@@ -5,8 +5,9 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.attention.call_spec import NSACall, NSATopkFwdInterface
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -250,8 +251,27 @@ def _nsa_topk_varlen_run(
     )(threads)(q, k_cmp, offsets, chunk_offsets, token_indices)
 
 
-class NSATopkVarlenKernel(Kernel):
+class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        """The chunk tile width is the block size: the candidate pool keeps the best
+        tile-width chunks."""
+        return call, lambda: cls(
+            seq_num=call.batch,
+            c_seq_len=call.c_seq_len,
+            heads=call.heads,
+            dim=call.dim,
+            chunk_num=call.chunk_num,
+            group=call.heads // call.heads_kv,
+            scale=call.scale,
+            selected_block_num=call.selected_blocks,
+            bc=call.block_size,
+            bs=call.block_size,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
 
     def __init__(
         self,

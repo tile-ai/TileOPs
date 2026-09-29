@@ -1,4 +1,3 @@
-import dataclasses
 import functools
 import itertools
 from typing import Optional
@@ -7,24 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.attention.call_spec import MlaDecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-__all__ = ["MLADecodeWsKernel", "MlaDecodeCall"]
-
-
-@dataclasses.dataclass(frozen=True)
-class MlaDecodeCall(CallSpec):
-    """One MLA decode call: the construction arguments the kernel takes."""
-
-    batch: int = 0
-    heads: int = 0
-    heads_kv: int = 0
-    seqlen_kv: int = 0
-    dim: int = 0
-    pe_dim: int = 0
-    dtype: Optional[torch.dtype] = None
+__all__ = ["MLADecodeWsKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -669,19 +655,15 @@ def _mla_decode_ws_run(
     )(Q, Q_pe, Kv, K_pe, glse, Output_partial)
 
 
-class MLADecodeWsKernel(Kernel):
+class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
     def applies(cls, call: MlaDecodeCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: MlaDecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:
             return f"serves one KV head, got {call.heads_kv}"
@@ -703,7 +685,6 @@ class MLADecodeWsKernel(Kernel):
             call.dim,
             call.pe_dim,
             call.dtype,
-            tune=call.tune,
             device_index=call.device.index if call.device is not None else None,
         )
 

@@ -6,7 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.attention.call_spec import (
+    AttentionCall,
+    GQABwdInterface,
+    GQABwdPreprocessInterface,
+)
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -49,13 +53,12 @@ def _flashattn_bwd_preprocess_kernel(
     return flash_bwd_prep
 
 
-class FlashAttnBwdPreprocessKernel(Kernel):
+class FlashAttnBwdPreprocessKernel(Kernel, GQABwdPreprocessInterface):
     """Row-wise ``delta = rowsum(o * do)`` for the GQA/MHA backward pass; also zeroes
     the f32 ``dq`` accumulator the backward kernel adds into.
 
     The launch geometry is fixed, so ``default_config`` is empty and
-    ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
-    config with a warning from ``Kernel.init_config``.
+    ``autotune_configs`` is undefined: a tuning request leaves it as built.
 
     Args:
         batch: Batch size.
@@ -68,6 +71,11 @@ class FlashAttnBwdPreprocessKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.dtype)
+        return args, lambda: cls(*args)
 
     def __init__(
         self,
@@ -279,7 +287,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
     return _gqa_bwd_wgmma_pipelined_func
 
 
-class GQABwdWgmmaPipelinedKernel(Kernel):
+class GQABwdWgmmaPipelinedKernel(Kernel, GQABwdInterface):
     """GQA/MHA backward, one CTA per key block; dQ is added into an f32 buffer in the
     layout of ``q`` and landed in the input dtype by a second launch."""
 
@@ -298,7 +306,7 @@ class GQABwdWgmmaPipelinedKernel(Kernel):
             call.is_causal,
             call.dtype,
         )
-        return args, lambda: cls(*args, tune=call.tune)
+        return args, lambda: cls(*args)
 
     def __init__(
         self,

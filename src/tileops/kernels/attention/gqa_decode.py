@@ -6,12 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import (
-    GQADenseFwdInterface,
-    dense_decode_limit_refusal,
-    dense_decode_refusal,
-    dense_long_context_decode_refusal,
-)
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.dense_entry import dense_decode_entry
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
@@ -527,16 +522,28 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     general: bool = True
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The contiguous decode region and the limits the program builds within."""
+        if not call.dense_decode_region:
+            return "does not serve this call"
+        if call.fuse_rope and call.arch != 90:
+            return "fuses RoPE on SM90 only"
+        return cls._limit_refusal(call.dim, call.seqlen_kv)
 
     @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_decode_refusal(call)
+    def _limit_refusal(dim: int, seq_len_kv: int) -> Optional[str]:
+        """Why the program cannot build this shape; read by the region and the constructor,
+        which a caller can reach directly. Past 128 the split-KV tile has no register layout.
+        """
+        if seq_len_kv <= 0:
+            return "requires a non-empty KV cache"
+        if dim % 16 != 0 or not 16 <= dim <= 128:
+            return "requires head dimension a multiple of 16 in [16, 128]"
+        return None
 
     @classmethod
     def split_tier(cls, call) -> tuple:
@@ -591,7 +598,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        reason = dense_decode_limit_refusal(dim=dim, seq_len_kv=seq_len_kv)
+        reason = self._limit_refusal(dim, seq_len_kv)
         if reason is not None:
             raise ValueError(f"{type(self).__name__} {reason}")
         self._use_batched_config = (
@@ -837,9 +844,21 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     general: bool = False
     preferred_over = frozenset({"gqa_dense_decode_bs1"})
 
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_long_context_decode_refusal(call)
+    @classmethod
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The one decode shape the long-context split serves."""
+        served = (
+            call.dense_decode_region
+            and not call.fuse_rope
+            and call.seqlen_kv >= 1024
+            and call.batch == 1
+            and call.heads == 32
+            and call.heads_kv == 4
+            and call.dim == 128
+            and call.dtype == torch.float16
+            and call.softcap == 0.0
+        )
+        return None if served else "does not serve this call"
 
     @classmethod
     def split_tier(cls, call) -> tuple:

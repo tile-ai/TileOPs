@@ -5,9 +5,10 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.attention.call_spec import NSACall, NSAFwdInterface
 from tileops.kernels.attention.online_softmax import make_online_softmax, make_rescale
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -196,8 +197,24 @@ def _nsa_fwd_varlen_run(
     )(threads)(q, k, v, block_indices, block_counts, offsets, token_indices)
 
 
-class NSAFwdVarlenKernel(Kernel):
+class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        return call, lambda: cls(
+            batch=call.batch,
+            heads=call.heads,
+            c_seq_len=call.c_seq_len,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            scale=call.scale,
+            block_size=call.block_size,
+            groups=call.heads // call.heads_kv,
+            selected_blocks=call.selected_blocks,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
 
     def __init__(
         self,

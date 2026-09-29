@@ -1,4 +1,3 @@
-import dataclasses
 import functools
 import itertools
 from typing import Callable, Optional
@@ -8,7 +7,7 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner import autotune
 
-from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.attention.call_spec import SparseMlaCall, SparseMLADecodeFwdInterface
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     LOG2E,
@@ -17,144 +16,49 @@ from tileops.kernels.constants import (
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["SparseMlaBasicKernel", "SparseMlaCall", "SparseMlaKernel"]
+__all__ = ["SparseMlaBasicKernel", "SparseMlaKernel", "SparseMlaKernelBase"]
 
 
-@dataclasses.dataclass(frozen=True)
-class SparseMlaCall(CallSpec):
-    """One sparse MLA decode call: the construction arguments both implementations take."""
+class SparseMlaKernelBase(Kernel, SparseMLADecodeFwdInterface):
+    """The shape region and constructor both sparse MLA implementations share."""
 
-    batch: int = 0
-    seq_len: int = 0
-    seq_len_kv: int = 0
-    heads: int = 0
-    dim: int = 0
-    tail_dim: int = 0
-    dtype: Optional[torch.dtype] = None
-    topk: int = 0
-    kv_stride: int = 0
-    q_start_index_s: int = 0
-    kv_group: int = 1
-    sm_scale: Optional[float] = None
-    is_causal: bool = True
-    cp0: bool = True
-
-
-def _shape_refusal(
-    dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
-) -> Optional[str]:
-    """Why neither implementation serves this shape, or ``None``."""
-    if not is_causal:
-        return "requires the causal mask"
-    pow2 = tilelang.math.next_power_of_2
-    if dim != pow2(dim) or tail_dim != pow2(tail_dim):
-        return "requires power-of-two dim and tail_dim"
-    group_heads = heads // kv_group
-    if group_heads > 64 and group_heads % 64 != 0:
-        return "requires at most 64 heads per KV group, or a multiple of 64"
-    if kv_group != 1 and max(pow2(group_heads), 16) != group_heads:
-        return "requires a power of two of at least 16 heads per KV group when kv_group > 1"
-    return None
-
-
-def _ws_gather_refusal(dim: int, tail_dim: int) -> Optional[str]:
-    """Why the warp-specialized KV gather cannot copy these widths, or ``None``."""
-    if dim % 128 != 0 or tail_dim != 64:
-        return "requires dim a multiple of 128 and tail_dim 64"
-    return None
-
-
-def _raise_on(reason: Optional[str]) -> None:
-    if reason is not None:
-        raise ValueError(reason)
-
-
-def _sparse_mla_refusal(call: SparseMlaCall) -> Optional[str]:
-    """Why *call* is outside the region both implementations serve, or ``None``."""
-    return _shape_refusal(call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal)
-
-
-def _heads_per_block(head_kv: int) -> int:
-    """Query heads one block of the basic kernel holds: the padded group, at most 64."""
-    return 64 if head_kv > 64 else max(tilelang.math.next_power_of_2(head_kv), 16)
-
-
-def _basic_default_config(arch: int) -> dict:
-    """The basic kernel's default config on *arch*."""
-    return {"block_i": 64 if arch >= 90 else 32, "threads": 128, "num_stages": 2}
-
-
-def _basic_autotune_configs() -> list[dict]:
-    """The configs the basic kernel tunes over."""
-    # threads=256 is kept for targets that support it; the autotuner
-    # prunes configs that fail to compile.
-    return [
-        {"block_i": block_i, "threads": threads, "num_stages": 2}
-        for block_i, threads in itertools.product((32, 64), (128, 256))
-    ]
-
-
-def _basic_shared_bytes(h_per_block: int, dim: int, itemsize: int, block_i: int) -> int:
-    """A lower bound on the shared memory one block of the basic kernel allocates.
-
-    Only ``q``, ``kv`` and ``s``, which the main loop holds at once, each aligned as
-    TileLang places them. TileLang may place the tail buffers and the reduction
-    workspace in space whose lifetime does not overlap theirs, so a refusal on this bound
-    never refuses a call that fits; a call it admits can still exceed the limit by those
-    buffers. The KV gather runs under a serial loop, so ``T.Pipelined`` does not
-    multi-buffer it and ``num_stages`` adds nothing.
-    """
-    buffers = (
-        h_per_block * dim * itemsize,  # q
-        block_i * dim * itemsize,  # kv
-        h_per_block * block_i * itemsize,  # s
-    )
-    align = SHARED_BUFFER_ALIGN_BYTES
-    return sum(-(-b // align) * align for b in buffers)
-
-
-def _basic_shared_refusal(call: SparseMlaCall) -> Optional[str]:
-    """Why no config the basic kernel would run for *call* fits its device, or ``None``.
-
-    An untuned call runs the default config; a tuned one runs whichever tuning config builds.
-    """
-    limit = BLOCK_SHARED_BYTES_OPT_IN.get(call.arch)
-    if limit is None:
-        return None
-    configs = _basic_autotune_configs() if call.tune else [_basic_default_config(call.arch)]
-    h_per_block = _heads_per_block(call.heads // call.kv_group)
-    need = min(
-        _basic_shared_bytes(h_per_block, call.dim, call.dtype.itemsize, config["block_i"])
-        for config in configs
-    )
-    if need > limit:
-        return (
-            f"needs {need} bytes of shared memory per block, over the {limit} bytes "
-            f"sm{call.arch} allows"
+    @classmethod
+    def entry_for(cls, call: SparseMlaCall) -> Entry:
+        """The call spec is the identity; the kernel is built on its device."""
+        return call, lambda: cls(
+            call.batch,
+            call.seq_len,
+            call.seq_len_kv,
+            call.heads,
+            call.dim,
+            call.tail_dim,
+            call.dtype,
+            call.topk,
+            call.kv_stride,
+            call.q_start_index_s,
+            call.kv_group,
+            call.sm_scale,
+            call.is_causal,
+            call.cp0,
+            device_index=call.device.index if call.device is not None else None,
         )
-    return None
 
-
-def _sparse_mla_entry(cls: type, call: SparseMlaCall) -> Entry:
-    """The entry for either implementation: the record is the identity, built on its device."""
-    return call, lambda: cls(
-        call.batch,
-        call.seq_len,
-        call.seq_len_kv,
-        call.heads,
-        call.dim,
-        call.tail_dim,
-        call.dtype,
-        call.topk,
-        call.kv_stride,
-        call.q_start_index_s,
-        call.kv_group,
-        call.sm_scale,
-        call.is_causal,
-        call.cp0,
-        tune=call.tune,
-        device_index=call.device.index if call.device is not None else None,
-    )
+    @staticmethod
+    def shape_refusal(
+        dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
+    ) -> Optional[str]:
+        """Why neither implementation serves this shape, or ``None``; its builders ask too."""
+        if not is_causal:
+            return "requires the causal mask"
+        pow2 = tilelang.math.next_power_of_2
+        if dim != pow2(dim) or tail_dim != pow2(tail_dim):
+            return "requires power-of-two dim and tail_dim"
+        group_heads = heads // kv_group
+        if group_heads > 64 and group_heads % 64 != 0:
+            return "requires at most 64 heads per KV group, or a multiple of 64"
+        if kv_group != 1 and max(pow2(group_heads), 16) != group_heads:
+            return "requires a power of two of at least 16 heads per KV group when kv_group > 1"
+        return None
 
 
 @functools.lru_cache(maxsize=32)
@@ -213,7 +117,9 @@ def _sparse_mla_kernel(
 
 
     """
-    _raise_on(_shape_refusal(dim, tail_dim, heads, kv_group, is_causal))
+    reason = SparseMlaKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
+    if reason is not None:
+        raise ValueError(reason)
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
@@ -281,7 +187,9 @@ def _sparse_mla_kernel(
                 f"block_i={i_block} is not a multiple of the {producer_rows} rows one "
                 f"gather pass copies with threads={threads}"
             )
-        _raise_on(_ws_gather_refusal(d, d_tail))
+        reason = SparseMlaKernel.gather_refusal(d, d_tail)
+        if reason is not None:
+            raise ValueError(reason)
 
         replicate_h = head_kv // 64 if head_kv > 64 else 1
 
@@ -691,7 +599,9 @@ def _sparse_mla_basic_kernel(
       buffering with mbarriers.
     - Per-row KV gather via ``T.copy`` with runtime row indices.
     """
-    _raise_on(_shape_refusal(dim, tail_dim, heads, kv_group, is_causal))
+    reason = SparseMlaKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
+    if reason is not None:
+        raise ValueError(reason)
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
@@ -729,7 +639,7 @@ def _sparse_mla_basic_kernel(
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
-        h_per_block = _heads_per_block(head_kv)
+        h_per_block = SparseMlaBasicKernel.heads_per_block(head_kv)
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -895,7 +805,7 @@ def _sparse_mla_basic_run(
     )(block_i, threads, num_stages)(q, kv, indices)
 
 
-class SparseMlaBasicKernel(Kernel):
+class SparseMlaBasicKernel(SparseMlaKernelBase):
     """
     Architecture-agnostic sparse MLA kernel (sm80+).
 
@@ -929,15 +839,58 @@ class SparseMlaBasicKernel(Kernel):
 
     @classmethod
     def applies(cls, call: SparseMlaCall) -> bool:
-        return _sparse_mla_refusal(call) is None and _basic_shared_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: SparseMlaCall) -> Optional[str]:
-        return _sparse_mla_refusal(call) or _basic_shared_refusal(call)
+        """The shared shape region, where the default config fits the block's shared memory."""
+        reason = cls.shape_refusal(
+            call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
+        )
+        limit = BLOCK_SHARED_BYTES_OPT_IN.get(call.arch)
+        if reason is not None or limit is None:
+            return reason
+        need = cls._shared_bytes(
+            cls.heads_per_block(call.heads // call.kv_group),
+            call.dim,
+            call.dtype.itemsize,
+            cls._default_config_on(call.arch)["block_i"],
+        )
+        if need > limit:
+            return (
+                f"needs {need} bytes of shared memory per block, over the {limit} bytes "
+                f"sm{call.arch} allows"
+            )
+        return None
 
-    @classmethod
-    def entry_for(cls, call: SparseMlaCall) -> Entry:
-        return _sparse_mla_entry(cls, call)
+    @staticmethod
+    def heads_per_block(head_kv: int) -> int:
+        """Query heads one block holds: the padded group, at most 64; its builder asks too."""
+        return 64 if head_kv > 64 else max(tilelang.math.next_power_of_2(head_kv), 16)
+
+    @staticmethod
+    def _default_config_on(arch: int) -> dict:
+        """The config this kernel builds on *arch*, which its region is sized for."""
+        return {"block_i": 64 if arch >= 90 else 32, "threads": 128, "num_stages": 2}
+
+    @staticmethod
+    def _shared_bytes(h_per_block: int, dim: int, itemsize: int, block_i: int) -> int:
+        """A lower bound on the shared memory one block allocates.
+
+        Only ``q``, ``kv`` and ``s``, which the main loop holds at once, each aligned as
+        TileLang places them. TileLang may place the tail buffers and the reduction
+        workspace in space whose lifetime does not overlap theirs, so a refusal on this bound
+        never refuses a call that fits; a call it admits can still exceed the limit by those
+        buffers. The KV gather runs under a serial loop, so ``T.Pipelined`` does not
+        multi-buffer it and ``num_stages`` adds nothing.
+        """
+        buffers = (
+            h_per_block * dim * itemsize,  # q
+            block_i * dim * itemsize,  # kv
+            h_per_block * block_i * itemsize,  # s
+        )
+        align = SHARED_BUFFER_ALIGN_BYTES
+        return sum(-(-b // align) * align for b in buffers)
 
     def __init__(
         self,
@@ -1002,7 +955,7 @@ class SparseMlaBasicKernel(Kernel):
         # Below SM90, block_i=32 keeps the KV tiles small enough for the
         # per-block shared-memory limit; ``refusal`` rejects a shape where
         # even that does not fit.
-        return _basic_default_config(get_sm_version(self.device_index))
+        return self._default_config_on(get_sm_version(self.device_index))
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1016,7 +969,12 @@ class SparseMlaBasicKernel(Kernel):
         Returns:
             list[dict]: Configs with 'block_i', 'threads' and 'num_stages'.
         """
-        return _basic_autotune_configs()
+        # threads=256 is kept for targets that support it; the autotuner
+        # prunes configs that fail to compile.
+        return [
+            {"block_i": block_i, "threads": threads, "num_stages": 2}
+            for block_i, threads in itertools.product((32, 64), (128, 256))
+        ]
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
@@ -1103,7 +1061,7 @@ class SparseMlaBasicKernel(Kernel):
         return q, kv, indices
 
 
-class SparseMlaKernel(Kernel):
+class SparseMlaKernel(SparseMlaKernelBase):
     """
     Sparse MLA kernel class for handling multi-head attention operations in ML models.
 
@@ -1132,28 +1090,29 @@ class SparseMlaKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
+    @staticmethod
+    def gather_refusal(dim: int, tail_dim: int) -> Optional[str]:
+        """Why the warp-specialized KV gather cannot copy these widths; its builder asks too."""
+        if dim % 128 != 0 or tail_dim != 64:
+            return "requires dim a multiple of 128 and tail_dim 64"
+        return None
+
     @classmethod
     def applies(cls, call: SparseMlaCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: SparseMlaCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: SparseMlaCall) -> Optional[str]:
-        """The shared region, narrowed to what the warp-specialized gather covers."""
-        reason = _sparse_mla_refusal(call) or _ws_gather_refusal(call.dim, call.tail_dim)
+        """The shared shape region, narrowed to what the warp-specialized gather covers."""
+        reason = cls.shape_refusal(
+            call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
+        ) or cls.gather_refusal(call.dim, call.tail_dim)
         if reason is not None:
             return reason
         # The default block_i of 64, taken an even number of times.
         if call.topk % 128 != 0:
             return "requires topk a multiple of 128"
         return None
-
-    @classmethod
-    def entry_for(cls, call: SparseMlaCall) -> Entry:
-        return _sparse_mla_entry(cls, call)
 
     def __init__(
         self,

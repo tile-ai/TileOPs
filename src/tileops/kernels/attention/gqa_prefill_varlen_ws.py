@@ -8,8 +8,8 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, uses_sliding_window
-from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
+from tileops.kernels.attention.call_spec import ATTENTION_DTYPES
+from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.utils import get_sm_count
@@ -442,15 +442,10 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             and call.dim in cls._DIMS
             and not call.is_fp8
             and not call.fuse_rope
-            and not uses_sliding_window(call)
+            and not call.uses_sliding_window
             and not call.empty_kv
             and call.batch <= cls._MAX_BATCH
-            and not call.is_uniform
         )
-
-    @classmethod
-    def entry_for(cls, call):
-        return varlen_entry(cls, call)
 
     def _make_kernel(self):
         return _gqa_prefill_varlen_ws_kernel(

@@ -20,7 +20,6 @@ from benchmarks.benchmark_base import (
     backward_of,
     manifest_calls,
 )
-from tileops.kernels.attention.call_spec import paged_decode_region
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -478,7 +477,7 @@ def test_gqa_paged_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionPagedFwdOp(**workload.arguments())
     q, k_pages, _, page_table, _, cu_seqlens_q = inputs[:6]
-    if not paged_decode_region(op.paged_call(q, k_pages, page_table, cu_seqlens_q)):
+    if op.paged_call(q, k_pages, page_table, cu_seqlens_q).paged_decode_refusal is not None:
         # FIXME(staged-rollout): a row outside the paged-decode region is not run.
         #
         # Broken invariant: every manifest workload row records a result.

@@ -16,7 +16,8 @@ import torch
 
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
-    paged_decode_refusal,
+    GQAPagedFwdInterface,
+    MHAPagedDecodeFwdInterface,
 )
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
@@ -601,32 +602,7 @@ def _gqa_decode_paged_split_run(
     return out.view(Q.shape)
 
 
-def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
-    """The entry for the paged-decode kernel.
-
-    A one-token causal query sees the whole cache, so it builds the non-causal
-    kernel. The device index is in the identity because the kernel is compiled
-    for the architecture it is built on.
-    """
-    index = call.device.index if call.device is not None else None
-    args = (
-        call.batch,
-        call.heads,
-        call.heads_kv,
-        call.max_seqlen_q,
-        call.seqlen_kv,
-        call.dim,
-        call.page_size,
-        call.max_pages_per_req,
-        call.is_causal and call.max_seqlen_q > 1,
-        call.dtype,
-    )
-    extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
-    identity = (*args, *extra.values(), index)
-    return identity, lambda: cls(*args, **extra, tune=call.tune, device_index=index)
-
-
-class GQADecodePagedKernel(Kernel):
+class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterface):
     """Paged decode for any head grouping and one query length shared by every request."""
 
     supported_archs: list[int] = [80, 89, 90]
@@ -634,17 +610,13 @@ class GQADecodePagedKernel(Kernel):
     general: bool = True
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: AttentionCall) -> Optional[str]:
         """Why *call* is outside the decode region or no key tile covers its pages."""
-        reason = paged_decode_refusal(call)
+        reason = call.paged_decode_refusal
         if reason is not None:
             return reason
         try:
@@ -655,7 +627,25 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        return paged_decode_entry(cls, call)
+        """A one-token causal query sees the whole cache, so it builds the non-causal
+        kernel. The device index is in the identity: the kernel is compiled for its
+        architecture."""
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.batch,
+            call.heads,
+            call.heads_kv,
+            call.max_seqlen_q,
+            call.seqlen_kv,
+            call.dim,
+            call.page_size,
+            call.max_pages_per_req,
+            call.is_causal and call.max_seqlen_q > 1,
+            call.dtype,
+        )
+        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
+        identity = (*args, *extra.values(), index)
+        return identity, lambda: cls(*args, **extra, device_index=index)
 
     def __init__(
         self,

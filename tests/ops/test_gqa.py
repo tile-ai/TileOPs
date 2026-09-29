@@ -638,3 +638,32 @@ def test_gqa_bwd(
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionBwdOp(causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("heads_kv", "dim", "seq_len", "expected"),
+    [
+        pytest.param(16, 128, 1024, "gqa_bwd_ws_kernel", id="mha-dim-128"),
+        pytest.param(4, 128, 1024, "gqa_bwd_kernel", id="grouped"),
+        pytest.param(16, 64, 1024, "gqa_bwd_kernel", id="dim-64"),
+        pytest.param(16, 128, 1000, "gqa_bwd_kernel", id="partial-key-block"),
+    ],
+)
+def test_gqa_bwd_regions(heads_kv: int, dim: int, seq_len: int, expected: str) -> None:
+    """The warp-specialized backward serves MHA at head dim 128 on whole key blocks."""
+    from tileops.kernels.attention.call_spec import AttentionCall
+
+    call = AttentionCall(
+        arch=90,
+        sm_count=132,
+        dtype=torch.float16,
+        batch=2,
+        heads=16,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        seqlen_kv=seq_len,
+        is_causal=True,
+    )
+    assert GroupedQueryAttentionBwdOp().select_implementation("gqa_bwd", call) == expected

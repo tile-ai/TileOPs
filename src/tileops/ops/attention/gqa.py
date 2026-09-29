@@ -23,8 +23,16 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
     MHABwdWsKernel,
 )
-from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.attention.call_spec import (
+    AttentionCall,
+    GQABwdInterface,
+    GQABwdPreprocessInterface,
+    GQADenseFwdInterface,
+    GQAPagedFwdInterface,
+    GQAPrefillPagedFwdInterface,
+    GQAVarlenFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.ops.rope import base_freqs
 from tileops.perf.profile import tensor_core_roof
@@ -394,6 +402,14 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     """
 
     compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gqa_varlen": GQAPrefillVarlenFwdKernel,
+        "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
+        "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gqa_varlen": GQAVarlenFwdInterface
+    }
 
     def __init__(
         self,
@@ -443,14 +459,6 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gqa_varlen": GQAPrefillVarlenFwdKernel,
-            "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
-            "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
-        }
-
     def compute_roof(self) -> str:
         """Varlen attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
@@ -481,7 +489,6 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             if self.pos_encoding_mode == "rope"
             else 0,
             rope_layout=self.rope_layout,
-            tune=self.tune,
             device=q.device,
         )
 
@@ -583,6 +590,7 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows it reads,
@@ -679,7 +687,6 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             is_uniform=len(set(q_lens)) <= 1,
             cache_dtype=k_pages.dtype,
             fuse_rope=self.pos_encoding_mode == "rope",
-            tune=self.tune,
             device=q.device,
         )
 
@@ -751,22 +758,9 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
-        inputs = (
-            q,
-            k_pages,
-            v_pages,
-            page_table,
-            cache_seqlens,
-            cu_seqlens_q,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-        )
         call = self.paged_call(q, k_pages, page_table, cu_seqlens_q)
-        kernel = self.kernel_for("gqa_paged", inputs, call)
-        return kernel(q, k_pages.flatten(0, 1), v_pages.flatten(0, 1), cache_seqlens, page_table)
+        inputs = (q, k_pages.flatten(0, 1), v_pages.flatten(0, 1), cache_seqlens, page_table)
+        return self.kernel_for("gqa_paged", inputs, call)(*inputs)
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
@@ -786,6 +780,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         "gqa_prefill_paged_with_kv_cache_fwd_kernel": GQAPrefillPagedWithKVCacheFwdKernel,
         "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel": GQAPrefillPagedWithFP8KVCacheFwdKernel,
         "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel": GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gqa_prefill_paged": GQAPrefillPagedFwdInterface
     }
 
     def eval_roofline_read_bytes(self) -> "int | None":
@@ -891,7 +888,6 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             fuse_rope=self.fuse_rope,
             max_position=self.max_position,
             rotary_dim=self._resolved_rotary_dim(dim),
-            tune=self.tune,
             device=q.device,
         )
 
@@ -1031,7 +1027,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cache_seqlens,
             block_table,
         )
-        kernel = self.kernel_for("gqa_prefill_paged", inputs, call)
+        kernel = self.kernel_for("gqa_prefill_paged", (*inputs, cos_table, sin_table), call)
         return kernel(*inputs, self.max_seqlen_q, cos_table, sin_table)
 
     @property
@@ -1062,7 +1058,10 @@ class GroupedQueryAttentionBwdOp(Op):
         "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
         "gqa_bwd_ws_kernel": MHABwdWsKernel,
     }
-    _BACKWARD_KEYS = ("gqa_bwd_kernel", "gqa_bwd_ws_kernel")
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gqa_bwd_preprocess": GQABwdPreprocessInterface,
+        "gqa_bwd": GQABwdInterface,
+    }
 
     def __init__(
         self,
@@ -1099,20 +1098,8 @@ class GroupedQueryAttentionBwdOp(Op):
             max_seqlen_q=seq_len,
             seqlen_kv=seq_len,
             is_causal=self.is_causal,
-            tune=self.tune,
             device=q.device,
         )
-
-    def entry_for(self, role: str, call: AttentionCall) -> Entry:
-        """The preprocess pass has one implementation, built per ``(batch, heads,
-        seq_len, dim, dtype)``; the backward pass is chosen among its candidates."""
-        if role == "gqa_bwd_preprocess":
-            args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.dtype)
-            cls = self.kernel_map["gqa_bwd_preprocess_kernel"]
-            return (cls, args), lambda: cls(*args, tune=self.tune)
-        cls = self.select_kernel(call, self._BACKWARD_KEYS)
-        identity, build = cls.entry_for(call)
-        return (cls, identity), build
 
     def forward(
         self,
@@ -1152,12 +1139,10 @@ class GroupedQueryAttentionBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         do = do.contiguous()
-        inputs = (q, k, v, o, do, lse)
         call = self._attention_call(q, k)
-        prep_kernel = self.kernel_for("gqa_bwd_preprocess", inputs, call)
-        kernel = self.kernel_for("gqa_bwd", inputs, call)
-        delta, dq_accum = prep_kernel(o, do)
-        return kernel(q, k, v, do, lse, delta, dq_accum)
+        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", (o, do), call)(o, do)
+        inputs = (q, k, v, do, lse, delta, dq_accum)
+        return self.kernel_for("gqa_bwd", inputs, call)(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

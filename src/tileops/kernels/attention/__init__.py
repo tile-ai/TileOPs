@@ -1,9 +1,6 @@
-from tileops.kernels.attention.deepseek_dsa_decode import (
-    SparseMlaBasicKernel,
-    SparseMlaCall,
-    SparseMlaKernel,
-)
-from tileops.kernels.attention.deepseek_mla_decode import MlaDecodeCall, MLADecodeWsKernel
+from tileops.kernels.attention.call_spec import MlaDecodeCall, SparseMlaCall
+from tileops.kernels.attention.deepseek_dsa_decode import SparseMlaBasicKernel, SparseMlaKernel
+from tileops.kernels.attention.deepseek_mla_decode import MLADecodeWsKernel
 from tileops.kernels.attention.deepseek_nsa_cmp_fwd import NSACmpFwdVarlenKernel
 from tileops.kernels.attention.deepseek_nsa_fwd import NSAFwdVarlenKernel
 from tileops.kernels.attention.deepseek_nsa_topk import NSATopkVarlenKernel
@@ -20,7 +17,6 @@ from tileops.kernels.attention.gqa_dense import GQADenseSlidingWindowKernel, GQA
 from tileops.kernels.attention.gqa_fwd import (
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
-    GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
 )
 from tileops.kernels.attention.gqa_fwd_fp8 import GQADenseFP8Kernel
@@ -46,7 +42,6 @@ __all__ = [
     "GQADenseFP8Kernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheRopeAppendKernel",
     "GQAPrefillPagedWithKVCacheRopeFwdKernel",
     "GQAPrefillVarlenFwdKernel",
     "GQAPrefillVarlenWSFwdKernel",

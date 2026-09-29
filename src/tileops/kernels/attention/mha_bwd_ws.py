@@ -5,7 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
+from tileops.kernels.attention.call_spec import (
+    ATTENTION_DTYPES,
+    AttentionCall,
+    GQABwdInterface,
+)
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
@@ -447,7 +451,7 @@ def _launch_group(batch_heads: int, kv_blocks: int, num_sms: int) -> int:
     return max(g for g in range(1, min(fit, batch_heads) + 1) if batch_heads % g == 0)
 
 
-class MHABwdWsKernel(Kernel):
+class MHABwdWsKernel(Kernel, GQABwdInterface):
     """Warp-specialized causal or full MHA backward for head dim 128 on SM90.
 
     Persistent: one CTA per SM claims key-block tiles in launch order, and the next
@@ -480,14 +484,14 @@ class MHABwdWsKernel(Kernel):
             and not call.is_fp8
             and call.softcap == 0.0
             and call.sm_scale is None
-            and not uses_sliding_window(call)
+            and not call.uses_sliding_window
         )
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.is_causal, call.dtype)
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,

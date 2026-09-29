@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import GQADenseFwdInterface, dense_fp8_decode_refusal
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.dense_entry import dense_fp8_decode_entry
 from tileops.kernels.attention.gqa_decode_bs1_common import COMPILE_FLAGS
 from tileops.kernels.attention.gqa_fwd_fp8 import _validate_fa3_gqa_descales
@@ -273,20 +273,34 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     """Context-split native-FP8 Dense decode specialization."""
 
     supported_archs: list[int] = [90]
+    # A batch-1 FP8 decode against a long cache is also an FP8 call.
+    preferred_over = frozenset({"gqa_dense_fp8"})
     _TARGET_CTAS = 128
     _MAX_SPLITS = 32
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_fp8_decode_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """Batch 1, one query position, a long cache, at most 16 heads per KV head."""
+        served = (
+            call.is_fp8
+            and call.batch == 1
+            and call.max_seqlen_q == 1
+            and call.seqlen_kv >= 2048
+            and call.heads_kv > 0
+            and call.heads // call.heads_kv <= 16
+            and not call.uses_sliding_window
+            and not call.fuse_rope
+        )
+        if not served:
+            return "does not serve this call"
+        # Each of the four consumer warps takes a quarter of the head dimension in 8-wide tiles.
+        if call.dim % 32 != 0 or not 32 <= call.dim <= 128:
+            return "requires head dimension a multiple of 32 in [32, 128]"
+        return None
 
     @classmethod
     def entry_for(cls, call) -> Entry:

@@ -8,7 +8,13 @@ from tileops.kernels.attention import (
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.attention.call_spec import (
+    NSACall,
+    NSACmpFwdInterface,
+    NSAFwdInterface,
+    NSATopkFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -34,10 +40,9 @@ class NSATopkVarlenFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_topk_varlen_kernel": NSATopkVarlenKernel
     }
-
-    # Kernel configuration, not contract: the accumulator dtype. The chunk tile width is the
-    # block size, because the kernel's candidate pool keeps the best tile-width chunks.
-    accum_dtype: ClassVar[torch.dtype] = torch.float32
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "nsa_topk_varlen_kernel": NSATopkFwdInterface
+    }
 
     def __init__(
         self,
@@ -73,25 +78,6 @@ class NSATopkVarlenFwdOp(Op):
         from tileops.perf.formulas import nsa_topk_scored_pairs
 
         return {"scored_pairs": nsa_topk_scored_pairs(self.last_call)}
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        seq_num, c_seq_len, heads, dim, chunk_num, head_kv, dtype, _device = call
-        return call, lambda: self.kernel_map["nsa_topk_varlen_kernel"](
-            seq_num=seq_num,
-            c_seq_len=c_seq_len,
-            heads=heads,
-            dim=dim,
-            chunk_num=chunk_num,
-            group=heads // head_kv,
-            scale=self.scale,
-            selected_block_num=self.selected_block_num,
-            bc=self.bs,
-            bs=self.bs,
-            dtype=dtype,
-            accum_dtype=self.accum_dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -129,16 +115,18 @@ class NSATopkVarlenFwdOp(Op):
         """
         tensors = (q, k_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = q.shape
-        chunk_num, head_kv = k_cmp.shape[0], k_cmp.shape[1]
-        call = (
-            offsets.shape[0] - 1,
-            c_seq_len,
-            heads,
-            dim,
-            chunk_num,
-            head_kv,
-            q.dtype,
-            q.device.index,
+        call = NSACall(
+            batch=offsets.shape[0] - 1,
+            c_seq_len=c_seq_len,
+            heads=heads,
+            heads_kv=k_cmp.shape[1],
+            dim=dim,
+            chunk_num=k_cmp.shape[0],
+            selected_blocks=self.selected_block_num,
+            block_size=self.bs,
+            scale=self.scale,
+            dtype=q.dtype,
+            device=q.device,
         )
         return self.kernel_for("nsa_topk_varlen_kernel", tensors, call)(*tensors)
 
@@ -163,9 +151,9 @@ class NSAVarlenFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel
     }
-
-    # Kernel configuration, not contract: the accumulator dtype.
-    accum_dtype: ClassVar[torch.dtype] = torch.float32
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "nsa_fwd_varlen_kernel": NSAFwdInterface
+    }
 
     def __init__(
         self,
@@ -202,24 +190,6 @@ class NSAVarlenFwdOp(Op):
 
         scored, distinct = nsa_selected_rows(self.last_call)
         return {"scored_rows": scored, "distinct_rows": distinct}
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, heads, c_seq_len, dim, head_kv, selected_blocks, dtype, _device = call
-        return call, lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
-            batch=batch,
-            heads=heads,
-            c_seq_len=c_seq_len,
-            dim=dim,
-            is_causal=self.is_causal,
-            scale=self.scale,
-            block_size=self.block_size,
-            groups=heads // head_kv,
-            selected_blocks=selected_blocks,
-            dtype=dtype,
-            accum_dtype=self.accum_dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -263,15 +233,18 @@ class NSAVarlenFwdOp(Op):
         """
         tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
         c_seq_len, heads, dim = q.shape
-        call = (
-            offsets.shape[0] - 1,
-            heads,
-            c_seq_len,
-            dim,
-            k.shape[1],
-            block_indices.shape[2],
-            q.dtype,
-            q.device.index,
+        call = NSACall(
+            batch=offsets.shape[0] - 1,
+            c_seq_len=c_seq_len,
+            heads=heads,
+            heads_kv=k.shape[1],
+            dim=dim,
+            selected_blocks=block_indices.shape[2],
+            block_size=self.block_size,
+            scale=self.scale,
+            is_causal=self.is_causal,
+            dtype=q.dtype,
+            device=q.device,
         )
         return self.kernel_for("nsa_fwd_varlen_kernel", tensors, call)(*tensors)
 
@@ -294,10 +267,9 @@ class NSACmpVarlenFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_cmp_fwd_varlen_kernel": NSACmpFwdVarlenKernel
     }
-
-    # Kernel configuration, not contract: the chunk tile width and the accumulator dtype.
-    bc: ClassVar[int] = 32
-    accum_dtype: ClassVar[torch.dtype] = torch.float32
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "nsa_cmp_fwd_varlen_kernel": NSACmpFwdInterface
+    }
 
     def __init__(
         self,
@@ -330,25 +302,6 @@ class NSACmpVarlenFwdOp(Op):
         from tileops.perf.formulas import nsa_closed_chunk_pairs
 
         return {"scored_pairs": nsa_closed_chunk_pairs(self.last_call)}
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, head_kv, dtype, _device = call
-        return call, lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
-            seq_num=seq_num,
-            c_seq_len=c_seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=dim_v,
-            chunk_num=chunk_num,
-            group=heads // head_kv,
-            scale=self.scale,
-            bc=self.bc,
-            bs=self.bs,
-            dtype=dtype,
-            accum_dtype=self.accum_dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -390,16 +343,18 @@ class NSACmpVarlenFwdOp(Op):
         tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = q.shape
         chunk_num, head_kv, dim_v = v_cmp.shape
-        call = (
-            offsets.shape[0] - 1,
-            c_seq_len,
-            heads,
-            dim_k,
-            dim_v,
-            chunk_num,
-            head_kv,
-            q.dtype,
-            q.device.index,
+        call = NSACall(
+            batch=offsets.shape[0] - 1,
+            c_seq_len=c_seq_len,
+            heads=heads,
+            heads_kv=head_kv,
+            dim=dim_k,
+            dim_v=dim_v,
+            chunk_num=chunk_num,
+            block_size=self.bs,
+            scale=self.scale,
+            dtype=q.dtype,
+            device=q.device,
         )
         return self.kernel_for("nsa_cmp_fwd_varlen_kernel", tensors, call)(*tensors)
 

@@ -17,8 +17,7 @@ import torch
 
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
-    decode_bs1_region,
-    paged_decode_region,
+    GQAPagedFwdInterface,
 )
 from tileops.kernels.attention.gqa_decode_bs1_common import (
     COMPILE_FLAGS,
@@ -169,7 +168,7 @@ def _gqa_decode_paged_bs1_ctx_run(
     )
 
 
-class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
+class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterface):
     """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
     ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
@@ -184,8 +183,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         # override answers for its own tiling rather than for the shipped one.
         return (
             call.max_seqlen_q == 1
-            and paged_decode_region(call)
-            and decode_bs1_region(call)
+            and call.paged_decode_refusal is None
+            and call.decode_bs1_region
             and cls.block_n_for_page_size(call.page_size) is not None
         )
 
@@ -216,7 +215,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         )
         extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
         identity = (*args, *extra.values(), index)
-        return identity, lambda: cls(*args, **extra, tune=call.tune, device_index=index)
+        return identity, lambda: cls(*args, **extra, device_index=index)
 
     def __init__(
         self,

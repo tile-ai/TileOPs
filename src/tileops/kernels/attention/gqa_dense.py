@@ -9,11 +9,7 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from tileops.kernels.attention.call_spec import (
-    GQADenseFwdInterface,
-    dense_sliding_window_refusal,
-    dense_ws_refusal,
-)
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.dense_entry import dense_sliding_window_entry, dense_ws_entry
 from tileops.kernels.attention.online_softmax import make_apply_softcap
 from tileops.kernels.constants import LOG2E
@@ -659,16 +655,15 @@ class GQADenseWsKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_ws_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The contiguous prefill region: more than one query position, no window, not FP8."""
+        if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
+            return "does not serve this call"
+        return call.tensor_core_dim_refusal
 
     @classmethod
     def entry_for(cls, call) -> Entry:
@@ -972,16 +967,17 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_sliding_window_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The contiguous windowed region, which FP8 has its own implementation for."""
+        if call.is_fp8 or not call.uses_sliding_window:
+            return "does not serve this call"
+        if call.max_seqlen_q != call.seqlen_kv:
+            return "a sliding window requires equal Q and KV lengths"
+        return call.tensor_core_dim_refusal
 
     @classmethod
     def entry_for(cls, call) -> Entry:

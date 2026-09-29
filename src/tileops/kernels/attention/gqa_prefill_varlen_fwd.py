@@ -17,13 +17,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import uses_sliding_window
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
+from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -250,24 +249,14 @@ def _gqa_prefill_varlen_fwd_kernel(
 
 
 class GQAPrefillVarlenFwdKernel(VarlenKernel):
-    """Ragged packed prefill: per-request ranges of unequal length.
-
-    Serves the requests the dense implementations cannot: packed ranges that are
-    not uniform.
-    """
+    """Packed prefill over per-request ranges of any length."""
 
     supported_archs: list[int] = [80, 89, 90]
     general: bool = True
 
     @classmethod
     def applies(cls, call) -> bool:
-        if call.is_fp8 or call.fuse_rope or uses_sliding_window(call):
-            return False
-        return not call.is_uniform
-
-    @classmethod
-    def entry_for(cls, call):
-        return varlen_entry(cls, call)
+        return not (call.is_fp8 or call.fuse_rope or call.uses_sliding_window)
 
     def _make_kernel(self) -> Callable:
         return _gqa_prefill_varlen_fwd_kernel(

@@ -5,8 +5,9 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.attention.call_spec import NSACall, NSACmpFwdInterface
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -175,8 +176,27 @@ def _nsa_cmp_fwd_varlen_run(
     )(threads)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
 
 
-class NSACmpFwdVarlenKernel(Kernel):
+class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
     supported_archs: list[int] = [90]
+    # Chunks one tile holds.
+    _BC = 32
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        return call, lambda: cls(
+            seq_num=call.batch,
+            c_seq_len=call.c_seq_len,
+            heads=call.heads,
+            dim_k=call.dim,
+            dim_v=call.dim_v,
+            chunk_num=call.chunk_num,
+            group=call.heads // call.heads_kv,
+            scale=call.scale,
+            bc=cls._BC,
+            bs=call.block_size,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
 
     def __init__(
         self,

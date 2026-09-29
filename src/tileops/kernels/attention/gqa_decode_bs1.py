@@ -16,13 +16,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import (
-    GQADenseFwdInterface,
-    decode_bs1_region,
-    dense_decode_refusal,
-)
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.dense_entry import dense_decode_entry
 from tileops.kernels.attention.gqa_decode import (
+    GQADecodeKernel,
     _gqa_decode_no_split_rope_run,
     _gqa_decode_no_split_run,
 )
@@ -565,20 +562,15 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         return glse, output_partial
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        # ``decode_bs1_region`` is the shape, shared with the paged sibling; this
-        # class serves it in the contiguous decode region only.
-        if not decode_bs1_region(call):
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The batch-1 shape, within what the general decode kernel serves."""
+        if not call.decode_bs1_region:
             return "does not serve this call"
-        return dense_decode_refusal(call)
+        return GQADecodeKernel.refusal(call)
 
     @classmethod
     def split_tier(cls, call) -> tuple:

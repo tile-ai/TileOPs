@@ -1,50 +1,37 @@
-"""The paged GQA prefill slot: one constructor, one call, one result.
-
-    kernel(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale,
-           cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q,
-           cos_table, sin_table) -> o
-
-An implementation accepts the whole spec whether or not it reads every field,
-and one that appends to the cache does so itself. See
-docs/design/ops-design.md § Kernel selection.
-"""
+"""The constructor and build identity every paged GQA prefill implementation shares."""
 
 from typing import Optional
 
 import torch
 
-from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.attention.call_spec import AttentionCall, GQAPrefillPagedFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 
-__all__ = ["PagedPrefillKernel", "page_size_refusal"]
+__all__ = ["PagedPrefillKernel"]
 
 
-def page_size_refusal(page_size: int) -> Optional[str]:
-    """Why the paged kernels cannot index pages of *page_size* tokens by shift, or ``None``."""
-    if page_size <= 0 or page_size & (page_size - 1) != 0:
-        return "requires a power-of-two page_size"
-    return None
-
-
-class PagedPrefillKernel(Kernel):
-    """Base for every implementation of the paged GQA prefill slot."""
+class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
+    """Base for every in-tree implementation of the paged GQA prefill interface."""
 
     @classmethod
     def applies(cls, call: AttentionCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @classmethod
-    def _region_refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None``.
 
         Every implementation indexes pages by shift. A subclass states its own region
         and asks this for the page-size limit.
         """
-        return page_size_refusal(call.page_size)
+        return cls.page_size_refusal(call.page_size)
+
+    @staticmethod
+    def page_size_refusal(page_size: int) -> Optional[str]:
+        """Why pages of *page_size* tokens cannot be indexed by shift; the builders ask too."""
+        if page_size <= 0 or page_size & (page_size - 1) != 0:
+            return "requires a power-of-two page_size"
+        return None
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -69,7 +56,7 @@ class PagedPrefillKernel(Kernel):
             max_position=call.max_position,
             rotary_dim=call.rotary_dim,
         )
-        return (*args.values(), index), lambda: cls(**args, tune=call.tune, device_index=index)
+        return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def __init__(
         self,
@@ -109,22 +96,3 @@ class PagedPrefillKernel(Kernel):
 
     def _build_program(self) -> None:
         """Build whatever the implementation launches beyond its wrapped call."""
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        k_scale: Optional[torch.Tensor],
-        v_scale: Optional[torch.Tensor],
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-        max_seqlen_q: int,
-        cos_table: Optional[torch.Tensor] = None,
-        sin_table: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Attend against the paged cache and return the semantic output only."""
-        raise NotImplementedError

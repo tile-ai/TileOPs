@@ -5,7 +5,6 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
-from tileops.kernels.attention.deepseek_dsa_decode import _basic_default_config
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.deepseek_attention import DsaDecodeWorkload
 from workloads.device import run_device
@@ -158,8 +157,8 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
     """64 heads per block at d=512 need at least 100 KB on SM89, over its 99 KB.
 
     A call that fits once TileLang reuses buffer space is not refused (16 heads at d=1024
-    compile to 99,840 bytes on SM89). A tuned call is refused only when no tuning config
-    fits: at d=1024 on SM90 the default needs at least 264 KB, block_i=32 at least 196 KB.
+    compile to 99,840 bytes on SM89). The region is sized for the default config whether or
+    not the op tunes: at d=1024 on SM90 it needs at least 264 KB.
     """
     call = SparseMlaCall(
         arch=89,
@@ -179,7 +178,33 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
     tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
     assert SparseMlaBasicKernel.refusal(tight) is None
     assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
-    assert _basic_default_config(90)["block_i"] == 64
     wide = dataclasses.replace(call, arch=90, dim=1024)
-    assert SparseMlaBasicKernel.refusal(wide) is not None
-    assert SparseMlaBasicKernel.refusal(dataclasses.replace(wide, tune=True)) is None
+    assert "shared memory" in SparseMlaBasicKernel.refusal(wide)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dim", "topk", "expected"),
+    [
+        pytest.param(512, 2048, "sparse_mla_kernel", id="ws"),
+        pytest.param(512, 96, "sparse_mla_basic_kernel", id="topk-off-128"),
+        pytest.param(64, 2048, "sparse_mla_basic_kernel", id="dim-off-128"),
+    ],
+)
+def test_sparse_mla_regions(dim: int, topk: int, expected: str) -> None:
+    """The warp-specialized kernel serves SM90 where its gather and topk tiling apply."""
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(64, 1, 0)
+    call = SparseMlaCall(
+        arch=90,
+        sm_count=132,
+        batch=1,
+        seq_len=1,
+        seq_len_kv=2048,
+        heads=64,
+        dim=dim,
+        tail_dim=64,
+        dtype=torch.float16,
+        topk=topk,
+        kv_stride=1,
+    )
+    assert op.select_implementation("sparse_mla", call) == expected
