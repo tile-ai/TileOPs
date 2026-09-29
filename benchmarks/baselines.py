@@ -195,8 +195,8 @@ def flashinfer_op(name: str) -> Callable:
     return _resolve("flashinfer", name, "flashinfer")
 
 
-def vllm_op(name: str) -> Callable:
-    """Return the ``vllm._custom_ops`` entry point *name*.
+def vllm_op(name: str, module: str = "_custom_ops") -> Callable:
+    """Return the entry point *name* of ``vllm.<module>``, ``vllm._custom_ops`` by default.
 
     Most of them write into a caller-allocated out tensor and return ``None``,
     so an adapter has to allocate before the timed region, not inside it.
@@ -213,7 +213,7 @@ def vllm_op(name: str) -> Callable:
             "before anything that imports flag_gems (benchmarks/conftest.py does), or "
             "resolve flag_gems through flaggems_op"
         )
-    return _resolve("vllm._custom_ops", name, "vllm")
+    return _resolve(f"vllm.{module}", name, "vllm")
 
 
 def reference_tolerance(dtype: torch.dtype) -> dict[str, float]:

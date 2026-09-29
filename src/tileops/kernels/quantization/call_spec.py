@@ -11,7 +11,12 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 from tileops.kernels.quantization.dequant_call import DequantizeCall
 
-__all__ = ["INT8DequantFwdInterface", "INT8QuantPerTensorFwdInterface", "QuantizeCall"]
+__all__ = [
+    "INT8DequantFwdInterface",
+    "INT8QuantPerChannelFwdInterface",
+    "INT8QuantPerTensorFwdInterface",
+    "QuantizeCall",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,5 +70,23 @@ class INT8QuantPerTensorFwdInterface(KernelInterface):
 
         Returns:
             A new ``q`` shaped like *x* in ``int8`` and a new ``scale`` ``[1]`` in
+            ``float32``.
+        """
+
+
+class INT8QuantPerChannelFwdInterface(KernelInterface):
+    """Symmetric INT8 quantization of each row against its own amax."""
+
+    request = QuantizeCall
+
+    @abstractmethod
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Quantize each of the ``call.rows`` rows of ``w``; nothing is written in place.
+
+        Args:
+            w: ``[call.rows, call.cols]``, contiguous, in ``call.dtype`` on ``call.device``.
+
+        Returns:
+            A new ``q`` shaped like *w* in ``int8`` and a new ``scale`` ``[call.rows]`` in
             ``float32``.
         """

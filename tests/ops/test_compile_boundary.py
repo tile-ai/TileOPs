@@ -57,6 +57,7 @@ from tileops.ops.pool import MeanPoolingFwdOp
 from tileops.ops.quantization import (
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
+    INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
 )
 from tileops.ops.rope import (
@@ -91,7 +92,7 @@ from workloads.gqa import (
 from workloads.int8_dequant import INT8DequantPerChannelWorkload, INT8DequantPerTensorWorkload
 from workloads.mha import MhaDecodePagedWorkload
 from workloads.paged_kv_cache import make_unit_cache_scales
-from workloads.quantization import INT8QuantPerTensorWorkload
+from workloads.quantization import INT8QuantPerChannelWorkload, INT8QuantPerTensorWorkload
 
 
 def _attention_cases():
@@ -482,6 +483,11 @@ def _other_cases():
         case = INT8DequantPerTensorWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerTensorFwdOp(torch.bfloat16), case.gen_inputs()
 
+    def int8_quant_per_channel():
+        return INT8QuantPerChannelFwdOp(), INT8QuantPerChannelWorkload(
+            64, 64, torch.bfloat16
+        ).gen_inputs()
+
     def int8_quant_per_tensor():
         return INT8QuantPerTensorFwdOp(), INT8QuantPerTensorWorkload(
             64, 64, torch.bfloat16
@@ -496,6 +502,7 @@ def _other_cases():
         ("fp8-quant", fp8_quant),
         ("int8-dequant-per-channel", int8_dequant_per_channel),
         ("int8-dequant-per-tensor", int8_dequant_per_tensor),
+        ("int8-quant-per-channel", int8_quant_per_channel),
         ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
     )
@@ -683,6 +690,7 @@ for _op_cls in (
     FP8QuantFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
+    INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
     MeanPoolingFwdOp,
     EngramGateConvFwdOp,
