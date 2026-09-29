@@ -38,7 +38,7 @@ def main() -> int:
     meta = {
         "commit": args.commit,
         "date": args.date,
-        "gpu": env.get("gpu", "NVIDIA H200"),
+        "gpu": env.get("gpu", "unknown"),
         "run_id": args.run_id,
     }
     if env:

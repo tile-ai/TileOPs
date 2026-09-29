@@ -23,10 +23,6 @@ _CU_SRC = Path(__file__).parent / "fma_saturation.cu"
 # One boost bin on sm_90; more clock movement than this is not a locked-clock run.
 _CLOCK_STEADY_MHZ = 15.0
 
-# fp32 FMA lanes per SM per clock on compute capability 9.0, from the CUDA C
-# Programming Guide's native arithmetic throughput table.
-_FMA_LANES_PER_SM = 128
-
 
 def _compile(cu_path, binary_path, arch="sm_90"):
     """Compile the CUDA source. Raises on failure."""
@@ -156,19 +152,21 @@ def _parse_peak(lines, op):
 
 
 def _parse_device(lines):
-    """Pull (sm_count, max_clock_ghz) out of the benchmark's banner line."""
+    """Pull (sm_count, max_clock_ghz, fma_lanes_per_sm) out of the benchmark's banner line."""
     for line in lines:
         if not line.startswith("GPU:"):
             continue
-        sm_count = max_ghz = None
+        sm_count = max_ghz = lanes = None
         for field in line.split("|"):
             field = field.strip()
             if field.startswith("SMs:"):
                 sm_count = int(field.split(":")[1])
             elif field.startswith("max SM clock:"):
                 max_ghz = float(field.split(":")[1].strip().split()[0])
-        return sm_count, max_ghz
-    return None, None
+            elif field.startswith("FMA lanes/SM:"):
+                lanes = int(field.split(":")[1])
+        return sm_count, max_ghz, lanes
+    return None, None, None
 
 
 def _parse_derived(lines, key):
@@ -228,6 +226,7 @@ def main():
     implied_ghz = _parse_derived(lines, "implied_sm_clock_ghz")
     mufu_ratio = _parse_derived(lines, "fma_to_mufu_ratio")
     telemetry = sampler.summary()
+    sm_count, max_ghz, lanes = _parse_device(lines)
 
     if measured_peak <= 0 or theo_peak_tflops <= 0:
         return
@@ -241,10 +240,7 @@ def main():
     print(f"Theoretical:               {theo_peak_tflops:.1f} TFLOP/s")
     print(f"Calibration:               {calibration:.4f}")
     if implied_ghz is not None:
-        print(
-            f"Implied SM clock:          {implied_ghz:.3f} GHz"
-            f"  (assumes all {_FMA_LANES_PER_SM} lanes busy)"
-        )
+        print(f"Implied SM clock:          {implied_ghz:.3f} GHz  (assumes all {lanes} lanes busy)")
     if mufu_peak > 0:
         print(f"MUFU (rsqrt.approx.ftz):   {mufu_peak:.2f} Gop/s (ILP={mufu_ilp})", end="")
         print(f"  [{mufu_ratio:.1f} FMA per MUFU result]" if mufu_ratio else "")
@@ -266,13 +262,12 @@ def main():
         # calibration = lane utilisation * clock headroom:
         #   lane utilisation = measured / (2 * lanes * SMs * clock)  — hardware + kernel
         #   clock headroom   = held clock / max clock                — the site's policy
-        sm_count, max_ghz = _parse_device(lines)
-        if sm_count and sm_med > 0:
-            ceiling = 2.0 * _FMA_LANES_PER_SM * sm_count * (sm_med * 1e6) / 1e12
+        if sm_count and lanes and sm_med > 0:
+            ceiling = 2.0 * lanes * sm_count * (sm_med * 1e6) / 1e12
             lane_util = measured_peak / ceiling
             print(
                 f"Ceiling at {sm_med:.0f} MHz:        {ceiling:.2f} TFLOP/s"
-                f"  ({_FMA_LANES_PER_SM} lanes x {sm_count} SMs)"
+                f"  ({lanes} lanes x {sm_count} SMs)"
             )
             print(f"Lane utilisation:          {lane_util * 100:.1f}%")
             if max_ghz and sm_med * 1e6 < max_ghz * 1e9 * 0.99:

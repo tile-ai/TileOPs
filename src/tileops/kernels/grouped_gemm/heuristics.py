@@ -9,7 +9,7 @@ import enum
 import functools
 import math
 
-from tileops.kernels.constants import SHARED_BUFFER_ALIGN_BYTES
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, SHARED_BUFFER_ALIGN_BYTES
 from tileops.utils import calibration_key
 
 __all__ = [
@@ -45,7 +45,7 @@ class _HeuristicPolicy:
     """
 
     # Hardware, SM90.
-    smem_capacity: int = 232448  # shared memory one CTA can be given
+    smem_capacity: int = BLOCK_SHARED_BYTES_OPT_IN[90]
     wgmma_m: int = 64
     element_bytes: int = 2
     max_stages: int = 16

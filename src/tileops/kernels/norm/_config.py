@@ -20,7 +20,7 @@ from typing import Optional
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT
 
 __all__ = [
@@ -51,7 +51,7 @@ NARROW_ROW = 2048
 
 _CANDIDATE_BLOCK_M = (1, 2, 4, 8)  # rows per block offered to autotune
 _DEFAULT_THREADS = 128  # divides every row padded to a multiple of ALIGNMENT
-_ROW_SMEM_BUDGET_BYTES = 48 * 1024
+_ROW_SMEM_BUDGET_BYTES = STATIC_SHARED_BYTES
 
 _TARGET_ELEMENTS_PER_THREAD = 32  # what select_row_config_by_width aims for
 

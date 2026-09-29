@@ -11,6 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import device_calibration, get_sm_count
 
@@ -65,7 +66,7 @@ class _ConfigSpace:
     threads: tuple[int, ...] = (128, 256)
     split_ks: tuple[int, ...] = (1, 2, 4, 8, 16)
     max_m_tiles: int = 64
-    smem_bytes: int = 227 * 1024
+    smem_bytes: int = BLOCK_SHARED_BYTES_OPT_IN[90]
     # Warp-specialized allocations must satisfy
     # (producer_reg + consumer_reg) * threads <= 65536 registers per SM90 SM.
     producer_reg: int = 32

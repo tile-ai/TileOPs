@@ -1,7 +1,11 @@
+import dataclasses
+
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
+from tileops.kernels.attention.deepseek_dsa_decode import _basic_default_config
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.deepseek_attention import DsaDecodeWorkload
 from workloads.device import run_device
@@ -147,3 +151,35 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
     # NaN rows in every slot must not change the output.
     op(q, torch.full_like(kv, float("nan")), torch.zeros_like(in_range_pad))
     assert torch.equal(op(q, kv, in_range_pad), expected)
+
+
+@pytest.mark.smoke
+def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
+    """64 heads per block at d=512 need at least 100 KB on SM89, over its 99 KB.
+
+    A call that fits once TileLang reuses buffer space is not refused (16 heads at d=1024
+    compile to 99,840 bytes on SM89). A tuned call is refused only when no tuning config
+    fits: at d=1024 on SM90 the default needs at least 264 KB, block_i=32 at least 196 KB.
+    """
+    call = SparseMlaCall(
+        arch=89,
+        sm_count=1,
+        batch=1,
+        seq_len=1,
+        seq_len_kv=2048,
+        heads=64,
+        dim=512,
+        tail_dim=64,
+        dtype=torch.float16,
+        topk=2048,
+        kv_stride=1,
+    )
+    assert "shared memory" in SparseMlaBasicKernel.refusal(call)
+    assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, heads=32)) is None
+    tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
+    assert SparseMlaBasicKernel.refusal(tight) is None
+    assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
+    assert _basic_default_config(90)["block_i"] == 64
+    wide = dataclasses.replace(call, arch=90, dim=1024)
+    assert SparseMlaBasicKernel.refusal(wide) is not None
+    assert SparseMlaBasicKernel.refusal(dataclasses.replace(wide, tune=True)) is None

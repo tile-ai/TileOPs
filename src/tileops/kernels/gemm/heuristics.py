@@ -41,6 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.utils import calibration_key
 
 __all__ = [
@@ -53,7 +54,7 @@ __all__ = [
     "swap_ab_grid_underfills",
 ]
 
-_SMEM_BUDGET = 227 * 1024
+_SMEM_BUDGET = BLOCK_SHARED_BYTES_OPT_IN[90]
 _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128

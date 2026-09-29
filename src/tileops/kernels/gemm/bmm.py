@@ -10,6 +10,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -891,6 +892,7 @@ class BmmFp8Kernel(Kernel):
         #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
         #      runs on any FP8 tensor-core target, sm89+).
         self._sm_count = get_sm_count(index)
+        self._arch = arch
         self._is_sm90 = arch // 10 == 9
         self._use_ws = self._is_sm90 and self._ws_eligible(batch, m, n, k, self._sm_count)
         self._use_persistent = self._is_sm90 and (
@@ -955,7 +957,7 @@ class BmmFp8Kernel(Kernel):
                 "group_size_m": 8,
             }
         if not self._is_sm90:
-            # Sized for the sm89 100KB per-block SMEM cap; K tails are
+            # Sized for the sm89 per-block shared-memory limit; K tails are
             # zero-padded by the classic copy path.
             return {
                 "block_m": 128,
@@ -975,7 +977,7 @@ class BmmFp8Kernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         if self._use_ws:
-            SMEM_BUDGET_BYTES = 228 * 1024  # SM90 shared-memory cap
+            SMEM_BUDGET_BYTES = BLOCK_SHARED_BYTES_OPT_IN[90]
             configs = []
             for bm in (128,):
                 half_m = bm // 2
@@ -1007,8 +1009,8 @@ class BmmFp8Kernel(Kernel):
             return configs
 
         if not self._is_sm90:
-            # Classic 3D-grid sweep for the sm89 100KB cap.
-            SMEM_BUDGET_BYTES = 100 * 1024
+            # Classic 3D-grid sweep under the device's per-block shared-memory limit.
+            SMEM_BUDGET_BYTES = BLOCK_SHARED_BYTES_OPT_IN[self._arch]
             configs = []
             for bm in (64, 128):
                 for bn in (64, 128):

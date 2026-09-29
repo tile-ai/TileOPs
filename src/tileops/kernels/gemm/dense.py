@@ -114,6 +114,8 @@ class _GemmFp8Kernel(Kernel):
     :meth:`_ws_refusal` rejects.
     """
 
+    supported_archs: list[int] = [90]
+
     # Whether this kernel reads block128 scale grids rather than per-tensor scalars.
     BLOCK_SCALED = False
 

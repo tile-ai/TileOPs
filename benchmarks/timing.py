@@ -65,8 +65,8 @@ _DROP_COUNTER_LIVE: Optional[bool] = None
 _PREPARE_ID = 1 << 32
 
 
-# L2 cache flush buffer, allocated lazily.
-_l2_flush_cache: Optional[torch.Tensor] = None
+# L2 cache flush buffer per device index, allocated lazily.
+_l2_flush_caches: dict[int, torch.Tensor] = {}
 
 
 def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
@@ -540,17 +540,20 @@ def _reset_persisting_l2_cache() -> None:
 
 
 def _get_l2_flush_cache() -> torch.Tensor:
-    global _l2_flush_cache
-    if _l2_flush_cache is None:
-        l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
+    """A buffer twice the L2 of the current device, the one ``bench_kernel`` launches on."""
+    device = torch.cuda.current_device()
+    cache = _l2_flush_caches.get(device)
+    if cache is None:
+        l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
         if l2_bytes <= 0:
             _logger.warning(
                 "L2 cache size query returned %d; flushing a 256 MB buffer instead",
                 l2_bytes,
             )
             l2_bytes = int(256e6)
-        _l2_flush_cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device="cuda")
-    return _l2_flush_cache
+        cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device=torch.device("cuda", device))
+        _l2_flush_caches[device] = cache
+    return cache
 
 
 def _native_output_suppressor():
@@ -617,13 +620,42 @@ def bench_kernel(
     implementations compute part of the result with one. It is off by default because a
     staging copy is not the arithmetic being timed; turn it on for every tag in a row or
     for none, since the two sides are otherwise read off different instruments.
+
+    Everything runs on the device the first CUDA tensor in *args* lives on, or the
+    current device when there is none.
     """
     if not isinstance(args, tuple):
         raise TypeError(
             f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
             "Check that gen_inputs() returns a tuple."
         )
+    device = next(
+        (a.device for a in args if isinstance(a, torch.Tensor) and a.is_cuda),
+        torch.device("cuda", torch.cuda.current_device()),
+    )
+    with torch.cuda.device(device):
+        return _bench_kernel(
+            fn,
+            args,
+            dry_run_ms,
+            repeat_ms,
+            max_iters,
+            min_iters,
+            count_copies,
+            allow_events_fallback,
+        )
 
+
+def _bench_kernel(
+    fn: Callable,
+    args: tuple[Any, ...] = (),
+    dry_run_ms: float = DRY_RUN_MS,
+    repeat_ms: float = REPEAT_MS,
+    max_iters: int = _MAX_ITERS,
+    min_iters: int = _MIN_ITERS,
+    count_copies: bool = False,
+    allow_events_fallback: Optional[bool] = None,
+) -> list[Sample]:
     allow_fallback = (
         events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
     )

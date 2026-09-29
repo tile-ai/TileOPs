@@ -9,7 +9,11 @@ import torch
 from tilelang.autotuner import autotune
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import (
+    BLOCK_SHARED_BYTES_OPT_IN,
+    LOG2E,
+    SHARED_BUFFER_ALIGN_BYTES,
+)
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
@@ -68,6 +72,67 @@ def _raise_on(reason: Optional[str]) -> None:
 def _sparse_mla_refusal(call: SparseMlaCall) -> Optional[str]:
     """Why *call* is outside the region both implementations serve, or ``None``."""
     return _shape_refusal(call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal)
+
+
+def _heads_per_block(head_kv: int) -> int:
+    """Query heads one block of the basic kernel holds: the padded group, at most 64."""
+    return 64 if head_kv > 64 else max(tilelang.math.next_power_of_2(head_kv), 16)
+
+
+def _basic_default_config(arch: int) -> dict:
+    """The basic kernel's default config on *arch*."""
+    return {"block_i": 64 if arch >= 90 else 32, "threads": 128, "num_stages": 2}
+
+
+def _basic_autotune_configs() -> list[dict]:
+    """The configs the basic kernel tunes over."""
+    # threads=256 is kept for targets that support it; the autotuner
+    # prunes configs that fail to compile.
+    return [
+        {"block_i": block_i, "threads": threads, "num_stages": 2}
+        for block_i, threads in itertools.product((32, 64), (128, 256))
+    ]
+
+
+def _basic_shared_bytes(h_per_block: int, dim: int, itemsize: int, block_i: int) -> int:
+    """A lower bound on the shared memory one block of the basic kernel allocates.
+
+    Only ``q``, ``kv`` and ``s``, which the main loop holds at once, each aligned as
+    TileLang places them. TileLang may place the tail buffers and the reduction
+    workspace in space whose lifetime does not overlap theirs, so a refusal on this bound
+    never refuses a call that fits; a call it admits can still exceed the limit by those
+    buffers. The KV gather runs under a serial loop, so ``T.Pipelined`` does not
+    multi-buffer it and ``num_stages`` adds nothing.
+    """
+    buffers = (
+        h_per_block * dim * itemsize,  # q
+        block_i * dim * itemsize,  # kv
+        h_per_block * block_i * itemsize,  # s
+    )
+    align = SHARED_BUFFER_ALIGN_BYTES
+    return sum(-(-b // align) * align for b in buffers)
+
+
+def _basic_shared_refusal(call: SparseMlaCall) -> Optional[str]:
+    """Why no config the basic kernel would run for *call* fits its device, or ``None``.
+
+    An untuned call runs the default config; a tuned one runs whichever tuning config builds.
+    """
+    limit = BLOCK_SHARED_BYTES_OPT_IN.get(call.arch)
+    if limit is None:
+        return None
+    configs = _basic_autotune_configs() if call.tune else [_basic_default_config(call.arch)]
+    h_per_block = _heads_per_block(call.heads // call.kv_group)
+    need = min(
+        _basic_shared_bytes(h_per_block, call.dim, call.dtype.itemsize, config["block_i"])
+        for config in configs
+    )
+    if need > limit:
+        return (
+            f"needs {need} bytes of shared memory per block, over the {limit} bytes "
+            f"sm{call.arch} allows"
+        )
+    return None
 
 
 def _sparse_mla_entry(cls: type, call: SparseMlaCall) -> Entry:
@@ -664,7 +729,7 @@ def _sparse_mla_basic_kernel(
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
-        h_per_block = padded_h if replicate_h == 1 else 64
+        h_per_block = _heads_per_block(head_kv)
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -864,11 +929,11 @@ class SparseMlaBasicKernel(Kernel):
 
     @classmethod
     def applies(cls, call: SparseMlaCall) -> bool:
-        return _sparse_mla_refusal(call) is None
+        return _sparse_mla_refusal(call) is None and _basic_shared_refusal(call) is None
 
     @classmethod
     def refusal(cls, call: SparseMlaCall) -> Optional[str]:
-        return _sparse_mla_refusal(call)
+        return _sparse_mla_refusal(call) or _basic_shared_refusal(call)
 
     @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:
@@ -934,43 +999,24 @@ class SparseMlaBasicKernel(Kernel):
         # 128 threads (4 warps) matches the row-parallel online-softmax
         # layout and MLADecodeKernel's sm89 best config. The WGMMA version
         # instead spreads acc_o across two 128-thread consumer warpgroups.
-        # block_i=64 stages 230KB of SMEM for the worst test shape (kv_group=1,
-        # h_per_block=64, d=512: q 64KB + q_tail 8KB + 2x (kv 64KB + kv_tail
-        # 8KB) + s 8KB), over the 163KB per-block cap every pre-SM90 card
-        # launches with — verified failing on real sm80 hardware. block_i=32
-        # halves the pipelined KV tiles to 148KB, which fits sm80; sm89's
-        # 99KB cap still needs the smaller h_per_block of a realistic MLA
-        # shape (heads // kv_group) or an autotuned block_i.
-        if get_sm_version(self.device_index) < 90:
-            return {"block_i": 32, "threads": 128, "num_stages": 2}
-        return {"block_i": 64, "threads": 128, "num_stages": 2}
+        # Below SM90, block_i=32 keeps the KV tiles small enough for the
+        # per-block shared-memory limit; ``refusal`` rejects a shape where
+        # even that does not fit.
+        return _basic_default_config(get_sm_version(self.device_index))
 
     @property
     def autotune_configs(self) -> list[dict]:
         """
         Generates a list of autotuning configurations for the kernel.
 
-        ``block_i=32`` halves the pipelined KV shared-memory footprint, which
-        matters on archs with a tighter per-block shared memory limit
-        (sm80 164KB / sm89 100KB vs sm90 227KB).
+        ``block_i=32`` halves the KV shared-memory footprint, which matters
+        where ``BLOCK_SHARED_BYTES_OPT_IN`` gives a block less shared memory
+        than on SM90.
 
         Returns:
             list[dict]: Configs with 'block_i', 'threads' and 'num_stages'.
         """
-        block_i = [32, 64]
-        # threads=256 is kept for targets that support it; the autotuner
-        # prunes configs that fail to compile.
-        threads = [128, 256]
-        _configs = list(itertools.product(block_i, threads))
-
-        return [
-            {
-                "block_i": c[0],
-                "threads": c[1],
-                "num_stages": 2,
-            }
-            for c in _configs
-        ]
+        return _basic_autotune_configs()
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
