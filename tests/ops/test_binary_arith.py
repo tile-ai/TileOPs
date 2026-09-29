@@ -421,13 +421,34 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_floor_ops_match_torch_on_special_values() -> None:
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    "a_shape, b_shape",
+    [
+        pytest.param((4096,), (4096,), id="same"),
+        pytest.param((4, 2048), (1, 2048), id="bias"),
+        pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel"),
+    ],
+)
+def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> None:
     """``1.0 // 0.1`` is 9, an infinite divisor floors a mixed-sign quotient to -1,
-    and a zero result keeps its sign."""
-    values = [0.0, -0.0, 1.0, -1.0, 0.1, -2.5, 7.0, float("inf"), float("-inf"), float("nan")]
+    and a zero result keeps its sign.
+
+    The special values sit among ordinary ones, so a thread whose cheap form fails
+    for one element redoes it next to threads that keep theirs, on every staged
+    layout: same shape, a broadcast row and a broadcast channel.
+    """
+    values = [0.0, -0.0, 1.0, -1.0, 0.1, -2.5, 7.0, 3e4, float("inf"), float("-inf"), float("nan")]
     grid = torch.tensor(values, device=run_device())
     pairs = torch.cartesian_prod(grid, grid)
-    a, b = pairs[:, 0].contiguous(), pairs[:, 1].contiguous()
+    a = torch.rand(a_shape, device=run_device()) + 0.5
+    b = torch.rand(b_shape, device=run_device()) + 0.5
+    a.view(-1)[: len(pairs)] = pairs[:, 0]
+    if a_shape == b_shape:
+        b.view(-1)[: len(pairs)] = pairs[:, 1]
+    else:
+        b.view(-1)[: len(values)] = grid
+    a, b = a.to(dtype), b.to(dtype)
     cases = [
         (FloorDivideFwdOp(), torch.floor_divide),
         (DivFwdOp(rounding_mode="floor"), lambda x, y: torch.div(x, y, rounding_mode="floor")),

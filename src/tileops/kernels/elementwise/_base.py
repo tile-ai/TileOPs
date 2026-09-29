@@ -29,6 +29,7 @@ from ._builders import (
 )
 from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES
 from ._op_body import (
+    GuardedOpFunc,
     _store_binary_bool_as_int8,
     _store_unary_bool_as_int8,
     register_op_func,
@@ -269,6 +270,9 @@ class BinaryKernel(_StrategyKernel):
         """Pointwise operation. Must be overridden by subclass."""
         raise NotImplementedError
 
+    # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
+    fast_func = None
+
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
         super().__init__()
         self._validate_supported_dtype(dtype)
@@ -331,6 +335,8 @@ class BinaryKernel(_StrategyKernel):
         name = self._op_func_name()
         if self._bool_via_int8:
             return name, _store_binary_bool_as_int8(self.op_func)
+        if self.fast_func is not None:
+            return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
 
     def _op_func_name(self) -> str:

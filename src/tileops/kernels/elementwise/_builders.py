@@ -12,13 +12,38 @@ from ._broadcast import (
     row_broadcast_split,
     row_tile_leaves_tail,
 )
-from ._op_body import op_func_for
+from ._op_body import GuardedOpFunc, op_func_for
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
 # the lane slots one chain is worth. At W // 4 that ratio is one chain per three
 # idle slots.
 _TAIL_PACK_RATIO = 4
+# Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
+# keeps every element of a thread in flight, and nvcc left to itself gives it more
+# than 32 registers, which leaves fewer threads resident; asking for blocks enough
+# to fill this many threads holds it at 32.
+_THREADS_AT_32_REGISTERS = 64 * 1024 // 32
+
+
+def _fast_of(op_func):
+    """The cheaper form a ``GuardedOpFunc`` carries, or ``None``."""
+    return op_func.fast if isinstance(op_func, GuardedOpFunc) else None
+
+
+def _any_fails(held, count):
+    """Whether one of ``held[:count]`` is false."""
+    return T.Not(functools.reduce(T.And, [held[j] for j in range(count)]))
+
+
+def _backwards(j, count):
+    """Slot ``count - 1 - j`` of a thread's *count*: the order a guarded fallback reads in.
+
+    The fallback reads its operands from global memory: read from the staged
+    fragment, they stay live across the fast loop. Read forwards, the loads widen
+    into a copy of the staged one, nvcc merges the two, and the same happens.
+    """
+    return count - 1 - j
 
 
 def _broadcast_index_terms(plan_name):
@@ -129,6 +154,7 @@ def _row_broadcast_prim(
     vectorize is slower for the round trip.
     """
     op_func = op_func_for(op_name)
+    fast = _fast_of(op_func)
     ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
     plan = broadcast_plan_for(plan_name)
     inner = plan.coalesced_shape[-1]
@@ -183,12 +209,28 @@ def _row_broadcast_prim(
         else:
             b_held = T.alloc_local((1,), dtype)
             b_held[0] = b[b_base]
-        for i, j in T.Parallel(threads, num_per_thread):
-            idx = i * num_per_thread + j
-            y_reg[idx] = op_func(
-                a_reg[idx] if a_inner else a_held[0],
-                b_reg[idx] if b_inner else b_held[0],
-            )
+        if fast is None:
+            for i, j in T.Parallel(threads, num_per_thread):
+                idx = i * num_per_thread + j
+                y_reg[idx] = op_func(
+                    a_reg[idx] if a_inner else a_held[0],
+                    b_reg[idx] if b_inner else b_held[0],
+                )
+        else:
+            held = T.alloc_local((num_per_thread,), "bool")
+            for i, j in T.Parallel(threads, num_per_thread):
+                idx = i * num_per_thread + j
+                value, holds = fast(
+                    a_reg[idx] if a_inner else a_held[0],
+                    b_reg[idx] if b_inner else b_held[0],
+                )
+                y_reg[idx] = value
+                held[j] = holds
+            for i, j in T.Parallel(threads, num_per_thread):
+                e = i * num_per_thread + _backwards(j, num_per_thread)
+                col = col0 + e
+                if _any_fails(held, num_per_thread):
+                    y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
     @T.macro
@@ -271,12 +313,34 @@ def _row_broadcast_prim(
                     a_held[i] = a[a_base]
                 if not b_inner:
                     b_held[i] = b[b_base]
-            for i, j in T.Parallel(threads, num_per_thread):
-                k = i * num_per_thread + j
-                y_reg[k] = op_func(
-                    a_reg[k] if a_inner else a_held[i],
-                    b_reg[k] if b_inner else b_held[i],
-                )
+            if fast is None:
+                for i, j in T.Parallel(threads, num_per_thread):
+                    k = i * num_per_thread + j
+                    y_reg[k] = op_func(
+                        a_reg[k] if a_inner else a_held[i],
+                        b_reg[k] if b_inner else b_held[i],
+                    )
+            else:
+                held = T.alloc_local((num_per_thread,), "bool")
+                for i, j in T.Parallel(threads, num_per_thread):
+                    k = i * num_per_thread + j
+                    value, holds = fast(
+                        a_reg[k] if a_inner else a_held[i],
+                        b_reg[k] if b_inner else b_held[i],
+                    )
+                    y_reg[k] = value
+                    held[j] = holds
+                for i, j in T.Parallel(threads, num_per_thread):
+                    v = bx * threads + i
+                    jr = _backwards(j, num_per_thread)
+                    col = (v % vecs_per_row) * num_per_thread + jr
+                    a_base, b_base = _compute_broadcast_offsets(
+                        (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                    )
+                    if _any_fails(held, num_per_thread):
+                        y_reg[i * num_per_thread + jr] = op_func(
+                            a[a_base + col * a_inner], b[b_base + col * b_inner]
+                        )
             for i, j in T.Parallel(threads, num_per_thread):
                 v = bx * threads + i
                 y[(v // vecs_per_row) * inner + (v % vecs_per_row) * num_per_thread + j] = y_reg[
@@ -290,6 +354,8 @@ def _row_broadcast_prim(
             y: T.Tensor((N_total,), out_dtype),
         ):
             with T.Kernel(grid_vecs, threads=threads) as bx:
+                if fast is not None and stage:
+                    T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
                 if stage:
                     write_flat_staged(a, b, y, bx)
                 else:
@@ -349,6 +415,8 @@ def _row_broadcast_prim(
         y: T.Tensor((N_total,), out_dtype),
     ):
         with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (bx, by):
+            if fast is not None and stage:
+                T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
             a_base, b_base = _compute_broadcast_offsets(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
@@ -384,6 +452,9 @@ def _make_binary_register_copy(
     def kernel(threads, num_per_thread):
         op_func = op_func_for(op_name)
         block_size = threads * num_per_thread
+        # A ragged last block bounds-checks its copies, and the fallback loop below
+        # has no layout against that; it runs the body per element instead.
+        fast = _fast_of(op_func) if N_total % block_size == 0 else None
 
         @T.prim_func
         def main(
@@ -392,14 +463,28 @@ def _make_binary_register_copy(
             y: T.Tensor((N_total,), out_dtype),
         ):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+                if fast is not None:
+                    T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
                 a_reg = T.alloc_fragment((block_size,), dtype)
                 b_reg = T.alloc_fragment((block_size,), dtype)
                 y_reg = T.alloc_fragment((block_size,), out_dtype)
                 T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
                 T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
-                for i, j in T.Parallel(threads, num_per_thread):
-                    idx = i * num_per_thread + j
-                    y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                if fast is None:
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        idx = i * num_per_thread + j
+                        y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                else:
+                    held = T.alloc_local((num_per_thread,), "bool")
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        idx = i * num_per_thread + j
+                        value, holds = fast(a_reg[idx], b_reg[idx])
+                        y_reg[idx] = value
+                        held[j] = holds
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        e = i * num_per_thread + _backwards(j, num_per_thread)
+                        if _any_fails(held, num_per_thread):
+                            y_reg[e] = op_func(a[bx * block_size + e], b[bx * block_size + e])
                 T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
