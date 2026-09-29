@@ -109,7 +109,13 @@ class _ClockSampler(threading.Thread):
 
 def _run(binary_path, iters, theo_peak_tflops, gpu_index):
     """Run the benchmark binary and return (stdout lines, clock sampler)."""
-    cmd = [str(binary_path), str(iters), str(theo_peak_tflops)]
+    bus_id = subprocess.run(
+        ["nvidia-smi", f"--id={gpu_index}", "--query-gpu=pci.bus_id", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    cmd = [str(binary_path), str(iters), str(theo_peak_tflops), bus_id]
     sampler = _ClockSampler(gpu_index)
     sampler.start()
     try:
@@ -185,7 +191,9 @@ def main():
     parser.add_argument("--profile", default="h200", help="GPU profile name")
     parser.add_argument("--iters", type=int, default=20000, help="FMA iterations per chain")
     parser.add_argument("--arch", default="sm_90", help="CUDA architecture")
-    parser.add_argument("--gpu-index", type=int, default=0, help="GPU to sample telemetry from")
+    parser.add_argument(
+        "--gpu-index", type=int, default=0, help="GPU to measure and sample telemetry from"
+    )
     parser.add_argument(
         "--allow-unlocked-clocks",
         action="store_true",

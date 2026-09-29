@@ -219,15 +219,20 @@ double sweep_mufu(const Grid& g) {
 int main(int argc, char* argv[]) {
     int iters = 20000;
     double theo_peak_tflops = 67.0;
+    int device = 0;
     if (argc >= 2) iters = atoi(argv[1]);
     if (argc >= 3) theo_peak_tflops = atof(argv[2]);
     if (iters <= 0 || theo_peak_tflops <= 0) {
-        fprintf(stderr, "usage: %s [iters > 0] [theo_peak_tflops > 0]\n", argv[0]);
+        fprintf(stderr, "usage: %s [iters > 0] [theo_peak_tflops > 0] [pci_bus_id]\n", argv[0]);
         return 1;
     }
+    // The GPU nvidia-smi samples, named by PCI bus id: CUDA and nvidia-smi can number
+    // GPUs differently.
+    if (argc >= 4) CHECK_CUDA(cudaDeviceGetByPCIBusId(&device, argv[3]));
+    CHECK_CUDA(cudaSetDevice(device));
 
     cudaDeviceProp prop;
-    CHECK_CUDA(cudaGetDeviceProperties(&prop, 0));
+    CHECK_CUDA(cudaGetDeviceProperties(&prop, device));
     const int sm_count = prop.multiProcessorCount;
     const int fma_lanes = fma_lanes_per_sm(prop.major, prop.minor);
     if (fma_lanes == 0) {
@@ -243,7 +248,7 @@ int main(int argc, char* argv[]) {
     // cudaDeviceProp::clockRate was removed in CUDA 13; the attribute query is
     // the portable spelling.
     int clock_khz = 0;
-    CHECK_CUDA(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0));
+    CHECK_CUDA(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, device));
 
     printf("GPU: %s | SMs: %d | max SM clock: %.2f GHz | FMA lanes/SM: %d\n",
            prop.name, sm_count, clock_khz / 1e6, fma_lanes);
