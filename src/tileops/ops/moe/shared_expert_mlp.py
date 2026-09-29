@@ -7,9 +7,8 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["SharedExpertMLPFwdOp"]
 

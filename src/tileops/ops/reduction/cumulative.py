@@ -9,8 +9,7 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 from tileops.manifest.primitives import normalize_axis
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["CumprodFwdOp", "CumsumFwdOp", "CumulativeOp"]
 

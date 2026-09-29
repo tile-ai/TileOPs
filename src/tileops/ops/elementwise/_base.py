@@ -20,8 +20,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 _MANIFEST_INT_DTYPES = (
     torch.uint8,

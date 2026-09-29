@@ -12,8 +12,8 @@ from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
+from tileops.ops.op_base import Op
 
-from ..op_base import Op
 from .reduce import _ReduceOpBase
 
 __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]

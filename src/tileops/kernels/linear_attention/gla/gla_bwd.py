@@ -21,9 +21,9 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 from tileops.utils import get_sm_version
 
-from ..v_tile import GEMM_MIN_N
 from .gla_fwd import _gla_precompute_g_kernel
 
 __all__ = ["GLABwdKernel"]

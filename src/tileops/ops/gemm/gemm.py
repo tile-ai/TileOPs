@@ -16,9 +16,8 @@ from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
 from tileops.kernels.gemm.w4a16 import _LAYOUT, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 

@@ -13,7 +13,8 @@ from typing import Optional
 
 import torch
 
-from ..kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+
 from .call_spec import AttentionCall
 
 __all__ = ["PagedPrefillKernel", "page_size_refusal"]

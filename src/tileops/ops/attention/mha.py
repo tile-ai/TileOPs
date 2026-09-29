@@ -9,9 +9,8 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = [
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

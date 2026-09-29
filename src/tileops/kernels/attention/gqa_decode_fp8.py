@@ -8,8 +8,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry, Kernel
 
-from ..kernel_base import Entry, Kernel
 from .call_spec import GQADenseFwdInterface, dense_fp8_decode_refusal
 from .dense_entry import dense_fp8_decode_entry
 from .gqa_decode_bs1_common import COMPILE_FLAGS

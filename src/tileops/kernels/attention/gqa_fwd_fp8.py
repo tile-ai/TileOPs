@@ -7,9 +7,9 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
 
-from ..kernel_base import Entry, Kernel
 from .call_spec import (
     ATTENTION_DTYPES,
     GQADenseFwdInterface,

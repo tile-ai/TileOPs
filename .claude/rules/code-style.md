@@ -7,7 +7,7 @@ that file states why each one is wrong.
 
 - Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
 
-- Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
+- Import relatively only within the same package (`from .x import y`); import parent packages absolutely (`from tileops.x import y`).
 
 - Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.
 

@@ -8,8 +8,8 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 
-from ..op_base import Op
 from ._base import _PerDtypeKernels
 
 

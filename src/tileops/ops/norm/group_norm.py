@@ -18,8 +18,8 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.ops.op_base import Op
 
-from ..op_base import Op
 from .norm_base import affine_or_constant
 
 __all__ = ["GroupNormFwdOp"]

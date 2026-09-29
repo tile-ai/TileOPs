@@ -8,9 +8,8 @@ from tileops.kernels.linear_attention import (
     GatedDeltaNetDenseDecodeFwdKernel,
     GatedDeltaNetDensePrefillFwdKernel,
 )
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["GatedDeltaNetFwdOp"]
 

@@ -15,11 +15,10 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
+from tileops.ops.moe.contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
+from tileops.ops.moe.staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ...op_base import Op
-from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
-from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
 
 __all__ = ["IndexedExpertMLPFwdOp"]
 

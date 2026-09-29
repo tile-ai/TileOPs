@@ -8,8 +8,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import RMSNormKernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["RMSNormFwdOp"]
 

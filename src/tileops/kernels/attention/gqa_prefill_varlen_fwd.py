@@ -23,9 +23,9 @@ from tileops.kernels.constants import (
     WARPGROUP_THREADS,
     WGMMA_ROWS,
 )
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.utils import get_shared_memory_optin
 
-from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
 from .online_softmax import (
     make_apply_softcap,

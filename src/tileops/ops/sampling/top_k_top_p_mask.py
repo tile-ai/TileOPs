@@ -7,8 +7,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.sampling.call_spec import SamplingCall
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["TopKTopPMaskFwdOp"]
 

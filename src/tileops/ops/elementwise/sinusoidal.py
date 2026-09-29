@@ -7,8 +7,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.elementwise import SinusoidalFwdKernel
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 
 class SinusoidalFwdOp(Op):

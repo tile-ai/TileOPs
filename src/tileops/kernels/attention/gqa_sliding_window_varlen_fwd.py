@@ -18,7 +18,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from ..grouped_tiling import GroupTiling
+from tileops.kernels.grouped_tiling import GroupTiling
+
 from .call_spec import uses_sliding_window
 from .online_softmax import (
     make_log2e_scale,

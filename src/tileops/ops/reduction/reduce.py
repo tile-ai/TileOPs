@@ -26,8 +26,7 @@ from tileops.kernels.reduction.reduce import (
     WelfordReduceKernel,
 )
 from tileops.manifest.primitives import normalize_axis, reduced
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = [
     "AmaxFwdOp",
