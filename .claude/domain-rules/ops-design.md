@@ -10,9 +10,23 @@
 
 - Update `docs/design/` when a change alters a top-level decision (an intermediate base class, the kernel-dispatch pattern, a contract between modules); a class attribute or other mechanism that implements a documented decision is read from the code.
 
-- Each program or launch sequence the shape selects is its own candidate Kernel class with its region in `applies`/`refusal`, never a branch inside one class; an op with several slots declares each slot's keys in `kernel_roles`. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
+- Declare `interfaces` on every op that holds kernels: the name of each place the op calls a kernel → its `KernelInterface` class. Open a new interface only where semantic control flow or the kernel call contract changes, never per shape, dtype, architecture or performance. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
 
-- Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
+- Define a kernel interface in the family's `kernels/<family>/call_spec.py`: `request` names the frozen `CallSpec` subclass; an abstract `forward` states the tensors handed and the value returned.
+
+- Make each implementation a `Kernel` subclass that inherits its interface, takes the interface's `forward` arguments, and is built only through its classmethod `entry_for(call)`, which returns a hashable build identity and a builder.
+
+- State where an implementation runs in `devices` / `supported_archs` only, and the calls it serves positively in `applies` / `refusal`; never exclude a sibling. Where it overlaps another non-general implementation, declare `preferred_over = frozenset({"<key>"})` on the one that wins. Mark at most one implementation per interface `general`.
+
+- Give a shape-selected change of decomposition or data flow its own implementation class. Keep tile sizes, split counts (one included) and fusion among one fixed set of stages inside one implementation's plan.
+
+- Put only call facts in the call spec, the op's fixed semantic params and `device=` included; never `tune`, a priority or a device fact (`arch`, `sm_count`, `calibration`), which the dispatcher resolves on a miss.
+
+- Add an implementation from a backend with `tileops.backend.register_implementation(op, key, cls)`; its interface is the one `cls` inherits. Use `kernel_map=` only to replace what runs under an existing key: the key keeps its registered implementation's `applies`, `general` and `preferred_over`.
+
+- Declare `interfaces` on a new op; `tests/test_kernel_dispatch.py` lists the ops still without them, and a migration PR removes the names it migrates.
+
+- Every kernel an op builds after construction goes through `Op.kernel_for(interface, inputs, call)`, with `inputs` the tensors the kernel will be handed and `call` the interface's call spec. The identity and builder come from the selected implementation's `entry_for`; an op with `interfaces` defines no `entry_for` of its own. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 
 - An op that runs kernels built by another op declares that op's class in `delegate_types` and holds it through `delegate_for(stage, key, ...)`, whether it is built at construction, built per call, or injected by the caller. `kernel_delegates()` is derived and not overridden. A sub-op cache of an op's own, or overriding `autotune()` to reach a delegate, is prohibited.
 

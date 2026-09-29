@@ -4,7 +4,7 @@ from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Entry", "Kernel"]
+__all__ = ["Entry", "Kernel", "KernelInterface"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -71,17 +71,17 @@ class Kernel(ABC):
     # ``autotune_supply_prog`` instead; left False, autotuning refuses.
     autotune_accepts_random_int_inputs: bool = False
 
-    # The device types this implementation runs on. A call on any other device, meta included,
-    # is refused before anything is built; a replacement kernel may declare others.
+    # The device types this implementation runs on. With ``supported_archs`` it states where
+    # the implementation is available; selection filters on it before asking ``refusal``.
     devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
-    # Whether this implementation is the one behind the specialised ones.
-    # A dispatch key may have at most one general implementation applying to a
-    # call; it runs when no specialised implementation of that key serves it.
-    # Stating it here rather than as an exclusion in every specialised sibling
-    # is what lets a specialisation appear, or be replaced, without the general
-    # implementation naming it.
+    # Whether this implementation is below every other implementation of its interface.
+    # An interface has at most one; it runs where no other implementation serves the call.
     general: bool = False
+
+    # The keys of implementations of the same interface this one wins over where both are
+    # available and apply. Transitive.
+    preferred_over: ClassVar[frozenset[str]] = frozenset()
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -92,46 +92,32 @@ class Kernel(ABC):
     def applies(cls, call: Any) -> bool:
         """Whether this implementation serves the call *call* describes.
 
-        States a region positively — what this class serves, never what a
-        sibling serves.
+        States the calls it serves positively, never what a sibling serves. Where two
+        non-general implementations both apply, ``preferred_over`` says which one wins.
+        Where it is available is ``devices`` and ``supported_archs``, not this.
 
-        ``supported_archs`` says where this class can run, and one the device
-        cannot run does not apply. A class that runs where a sibling supersedes it
-        states that exclusion here instead, since ``supported_archs`` also gates
-        direct construction.
-
-        Answered by the class that would run, so a ``kernel_map`` override is
-        asked about its own region rather than the region of the class it
-        replaced.
-
-        The default serves anything the architecture allows. A specialised
-        implementation that leaves it unset therefore claims every call, which
-        collides with its siblings and is reported rather than silently
-        preferred.
+        The default serves every call.
         """
         return True
 
     @classmethod
     def refusal(cls, call: Any) -> Optional[str]:
-        """Why this class cannot serve *call*, or ``None`` when it can.
+        """Why this class does not serve *call*, or ``None`` when it does.
 
-        The class that declines says why. A caller told only that nothing served
-        the call cannot tell an architecture it does not have from a shape the
-        implementation was never written for, and whoever is selecting has no
-        way to find out without reading the class it just rejected.
+        ``applies`` with a reason. A class that names the limit it refuses overrides this,
+        so a caller told that nothing served the call learns why each class declined.
         """
-        reason = cls.arch_refusal(call)
-        if reason is None and not cls.applies(call):
-            return "does not serve this call"
-        return reason
+        return None if cls.applies(call) else "does not serve this call"
 
     @classmethod
-    def arch_refusal(cls, call: Any) -> Optional[str]:
-        """Why this class cannot run on *call*'s architecture, or ``None`` when it can.
+    def unavailable(cls, call: Any) -> Optional[str]:
+        """Why this class cannot run on *call*'s device, or ``None`` when it can.
 
-        The first question :meth:`refusal` asks. A class that names the shape limit
-        it refuses overrides ``refusal`` and asks this first.
+        From ``devices`` and ``supported_archs``. Selection asks this before ``refusal``.
         """
+        device = getattr(call, "device", None)
+        if device is not None and device.type not in cls.devices:
+            return f"runs on {sorted(cls.devices)}, not {device.type}"
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return f"built for architectures {sorted(archs)}, device reports {call.arch}"
@@ -161,15 +147,15 @@ class Kernel(ABC):
 
         Read from ``device_index``, the device the op handed over — not from whichever
         device happens to be current, which need not be the one the input lives on. The op
-        layer performs no architecture check of its own; a role served by several kernels
-        filters candidates during selection instead.
+        layer performs no architecture check of its own; selection filters an interface's
+        implementations by availability first.
 
         ``device_index`` ``None`` reads the current device. An op builds every kernel with
         the call's device current (``Op.kernel_for``), so that is the call's device there.
 
         Raises:
             ValueError: The device's architecture is not among ``supported_archs``.
-                Selection raises the same class when no candidate for a dispatch key can
+                Selection raises the same class when no implementation for a dispatch key can
                 serve a call, so a caller catches one exception type whether the key has
                 one implementation or several.
         """
@@ -455,3 +441,21 @@ class Kernel(ABC):
             for key, value in tuned_kernel.config.items()
         }
         print(f"Best config: {self.config}")
+
+
+class KernelInterface(ABC):
+    """The call contract of one kernel interface, which each of its implementations inherits.
+
+    ``request`` names the ``CallSpec`` subclass the op passes as the call spec. ``forward``
+    states the call the op makes on the built entry: each tensor's shape, dtype, layout and
+    device, which ones it writes in place or may alias, and what it returns. An
+    implementation is a ``Kernel`` that inherits the interface, with a classmethod
+    ``entry_for`` and a constructor of its own.
+    """
+
+    request: ClassVar[type]
+
+    @abstractmethod
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """The call the op makes on an implementation's entry."""
+        raise NotImplementedError

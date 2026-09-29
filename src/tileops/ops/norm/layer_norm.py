@@ -6,8 +6,9 @@ from typing import ClassVar, Dict, Mapping, Optional, Sequence
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import LayerNormKernel
+from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -34,6 +35,9 @@ class LayerNormFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"layer_norm": LayerNormKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "layer_norm": LayerNormFwdInterface
+    }
 
     def __init__(
         self,
@@ -92,10 +96,5 @@ class LayerNormFwdOp(Op):
         weight = affine_or_constant(weight, ns, 1.0, x.dtype, x.device)
         bias = affine_or_constant(bias, ns, 0.0, x.dtype, x.device)
         x = x.contiguous()
-        kernel = self.kernel_for("layer_norm", (x, weight, bias), x.dtype)
-        return kernel(x, weight, bias)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; the row width and epsilon are the op's."""
-        n = math.prod(self.normalized_shape)
-        return call, lambda: self.kernel_map["layer_norm"](n, self.eps, call, tune=self.tune)
+        call = LayerNormCall(device=x.device, n=math.prod(ns), eps=self.eps, dtype=x.dtype)
+        return self.kernel_for("layer_norm", (x, weight, bias), call)(x, weight, bias)

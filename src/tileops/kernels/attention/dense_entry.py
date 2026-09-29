@@ -33,8 +33,8 @@ def _index(call: AttentionCall) -> Optional[int]:
 
 
 def _identity(args: dict, *runtime: str) -> tuple:
-    """The construction arguments but ``tune`` and those the program takes at runtime."""
-    return tuple(v for k, v in args.items() if k not in ("tune", *runtime))
+    """The construction arguments but those the program takes at runtime."""
+    return tuple(v for k, v in args.items() if k not in runtime)
 
 
 def dense_fp8_decode_entry(cls: type, call: AttentionCall) -> Entry:
@@ -48,7 +48,6 @@ def dense_fp8_decode_entry(cls: type, call: AttentionCall) -> Entry:
         sm_scale=call.sm_scale,
         softcap=call.softcap,
         device_index=_index(call),
-        tune=call.tune,
     )
     return _identity(args), lambda: cls(**args)
 
@@ -70,7 +69,6 @@ def dense_fp8_entry(cls: type, call: AttentionCall) -> Entry:
         softcap=call.softcap,
         **_rope_kwargs(call),
         device_index=_index(call),
-        tune=call.tune,
     )
     return _identity(args), lambda: cls(**args)
 
@@ -88,7 +86,6 @@ def dense_decode_entry(cls: type, call: AttentionCall) -> Entry:
         softcap=call.softcap,
         **_rope_kwargs(call),
         device_index=_index(call),
-        tune=call.tune,
     )
     # The cache length is taken at runtime: what it compiles for is its split tier.
     identity = (*_identity(args, "seq_len_kv"), *cls.split_tier(call))
@@ -111,7 +108,6 @@ def dense_sliding_window_entry(cls: type, call: AttentionCall) -> Entry:
         softcap=call.softcap,
         **_rope_kwargs(call),
         device_index=_index(call),
-        tune=call.tune,
     )
     return _identity(args), lambda: cls(**args)
 
@@ -131,7 +127,6 @@ def dense_ws_entry(cls: type, call: AttentionCall) -> Entry:
         softcap=call.softcap,
         **_rope_kwargs(call),
         device_index=_index(call),
-        tune=call.tune,
     )
     if call.fuse_rope:
         return _identity(args), lambda: cls(**args)

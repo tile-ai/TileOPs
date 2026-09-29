@@ -868,7 +868,7 @@ class SparseMlaBasicKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: SparseMlaCall) -> Optional[str]:
-        return cls.arch_refusal(call) or _sparse_mla_refusal(call)
+        return _sparse_mla_refusal(call)
 
     @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:
@@ -1092,7 +1092,7 @@ class SparseMlaKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: SparseMlaCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: SparseMlaCall) -> Optional[str]:

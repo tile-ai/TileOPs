@@ -1,4 +1,4 @@
-"""The two tables, and how they get filled.
+"""The tables, and how they get filled.
 
 Module-level state, because registration happens as mutually unaware distributions get
 imported: one process-wide place is the only place they can meet.
@@ -20,6 +20,8 @@ ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
+# Kernel implementations a backend added to an op, ``{op: {key: implementation}}``.
+IMPLEMENTATIONS: dict[str, dict[str, type]] = {}
 
 # One line per backend that failed to import. Strings, not records: they are read to be
 # printed.
@@ -82,6 +84,35 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
                 f"distribution; two packages claiming it is a misinstall."
             )
         BUILDERS[(op, target)] = build_kernel
+
+
+def register_implementation(op: str, key: str, implementation: type) -> None:
+    """Add *implementation* to *op* under *key*, beside the in-tree implementations.
+
+    It joins every instance of the op constructed afterwards, under each kernel interface it
+    inherits, and is selected by the same rule as the in-tree ones: its ``applies`` /
+    ``refusal``, ``general`` and ``preferred_over``. A call it does not serve stays with the
+    in-tree implementations. The op checks it against the interface when an instance is
+    constructed.
+
+    Args:
+        op: The op's manifest key, e.g. ``"LayerNormFwdOp"``.
+        key: The implementation's dispatch key, which ``kernel_map=`` and ``preferred_over``
+            name it by.
+        implementation: A ``Kernel`` subclass inheriting one of the op's kernel interfaces.
+
+    Raises:
+        BackendError: *key* is already registered for *op*.
+    """
+    with LOCK:
+        added = IMPLEMENTATIONS.setdefault(op, {})
+        existing = added.get(key)
+        if existing is not None:
+            raise BackendError(
+                f"{op} already has implementation {key!r} ({describe(existing)}); "
+                f"{describe(implementation)} cannot take it."
+            )
+        added[key] = implementation
 
 
 def describe(fn: Callable) -> str:
@@ -161,6 +192,7 @@ class RegistryState(NamedTuple):
 
     detectors: dict[str, DetectFn]
     builders: dict[tuple[str, str], BuildKernel]
+    implementations: dict[str, dict[str, type]]
     load_failures: list[str]
     default_target: Target
     loaded: bool
@@ -175,6 +207,7 @@ def snapshot() -> RegistryState:
         return RegistryState(
             detectors=dict(DETECTORS),
             builders=dict(BUILDERS),
+            implementations={op: dict(added) for op, added in IMPLEMENTATIONS.items()},
             load_failures=list(LOAD_FAILURES),
             default_target=default_target,
             loaded=_loaded,
@@ -189,6 +222,8 @@ def restore(state: RegistryState) -> None:
         DETECTORS.update(state.detectors)
         BUILDERS.clear()
         BUILDERS.update(state.builders)
+        IMPLEMENTATIONS.clear()
+        IMPLEMENTATIONS.update(state.implementations)
         LOAD_FAILURES[:] = state.load_failures
         default_target = state.default_target
         _loaded = state.loaded

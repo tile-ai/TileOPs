@@ -293,6 +293,6 @@ def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
 
     if expected is None:
         with pytest.raises(ValueError, match="no implementation serves"):
-            op.select_kernel(call)
+            op.select_implementation("gqa_dense", call)
     else:
-        assert op.select_kernel(call).__name__ == expected
+        assert op.kernel_map[op.select_implementation("gqa_dense", call)].__name__ == expected

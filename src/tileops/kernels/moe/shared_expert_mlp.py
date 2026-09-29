@@ -68,7 +68,7 @@ def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None
     """
     candidates = (GemmTmaKernel, GemmCpAsyncKernel)
     for cls in candidates:
-        if cls.refusal(call) is None:
+        if (cls.unavailable(call) or cls.refusal(call)) is None:
             return cls(
                 m=call.m,
                 n=call.n,
@@ -78,7 +78,9 @@ def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None
                 config=config,
                 device_index=device_index,
             )
-    reasons = "; ".join(f"{cls.__name__}: {cls.refusal(call)}" for cls in candidates)
+    reasons = "; ".join(
+        f"{cls.__name__}: {cls.unavailable(call) or cls.refusal(call)}" for cls in candidates
+    )
     raise ValueError(f"no dense GEMM serves {call.m}x{call.n}x{call.k}: {reasons}")
 
 

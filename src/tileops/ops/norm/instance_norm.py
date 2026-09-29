@@ -21,7 +21,7 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import (
     BatchNormFwdInferKernel,
     InstanceNormFwdTrainKernel,
@@ -29,7 +29,12 @@ from tileops.kernels.norm import (
     InstanceNormKernel,
     InstanceNormNoAffineKernel,
 )
-from tileops.kernels.norm.call_spec import BatchNormCall
+from tileops.kernels.norm.call_spec import (
+    BatchNormCall,
+    InstanceNormFwdInferInterface,
+    InstanceNormFwdInterface,
+    InstanceNormFwdTrainInterface,
+)
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -67,10 +72,10 @@ class InstanceNormFwdOp(Op):
         "instance_norm_train": InstanceNormFwdTrainKernel,
         "instance_norm_running_stats": BatchNormFwdInferKernel,
     }
-    kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = {
-        "instance_norm": ("instance_norm", "instance_norm_no_affine"),
-        "instance_norm_train": ("instance_norm_train_single", "instance_norm_train"),
-        "instance_norm_infer": ("instance_norm_running_stats",),
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "instance_norm": InstanceNormFwdInterface,
+        "instance_norm_train": InstanceNormFwdTrainInterface,
+        "instance_norm_infer": InstanceNormFwdInferInterface,
     }
 
     def __init__(
@@ -160,17 +165,16 @@ class InstanceNormFwdOp(Op):
             input_dtype_params=True,
             has_weight=weight is not None,
             has_bias=bias is not None,
-            tune=self.tune,
         )
         if not self.use_input_stats or tracks:
-            role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
+            interface = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
             view = x.view(batch, channels, spatial)
             weight = None if weight is None else weight.contiguous()
             bias = None if bias is None else bias.contiguous()
             # The training kernel writes the running statistics in place, so a strided
             # buffer is served through a contiguous copy that is written back.
             stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-            kernel = self.kernel_for(role, (view, *stats, weight, bias), call)
+            kernel = self.kernel_for(interface, (view, *stats, weight, bias), call)
             self.kernel = kernel
             y = kernel(view, *stats, weight, bias)
             if self.use_input_stats:

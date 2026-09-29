@@ -323,7 +323,7 @@ def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> 
         dtype=test.dtype,
         device=torch.device(run_device()),
     )
-    reason = kernel_cls.refusal(call)
+    reason = kernel_cls.unavailable(call) or kernel_cls.refusal(call)
     if reason is not None:
         pytest.skip(f"{kernel_cls.__name__}: {reason}")
 
@@ -476,7 +476,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     )
     assert any(
         isinstance(kernel, GLADensePrefillPartitionedKernel)
-        for kernel in op.built_kernels("gla_dense_prefill").values()
+        for kernel in op.built_kernels("gla_inference").values()
     )
 
 
@@ -502,7 +502,7 @@ def test_gla_dense_decode_matches_fla(
     test.check(op, *inputs, **standard_tolerance(dtype))
     assert any(
         isinstance(kernel, GLADenseDecodeFwdKernel)
-        for kernel in op.built_kernels("gla_dense_decode").values()
+        for kernel in op.built_kernels("gla_inference").values()
     )
 
 

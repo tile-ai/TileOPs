@@ -121,15 +121,20 @@ design, calling conventions — live in
 - **Rule.** A class attribute declaring the op's dispatch keys: `snake_case` keys, Kernel-class
   values. It is the one declaration of the keys; `default_kernel_map`, the instance's view, is
   derived from it — all of it, or the entries a construction parameter selects. The code owns it;
-  the manifest does not list kernels.
+  the manifest does not list kernels. Beside it, `interfaces` maps each place the op calls a kernel to its
+  kernel interface, and every key's class inherits one of them.
 - **Example.**
   ```python
   kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
       "example_cumsum_fwd": ExampleCumsumKernel
   }
+  interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+      "example_cumsum_fwd": ExampleCumsumFwdInterface
+  }
   ```
 - **Common mistakes.** Keys that echo the class name instead of being dispatch strings; a
-  `default_kernel_map` naming a key `kernel_types` does not declare.
+  `default_kernel_map` naming a key `kernel_types` does not declare; an interface per shape
+  regime instead of one interface whose implementations split the regimes.
 
 ### Slot S15: <a id="slot-s15"></a> `forward` signature
 
@@ -147,13 +152,14 @@ design, calling conventions — live in
   normalize parameter-dependent axes with the manifest's axis rule
   (`dim = normalize_axis(self.dim, x.ndim)`, which maps `0` and `-1` to the scalar axis at rank 0); (b) make contiguous
   each input the kernel needs contiguous, never a `mutated` input, which is written in place; (c)
-  `self.kernel_for(<role>, <tensors>, <call>)`, handing over every tensor the kernel reads or
+  `self.kernel_for(<interface>, <tensors>, <call>)`, handing over every tensor the kernel reads or
   writes, output buffers included, and `None` for an absent optional one; (d) call the kernel.
   An op registered for `fullgraph=True` compilation keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
   scaffold's scope, see
   [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
-- **Derivation.** The role is the `kernel_map` dispatch key whose kernel the factory builds. A specialization that implies more than a dtype — a compute dtype differing from the
+- **Derivation.** The first argument is a key of `interfaces`; the call is that interface's
+  call spec. A specialization that implies more than a dtype — a compute dtype differing from the
   semantic one, an output dtype no input supplies — makes the entry one frozen record rather than a
   bare kernel, and those fields never live in `self.*`
   ([Forward keying](./ops-design-reference.md#base-class-protocol)).
@@ -165,22 +171,17 @@ design, calling conventions — live in
   def forward(self, x: torch.Tensor) -> torch.Tensor:
       dim = normalize_axis(self.dim, x.ndim)
       x = x.contiguous()
-      kernel = self.kernel_for("example_cumsum_fwd", (x,), (tuple(x.shape), dim, x.dtype))
-      return kernel(x)
-
-
-  def entry_for(self, role: str, call: tuple) -> Entry:
-      """One implementation, built per shape, axis and dtype."""
-      shape, dim, dtype = call
-      return call, lambda: self.kernel_map["example_cumsum_fwd"](
-          shape[dim], "sum", dtype, tune=self.tune
+      call = ExampleCumsumCall(
+          device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype
       )
+      return self.kernel_for("example_cumsum_fwd", (x,), call)(x)
   ```
 - **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
   dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; repeating a check the
   signature states; reshaping before the fetch; passing an already-built kernel where
-  a factory is expected, which rebuilds on every call; fetching a kernel under two roles in one op
-  where one entry holding both would do.
+  a factory is expected, which rebuilds on every call; fetching a kernel under two interfaces in one
+  op where one entry holding both would do; an op-level `entry_for`, where the implementation
+  states its own.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes`
 

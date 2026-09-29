@@ -20,11 +20,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
 
 from ._config import select_row_config, select_row_configs
+from .call_spec import LayerNormCall, LayerNormFwdInterface
 
 __all__ = ["LayerNormKernel"]
 
@@ -174,7 +175,7 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
     return _func
 
 
-class LayerNormKernel(Kernel):
+class LayerNormKernel(Kernel, LayerNormFwdInterface):
     """LayerNorm kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment (512 bytes for
@@ -187,6 +188,11 @@ class LayerNormKernel(Kernel):
     # Row elements a thread must own before the walk pays. Two reductions here,
     # so two walks, so twice the row RMSNorm needs.
     PARTIAL_MIN_ELEMENTS_PER_THREAD = 64
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     def __init__(
         self,

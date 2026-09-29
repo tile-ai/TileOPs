@@ -2634,9 +2634,7 @@ class GemmTmaKernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        return cls.arch_refusal(call) or _tma_misalignment(
-            call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b
-        )
+        return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:

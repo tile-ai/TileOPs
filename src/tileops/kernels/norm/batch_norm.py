@@ -17,7 +17,13 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import BatchNormCall
+from .call_spec import (
+    BatchNormBwdInterface,
+    BatchNormCall,
+    BatchNormFwdInferInterface,
+    BatchNormFwdTrainInterface,
+    InstanceNormFwdInferInterface,
+)
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -703,7 +709,7 @@ class _BatchNormKernel(Kernel):
         return max(1, min(call.n * call.spatial, -(-cls._SPLIT_TARGET_BLOCKS // call.c)))
 
 
-class _BatchNormFwdTrainHeldKernel(_BatchNormKernel):
+class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
     """Training forward with a channel held in registers, launched with ``self.launch``."""
 
     def forward(
@@ -830,7 +836,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
 
 
-class BatchNormFwdTrainSplitKernel(_BatchNormKernel):
+class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
     """Training forward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel one block does not hold and that is long enough, among few enough
@@ -872,7 +878,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel):
             cls._split_seed(call),
         )
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -1045,7 +1051,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel):
         return y, mean_out, rstd_out
 
 
-class BatchNormFwdTrainKernel(Kernel):
+class BatchNormFwdTrainKernel(Kernel, BatchNormFwdTrainInterface):
     """Training forward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -1069,7 +1075,7 @@ class BatchNormFwdTrainKernel(Kernel):
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -1243,7 +1249,7 @@ def _batch_norm_fwd_infer_kernel(
     return _bn_fwd_infer_func
 
 
-class BatchNormFwdInferKernel(Kernel):
+class BatchNormFwdInferKernel(Kernel, BatchNormFwdInferInterface, InstanceNormFwdInferInterface):
     """Inference-mode batch normalization forward kernel.
 
     Args:
@@ -1287,7 +1293,7 @@ class BatchNormFwdInferKernel(Kernel):
             call.has_bias,
         )
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -1860,7 +1866,7 @@ def _batch_norm_bwd_split_kernel(
     return _stats_func, _finalize_func, _apply_func
 
 
-class BatchNormBwdWideKernel(_BatchNormKernel):
+class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
     """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
 
     Serves a channel whose two tensors one block holds, a thread-held one included.
@@ -1919,7 +1925,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel):
         return grad_x, grad_weight, grad_bias
 
 
-class BatchNormBwdSplitKernel(_BatchNormKernel):
+class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
     """Backward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel whose two tensors one block does not hold and that is long enough,
@@ -2017,7 +2023,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel):
         return grad_x, grad_weight, grad_bias
 
 
-class BatchNormBwdKernel(Kernel):
+class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
     """Backward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -2039,7 +2045,7 @@ class BatchNormBwdKernel(Kernel):
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,

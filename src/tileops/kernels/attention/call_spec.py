@@ -1,4 +1,4 @@
-"""The facts of one attention call, and the regions kernels answer for.
+"""The facts of one attention call, the regions kernels answer for, and the kernel interface.
 
 ``AttentionCall`` is what an op states about a call; the region helpers are the
 predicates kernel classes answer ``applies`` with, kept here because more than
@@ -6,15 +6,18 @@ one class reads each. See docs/design/ops-design.md § Kernel selection.
 """
 
 import dataclasses
+from abc import abstractmethod
 from typing import Optional
 
 import torch
 
 from ..call_spec import CallSpec
+from ..kernel_base import KernelInterface
 
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
+    "GQADenseFwdInterface",
     "dense_decode_limit_refusal",
     "dense_decode_refusal",
     "dense_decode_region",
@@ -60,7 +63,6 @@ class AttentionCall(CallSpec):
     softcap: float = 0.0
     window_size_left: int = -1
     window_size_right: int = -1
-    backend: str = "auto"
     is_fp8: bool = False
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
@@ -71,6 +73,44 @@ class AttentionCall(CallSpec):
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
     accum_dtype: torch.dtype = torch.float32
+
+
+class GQADenseFwdInterface(KernelInterface):
+    """Grouped-query attention over dense Q, K and V."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Attend each query row to the keys the call's mask and window admit.
+
+        Every tensor is contiguous on ``call.device``, and nothing is written in place.
+        Q, K and V are in ``call.dtype``, or ``float8_e4m3fn`` when ``call.is_fp8``.
+
+        Args:
+            q: ``(batch, max_seqlen_q, heads, dim)``.
+            k: ``(batch, seqlen_kv, heads_kv, dim)``.
+            v: ``(batch, seqlen_kv, heads_kv, dim)``.
+            q_scale: ``float32`` ``(batch, heads_kv)``, passed exactly when ``call.is_fp8``.
+            k_scale: The same, for ``k``.
+            v_scale: The same, for ``v``.
+            rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
+                when ``call.fuse_rope``.
+            rope_sin: The same layout, passed exactly when ``rope_cos`` is.
+
+        Returns:
+            A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``.
+        """
 
 
 def uses_sliding_window(call: AttentionCall) -> bool:
@@ -254,9 +294,8 @@ def dense_fp8_limit_refusal(
 def decode_bs1_region(call: AttentionCall) -> bool:
     """The SM90 batch-1 decode region, shared by contiguous and paged decode.
 
-    Owned by the batch-1 kernels; the general decode kernels behind them exclude
-    exactly this region, and the paged batch-1 kernel narrows it further with a
-    page-tile condition only it can answer.
+    Owned by the batch-1 kernels; the paged batch-1 kernel narrows it further with
+    a page-tile condition only it can answer.
     """
     if not (
         call.batch == 1 and call.dtype == torch.float16 and call.dim == 128 and call.softcap == 0.0

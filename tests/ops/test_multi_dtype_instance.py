@@ -58,7 +58,7 @@ def test_layer_norm_keys_on_dtype():
         b = torch.randn(n, dtype=dtype, device=run_device())
         assert op(x, w, b).dtype == dtype
     if served_in_tree(op):
-        assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
+        assert {k.dtype for k in op.built_kernels("layer_norm").values()} == set(_DTYPES)
 
 
 @pytest.mark.smoke

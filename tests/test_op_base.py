@@ -582,7 +582,6 @@ def test_a_key_another_op_declares_passes_through() -> None:
 
     op = GemmFwdOp(kernel_map={"shared_expert_mlp": GemmTmaKernel})
     assert "shared_expert_mlp" not in op.kernel_map
-    assert op._overridden_keys == frozenset()
 
 
 def test_kernel_types_declare_the_keys_an_override_may_name(

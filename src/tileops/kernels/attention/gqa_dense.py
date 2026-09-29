@@ -12,7 +12,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import dense_sliding_window_refusal, dense_ws_refusal
+from .call_spec import GQADenseFwdInterface, dense_sliding_window_refusal, dense_ws_refusal
 from .dense_entry import dense_sliding_window_entry, dense_ws_entry
 from .online_softmax import make_apply_softcap
 
@@ -650,7 +650,7 @@ def _gqa_dense_ws_kernel(
     return main
 
 
-class GQADenseWsKernel(Kernel):
+class GQADenseWsKernel(Kernel, GQADenseFwdInterface):
     """Dense attention using the FA3 two-consumer pipeline."""
 
     supported_archs: list[int] = [90]
@@ -661,7 +661,7 @@ class GQADenseWsKernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call) -> Optional[str]:
@@ -963,7 +963,7 @@ def _gqa_sw_fwd_wgmma_pipelined_run(
     )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
-class GQADenseSlidingWindowKernel(Kernel):
+class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
     supported_archs: list[int] = [90]
@@ -974,7 +974,7 @@ class GQADenseSlidingWindowKernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call) -> Optional[str]:

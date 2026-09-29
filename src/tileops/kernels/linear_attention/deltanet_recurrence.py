@@ -287,7 +287,7 @@ class DeltaNetDecodeKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return cls.arch_refusal(call) or _k_tile_refusal(call)
+        return _k_tile_refusal(call)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -407,7 +407,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: DeltaNetDecodeCall) -> Optional[str]:
@@ -647,7 +647,7 @@ class DeltaNetDecodeFP32Kernel(Kernel):
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: DeltaNetDecodeCall) -> Optional[str]:

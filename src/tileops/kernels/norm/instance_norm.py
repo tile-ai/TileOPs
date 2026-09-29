@@ -27,7 +27,7 @@ from ._config import (
     row_padding,
     select_row_config_by_width,
 )
-from .call_spec import BatchNormCall
+from .call_spec import BatchNormCall, InstanceNormFwdInterface, InstanceNormFwdTrainInterface
 from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
 
 __all__ = [
@@ -38,7 +38,7 @@ __all__ = [
 ]
 
 
-class InstanceNormKernel(GroupNormKernel):
+class InstanceNormKernel(GroupNormKernel, InstanceNormFwdInterface):
     """InstanceNorm forward kernel with a per-channel affine.
 
     GroupNorm's kernel with ``num_groups=C`` and ``channels_per_group=1``. The running
@@ -53,7 +53,7 @@ class InstanceNormKernel(GroupNormKernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         identity = (call.spatial, call.eps, call.dtype, call.c)
-        return identity, lambda: cls(*identity, channels_per_group=1, tune=call.tune)
+        return identity, lambda: cls(*identity, channels_per_group=1)
 
     def forward(
         self,
@@ -66,7 +66,7 @@ class InstanceNormKernel(GroupNormKernel):
         return super().forward(x, weight, bias)
 
 
-class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
+class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterface):
     """InstanceNorm forward kernel without affine scale/shift.
 
     GroupNorm's no-affine kernel with ``G = C``. The running statistics and the affine
@@ -80,7 +80,7 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         identity = (call.spatial, call.eps, call.dtype)
-        return identity, lambda: cls(*identity, tune=call.tune)
+        return identity, lambda: cls(*identity)
 
     def forward(
         self,
@@ -310,7 +310,7 @@ def _instance_norm_stats_kernel(N, C, splits, dtype):
     return _func
 
 
-class _InstanceNormTrainKernel(GroupNormNoAffineKernel):
+class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormFwdTrainInterface):
     """InstanceNorm forward that also updates the running statistics in place.
 
     GroupNorm's row tiling and config space, with a program of its own. Each block owns one channel and ``block_m`` of its samples. ``running_mean[c]`` and
@@ -366,7 +366,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel):
             call.has_weight,
             call.has_bias,
         )
-        return identity, lambda: cls(*identity, tune=call.tune)
+        return identity, lambda: cls(*identity)
 
     def __init__(
         self,

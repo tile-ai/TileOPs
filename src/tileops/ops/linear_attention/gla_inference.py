@@ -6,8 +6,11 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.linear_attention.gla.call_spec import (
+    GLAInferenceCallSpec,
+    GLAInferenceFwdInterface,
+)
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
@@ -37,6 +40,9 @@ class GLAInferenceFwdOp(Op):
         "gla_dense_decode": GLADenseDecodeFwdKernel,
         "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
         "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gla_inference": GLAInferenceFwdInterface
     }
 
     def __init__(
@@ -106,9 +112,6 @@ class GLAInferenceFwdOp(Op):
             dtype=q.dtype,
             scale=self.scale if self.scale is not None else dim_k**-0.5,
             varlen=cu_seqlens is not None,
-            tune=self.tune,
             device=q.device,
         )
-        role = "gla_dense_decode" if seq_len == 1 else "gla_dense_prefill"
-        kernel = self.kernel_for(role, inputs, call)
-        return kernel(*inputs)
+        return self.kernel_for("gla_inference", inputs, call)(*inputs)

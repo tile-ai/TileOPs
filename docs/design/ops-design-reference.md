@@ -26,24 +26,24 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 Abstract interface: `forward()`. Methods generated from the manifest entry: the construction and call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
-- `kernel_types` (class attribute) is the one declaration of an op's dispatch keys; `default_kernel_map` (property) is derived from it. Each op class created adds its keys to a set `op_base` holds, and a `kernel_map` override naming a key outside that set is refused.
+- `kernel_types` (class attribute) is the one declaration of an op's dispatch keys; `default_kernel_map` (property) is derived from it. `interfaces` (class attribute) maps each place the op calls a kernel to its kernel interface. Each op class created adds its keys to a set `op_base` holds, and a `kernel_map` override naming a key outside that set is refused.
 - `delegate_types` (class attribute) is the one declaration of the sub-ops an op may hold: stage name to op class, in stage order. Default empty.
 - `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects, metadata tensors, and the checked calls its sub-ops completed during it, by stage. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
 
 #### Kernel caching and enumeration methods
 
-Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
+Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
 
-| Method                           | Purpose                                                                                                                                                        |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_for(role, inputs, call)` | The in-tree kernel serving this call, built once on a miss. The only way an op's in-tree implementation reaches a kernel. A target serves the whole op instead |
-| `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
-| `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                       |
-| `delegate_for(stage, key, ...)`  | The sub-op held for a stage and identity, built once on a miss with the op's execution policy. The only way an op holds a sub-op                               |
-| `kernel_delegates()`             | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                    |
-| `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                             |
-| `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                 |
-| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune`, under which every later in-tree build is tuned as it is built; a target is not passed `tune`  |
+| Method                                   | Purpose                                                                                                                                                       |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel_for(interface, inputs, call)`    | The in-tree entry serving this call, resolved once per call spec. The only way an op's in-tree implementation reaches a kernel; a target serves the whole op  |
+| `select_implementation(interface, call)` | The key of the interface's implementation that serves the call. Introspection and tests; `kernel_for` asks it on a miss                                       |
+| `built_kernels(name)`                    | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                      |
+| `delegate_for(stage, key, ...)`          | The sub-op held for a stage and identity, built once on a miss with the op's execution policy. The only way an op holds a sub-op                              |
+| `kernel_delegates()`                     | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                   |
+| `iter_kernels()`                         | The TileOPs `Kernel` instances the entries hold, deduplicated: interface entries, `self.kernel`, and delegates. What `autotune()` tunes                       |
+| `settled_target`                         | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                |
+| `autotune()`                             | Puts the op in tuned mode: tunes built kernels, and sets `tune`, under which every later in-tree build is tuned as it is built; a target is not passed `tune` |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 
@@ -70,6 +70,7 @@ A restriction on the accepted domain is a refinement of the signature, never a h
 
 - **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).
 - **Kernel class:** `{PascalCaseName}{Direction}Kernel`. Same direction-suffix rule.
+- **Kernel interface:** `{PascalCaseName}{Direction}Interface`, beside the call spec it names in the family's `call_spec.py`. Same direction-suffix rule.
 - **`kernel_map` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](op-slot-rules.md#slot-s14).
 - **Builder functions:** `snake_case`, e.g. `def rms_norm_fwd(M, N, dtype, ...): ...`.
 - **Filenames:** all-lowercase with underscores. Multi-word abbreviations stay fully lowercase (`rms_norm.py`, `ssd_decode.py`; never `RMSNorm.py` or `Ssd_decode.py`). Norm-related names never contract (`rms_norm`, not `rmsnorm`).

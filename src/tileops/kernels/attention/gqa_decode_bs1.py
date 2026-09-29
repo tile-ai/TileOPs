@@ -23,7 +23,7 @@ from tileops.kernels.attention.gqa_decode import (
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import decode_bs1_region, dense_decode_refusal, dense_long_context_decode_region
+from .call_spec import GQADenseFwdInterface, decode_bs1_region, dense_decode_refusal
 from .dense_entry import dense_decode_entry
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
@@ -505,7 +505,7 @@ def _gqa_decode_bs1_ctx_run(
     return kernel(Q, K, V, glse, Output_partial)
 
 
-class GQADecodeBs1Kernel(Kernel):
+class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     """SM90 warp-specialized batch=1 GQA decode kernel with a context-length switch.
 
     ``forward`` always uses the context pipeline for full-dimensional RoPE.  Plain calls
@@ -564,13 +564,13 @@ class GQADecodeBs1Kernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call) -> Optional[str]:
         # ``decode_bs1_region`` is the shape, shared with the paged sibling; this
         # class serves it in the contiguous decode region only.
-        if not decode_bs1_region(call) or dense_long_context_decode_region(call):
+        if not decode_bs1_region(call):
             return "does not serve this call"
         return dense_decode_refusal(call)
 

@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import dense_fp8_decode_refusal
+from .call_spec import GQADenseFwdInterface, dense_fp8_decode_refusal
 from .dense_entry import dense_fp8_decode_entry
 from .gqa_decode_bs1_common import COMPILE_FLAGS
 from .gqa_fwd_fp8 import _validate_fa3_gqa_descales
@@ -270,7 +270,7 @@ def _gqa_dense_fp8_decode_ctx_run(
     return kernel(q, k, v, q_descale, k_descale, v_descale, glse, output_partial)
 
 
-class GQADenseFP8DecodeKernel(Kernel):
+class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     """Context-split native-FP8 Dense decode specialization."""
 
     supported_archs: list[int] = [90]
@@ -283,7 +283,7 @@ class GQADenseFP8DecodeKernel(Kernel):
 
     @classmethod
     def refusal(cls, call) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call) -> Optional[str]:

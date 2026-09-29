@@ -251,9 +251,8 @@ def _gqa_prefill_varlen_fwd_kernel(
 class GQAPrefillVarlenFwdKernel(VarlenKernel):
     """Ragged packed prefill: per-request ranges of unequal length.
 
-    Serves the requests the dense implementations cannot: a caller that asked
-    for the varlen algorithm explicitly, or an automatic choice whose packed
-    ranges are not uniform.
+    Serves the requests the dense implementations cannot: packed ranges that are
+    not uniform.
     """
 
     supported_archs: list[int] = [80, 89, 90]
@@ -263,9 +262,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     def applies(cls, call) -> bool:
         if call.is_fp8 or call.fuse_rope or uses_sliding_window(call):
             return False
-        if call.backend == "varlen":
-            return True
-        return call.backend == "auto" and not call.is_uniform
+        return not call.is_uniform
 
     @classmethod
     def entry_for(cls, call):

@@ -1,54 +1,121 @@
 """Shared device facts for call records."""
 
 import dataclasses
+import enum
 
 import torch
 
 __all__ = ["CallSpec"]
 
 
-@dataclasses.dataclass(frozen=True)
-class CallSpec:
-    """What a call runs on: the device facts every family's record carries.
+class _DeviceFact:
+    """A device fact of a call record: the value the caller stated, else the device's own.
 
-    ``Op.select_kernel_key`` asks each implementation for its ``refusal(call)``,
-    and a refusal reads these. A caller that states them gets what it stated; a
-    record that states none reads them when it is built, which is when the call
-    is made rather than when the op is constructed.
-
-    A family subclasses this and adds every fact its implementations read in
-    ``applies`` / ``refusal`` / ``entry_for`` or take as a construction argument,
-    and nothing a tensor's contents decide.
+    A fact the caller did not state is read from ``device`` the first time it is read.
+    Hashing and comparing a record read none, so a record that is only looked up never
+    queries the device.
     """
 
-    arch: int = -1
+    def __init__(self, name: str) -> None:
+        self.stored = f"_{name}"
+
+    def __get__(self, record: "CallSpec | None", owner: type) -> object:
+        if record is None:
+            return self
+        facts = record.__dict__
+        if self.stored not in facts:
+            record._read_device_facts()
+        return facts[self.stored]
+
+    def __set__(self, record: "CallSpec", value: object) -> None:
+        if value is not self:
+            record.__dict__[self.stored] = value
+
+
+@dataclasses.dataclass(frozen=True)
+class CallSpec:
+    """A call spec: the immutable facts of one call and the device it runs on.
+
+    A family subclasses this and adds every fact its implementations read in ``applies`` /
+    ``refusal`` / ``entry_for``, and nothing a tensor's contents decide. Equality and the
+    hash cover those facts and ``device``, normalized to an explicit type and index.
+
+    The device facts (``arch``, ``calibration``, ``sm_count``) are derived from ``device``
+    and take no part in equality: one left unstated is read from ``device`` when selection
+    or a builder first reads it, which the dispatcher does only on a miss. A caller may state
+    them to ask ``select_implementation`` about a device it is not on; ``kernel_for`` refuses
+    such a call spec, since it keys what it builds by ``device``.
+    """
+
+    arch: int = dataclasses.field(default=_DeviceFact("arch"), compare=False)
     # The key of the calibrated board the device belongs to (``tileops.utils.calibration_key``),
     # or ``None``. A family's fitted tuning data is keyed by it.
-    calibration: "str | None" = None
-    sm_count: int = 0
+    calibration: "str | None" = dataclasses.field(default=_DeviceFact("calibration"), compare=False)
+    sm_count: int = dataclasses.field(default=_DeviceFact("sm_count"), compare=False)
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
-    # Whether the kernel built for this call tunes itself. A construction argument
-    # wherever a kernel takes one, so it belongs to the call rather than beside it. No
-    # part of comparison: tuning changes how fast a kernel runs, not what it computes.
+    # FIXME(staged-rollout): tuning policy travels on the record of an unmigrated call.
+    #
+    # Broken invariant: a call spec carries call facts only (ops-design.md § Kernel selection).
+    # Why: unmigrated ops and their kernels still pass ``tune`` through the record.
+    # Cleanup: when every op declares ``interfaces``, delete this field.
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.arch >= 0 and self.sm_count > 0:
+        stated = frozenset(f for f in ("arch", "calibration", "sm_count") if f"_{f}" in vars(self))
+        object.__setattr__(self, "stated_device_facts", stated)
+        device = self.device
+        if device is None:
             return
-        # Facts are the call device's own. Another device type has no CUDA facts, and the
-        # current CUDA device, if there is one, is not where the call runs.
-        if self.device is not None and self.device.type != "cuda":
-            return
+        if not isinstance(device, torch.device):
+            device = torch.device(device)
+        if device.type == "cuda" and device.index is None:
+            device = torch.device("cuda", torch.cuda.current_device())
+        object.__setattr__(self, "device", device)
+
+    def _read_device_facts(self) -> None:
+        """Fill the device facts the caller left unstated from ``device``.
+
+        A device other than a CUDA one has none: no architecture, board or SM.
+        """
         from tileops.utils import device_facts
 
-        index = self.device.index if self.device is not None else None
-        arch, calibration, sm_count = device_facts(index)
-        if self.arch < 0:
-            object.__setattr__(self, "arch", arch)
-            object.__setattr__(self, "calibration", calibration)
-        if self.sm_count <= 0:
-            object.__setattr__(self, "sm_count", sm_count)
+        if self.device is not None and self.device.type != "cuda":
+            arch, calibration, sm_count = -1, None, 0
+        else:
+            arch, calibration, sm_count = device_facts(
+                self.device.index if self.device is not None else None
+            )
+        facts = self.__dict__
+        facts.setdefault("_arch", arch)
+        facts.setdefault("_calibration", calibration)
+        facts.setdefault("_sm_count", sm_count)
+
+    def refuse_unkeyable(self) -> None:
+        """Raise unless every compared field is an immutable value.
+
+        A tensor, a mutable container or a policy object compares by identity or not at
+        all, so a record holding one would miss the cache or return another call's entry.
+
+        Raises:
+            TypeError: A compared field holds something other than a scalar, a dtype, a
+                device, an enum, a frozen dataclass, or a tuple or frozenset of those.
+        """
+        keyable = (type(None), bool, int, float, str, torch.dtype, torch.device, enum.Enum)
+        pending = [(f.name, getattr(self, f.name)) for f in dataclasses.fields(self) if f.compare]
+        while pending:
+            name, value = pending.pop()
+            if isinstance(value, (tuple, frozenset)):
+                pending.extend((name, item) for item in value)
+            elif dataclasses.is_dataclass(value) and type(value).__dataclass_params__.frozen:
+                pending.extend(
+                    (name, getattr(value, f.name)) for f in dataclasses.fields(value) if f.compare
+                )
+            elif not isinstance(value, keyable):
+                raise TypeError(
+                    f"{type(self).__name__}.{name} holds a {type(value).__name__}, which "
+                    f"cannot key a dispatch cache; a call spec holds immutable values only"
+                )
 
     def __str__(self) -> str:
         """The facts of the call, without the fields nobody set.

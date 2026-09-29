@@ -678,9 +678,6 @@ class MLADecodeWsKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
-        archs = cls.supported_archs
-        if archs is not None and call.arch not in archs:
-            return f"built for architectures {sorted(archs)}, device reports {call.arch}"
         return cls._region_refusal(call)
 
     @staticmethod
