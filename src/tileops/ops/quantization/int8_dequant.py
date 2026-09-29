@@ -5,10 +5,15 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import DequantizeCall, INT8DequantPerChannelKernel
-
-from ..op_base import Op
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization import (
+    DequantizeCall,
+    INT8DequantFwdInterface,
+    INT8DequantPerChannelFwdKernel,
+    INT8DequantPerTensorFwdKernel,
+    INT8DequantPerTensorSmallFwdKernel,
+)
+from tileops.ops.op_base import Op
 
 __all__ = [
     "INT8DequantPerBlockFwdOp",
@@ -20,11 +25,17 @@ __all__ = [
 class INT8DequantPerTensorFwdOp(Op):
     """Dequantize an INT8 matrix with one scale: ``x = (q.float() * scale).to(out_dtype)``.
 
-    The multiply is in float32 and its result is cast once to ``out_dtype``. The op has
-    no in-tree kernel yet, so a call needs a target that registers one.
+    The multiply is in float32 and its result is cast once to ``out_dtype``, so ``x`` is
+    bit-identical to that expression.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "int8_dequant_per_tensor": INT8DequantPerTensorFwdKernel,
+        "int8_dequant_per_tensor_small": INT8DequantPerTensorSmallFwdKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dequant": INT8DequantFwdInterface}
 
     def __init__(
         self,
@@ -59,13 +70,16 @@ class INT8DequantPerTensorFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
+        return self._call_boundary(q, scale)
+
+    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
             k=q.shape[1],
             granularity="tensor",
             out_dtype=self.out_dtype,
-            tune=self.tune,
             device=q.device,
         )
         return self.kernel_for("dequant", (q, scale), call)(q, scale)
@@ -81,8 +95,9 @@ class INT8DequantPerChannelFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "int8_dequant_per_channel": INT8DequantPerChannelKernel
+        "int8_dequant_per_channel": INT8DequantPerChannelFwdKernel
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dequant": INT8DequantFwdInterface}
 
     def __init__(
         self,
@@ -127,7 +142,6 @@ class INT8DequantPerChannelFwdOp(Op):
             k=q.shape[1],
             granularity="channel",
             out_dtype=self.out_dtype,
-            tune=self.tune,
             device=q.device,
         )
         return self.kernel_for("dequant", (q, scale), call)(q, scale)
@@ -182,7 +196,6 @@ class INT8DequantPerBlockFwdOp(Op):
             k=q.shape[1],
             granularity="block",
             out_dtype=self.out_dtype,
-            tune=self.tune,
             device=q.device,
         )
         return self.kernel_for("dequant", (q, scale), call)(q, scale)

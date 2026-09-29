@@ -148,7 +148,7 @@ SmoothQuantFwdOp:
 
 INT8DequantPerTensorFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -163,6 +163,9 @@ INT8DequantPerTensorFwdOp:
   - {M: 32, K: 4096, out_dtype: bfloat16, label: llama-8b-decode}
   - {M: 8192, K: 5120, out_dtype: float16, label: qwen3-32b-prefill}
   - {M: 8192, K: 5120, out_dtype: float32, label: qwen3-32b-prefill}
+  - {M: 3000, K: 2880, out_dtype: bfloat16, label: gpt-oss-prefill}
+  - {M: 1000, K: 4099, out_dtype: float32, label: ragged-k}
+  - {M: 17, K: 4099, out_dtype: float16, label: ragged-k-few-rows}
   roofline:
     # One multiply per element, in float32; the cast is not counted.
     flops: "M * K"

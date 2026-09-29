@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 import torch
 
-from ..call_spec import CallSpec
+from tileops.kernels.call_spec import CallSpec
 
 __all__ = ["DequantizeCall"]
 

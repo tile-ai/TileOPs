@@ -30,6 +30,14 @@ BLOCK_SHARED_BYTES_OPT_IN: dict[int, int] = {
 # Threads one block may hold.
 MAX_BLOCK_THREADS: int = 1024
 
+# Blocks one SM may hold resident at once, by architecture.
+SM_RESIDENT_BLOCKS: dict[int, int] = {
+    80: 32,
+    86: 16,
+    89: 24,
+    90: 32,
+}
+
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 

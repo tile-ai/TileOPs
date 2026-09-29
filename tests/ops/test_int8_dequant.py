@@ -3,6 +3,11 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import OpNotAvailableError
+from tileops.kernels.quantization import (
+    DequantizeCall,
+    INT8DequantPerChannelFwdKernel,
+    INT8DequantPerTensorFwdKernel,
+)
 from tileops.quantization import (
     INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
@@ -38,7 +43,7 @@ _TESTS = {
 # One typical shape per op; the per-block K is not a multiple of 128, so the last block of
 # each row is partial.
 _SHAPES = {
-    INT8DequantPerTensorFwdOp: (256, 1024),
+    INT8DequantPerTensorFwdOp: (1024, 1024),
     INT8DequantPerChannelFwdOp: (256, 1024),
     INT8DequantPerBlockFwdOp: (256, 1000),
 }
@@ -58,7 +63,12 @@ class INT8DequantFixture(FixtureBase):
             + [
                 pytest.param(
                     INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
-                )
+                ),
+                # Per-tensor, past the small-matrix kernel's region, with a tail whose length
+                # is not a multiple of any vector width.
+                pytest.param(
+                    INT8DequantPerTensorFwdOp, 2051, 1025, torch.bfloat16, marks=pytest.mark.full
+                ),
             ],
         ),
     ]
@@ -94,10 +104,27 @@ def test_int8_dequant_rejects_wrong_scale_shape(op_cls: type, scale_shape: tuple
 
 
 @pytest.mark.smoke
-def test_int8_dequant_per_channel_misaligned_input() -> None:
+@pytest.mark.parametrize("op_cls", [INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp])
+def test_int8_dequant_misaligned_input(op_cls: type) -> None:
     """A ``q`` whose storage is off the vector boundary, rows that split a thread's codes, a tail."""
-    test = INT8DequantPerChannelTest(5, 1001, torch.bfloat16)
+    test = _TESTS[op_cls](5, 1001, torch.bfloat16)
     q, scale = test.gen_inputs()
     q = torch.cat([q.new_zeros(1, 1001), q])[1:]
     assert q.is_contiguous() and q.data_ptr() % 16
-    test.check(INT8DequantPerChannelFwdOp(torch.bfloat16), q, scale, atol=0, rtol=0)
+    test.check(op_cls(torch.bfloat16), q, scale, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "kernel_cls, granularity",
+    [
+        (INT8DequantPerChannelFwdKernel, "channel"),
+        (INT8DequantPerTensorFwdKernel, "tensor"),
+    ],
+)
+def test_int8_dequant_refuses_a_last_block_past_int32(kernel_cls: type, granularity: str) -> None:
+    """The last block indexes up to one block past ``M * K``, so ``M * K = 2^31 - 1`` is refused."""
+    call = DequantizeCall(
+        m=1, k=2**31 - 1, granularity=granularity, out_dtype=torch.bfloat16, device=run_device()
+    )
+    assert "int32" in (kernel_cls.refusal(call) or "")
