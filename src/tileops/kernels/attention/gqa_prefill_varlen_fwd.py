@@ -17,7 +17,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
+from tileops.kernels.constants import (
+    LOG2E,
+    SHARED_BUFFER_ALIGN_BYTES,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
+)
 from tileops.utils import get_shared_memory_optin
 
 from ..grouped_tiling import GroupTiling
@@ -30,9 +35,6 @@ from .online_softmax import (
 from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
-
-# The granule TileLang aligns each shared buffer to.
-_SHARED_ALIGN = 1024
 
 
 def _stages_score_tile(block_m: int, threads: int) -> bool:
@@ -304,7 +306,8 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         buffers = [block_m * self.dim * elem, tile, tile, 4 * (self.batch + 1)]
         if _stages_score_tile(block_m, config["threads"]):
             buffers += [block_m * block_n * elem, 4 * config["threads"], 4 * config["threads"]]
-        return sum(-(-b // _SHARED_ALIGN) * _SHARED_ALIGN for b in buffers)
+        align = SHARED_BUFFER_ALIGN_BYTES
+        return sum(-(-b // align) * align for b in buffers)
 
     @property
     def autotune_configs(self) -> list[dict]:

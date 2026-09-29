@@ -6,6 +6,10 @@ VECTOR_ACCESS_BYTES: int = 16
 # Address range the shared-memory banks cover before repeating: 32 banks of 4 bytes.
 SHARED_BANK_SPAN_BYTES: int = 128
 
+# Alignment of a shared buffer a 128-byte-swizzled TMA copy targets. TileLang aligns every
+# shared buffer to it, so a buffer's footprint is its size rounded up to this.
+SHARED_BUFFER_ALIGN_BYTES: int = 1024
+
 # Threads in an SM90 warpgroup, the four warps a WGMMA instruction issues across.
 WARPGROUP_THREADS: int = 128
 
