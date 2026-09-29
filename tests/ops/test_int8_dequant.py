@@ -52,6 +52,13 @@ class INT8DequantFixture(FixtureBase):
                 pytest.param(op_cls, *shape, dtype, marks=pytest.mark.smoke)
                 for op_cls, shape in _SHAPES.items()
                 for dtype in (torch.float16, torch.bfloat16, torch.float32)
+            ]
+            # Per-channel rows shorter than a thread's eight codes, over whole blocks: no
+            # block takes the vector path.
+            + [
+                pytest.param(
+                    INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                )
             ],
         ),
     ]
@@ -65,6 +72,8 @@ def test_int8_dequant_op(op_cls: type, m: int, k: int, out_dtype: torch.dtype) -
         # One float32 multiply and one cast: a conforming kernel is bit-exact.
         test.check(op, *test.gen_inputs(), atol=0, rtol=0)
     except OpNotAvailableError:
+        if op_cls.kernel_types:
+            raise
         pytest.skip(f"{op_cls.__name__} has no in-tree kernel")
 
 
@@ -82,3 +91,13 @@ def test_int8_dequant_rejects_wrong_scale_shape(op_cls: type, scale_shape: tuple
     scale = torch.ones(scale_shape, dtype=torch.float32, device=run_device())
     with pytest.raises(ValueError, match="scale"):
         op_cls(torch.bfloat16)(q, scale)
+
+
+@pytest.mark.smoke
+def test_int8_dequant_per_channel_misaligned_input() -> None:
+    """A ``q`` whose storage is off the vector boundary, rows that split a thread's codes, a tail."""
+    test = INT8DequantPerChannelTest(5, 1001, torch.bfloat16)
+    q, scale = test.gen_inputs()
+    q = torch.cat([q.new_zeros(1, 1001), q])[1:]
+    assert q.is_contiguous() and q.data_ptr() % 16
+    test.check(INT8DequantPerChannelFwdOp(torch.bfloat16), q, scale, atol=0, rtol=0)
