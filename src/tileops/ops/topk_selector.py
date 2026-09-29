@@ -66,7 +66,9 @@ class TopkSelectorFwdOp(Op):
             batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=self.tune
         )
 
-    def forward(self, index_score, starts, ends) -> torch.Tensor:
+    def forward(
+        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
+    ) -> torch.Tensor:
         """Select each query row's ``topk`` highest-scoring keys inside its window.
 
         Args:
@@ -79,7 +81,9 @@ class TopkSelectorFwdOp(Op):
         """
         return self._call_boundary(index_score, starts, ends)
 
-    def _eager_forward(self, index_score, starts, ends) -> torch.Tensor:
+    def _eager_forward(
+        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
+    ) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
