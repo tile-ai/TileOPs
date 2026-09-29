@@ -58,7 +58,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**`kernel_map=` replaces what runs under a key, not the key's rule.** The key keeps its registered implementation's applicability and precedence, and is available wherever either class runs; a selected key whose replacement cannot serve the call is an error, never a fallback. Why: what selects a key stays declared in one place, and changing which calls a kernel serves is registration.
+**`kernel_map=` replaces what runs under a key, not the key's rule.** The key keeps its registered implementation's applicability and precedence, and is available wherever either class runs; the replacement, like every implementation, inherits the key's interface and is built through its own `entry_for`; a selected key whose replacement cannot serve the call is an error, never a fallback. Why: what selects a key stays declared in one place, and changing which calls a kernel serves is registration.
 
 **The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 

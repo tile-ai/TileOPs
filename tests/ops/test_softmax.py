@@ -796,6 +796,10 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
     "shape, axes, dtype, expected",
     [
         pytest.param((4, 128, 4096), (0, 2), torch.float16, "LogSumExpEdgeSplitKernel", id="edge"),
+        # Edge axes whose kept rows would also stream: read in place wins.
+        pytest.param(
+            (16, 300, 16384), (0, 2), torch.bfloat16, "LogSumExpEdgeSplitKernel", id="edge-long"
+        ),
         pytest.param((256, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream"),
         pytest.param(
             (260, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream-few"
@@ -808,7 +812,8 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
 def test_logsumexp_regions(shape: tuple, axes: tuple, dtype: torch.dtype, expected: str) -> None:
     """Exactly one logsumexp implementation serves each call, whatever the key order."""
     call = LogSumExpCall(shape=shape, axes=axes, dtype=dtype, **_H200)
-    assert LogSumExpFwdOp(dim=-1).select_kernel(call).__name__ == expected
+    op = LogSumExpFwdOp(dim=-1)
+    assert op.kernel_map[op.select_implementation("reduce", call)].__name__ == expected
 
 
 @pytest.mark.smoke
@@ -822,4 +827,5 @@ def test_logsumexp_regions(shape: tuple, axes: tuple, dtype: torch.dtype, expect
 def test_softmax_regions(shape: tuple, dtype: torch.dtype, expected: str) -> None:
     """Exactly one softmax implementation serves each call, whatever the key order."""
     call = SoftmaxCall(shape=shape, axis=1, dtype=dtype, out_dtype=dtype, **_H200)
-    assert SoftmaxFwdOp(dim=-1).select_kernel(call).__name__ == expected
+    op = SoftmaxFwdOp(dim=-1)
+    assert op.kernel_map[op.select_implementation("softmax", call)].__name__ == expected

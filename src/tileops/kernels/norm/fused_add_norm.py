@@ -25,8 +25,13 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm._config import select_row_config, select_row_configs
+from tileops.kernels.norm.call_spec import (
+    FusedAddLayerNormFwdInterface,
+    FusedAddRMSNormFwdInterface,
+    LayerNormCall,
+)
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES
 
@@ -135,7 +140,7 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     return _func
 
 
-class FusedAddLayerNormKernel(Kernel):
+class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
     """Fused Add + LayerNorm forward kernel.
 
     Computes ``y = LayerNorm(x + residual)`` and returns both ``y`` and
@@ -148,6 +153,11 @@ class FusedAddLayerNormKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     def __init__(
         self,
@@ -340,7 +350,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
     return _func
 
 
-class FusedAddRMSNormKernel(Kernel):
+class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
     """Fused Add + RMSNorm forward kernel.
 
     Computes ``y = RMSNorm(x + residual)`` and returns both ``y`` and ``x + residual``,
@@ -352,6 +362,11 @@ class FusedAddRMSNormKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     # Rows at or below which a row-per-CTA call takes the narrow block: while the shared
     # park is small a narrow block keeps more CTAs resident on an SM, and past this width

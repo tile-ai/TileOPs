@@ -274,12 +274,13 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
 @pytest.mark.parametrize(
     "M, N, dtype, backend",
     [
-        (64, 16384, torch.float32, "row_scan"),
-        (64, 32768, torch.bfloat16, "row_scan"),
-        (64, 8200, torch.float32, "parallel_scan"),  # a padded width the row scan declines
-        (64, 8200, torch.bfloat16, "parallel_scan"),  # same, at the other element width
+        (64, 16384, torch.float32, "CumulativeRowScanKernel"),
+        (64, 32768, torch.bfloat16, "CumulativeRowScanKernel"),
+        # A padded width the row scan declines, at both element widths.
+        (64, 8200, torch.float32, "CumsumParallelScanKernel"),
+        (64, 8200, torch.bfloat16, "CumsumParallelScanKernel"),
         # 65 elements per thread is not a whole number of vector accesses
-        (64, 16640, torch.bfloat16, "parallel_scan"),
+        (64, 16640, torch.bfloat16, "CumsumParallelScanKernel"),
     ],
 )
 def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: str) -> None:
@@ -304,8 +305,8 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     # the arguments and says nothing about which backend was chosen.
     if served_in_tree(op):
         (kernel,) = op.built_kernels("cumulative_fwd").values()
-        assert kernel.strategy == backend, f"({M}, {N}): took {kernel.strategy}"
-        if kernel.strategy == "parallel_scan":
+        assert type(kernel).__name__ == backend, f"({M}, {N}): took {type(kernel).__name__}"
+        if backend == "CumsumParallelScanKernel":
             assert kernel.config["block_n"] == (256 if N > 16384 else 128)
 
 
@@ -385,3 +386,30 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     assert torch.allclose(y, ref, **reduction_tolerance(dtype)), (
         f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name, shape, key",
+    [
+        ("CumsumFwdOp", (127, 16384), "cumulative_row_scan"),
+        ("CumsumFwdOp", (127, 8448), "cumulative_row_scan"),
+        ("CumsumFwdOp", (127, 8200), "cumulative_parallel_scan"),
+        ("CumsumFwdOp", (128, 8200), "cumulative_fwd"),
+        ("CumsumFwdOp", (64, 8192), "cumulative_row_scan"),
+        ("CumsumFwdOp", (64, 262144), "cumulative_parallel_scan"),
+        ("CumprodFwdOp", (64, 262144), "cumulative_fwd"),
+        ("CumprodFwdOp", (64, 16384), "cumulative_row_scan"),
+    ],
+)
+def test_each_region_selects_its_one_implementation(op_name: str, shape: tuple, key: str) -> None:
+    """A row one block stages takes the row scan; of the rest, a few long cumsum rows take
+    the parallel scan; the tiled scan serves every other call."""
+    import tileops.ops as ops
+    from tileops.kernels.reduction.call_spec import CumulativeCall
+
+    op = getattr(ops, op_name)()
+    call = CumulativeCall(
+        arch=90, sm_count=132, smem_budget=232448, shape=shape, axis=1, dtype=torch.float16
+    )
+    assert op.select_implementation("cumulative_fwd", call) == key

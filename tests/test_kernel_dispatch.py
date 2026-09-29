@@ -193,7 +193,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
     monkeypatch.setattr(op, "_resolve_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
     assert op.kernel_for("scale", (), call) is first
-    assert "_arch" not in vars(call) and "_sm_count" not in vars(call)
+    assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
 
 
 def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
@@ -222,7 +222,7 @@ class _NotScaling(Kernel):
 @pytest.mark.parametrize(
     ("kernel_map", "error", "match"),
     [
-        ({"positive": _NotScaling}, TypeError, "does not implement _Scaling"),
+        ({"positive": _NotScaling}, TypeError, "does not implement _Scaling; .* inherits _Scaling"),
         (
             {"positive": _implementation("TwoArgs", forward=lambda self, x, y: x)},
             TypeError,
@@ -267,13 +267,16 @@ def test_installation_refuses_a_malformed_registration(added, match) -> None:
 
 
 def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
-    """A call spec of another type, with an unhashable field, or stating a device fact."""
+    """A call spec of another type, with an unhashable field, or stating a device fact,
+    whether or not an equal call spec was served before."""
     op = _ScaleOp()
     cpu = torch.device("cpu")
+    op.entry(5)
     for call, match in (
         (CallSpec(device=cpu), "takes a _Call call spec"),
         (_Call(device=cpu, n=[5]), "cannot key a dispatch cache"),
         (_Call(device=cpu, n=5, arch=90), "states \\['arch'\\]"),
+        (_Call(device=cpu, n=5, smem_budget=1), "states \\['smem_budget'\\]"),
     ):
         with pytest.raises(TypeError, match=match):
             op.kernel_for("scale", (), call)
@@ -384,19 +387,11 @@ def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest()
 _LEGACY_OPS = frozenset(
     [
         "AbsFwdOp",
-        "AdaLayerNormFwdOp",
-        "AdaLayerNormZeroFwdOp",
         "AdaptiveAvgPool2dFwdOp",
         "AdaptiveMaxPool2dFwdOp",
         "AdaptiveMaxPool2dIndicesFwdOp",
         "AddFwdOp",
         "AlibiFwdOp",
-        "AllFwdOp",
-        "AmaxFwdOp",
-        "AminFwdOp",
-        "AnyFwdOp",
-        "ArgmaxFwdOp",
-        "ArgminFwdOp",
         "AvgPool1dFwdOp",
         "AvgPool2dFwdOp",
         "AvgPool3dFwdOp",
@@ -414,9 +409,6 @@ _LEGACY_OPS = frozenset(
         "Conv2dFwdOp",
         "Conv3dFwdOp",
         "CosFwdOp",
-        "CountNonzeroFwdOp",
-        "CumprodFwdOp",
-        "CumsumFwdOp",
         "DaCumsumFwdOp",
         "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
         "DeltaNetBwdOp",
@@ -438,8 +430,6 @@ _LEGACY_OPS = frozenset(
         "FP8QuantFwdOp",
         "FloorDivideFwdOp",
         "FloorFwdOp",
-        "FusedAddLayerNormFwdOp",
-        "FusedAddRMSNormFwdOp",
         "FusedTopKFwdOp",
         "GLABwdOp",
         "GLADecodeFwdOp",
@@ -452,7 +442,6 @@ _LEGACY_OPS = frozenset(
         "GemmFp8FwdOp",
         "GemmFwdOp",
         "GemmW4A16FwdOp",
-        "GroupNormFwdOp",
         "GroupedGemmFwdOp",
         "GroupedQueryAttentionBwdOp",
         "GroupedQueryAttentionPagedFwdOp",
@@ -463,20 +452,15 @@ _LEGACY_OPS = frozenset(
         "HardswishFwdOp",
         "HardtanhFwdOp",
         "IndexedExpertMLPFwdOp",
-        "InfNormFwdOp",
         "IsfiniteFwdOp",
         "IsinfFwdOp",
         "IsnanFwdOp",
-        "L1NormFwdOp",
-        "L2NormFwdOp",
         "LeFwdOp",
         "LeakyReluFwdOp",
         "LerpFwdOp",
         "LerpTensorFwdOp",
         "Log1pFwdOp",
         "LogFwdOp",
-        "LogSoftmaxFwdOp",
-        "LogSumExpFwdOp",
         "LogicalAndFwdOp",
         "LogicalNotFwdOp",
         "LogicalOrFwdOp",
@@ -492,7 +476,6 @@ _LEGACY_OPS = frozenset(
         "MaxPool3dFwdOp",
         "MaxPool3dIndicesFwdOp",
         "MaximumFwdOp",
-        "MeanFwdOp",
         "MeanPoolingFwdOp",
         "MinimumFwdOp",
         "MishFwdOp",
@@ -511,8 +494,6 @@ _LEGACY_OPS = frozenset(
         "NegFwdOp",
         "PowFwdOp",
         "PreluFwdOp",
-        "ProdFwdOp",
-        "RMSNormFwdOp",
         "ReciprocalFwdOp",
         "ReluFwdOp",
         "RemainderFwdOp",
@@ -536,17 +517,12 @@ _LEGACY_OPS = frozenset(
         "SiluFwdOp",
         "SinFwdOp",
         "SinusoidalFwdOp",
-        "SoftmaxFwdOp",
         "SoftplusFwdOp",
         "SqrtFwdOp",
-        "StdFwdOp",
         "SubFwdOp",
-        "SumFwdOp",
         "TanhFwdOp",
         "TopkSelectorFwdOp",
         "TruncFwdOp",
-        "VarFwdOp",
-        "VarMeanFwdOp",
         "WhereFwdOp",
     ]
 )

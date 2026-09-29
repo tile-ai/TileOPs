@@ -301,3 +301,17 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"max err: {(y - y_ref).abs().max()}"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "passes_affine, key", [(True, "group_norm"), (False, "group_norm_no_affine")]
+)
+def test_each_region_selects_its_one_implementation(passes_affine: bool, key: str) -> None:
+    """A call passing the affine pair takes the affine program, any other the plain one."""
+    from tileops.kernels.norm.call_spec import GroupNormCall
+
+    call = GroupNormCall(
+        arch=90, sm_count=132, c=64, spatial=64, num_groups=8, passes_affine=passes_affine
+    )
+    assert GroupNormFwdOp(num_groups=8).select_implementation("group_norm", call) == key

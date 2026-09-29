@@ -3,8 +3,9 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import FusedAddRMSNormKernel
+from tileops.kernels.norm.call_spec import FusedAddRMSNormFwdInterface, LayerNormCall
 from tileops.ops.op_base import Op
 
 __all__ = ["FusedAddRMSNormFwdOp"]
@@ -39,6 +40,9 @@ class FusedAddRMSNormFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fused_add_rms_norm": FusedAddRMSNormKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "fused_add_rms_norm": FusedAddRMSNormFwdInterface
     }
 
     def __init__(
@@ -94,17 +98,7 @@ class FusedAddRMSNormFwdOp(Op):
         x = x.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()
-        kernel = self.kernel_for(
-            "fused_add_rms_norm",
-            (x, residual, weight),
-            (n, x.dtype),
-        )
+        call = LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
+        kernel = self.kernel_for("fused_add_rms_norm", (x, residual, weight), call)
         y, residual_out = kernel(x, residual, weight)
         return y, residual_out
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per row width and dtype; epsilon is the op's."""
-        n, dtype = call
-        return call, lambda: self.kernel_map["fused_add_rms_norm"](
-            n, self.eps, dtype, tune=self.tune
-        )

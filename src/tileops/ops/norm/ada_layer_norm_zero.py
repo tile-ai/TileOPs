@@ -3,8 +3,9 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.norm import AdaLayerNormKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.norm import AdaLayerNormZeroKernel
+from tileops.kernels.norm.call_spec import AdaLayerNormZeroFwdInterface, LayerNormCall
 from tileops.ops.op_base import Op
 
 __all__ = ["AdaLayerNormZeroFwdOp"]
@@ -36,7 +37,10 @@ class AdaLayerNormZeroFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormZeroKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "ada_layer_norm": AdaLayerNormZeroFwdInterface
+    }
 
     def __init__(
         self,
@@ -91,13 +95,6 @@ class AdaLayerNormZeroFwdOp(Op):
         scale = scale.contiguous()
         shift = shift.contiguous()
         gate = gate.contiguous()
-        n = x.shape[-1]
-        kernel = self.kernel_for("ada_layer_norm", (x, scale, shift, gate), (n, x.dtype))
+        call = LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype)
+        kernel = self.kernel_for("ada_layer_norm", (x, scale, shift, gate), call)
         return kernel(x, scale, shift, gate)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per row width and dtype; epsilon is the op's."""
-        n, dtype = call
-        return call, lambda: self.kernel_map["ada_layer_norm"](
-            n, self.eps, dtype, has_gate=True, tune=self.tune
-        )

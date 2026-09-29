@@ -14,8 +14,15 @@ from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.call_spec import ReduceCall
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import (
+    ProdFwdInterface,
+    ReduceCall,
+    ReduceFwdInterface,
+    VarianceFwdInterface,
+    VarMeanFwdInterface,
+)
 from tileops.kernels.reduction.reduce import (
     ReduceEdgeKernel,
     ReduceFoldKernel,
@@ -59,21 +66,18 @@ def reduce_axes(dim: Dim, rank: int, empty: str) -> "tuple[int, ...]":
 class _ReduceOpBase(Op):
     """Shared call flow of the reductions (simple, Welford, argreduce, logical, vector norm).
 
-    A subclass declares ``_op_kind``, ``_kernel_key``, ``kernel_types`` and the empty-``dim``
+    A subclass declares ``_op_kind``, ``kernel_types``, ``interfaces`` and the empty-``dim``
     mode of its manifest output shape, and overrides the hooks below where it differs.
 
+    - ``_call(x, axes, n)``: the call spec the ``reduce`` interface takes.
     - ``_output_dtype(x)``: the output dtype; the input's by default.
     - ``_identity``: the result over an empty reduced extent.
     - ``_scalar_forward(x)``: the result on a 0-d input.
-    - ``_build_kernel_kwargs(shape, axes, device_index)``: extra kernel constructor kwargs.
-    - ``_call_kwargs(n)``: kernel constructor kwargs beyond the shared ones: the output dtype
-      when ``dtype`` is passed, and what depends on the call's extent.
     """
 
     compile_boundary: ClassVar[bool] = True
 
     _op_kind: str = ""
-    _kernel_key: str = "reduce"
     # The manifest's empty-``dim`` mode of ``reduced``: ``'full'`` or ``'noop'``.
     _empty: str = "full"
     _identity: "float | bool | int" = 0
@@ -146,8 +150,7 @@ class _ReduceOpBase(Op):
             return self._empty_forward(self._cast(x))
         x = self._cast(x, for_kernel=True).contiguous()
         n = math.prod(x.shape[a] for a in axes)
-        m = x.numel() // n
-        return self._launch(x, axes, m, n)
+        return self._launch(x, axes, n)
 
     def _noop_forward(self, x: torch.Tensor):
         """An empty ``dim`` under the ``'noop'`` mode keeps every element."""
@@ -159,71 +162,30 @@ class _ReduceOpBase(Op):
             self._output_shape(x), self._identity, dtype=self._output_dtype(x), device=x.device
         )
 
-    def _launch(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int):
-        return self.kernel_for("reduce", (x,), self._call(x, axes, m, n))(x)
+    def _launch(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int):
+        return self.kernel_for("reduce", (x,), self._call(x, axes, n))(x)
 
-    def _build_kernel_kwargs(
-        self, shape: "tuple[int, ...]", axes: "tuple[int, ...]", device_index: "int | None"
-    ) -> dict:
-        """What this op's kernel takes beyond the shared arguments.
-
-        The device is one of them: a kernel that plans against shared memory has to plan
-        against the device the input lives on, not whichever one is current.
-        """
-        return {"device_index": device_index}
-
-    def _call_kwargs(self, n: int) -> tuple:
-        """Kernel constructor arguments this call decides, as ``(name, value)`` pairs."""
-        return () if self.dtype is None else (("out_dtype", self.dtype),)
-
-    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> object:
-        """What this call is, for :meth:`entry_for`: the facts the kernel is built from."""
-        return (
-            tuple(x.shape),
-            axes,
-            self.keepdim,
-            x.dtype,
-            x.device.index,
-            m,
-            n,
-            self._call_kwargs(n),
-        )
-
-    def entry_for(self, role: str, call: object) -> Entry:
-        """One implementation, built from the whole shape and the axes it reduces.
-
-        The kernel owns the permute, so the whole shape decides what it is. The device is
-        in the identity because the kernel plans against that device's shared memory.
-        """
-        shape, axes, keepdim, dtype, device_index, m, n, extra = call
-        cls = self.kernel_map[self._kernel_key]
-        return call, lambda: cls(
-            m,
-            n,
-            self._op_kind,
-            dtype,
-            reduce_axes=axes,
-            keepdim=keepdim,
-            tune=self.tune,
-            **self._build_kernel_kwargs(shape, axes, device_index),
-            **dict(extra),
-        )
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> CallSpec:
+        """The call spec of reducing *axes* of *x*, ``n`` elements to each output."""
+        raise NotImplementedError
 
 
 class ReduceCallOp(_ReduceOpBase):
-    """A reduction whose implementations each state the calls they serve over a `ReduceCall`."""
+    """A reduction over a `ReduceCall`: sum, mean, amax or amin unless a subclass says otherwise."""
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "reduce_fold": ReduceFoldKernel,
         "reduce": ReduceKernel,
-        "reduce_prod": ReduceProdKernel,
-        "reduce_welford": WelfordReduceKernel,
         "reduce_leading": ReduceLeadingKernel,
         "reduce_edge": ReduceEdgeKernel,
-        "reduce_welford_edge": WelfordEdgeKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": ReduceFwdInterface}
 
-    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> ReduceCall:
+    def _call_kwargs(self, n: int) -> tuple:
+        """Call spec fields this call decides, as ``(name, value)`` pairs."""
+        return () if self.dtype is None else (("out_dtype", self.dtype),)
+
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> ReduceCall:
         return ReduceCall(
             device=x.device,
             shape=tuple(x.shape),
@@ -231,13 +193,8 @@ class ReduceCallOp(_ReduceOpBase):
             keepdim=self.keepdim,
             op_kind=self._op_kind,
             dtype=x.dtype,
-            tune=self.tune,
             **dict(self._call_kwargs(n)),
         )
-
-    def entry_for(self, role: str, call: ReduceCall) -> Entry:
-        """Several implementations, so the one that serves the call says how it is built."""
-        return Op.entry_for(self, role, call)
 
 
 class _CastReduceOp(ReduceCallOp):
@@ -299,6 +256,12 @@ class ProdFwdOp(_CastReduceOp):
 
     _op_kind = "prod"
     _identity = 1
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "reduce_fold": ReduceFoldKernel,
+        "reduce_prod": ReduceProdKernel,
+        "reduce_leading": ReduceLeadingKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": ProdFwdInterface}
 
     def __init__(
         self,
@@ -329,6 +292,11 @@ class _WelfordReduceOp(ReduceCallOp):
     """Base for the variance family: ``op(dim=None, *, correction=1, keepdim=False)``."""
 
     _identity = math.nan
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "reduce_welford": WelfordReduceKernel,
+        "reduce_welford_edge": WelfordEdgeKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": VarianceFwdInterface}
 
     def __init__(
         self,
@@ -385,10 +353,10 @@ class _WelfordReduceOp(ReduceCallOp):
         self._warn_dof()
         return ((variance * n) / 0.0).to(dtype)
 
-    def _launch(self, x, axes, m, n):
+    def _launch(self, x, axes, n):
         if self._dof_correction < n:
-            return super()._launch(x, axes, m, n)
-        out = super()._launch(x.float(), axes, m, n)
+            return super()._launch(x, axes, n)
+        out = super()._launch(x.float(), axes, n)
         if self._op_kind == "std":
             return self._no_dof(out * out, n, torch.float32).sqrt().to(x.dtype)
         return self._no_dof(out, n, x.dtype)
@@ -410,6 +378,7 @@ class VarMeanFwdOp(_WelfordReduceOp):
     """Variance and mean over ``dim``, following ``torch.var_mean``."""
 
     _op_kind = "var_mean"
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": VarMeanFwdInterface}
 
     def _scalar_forward(self, x: torch.Tensor):
         return super()._scalar_forward(x), x.clone()
@@ -418,8 +387,8 @@ class VarMeanFwdOp(_WelfordReduceOp):
         nan = super()._empty_forward(x)
         return nan, nan.clone()
 
-    def _launch(self, x, axes, m, n):
+    def _launch(self, x, axes, n):
         if self._dof_correction < n:
-            return ReduceCallOp._launch(self, x, axes, m, n)
-        var, mean = ReduceCallOp._launch(self, x.float(), axes, m, n)
+            return ReduceCallOp._launch(self, x, axes, n)
+        var, mean = ReduceCallOp._launch(self, x.float(), axes, n)
         return self._no_dof(var, n, x.dtype), mean.to(x.dtype)

@@ -6,8 +6,9 @@ from typing import ClassVar, Dict, Mapping, Optional, Sequence
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import RMSNormKernel
+from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["RMSNormFwdOp"]
@@ -35,6 +36,7 @@ class RMSNormFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rms_norm": RMSNormKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rms_norm": RMSNormFwdInterface}
 
     def __init__(
         self,
@@ -83,11 +85,10 @@ class RMSNormFwdOp(Op):
         """
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
-        kernel = self.kernel_for("rms_norm", (x, weight), x.dtype)
-        return kernel(x, weight)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; the row width and epsilon are the op's."""
-        n = math.prod(self.normalized_shape)
-        eps = torch.finfo(torch.float32).eps if self.eps is None else float(self.eps)
-        return call, lambda: self.kernel_map["rms_norm"](n, eps, call, tune=self.tune)
+        call = LayerNormCall(
+            device=x.device,
+            n=math.prod(self.normalized_shape),
+            eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
+            dtype=x.dtype,
+        )
+        return self.kernel_for("rms_norm", (x, weight), call)(x, weight)

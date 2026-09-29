@@ -90,13 +90,19 @@ def get_shared_memory_optin(index: "int | None" = None) -> int:
 
 
 @functools.lru_cache(maxsize=16)
-def _device_facts(index: int) -> "tuple[int, str | None, int]":
+def _device_facts(index: int) -> "tuple[int, str | None, int, int]":
     props = torch.cuda.get_device_properties(index)
-    return _sm_version(index), calibration_key(_device_name(index)), props.multi_processor_count
+    return (
+        _sm_version(index),
+        calibration_key(_device_name(index)),
+        props.multi_processor_count,
+        props.shared_memory_per_block_optin,
+    )
 
 
-def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int]":
-    """``(arch, calibration, sm_count)`` of the device; defaults to the current device.
+def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int, int]":
+    """``(arch, calibration, sm_count, smem_budget)`` of the device; defaults to the current
+    device. ``smem_budget`` is the shared memory one block may take after opting in.
 
     One cached lookup for a call record, which is built on the per-call path. The
     index is resolved before the cache is read, so ``None`` never names whichever
