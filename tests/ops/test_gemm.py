@@ -750,6 +750,28 @@ def test_gemm_fp8_block_scale_selection(
     assert GemmFp8FwdOp(out_dtype=out_dtype).select_kernel(call).__name__ == expected
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gemm_fp8_refuses_sm89() -> None:
+    """SM89 has FP8 tensor cores but not the TMA and WGMMA the FP8 kernels are built on."""
+    m, n, k = 128, 256, 512
+    for scale_a_shape, scale_b_shape in (((1, 1), (1, 1)), ((m, k // 128), (n, k // 128))):
+        call = GemmCall(
+            arch=89,
+            sm_count=1,
+            m=m,
+            n=n,
+            k=k,
+            dtype=torch.float8_e4m3fn,
+            trans_b=True,
+            scale_a_shape=scale_a_shape,
+            scale_b_shape=scale_b_shape,
+            out_dtype=torch.bfloat16,
+        )
+        with pytest.raises(ValueError, match="no implementation serves this call"):
+            GemmFp8FwdOp().select_kernel(call)
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke

@@ -26,6 +26,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
@@ -44,7 +45,7 @@ def _should_use_cp_async(
     row_bytes = n * dtype.itemsize
     num_buffers = 4 if has_gate else 3
     shared_bytes = num_buffers * n_padded * dtype.itemsize
-    return n_padded != n and row_bytes % 4 == 0 and shared_bytes <= 48 * 1024
+    return n_padded != n and row_bytes % 4 == 0 and shared_bytes <= STATIC_SHARED_BYTES
 
 
 @functools.lru_cache(maxsize=32)

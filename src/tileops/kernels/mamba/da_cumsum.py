@@ -39,12 +39,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["DaCumsumFwdKernel"]
 
 _ROW_PAD = 4
-_MAX_SHARED_BYTES = 48 * 1024
+_MAX_SHARED_BYTES = STATIC_SHARED_BYTES
 _DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
 
 

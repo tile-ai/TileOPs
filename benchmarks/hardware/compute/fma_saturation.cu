@@ -164,9 +164,13 @@ BenchResult run_bench(std::function<void()> launch, double ops_per_launch,
 // Sweeps
 // ============================================================
 
-// fp32 FMA lanes per SM per clock on compute capability 9.0, from the CUDA C
-// Programming Guide's native arithmetic throughput table.
-static const int FMA_LANES_PER_SM = 128;
+// fp32 FMA lanes per SM per clock by compute capability, from the CUDA C
+// Programming Guide's native arithmetic throughput table; 0 where it is not listed here.
+static int fma_lanes_per_sm(int major, int minor) {
+    if (major == 8 && minor == 0) return 64;
+    if ((major == 8 && (minor == 6 || minor == 9)) || (major == 9 && minor == 0)) return 128;
+    return 0;
+}
 
 struct Grid {
     int nblocks;
@@ -225,6 +229,12 @@ int main(int argc, char* argv[]) {
     cudaDeviceProp prop;
     CHECK_CUDA(cudaGetDeviceProperties(&prop, 0));
     const int sm_count = prop.multiProcessorCount;
+    const int fma_lanes = fma_lanes_per_sm(prop.major, prop.minor);
+    if (fma_lanes == 0) {
+        fprintf(stderr, "no fp32 FMA lane count for compute capability %d.%d\n",
+                prop.major, prop.minor);
+        return 1;
+    }
     const int block = 256;
     // Fill every SM to its thread limit (2048 on sm_90).
     const int nblocks = sm_count * (prop.maxThreadsPerMultiProcessor / block);
@@ -235,8 +245,8 @@ int main(int argc, char* argv[]) {
     int clock_khz = 0;
     CHECK_CUDA(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0));
 
-    printf("GPU: %s | SMs: %d | max SM clock: %.2f GHz\n",
-           prop.name, sm_count, clock_khz / 1e6);
+    printf("GPU: %s | SMs: %d | max SM clock: %.2f GHz | FMA lanes/SM: %d\n",
+           prop.name, sm_count, clock_khz / 1e6, fma_lanes);
     printf("Grid: %d blocks x %d threads = %.0f threads (%d per SM)\n",
            nblocks, block, threads, prop.maxThreadsPerMultiProcessor);
     printf("Each config: 5 runs x 50 reps, warmup 20; calibration uses the median\n");
@@ -280,7 +290,7 @@ int main(int argc, char* argv[]) {
     // measured rate / (lanes * SMs) = the clock the GPU actually held; the gap
     // to the boost ceiling is the power cap at work.
     double fma_per_s = peak_fma_tflops * 1e12 / 2.0;
-    double implied_ghz = fma_per_s / ((double)FMA_LANES_PER_SM * sm_count) / 1e9;
+    double implied_ghz = fma_per_s / ((double)fma_lanes * sm_count) / 1e9;
     double mufu_ratio = (peak_mufu_gops > 0) ? fma_per_s / (peak_mufu_gops * 1e9) : 0.0;
 
     printf("\n# derived\n");
