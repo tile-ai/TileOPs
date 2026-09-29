@@ -121,47 +121,111 @@ class DivTruncFwdKernel(BinaryKernel):
         return T.Cast(a.dtype, T.trunc(T.Cast("float32", quotient)))
 
 
-# The divisors ``__fdividef`` is defined for.
-_FDIVIDEF_MIN, _FDIVIDEF_MAX = 2.0**-126, 2.0**126
-# Below this quotient a two-ulp divide lands within one of the whole quotient, and
-# the whole quotient is exact in float32.
+# Below this quotient the whole quotient and the one above it are exact in float32.
 _FAST_QUOTIENT = float(1 << 22)
 
 
-def _floored_quotient(num, den, dtype, fast_body, slow, limit=_FAST_QUOTIENT):
-    """``fast_body(k, u)`` with ``k = floor(a / b)`` exactly, or ``slow()`` off its range.
+def _floored_quotient(num, den, limit, fast_body):
+    """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
 
-    ``u = a * sign(b)`` turns the tests on the residual ``a - t * b`` into signs of
-    ``u - t * |b|``. ``t = floor(a / b)`` from a fast divide is off ``k`` by at most
-    one: it overshoots where ``u - t * |b|`` is negative and falls short where
-    ``u - (t + 1) * |b|`` is not. Each is rounded once by ``fma``, which keeps a sign
-    and a zero, so both tests decide right. A quotient of *limit* or more, or a
-    divisor ``__fdividef`` does not cover, takes ``slow``; a float16 divisor is
-    always in range unless it is infinite.
+    ``q`` is the IEEE quotient. Rounded to nearest, a quotient below a whole number
+    lands on it at most, so ``t = floor(q)`` is k or k + 1. It is k + 1 exactly where
+    ``a - t * b`` has the other sign from b, the sign of ``copysign(a, q) - t * |b|``.
+    ``fma`` rounds that once, and a nonzero multiple of the smallest subnormal keeps
+    its sign. ``holds`` fails on a NaN quotient or one of *limit* or more, which a zero
+    b and an infinite or NaN operand give, and on an infinite b, whose quotient is zero.
     """
     zero = T.cast(0.0, "float32")
     one = T.cast(1.0, "float32")
     magnitude = T.abs(den)
+    quotient = _ieee_fdiv(num, den)
 
-    def residue(u, t):
-        return T.call_extern("float32", "__fmaf_rn", -t, magnitude, u)
+    def value(q):
+        def pick(t):
+            over = T.call_extern("float32", "__fmaf_rn", -t, magnitude, T.copysign(num, q)) < zero
+            return fast_body(tirx.Select(over, t - one, t), q)
 
-    def floored(u, t):
-        over = residue(u, t) < zero
-        short = residue(u, t + one) >= zero
-        k = t + tirx.Select(over, -one, tirx.Select(short, one, zero))
-        return _bound(k, lambda k: fast_body(k, u))
+        return _bound(T.floor(q), pick)
 
-    def pick(quotient):
-        in_range = magnitude <= T.cast(_FDIVIDEF_MAX, "float32")
-        if str(dtype) != "float16":
-            in_range = T.And(in_range, magnitude >= T.cast(_FDIVIDEF_MIN, "float32"))
-        fast = T.And(T.abs(quotient) < T.cast(limit, "float32"), in_range)
-        u = num * T.copysign(one, den)
-        body = _bound(u, lambda u: _bound(T.floor(quotient), lambda t: floored(u, t)))
-        return T.if_then_else(fast, body, slow())
+    inf = T.cast(float("inf"), "float32")
+    holds = _bound(quotient, lambda q: T.And(T.abs(q) < T.cast(limit, "float32"), magnitude < inf))
+    return _bound(quotient, value), holds
 
-    return _bound(_approx_fdiv(num, den), pick)
+
+# Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
+_NUDGED_QUOTIENT = {"float16": float(1 << 8), "bfloat16": float(1 << 11)}
+# Twice the relative error of ``_approx_fdiv``.
+_NUDGE = 2.0**-21
+
+
+def _nudged_floor(num, den, dtype, fast_body):
+    """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
+
+    For two operands of 16-bit *dtype*, with ``q`` the quotient ``a * (1 / b)``.
+    Operands of p significant bits leave a quotient that is not whole at least
+    ``2**-p`` of itself, or ``2**-p``, from every whole number, so below the limit it
+    is further from one than the error of ``q`` plus the nudge. The nudge lifts an
+    exact whole quotient ``q`` left short back onto it, so the floor of the nudged
+    quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
+    on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
+    or NaN operand, every quotient that underflows and every divisor ``_approx_fdiv``
+    does not cover.
+    """
+    limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
+    # One reciprocal serves every element that shares b.
+    quotient = num * _approx_fdiv(T.cast(1.0, "float32"), den)
+
+    def value(q):
+        nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
+        return fast_body(T.floor(nudged), q)
+
+    holds = _bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
+    return _bound(quotient, value), holds
+
+
+def _floored_tiers(num, den, dtype, limit, fast_body):
+    """``fast_body(k, q)`` as ``(value, holds)`` pairs, cheapest first.
+
+    A float32 operand has the IEEE quotient alone; a 16-bit one tries the nudged
+    quotient first.
+    """
+    tiers = [_floored_quotient(num, den, limit, fast_body)]
+    if str(dtype) in _NUDGED_QUOTIENT:
+        tiers.insert(0, _nudged_floor(num, den, dtype, fast_body))
+    return tiers
+
+
+def _first_holding(tiers, last):
+    """The value of the first pair in *tiers* whose guard holds, else ``last``."""
+    out = last
+    for value, holds in reversed(tiers):
+        out = T.if_then_else(holds, value, out)
+    return out
+
+
+def _on_float32(a, b, body):
+    """``body(num, den)`` on the two operands widened to float32, each bound once."""
+    return _bound(
+        T.Cast("float32", a),
+        lambda num: _bound(T.Cast("float32", b), lambda den: body(num, den)),
+    )
+
+
+def _remainder(num, den, dtype):
+    """``(tiers, slow())`` for ``a % b``: see ``_floored_tiers`` and ``RemainderFwdKernel``."""
+    zero = T.cast(0.0, "float32")
+
+    def from_quotient(k, q):
+        r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
+        # A zero remainder is fmod's, which keeps the dividend's sign.
+        return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+
+    def signed(mod):
+        flip = T.And(mod != zero, (den < zero) != (mod < zero))
+        return tirx.Select(flip, mod + den, mod)
+
+    tiers = _floored_tiers(num, den, dtype, _FAST_QUOTIENT, from_quotient)
+    return tiers, _bound(T.fmod(num, den), signed)
 
 
 class RemainderFwdKernel(BinaryKernel):
@@ -181,27 +245,18 @@ class RemainderFwdKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        zero = T.cast(0.0, "float32")
-
         def body(num, den):
-            def fast(k, u):
-                r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
-                # A zero remainder is fmod's, which keeps the dividend's sign.
-                return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+            tiers, slow = _remainder(num, den, a.dtype)
+            return T.Cast(a.dtype, _first_holding(tiers, slow))
 
-            def slow():
-                def signed(mod):
-                    flip = T.And(mod != zero, (den < zero) != (mod < zero))
-                    return tirx.Select(flip, mod + den, mod)
+        return _on_float32(a, b, body)
 
-                return _bound(T.fmod(num, den), signed)
-
-            return T.Cast(a.dtype, _floored_quotient(num, den, a.dtype, fast, slow))
-
-        return _bound(
-            T.Cast("float32", a),
-            lambda num: _bound(T.Cast("float32", b), lambda den: body(num, den)),
-        )
+    @staticmethod
+    def fast_func(a, b):
+        """The cheapest form of ``op_func``, and where it holds."""
+        num, den = T.Cast("float32", a), T.Cast("float32", b)
+        value, holds = _remainder(num, den, a.dtype)[0][0]
+        return T.Cast(a.dtype, value), holds
 
 
 class PowFwdKernel(BinaryKernel):
@@ -245,19 +300,19 @@ class PowFwdKernel(BinaryKernel):
 # so torch's divide returns the whole quotient itself: its significand and b's fit
 # 24 bits together.
 _EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
-# The largest whole number below which every whole number is exact in the dtype.
-_EXACT_WHOLE = {"float16": float(1 << 11), "bfloat16": float(1 << 8)}
 
 
 def _floor_divide(num, den, dtype):
-    """torch's ``div_floor_floating`` on two float32 values, returning *dtype*.
+    """``(tiers, slow())`` for torch's ``div_floor_floating`` on two float32 values.
 
     torch divides ``a - fmod(a, b)``, a multiple of b, by b, floors the quotient into
     *dtype* and rounds it up once where that dropped more than a half; a zero
     quotient keeps the sign of ``a / b`` and a zero divisor returns ``a / b`` itself.
-    Where the multiple is exact the divide returns ``floor(a / b)``, and the dtype
-    rounding applies to that. Past it the result depends on how torch's divide
-    rounds, and it is computed as torch does.
+    Where the multiple is exact the divide returns ``floor(a / b)``, and rounding
+    that whole number into *dtype* never drops more than a half past the
+    representable value below it without the next one up rounding back to it.
+    Past it the result depends on how torch's divide rounds, and it is computed as
+    torch does.
     """
     zero = T.cast(0.0, "float32")
     one = T.cast(1.0, "float32")
@@ -281,16 +336,12 @@ def _floor_divide(num, den, dtype):
         general = _bound(T.fmod(num, den), from_mod)
         return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
 
-    exact_whole = T.cast(_EXACT_WHOLE.get(str(dtype), _FAST_QUOTIENT), "float32")
-
-    def whole(k, u):
-        # ``floor(a / b)`` has the sign of ``a / b``, which ``u`` carries, zero included.
-        exact = T.copysign(k, u)
-        # A quotient the dtype holds needs no rounding.
-        return T.if_then_else(T.abs(k) <= exact_whole, exact, rounded(k))
+    def whole(k, q):
+        # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.
+        return T.copysign(k, q)
 
     limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
-    return T.Cast(dtype, _floored_quotient(num, den, dtype, whole, slow, limit))
+    return _floored_tiers(num, den, dtype, limit, whole), slow()
 
 
 class FloorDivideFwdKernel(BinaryKernel):
@@ -311,10 +362,18 @@ class FloorDivideFwdKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        return _bound(
-            T.Cast("float32", a),
-            lambda num: _bound(T.Cast("float32", b), lambda den: _floor_divide(num, den, a.dtype)),
-        )
+        def body(num, den):
+            tiers, slow = _floor_divide(num, den, a.dtype)
+            return T.Cast(a.dtype, _first_holding(tiers, slow))
+
+        return _on_float32(a, b, body)
+
+    @staticmethod
+    def fast_func(a, b):
+        """The cheapest form of ``op_func``, and where it holds."""
+        num, den = T.Cast("float32", a), T.Cast("float32", b)
+        value, holds = _floor_divide(num, den, a.dtype)[0][0]
+        return T.Cast(a.dtype, value), holds
 
 
 class LerpFwdKernel(BinaryKernel):

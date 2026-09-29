@@ -4,13 +4,14 @@ A ``@tilelang.jit`` builder may close over scalars only, so the body lives here 
 builder closes over its name.
 """
 
+from dataclasses import dataclass
 from typing import Callable
 
 import tilelang.language as T
 
 from ._dtype import BOOL_STORAGE_DTYPE
 
-__all__ = ["op_func_for", "register_op_func"]
+__all__ = ["GuardedOpFunc", "op_func_for", "register_op_func"]
 
 _OP_FUNCS: dict[str, Callable] = {}
 
@@ -23,6 +24,22 @@ def register_op_func(name: str, op_func: Callable) -> str:
     """
     _OP_FUNCS[name] = op_func
     return name
+
+
+@dataclass(frozen=True)
+class GuardedOpFunc:
+    """An op body with a cheaper form that equals it wherever a guard holds.
+
+    ``fast(a, b)`` returns ``(value, holds)``. A staged builder runs ``fast`` over a
+    thread's elements and calls the body only in a thread where ``holds`` fails for
+    one of them, which takes the body's own test and fallback off the common path.
+    """
+
+    body: Callable
+    fast: Callable
+
+    def __call__(self, *args):
+        return self.body(*args)
 
 
 def op_func_for(name: str) -> Callable:
