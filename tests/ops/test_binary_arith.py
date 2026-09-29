@@ -425,7 +425,8 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize(
     "a_shape, b_shape",
     [
-        pytest.param((4096,), (4096,), id="same"),
+        # Wide enough that float32 keeps two vectors a thread.
+        pytest.param((1 << 18,), (1 << 18,), id="same"),
         pytest.param((4, 2048), (1, 2048), id="bias"),
         pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel"),
     ],
@@ -446,6 +447,9 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
     a.view(-1)[: len(pairs)] = pairs[:, 0]
     if a_shape == b_shape:
         b.view(-1)[: len(pairs)] = pairs[:, 1]
+        # Again one block-wide chunk on, where a thread holds its second vector.
+        a.view(-1)[512 : 512 + len(pairs)] = pairs[:, 0]
+        b.view(-1)[512 : 512 + len(pairs)] = pairs[:, 1]
     else:
         b.view(-1)[: len(values)] = grid
     a, b = a.to(dtype), b.to(dtype)

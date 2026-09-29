@@ -10,9 +10,12 @@ import pytest
 import torch
 
 from tileops.kernels.elementwise import (
+    AddFwdKernel,
+    BitwiseAndFwdKernel,
     EluFwdKernel,
     HardtanhFwdKernel,
     LeakyReluFwdKernel,
+    PowFwdKernel,
     PreluFwdKernel,
     SiluAndMulFwdKernel,
 )
@@ -69,6 +72,26 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
         kernel = kernel_cls(_WIDE_N, dtype)
     assert kernel.default_config["num_per_thread"] == expected_npt
     assert kernel.default_config["threads"] == 256
+
+
+@pytest.mark.full
+@pytest.mark.parametrize(
+    ("kernel_cls", "dtype", "expected_npt"),
+    [
+        (AddFwdKernel, torch.float32, 8),
+        (BitwiseAndFwdKernel, torch.int64, 4),
+        (PowFwdKernel, torch.float32, 4),
+    ],
+)
+def test_same_shape_binary_default_npt(kernel_cls, dtype, expected_npt):
+    """Same-shape binary threads carry eight elements, at most two vectors; heavy bodies keep one."""
+    with (
+        patch.object(kernel_cls, "_build_kernel", return_value=None),
+        patch.object(kernel_cls, "init_config"),
+    ):
+        kernel = kernel_cls((_WIDE_N,), (_WIDE_N,), dtype)
+    cfg = kernel.default_config
+    assert (cfg["strategy"], cfg["num_per_thread"]) == ("register_copy", expected_npt)
 
 
 @pytest.mark.full

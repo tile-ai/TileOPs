@@ -67,6 +67,9 @@ class _ElementwiseKernel(Kernel):
     SUPPORTED_DTYPES = None
     # Thread count this family launches with, or ``None`` to take the strategy's.
     DEFAULT_THREADS: int | None = None
+    # Elements a ``register_copy`` thread carries at least, up to two 16-byte vectors,
+    # before the grid-filling shrink; the dtype's one vector decides above it.
+    REGISTER_COPY_NUM_PER_THREAD: int = 4
     # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
 
@@ -102,12 +105,17 @@ class _StrategyKernel(_ElementwiseKernel):
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
             default_threads=self.DEFAULT_THREADS,
+            register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
     @property
     def autotune_configs(self) -> list[dict]:
         return elementwise_autotune_configs(
-            self.dtype, self.strategy, self.BYTES_PER_THREAD, self.MIN_NUM_PER_THREAD
+            self.dtype,
+            self.strategy,
+            self.BYTES_PER_THREAD,
+            self.MIN_NUM_PER_THREAD,
+            self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
     def init_config(self, config=None, tune=False) -> None:
@@ -263,6 +271,9 @@ class BinaryKernel(_StrategyKernel):
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    # Eight elements a thread keep two 16-byte loads of a 4-byte operand in flight;
+    # a single load streams slower. A body whose arithmetic outlasts its loads sets 4.
+    REGISTER_COPY_NUM_PER_THREAD = 8
 
     @staticmethod
     def op_func(a, b):

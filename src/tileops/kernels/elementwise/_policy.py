@@ -30,6 +30,7 @@ def default_launch_config(
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
     default_threads: int | None = None,
+    register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -39,6 +40,9 @@ def default_launch_config(
     *row_broadcast_inner* is the row extent a broadcast block walks, or
     ``None``; see ``_tail_dominated``. *default_threads* replaces the
     strategy's thread count; see ``_ElementwiseKernel.DEFAULT_THREADS``.
+    *register_copy_num_per_thread* is how many elements a ``register_copy``
+    thread carries at least before the shrink; see
+    ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
     """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
@@ -53,11 +57,14 @@ def default_launch_config(
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
-        row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
-    ):
-        # A narrower result leaves the store short of a vector, so widen to cover it.
-        npt *= 2
+    else:
+        if _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
+            row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
+        ):
+            # A narrower result leaves the store short of a vector, so widen to cover it.
+            npt *= 2
+        if strategy == "register_copy":
+            npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
     while (
         n_total is not None
@@ -67,6 +74,14 @@ def default_launch_config(
     ):
         npt //= 2
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
+
+
+def _register_copy_floor(requested: int, elem_bytes: int) -> int:
+    """*requested* elements, but no more than two 16-byte vectors of the dtype.
+
+    An 8-byte dtype has its two vectors at four elements, and eight run slower.
+    """
+    return min(requested, 2 * _BYTES_PER_THREAD // elem_bytes)
 
 
 def _tail_dominated(
@@ -90,18 +105,22 @@ def elementwise_autotune_configs(
     strategy: str | None = None,
     bytes_per_thread: int = _BYTES_PER_THREAD,
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
+    register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> list[dict]:
     """Return the launch configs to time for one elementwise specialization.
 
     The swept elements-per-thread brackets the default the same *bytes_per_thread*
-    produces, so a kernel can always land back on its shipped config, and reaches
-    *min_num_per_thread* where a kernel lowers it.
+    and *register_copy_num_per_thread* produce, so a kernel can always land back on
+    its shipped config, and reaches *min_num_per_thread* where a kernel lowers it.
     """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
+    elem_bytes = _torch_dtype_nbytes(dtype)
+    default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
+    if strategy == "register_copy":
+        default = max(default, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
     npts = tuple(
         sorted({min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2})
     )
