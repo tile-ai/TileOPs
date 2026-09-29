@@ -4,9 +4,9 @@ Each entry's reference is the torch expression its issue names, or the library r
 where one exists; an entry whose workload module holds its reference calls that one.
 Every workload row is instantiated; data tensors live on ``meta`` and metadata tensors on
 the CPU with the row's generated values, so the reference runs as written at the row's
-full size. What is checked depends on the row only through its discriminant point and its
-dtypes, so each point, dtype case and set of `DType` parameter values runs its row with the
-fewest input elements: a recurrent reference steps once per token even on ``meta``. Checked against the signature: the
+full size. What is checked depends on the row only through its discriminant point, its dtypes
+and its parameters, so each point, dtype case and set of parameter values runs its row with
+the fewest input elements: a recurrent reference steps once per token even on ``meta``. Checked against the signature: the
 reference's outputs have the inferred names, shapes and dtypes, and it writes exactly the
 inputs the call's effects mark written. One call the signature rejects is rejected by the
 reference too.
@@ -24,7 +24,6 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
-from tileops.manifest.signature import param_kind
 from tileops.manifest.workload import instantiate
 from workloads import int8_dequant, quantization, sampling
 
@@ -409,19 +408,15 @@ def _calls(name):
 
 def _smallest_calls(name, cls):
     """`_calls` narrowed to the call with the fewest input elements per discriminant point,
-    dtype case and `DType` parameter values, each with its constructed op."""
+    dtype case and parameter values, each with its constructed op."""
     smallest = {}
     for label, case, plan, call, meta, host in _calls(name):
         sig = plan.sig
         arguments = call.arguments(meta)
         op = cls(**arguments)
         inputs = {n: meta[n] for n in sig.inputs}
-        dtypes = sorted(
-            (p, str(arguments.get(p)))
-            for p, d in sig.params.items()
-            if param_kind(d.get("type"), sig.adts).payload().tag == "DType"
-        )
-        key = (cls._signature.key(cls._signature.point(op, inputs)), sorted(case.items()), dtypes)
+        params = sorted((p, repr(arguments.get(p))) for p in sig.params)
+        key = (cls._signature.key(cls._signature.point(op, inputs)), sorted(case.items()), params)
         size = sum(t.numel() for t in inputs.values() if t is not None)
         if repr(key) not in smallest or size < smallest[repr(key)][0]:
             smallest[repr(key)] = (size, (label, case, plan, call, meta, host, op))

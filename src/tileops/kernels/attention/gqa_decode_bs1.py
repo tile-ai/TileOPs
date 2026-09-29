@@ -34,6 +34,9 @@ from .gqa_decode_bs1_common import (
 __all__ = ["GQADecodeBs1Kernel"]
 
 CONSUMER_THREADS = 128
+# TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
+# per kernel; this kernel's producer and consumer ranges take 3 and 4.
+CONSUMER_BARRIER = 5
 TMA_THREADS = 32
 ROPE_PIPELINE_THREADS = 256
 
@@ -115,7 +118,7 @@ def _make_dense_decode_split(
                         Qs[i, j] = Q[bid, hid * kv_group_num + i, j]
                 else:
                     Qs[i, j] = 0
-            T.sync_threads(3, CONSUMER_THREADS)
+            T.sync_threads(CONSUMER_BARRIER, CONSUMER_THREADS)
         else:
             T.copy(
                 Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
@@ -135,7 +138,7 @@ def _make_dense_decode_split(
                         sin = rope_sin[position, freq]
                         Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
                         Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(3, CONSUMER_THREADS)
+                T.sync_threads(CONSUMER_BARRIER, CONSUMER_THREADS)
             T.wgmma_gemm(
                 Qs,
                 Ks[k % ring_depth, :, :],
