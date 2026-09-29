@@ -27,7 +27,7 @@ _TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
 
 
 @dataclass(frozen=True)
-class _Layout:
+class W4A16Layout:
     """Constants fixed by the packed-weight ABI, not tuning parameters."""
 
     mma_step_k: int = 128
@@ -74,14 +74,14 @@ class _ConfigSpace:
     stream_slots: int = 3
 
 
-_LAYOUT = _Layout()
+W4A16_LAYOUT = W4A16Layout()
 # Fits by calibrated board. Every board ranks with the one fit; a board without an
 # entry is warned.
 _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
 _CONFIG_SPACE = _ConfigSpace()
 
-__all__ = ["GROUP_SIZE", "GemmW4A16Kernel"]
+__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "W4A16Layout"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -324,9 +324,9 @@ def _gemm_w4a16_kernel(
         stream_ctas: int = 0,
     ) -> Callable:
         """Build the tile; ``stream_ctas > 0`` spreads the K tiles over that many CTAs."""
-        step_k = _LAYOUT.mma_step_k
-        lanes = _LAYOUT.lanes
-        fp16_nibble_bias = _LAYOUT.fp16_nibble_bias
+        step_k = W4A16_LAYOUT.mma_step_k
+        lanes = W4A16_LAYOUT.lanes
+        fp16_nibble_bias = W4A16_LAYOUT.fp16_nibble_bias
         packed_k = block_k // 2
         run = (step_k // 2) // lanes
         steps = block_k // step_k

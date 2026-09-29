@@ -55,6 +55,7 @@ from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.ops.pool import MeanPoolingFwdOp
 from tileops.ops.quantization import (
+    INT4QuantPerGroupFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerChannelFwdOp,
@@ -92,7 +93,11 @@ from workloads.gqa import (
 from workloads.int8_dequant import INT8DequantPerChannelWorkload, INT8DequantPerTensorWorkload
 from workloads.mha import MhaDecodePagedWorkload
 from workloads.paged_kv_cache import make_unit_cache_scales
-from workloads.quantization import INT8QuantPerChannelWorkload, INT8QuantPerTensorWorkload
+from workloads.quantization import (
+    INT4QuantPerGroupWorkload,
+    INT8QuantPerChannelWorkload,
+    INT8QuantPerTensorWorkload,
+)
 
 
 def _attention_cases():
@@ -493,6 +498,11 @@ def _other_cases():
             64, 64, torch.bfloat16
         ).gen_inputs()
 
+    def int4_quant_per_group():
+        return INT4QuantPerGroupFwdOp(), INT4QuantPerGroupWorkload(
+            64, 256, torch.float16
+        ).gen_inputs()
+
     def mean_pooling():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
@@ -500,6 +510,7 @@ def _other_cases():
     return (
         ("fft-c2c", fft_c2c),
         ("fp8-quant", fp8_quant),
+        ("int4-quant-per-group", int4_quant_per_group),
         ("int8-dequant-per-channel", int8_dequant_per_channel),
         ("int8-dequant-per-tensor", int8_dequant_per_tensor),
         ("int8-quant-per-channel", int8_quant_per_channel),
@@ -688,6 +699,7 @@ for _op_cls in (
     DeltaNetDecodeFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
+    INT4QuantPerGroupFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerChannelFwdOp,

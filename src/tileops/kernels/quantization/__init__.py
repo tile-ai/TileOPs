@@ -1,12 +1,17 @@
 """Quantization and dequantization kernels and their call records."""
 
 from tileops.kernels.quantization.call_spec import (
+    INT4QuantPerGroupFwdInterface,
     INT8DequantFwdInterface,
     INT8QuantPerChannelFwdInterface,
     INT8QuantPerTensorFwdInterface,
     QuantizeCall,
 )
 from tileops.kernels.quantization.dequant_call import DequantizeCall
+from tileops.kernels.quantization.int4_quant_per_group import (
+    INT4QuantPerGroupFwdKernel,
+    INT4QuantPerGroupRowFwdKernel,
+)
 from tileops.kernels.quantization.int8_dequant import (
     INT8DequantPerChannelFwdKernel,
     INT8DequantPerTensorFwdKernel,
@@ -17,6 +22,9 @@ from tileops.kernels.quantization.int8_quant_per_tensor import INT8QuantPerTenso
 
 __all__ = [
     "DequantizeCall",
+    "INT4QuantPerGroupFwdInterface",
+    "INT4QuantPerGroupFwdKernel",
+    "INT4QuantPerGroupRowFwdKernel",
     "INT8DequantFwdInterface",
     "INT8DequantPerChannelFwdKernel",
     "INT8DequantPerTensorFwdKernel",

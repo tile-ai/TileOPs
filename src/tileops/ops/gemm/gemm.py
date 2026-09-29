@@ -13,7 +13,7 @@ from tileops.kernels.gemm.dense import (
     GemvKernel,
 )
 from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
-from tileops.kernels.gemm.w4a16 import _LAYOUT, GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.op_base import Op
@@ -305,9 +305,9 @@ class GemmW4A16FwdOp(Op):
         if packed_weight.ndim != 2:
             raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
         n, packed_k = packed_weight.shape
-        if packed_k % (_LAYOUT.mma_step_k // 2):
+        if packed_k % (W4A16_LAYOUT.mma_step_k // 2):
             raise ValueError(
-                f"repack needs K/2={packed_k} to be a multiple of {_LAYOUT.mma_step_k // 2}, the"
+                f"repack needs K/2={packed_k} to be a multiple of {W4A16_LAYOUT.mma_step_k // 2}, the"
                 " packed width of one MMA K step"
             )
         # Built with the weight's device current, as Op.kernel_for builds every kernel.
