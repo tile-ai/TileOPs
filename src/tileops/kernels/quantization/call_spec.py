@@ -12,6 +12,7 @@ from tileops.kernels.kernel_base import KernelInterface
 from tileops.kernels.quantization.dequant_call import DequantizeCall
 
 __all__ = [
+    "FP8QuantPerBlockFwdInterface",
     "INT4QuantPerGroupFwdInterface",
     "INT8DequantPerBlockFwdInterface",
     "INT8DequantPerChannelFwdInterface",
@@ -170,4 +171,22 @@ class INT8QuantPerBlockFwdInterface(KernelInterface):
         Returns:
             A new ``q`` shaped like *x* in ``int8`` and a new ``scale``
             ``[call.rows, ceil(call.cols / 128)]`` in ``float32``.
+        """
+
+
+class FP8QuantPerBlockFwdInterface(KernelInterface):
+    """Block-scaled ``float8_e4m3fn`` quantization of each 128x128 tile against its own amax."""
+
+    request = QuantizeCall
+
+    @abstractmethod
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Quantize each tile of the ``call.rows x call.cols`` weight *w*; nothing is written in place.
+
+        Args:
+            w: ``[call.rows, call.cols]``, contiguous, in ``call.dtype`` on ``call.device``.
+
+        Returns:
+            A new ``q`` shaped like *w* in ``float8_e4m3fn`` and a new ``scale``
+            ``[ceil(call.rows / 128), ceil(call.cols / 128)]`` in ``float32``.
         """

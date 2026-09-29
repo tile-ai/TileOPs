@@ -46,14 +46,15 @@ _WORKLOADS = {
 _scale_compare = partial(allclose_compare, atol=0.0, rtol=1e-6)
 
 
-def _fp8_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Within one ``float8_e4m3fn`` mantissa step."""
-    allclose_compare(output.float(), output_ref.float(), atol=2.0**-9, rtol=2.0**-3)
+def _bitwise_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Bit for bit, so that NaN codes and signed zeros compare too."""
+    assert output.dtype == output_ref.dtype and output.shape == output_ref.shape
+    assert torch.equal(output.view(torch.uint8), output_ref.view(torch.uint8))
 
 
 _COMPARE = {
     INT8QuantPerBlockFwdOp: [exact_compare, exact_compare],
-    FP8QuantPerBlockFwdOp: [_fp8_compare, _scale_compare],
+    FP8QuantPerBlockFwdOp: [_bitwise_compare, _bitwise_compare],
     INT4QuantPerGroupFwdOp: [exact_compare, exact_compare, exact_compare],
 }
 
@@ -448,3 +449,96 @@ def test_int4_per_group_round_trip(group_size: int) -> None:
     bound = step * (0.5 + 15 * 2**-11 + 2**-20) + 2**-11 * out.float().abs()
     err = (out.float() - ref).abs()
     assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
+
+
+def _zero_odd_tiles(w: torch.Tensor) -> torch.Tensor:
+    """*w* with every other 128x128 tile of each tile row set to zero."""
+    w = w.clone()
+    for j in range(0, w.shape[1], 256):
+        w[:, j : j + 128] = 0
+    return w
+
+
+def _specials(w: torch.Tensor) -> torch.Tensor:
+    """*w* with a NaN and +-inf in one tile, +-inf in two others, and signed zeros in every
+    row."""
+    w = w.clone()
+    w[::3] = -0.0
+    w[5, 7] = float("nan")
+    w[6, 8] = float("inf")
+    w[7, 9] = -float("inf")
+    w[w.shape[0] - 1, w.shape[1] - 1] = float("inf")
+    w[10, 200] = -float("inf")
+    return w
+
+
+def _large_first_column(w: torch.Tensor) -> torch.Tensor:
+    """*w* with its first column a thousand times larger, which the partial last tile of the
+    row above must not see."""
+    w = w.clone()
+    w[:, 0] *= 1000
+    return w
+
+
+def _fp8_ties(w: torch.Tensor) -> torch.Tensor:
+    """Tiles of amax 3 whose other elements are +-3 * 2**-16: their quotient is 3.5 * 2**-9,
+    a tie between two float8 codes that the product with the rounded reciprocal of the
+    scale misses."""
+    w = torch.where(torch.rand_like(w, dtype=torch.float32) < 0.5, 1.0, -1.0) * 3 * 2.0**-16
+    w = w.to(torch.bfloat16)
+    w[::128, ::128] = 3.0
+    return w
+
+
+def _tiny(w: torch.Tensor) -> torch.Tensor:
+    """float32 tiles of magnitude 2**-120 to 2**-149 along K: their scales are subnormal or
+    round to zero, which the IEEE divide serves; the last tile holds only the smallest
+    subnormal, so its scale is zero."""
+    exponent = torch.linspace(-120, -149, w.shape[1], device=w.device)
+    w = w * torch.exp2(exponent)
+    w[:, -128:] = torch.finfo(torch.float32).smallest_normal * 2.0**-23
+    return w
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "rows, cols, dtype, make",
+    [
+        # The manifest's convention for an all-zero tile: scale 1.0, q all zero.
+        pytest.param(256, 512, torch.bfloat16, _zero_odd_tiles, id="zero-tiles"),
+        # Partial tiles on both axes, rows on the vector boundary.
+        pytest.param(200, 392, torch.float16, lambda w: w, id="partial-tiles"),
+        # Rows that start inside a vector: the unaligned kernel, and a storage end inside
+        # the last vector.
+        pytest.param(37, 999, torch.bfloat16, _large_first_column, id="odd-k"),
+        pytest.param(37, 999, torch.float32, lambda w: w, id="odd-k-float32"),
+        # A storage start off the 16-byte vector boundary.
+        pytest.param(256, 512, torch.float16, _misaligned, id="misaligned-start"),
+        # NaN and infinity reach scale and q as in torch; a signed zero stays signed.
+        pytest.param(200, 392, torch.bfloat16, _specials, id="nan-inf-signed-zero"),
+        # Subnormal and zero scales.
+        pytest.param(200, 2048, torch.float32, _tiny, id="tiny-scales"),
+        # A correctly rounded quotient, on exact ties.
+        pytest.param(256, 512, torch.bfloat16, _fp8_ties, id="rounding-ties"),
+    ],
+)
+def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
+    test = type("QuantizeTest", (FP8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
+    (w,) = test.gen_inputs()
+    test.check(FP8QuantPerBlockFwdOp(), make(w), compare=[_bitwise_compare, _bitwise_compare])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "cols, dtype, key",
+    [
+        (4096, torch.bfloat16, "fp8_quant_per_block_fwd"),
+        (2884, torch.float32, "fp8_quant_per_block_fwd"),
+        (4099, torch.float16, "fp8_quant_per_block_unaligned_fwd"),
+    ],
+)
+def test_each_region_selects_its_one_implementation(cols, dtype, key) -> None:
+    """Rows that all start on a 16-byte vector take the register kernel, any other K the
+    unaligned one."""
+    call = QuantizeCall(arch=90, sm_count=132, rows=256, cols=cols, dtype=dtype)
+    assert FP8QuantPerBlockFwdOp().select_implementation("fp8_quant_per_block_fwd", call) == key
