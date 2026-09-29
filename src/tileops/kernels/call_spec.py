@@ -41,9 +41,10 @@ class CallSpec:
     hash cover those facts and ``device``, normalized to an explicit type and index.
 
     The device facts (``arch``, ``calibration``, ``sm_count``) are derived from ``device``
-    and take no part in equality. A caller that states one gets what it stated; one left
-    unstated is read from ``device`` when selection or a builder first reads it, which the
-    dispatcher does only on a miss.
+    and take no part in equality: one left unstated is read from ``device`` when selection
+    or a builder first reads it, which the dispatcher does only on a miss. A caller may state
+    them to ask ``select_implementation`` about a device it is not on; ``kernel_for`` refuses
+    such a call spec, since it keys what it builds by ``device``.
     """
 
     arch: int = dataclasses.field(default=_DeviceFact("arch"), compare=False)
@@ -61,6 +62,8 @@ class CallSpec:
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
+        stated = frozenset(f for f in ("arch", "calibration", "sm_count") if f"_{f}" in vars(self))
+        object.__setattr__(self, "stated_device_facts", stated)
         device = self.device
         if device is None:
             return

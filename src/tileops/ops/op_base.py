@@ -97,7 +97,7 @@ class Op(ABC):
     _tune_warned: bool = False
 
     # An entry the op keeps bound directly, if it keeps one: a ``Kernel`` in-tree, whatever a
-    # target's builder returned otherwise. Specializations are held per role.
+    # target's builder returned otherwise. Specializations are held per interface.
     kernel: Optional[Callable[..., object]]
     # The implementation that runs under each key, ``kernel_map=`` included: read-only once
     # installed.
@@ -107,18 +107,18 @@ class Op(ABC):
     _registered: Mapping[str, type[Kernel]] = MappingProxyType({})
     # Each key mapped to the keys its registered implementation is preferred over, transitively.
     _preferred: Mapping[str, frozenset[str]] = MappingProxyType({})
-    # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
+    # Built entries, ``{interface: {key: entry}}``. Annotation only: the instance
     # attribute appears on the first ``kernel_for`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
-    _kernel_roles: dict[str, dict[Hashable, object]]
+    _built_entries: dict[str, dict[Hashable, object]]
     # The keys of each kernel interface's implementations, as installed.
     _interface_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     # Resolved entries, ``{(interface, call spec): entry}``. Annotation only, like
-    # ``_kernel_roles``.
+    # ``_built_entries``.
     _dispatched: dict[tuple[str, Hashable], object]
     # The ``kernel_map=`` the caller passed, as given; what every sub-op this op builds is handed.
     _given_kernel_map: Optional[dict[str, Kernel]] = None
-    # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_kernel_roles``.
+    # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_built_entries``.
     _delegates: dict[str, dict[Hashable, "Op"]]
     dtype: Optional[torch.dtype] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
@@ -282,11 +282,11 @@ class Op(ABC):
                 f"shipped implementation. This op's keys: {sorted(own)}"
             )
 
-    def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
+    def _install_kernel_map(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``, read-only.
 
         Each key's registered implementation, from ``default_kernel_map`` or a backend, is
-        replaced by *candidate_map*'s under the same name; only what runs changes, not what
+        replaced by *kernel_map*'s under the same name; only what runs changes, not what
         selects the key. A name no op in the library declares is refused; a name this op does
         not have but another does is kept out of the resolved map and ignored, because that
         is how a composite's sub-ops see each other's keys. Resolving a kernel *class* needs
@@ -299,10 +299,10 @@ class Op(ABC):
                 :meth:`_refuse_unknown_keys` or :meth:`_install_interfaces` raises.
             TypeError: What :meth:`_install_interfaces` raises.
         """
-        for built in ("_kernel_roles", "_selected_entries", "_dispatched"):
+        for built in ("_built_entries", "_selected_entries", "_dispatched"):
             self.__dict__.pop(built, None)
         default_map = self.default_kernel_map
-        override = dict(candidate_map) if candidate_map else {}
+        override = dict(kernel_map) if kernel_map else {}
         self._given_kernel_map = override or None
         if default_map is None or len(default_map) == 0:
             # Composite op: store override verbatim. Its keys belong to the sub-ops it
@@ -528,10 +528,10 @@ class Op(ABC):
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
         # cannot trace a method call on an instance ``__dict__``.
-        roles = getattr(self, "_kernel_roles", None)
+        roles = getattr(self, "_built_entries", None)
         if roles is None:
             roles = {}
-            self._kernel_roles = roles
+            self._built_entries = roles
         entries = roles.get(name)
         if entries is None:
             entries = {}
@@ -596,23 +596,24 @@ class Op(ABC):
 
     def kernel_for(
         self,
-        role: str,
+        interface: str,
         inputs: "Sequence[torch.Tensor | None]",
         call: object = None,
     ) -> object:
-        """Return the in-tree entry that serves *call* for *role*, resolving it on a miss.
+        """Return the in-tree entry that serves *call* for *interface*, resolving it on a miss.
 
         The one way an op's in-tree implementation reaches a kernel. It runs only when the
         in-tree kernels serve the op: a target serves the whole op instead
         (:meth:`_call_target`). For a kernel interface a hit is one lookup of
-        ``(role, call)``; a miss selects the implementation and builds or reuses the entry
+        ``(interface, call)``; a miss selects the implementation and builds or reuses the entry
         its build identity names (:meth:`_resolve_entry`).
 
         Args:
-            role: The kernel interface, one of ``interfaces``. An op that declares none
+            interface: The kernel interface, one of ``interfaces``. An op that declares none
                 names the memoization bucket of one kernel it runs, never the name of an
                 implementation it chose.
-            inputs: The tensors this kernel will be handed, for the device check.
+            inputs: The tensors this kernel will be handed; an op that declares no interfaces
+                has its device checked from them.
             call: The call spec: for an interface, an instance of its ``request``.
 
         Raises:
@@ -621,23 +622,23 @@ class Op(ABC):
             OpNotAvailableError: No implementation runs on the call's device, or what
                 :meth:`_get_or_build_kernel` raises.
         """
-        if role in self.interfaces:
+        if interface in self.interfaces:
             dispatched = getattr(self, "_dispatched", None)
             if dispatched is None:
                 dispatched = {}
                 self._dispatched = dispatched
             try:
-                entry = dispatched.get((role, call))
+                entry = dispatched.get((interface, call))
             except TypeError:
                 # The miss path's checks name what makes the call spec unusable.
-                self._resolve_entry(role, call)
+                self._resolve_entry(interface, call)
                 raise
             if entry is None:
-                entry = self._resolve_entry(role, call)
-                dispatched[(role, call)] = entry
+                entry = self._resolve_entry(interface, call)
+                dispatched[(interface, call)] = entry
             return entry
         self._refuse_device(inputs, call)
-        return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
+        return self._get_or_build_kernel(interface, inputs, lambda: self.entry_for(interface, call))
 
     def _resolve_entry(self, interface: str, call: CallSpec) -> object:
         """Resolve the entry serving *call* for *interface*, on a miss of the dispatch cache.
@@ -648,8 +649,8 @@ class Op(ABC):
         resolved entry, never through the builder.
 
         Raises:
-            TypeError: *call* is not the interface's ``request`` type, or holds a field that
-                cannot key the cache.
+            TypeError: *call* is not the interface's ``request`` type, holds a field that
+                cannot key the cache, or states a device fact.
             ValueError: What :meth:`select_implementation` raises.
             OpNotAvailableError: What :meth:`select_implementation` raises.
         """
@@ -660,12 +661,17 @@ class Op(ABC):
                 f"not {type(call).__name__}"
             )
         call.refuse_unkeyable()
+        if call.stated_device_facts:
+            raise TypeError(
+                f"{type(self).__name__}.{interface} reads the device facts from the call's "
+                f"device; this call spec states {sorted(call.stated_device_facts)}"
+            )
         cls = self.kernel_map[self.select_implementation(interface, call)]
         identity, build = cls.entry_for(call)
-        roles = getattr(self, "_kernel_roles", None)
+        roles = getattr(self, "_built_entries", None)
         if roles is None:
             roles = {}
-            self._kernel_roles = roles
+            self._built_entries = roles
         entries = roles.setdefault(interface, {})
         entry = entries.get((cls, identity))
         if entry is None:
@@ -942,18 +948,18 @@ class Op(ABC):
                 ) from None
         return values
 
-    def built_kernels(self, role: str) -> Mapping[Hashable, object]:
-        """Return a read-only view of the entries built for *role* so far, whoever built them.
+    def built_kernels(self, interface: str) -> Mapping[Hashable, object]:
+        """Return a read-only view of the entries built for *interface* so far, whoever built them.
 
-        Empty before the role's first build. A target serves the whole op, so for an op a
-        target serves every role shows the target's kernels, one per input signature. For
+        Empty before the interface's first build. A target serves the whole op, so for an op a
+        target serves every interface shows the target's kernels, one per input signature. For
         introspection — tests, benchmark reporting — never for dispatch: an execution path
         asks ``kernel_for`` so a miss builds rather than raises.
         """
         if self._served_by_target():
             return MappingProxyType(getattr(self, "_target_kernels", None) or {})
-        roles = getattr(self, "_kernel_roles", None) or {}
-        return MappingProxyType(roles.get(role, {}))
+        roles = getattr(self, "_built_entries", None) or {}
+        return MappingProxyType(roles.get(interface, {}))
 
     def delegate_for(
         self, stage: str, key: Hashable, given: "Op | None" = None, /, **params: object
@@ -1030,9 +1036,9 @@ class Op(ABC):
     def iter_kernels(self) -> Iterator[Kernel]:
         """Yield every ``Kernel`` instance the op's entries hold, each one once.
 
-        Reached: the entries of every role, ``self.kernel``, and the same walk over
+        Reached: the entries of every interface, ``self.kernel``, and the same walk over
         each ``kernel_delegates()`` entry. A kernel on any other attribute is not
-        searched for — an op that holds one builds it through a role.
+        searched for — an op that holds one builds it through an interface.
 
         What ``autotune`` tunes and ``run_config`` reads. An entry holding no ``Kernel``
         — a target builder's plain callable — contributes nothing here;
@@ -1040,7 +1046,7 @@ class Op(ABC):
         """
         seen: set[int] = set()
         for op in self._walk_ops():
-            roles = getattr(op, "_kernel_roles", None) or {}
+            roles = getattr(op, "_built_entries", None) or {}
             held = [entry for entries in roles.values() for entry in entries.values()]
             held.append(getattr(op, "kernel", None))
             for entry in held:
@@ -1223,14 +1229,14 @@ class Op(ABC):
             delegate._unsettle()
         dropped = {
             id(entry)
-            for entries in (getattr(self, "_kernel_roles", None) or {}).values()
+            for entries in (getattr(self, "_built_entries", None) or {}).values()
             for entry in entries.values()
         }
         if id(getattr(self, "kernel", None)) in dropped:
             self.kernel = None
         self._builder = _UNRESOLVED
         self._settled_target = None
-        self._kernel_roles = {}
+        self._built_entries = {}
         self._selected_entries = {}
         self._dispatched = {}
         self._target_kernels = {}

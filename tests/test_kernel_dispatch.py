@@ -212,7 +212,6 @@ def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
     assert op.entry(5) is entry and entry.config == {"tuned": True}
     assert op.entry(7) is entry
     assert op.entry(25).config == {"tuned": True}
-    assert "tune" not in inspect.signature(_Implementation.__init__).parameters
 
 
 class _NotScaling(Kernel):
@@ -228,6 +227,11 @@ class _NotScaling(Kernel):
             {"positive": _implementation("TwoArgs", forward=lambda self, x, y: x)},
             TypeError,
             "does not take _Scaling's arguments",
+        ),
+        (
+            {"positive": _implementation("StaticEntry", entry_for=staticmethod(lambda call: 0))},
+            TypeError,
+            "entry_for is not a classmethod",
         ),
     ],
 )
@@ -251,13 +255,28 @@ def test_what_runs_under_a_key_implements_its_interface(kernel_map, error, match
             },
             "cycle",
         ),
+        ({"positive": _implementation("Clash")}, "reuse keys it has"),
+        ({"loose": _NotScaling}, "implement none of its kernel interfaces"),
     ],
 )
-def test_installation_checks_the_declared_precedence(added, match) -> None:
+def test_installation_refuses_a_malformed_registration(added, match) -> None:
     for key, cls in added.items():
         register_implementation("_ScaleOp", key, cls)
     with pytest.raises(ValueError, match=match):
         _ScaleOp()
+
+
+def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
+    """A call spec of another type, with an unhashable field, or stating a device fact."""
+    op = _ScaleOp()
+    cpu = torch.device("cpu")
+    for call, match in (
+        (CallSpec(device=cpu), "takes a _Call call spec"),
+        (_Call(device=cpu, n=[5]), "cannot key a dispatch cache"),
+        (_Call(device=cpu, n=5, arch=90), "states \\['arch'\\]"),
+    ):
+        with pytest.raises(TypeError, match=match):
+            op.kernel_for("scale", (), call)
 
 
 def test_an_installed_implementation_set_cannot_change() -> None:

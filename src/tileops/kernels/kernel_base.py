@@ -147,15 +147,15 @@ class Kernel(ABC):
 
         Read from ``device_index``, the device the op handed over — not from whichever
         device happens to be current, which need not be the one the input lives on. The op
-        layer performs no architecture check of its own; a role served by several kernels
-        filters candidates during selection instead.
+        layer performs no architecture check of its own; selection filters an interface's
+        implementations by availability first.
 
         ``device_index`` ``None`` reads the current device. An op builds every kernel with
         the call's device current (``Op.kernel_for``), so that is the call's device there.
 
         Raises:
             ValueError: The device's architecture is not among ``supported_archs``.
-                Selection raises the same class when no candidate for a dispatch key can
+                Selection raises the same class when no implementation for a dispatch key can
                 serve a call, so a caller catches one exception type whether the key has
                 one implementation or several.
         """
