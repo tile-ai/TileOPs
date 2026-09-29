@@ -237,7 +237,6 @@ class RemainderFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    REGISTER_COPY_NUM_PER_THREAD = 4
 
     @property
     def stage_broadcast(self) -> bool:
@@ -356,7 +355,6 @@ class FloorDivideFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
-    REGISTER_COPY_NUM_PER_THREAD = 4
 
     @property
     def stage_broadcast(self) -> bool:
