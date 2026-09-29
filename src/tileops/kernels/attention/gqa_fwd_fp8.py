@@ -542,7 +542,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.barrier_arrive(q_full_1)
                         T.barrier_wait(q_full_1, gi_q1 % 2)
                         gi_q1 = gi_q1 + 1
-                        T.call_extern("handle", "tl::fp8_zero_raw_acc_64", acc_o_1.data)
+                        T.clear(acc_o_1)
                         T.clear(ls_1)
                         T.fill(sm_1, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
@@ -583,13 +583,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     qk_descale * attention_scale / softcap,
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_mask_columns_raw_acc_64x224",
-                                    acc_s_1.data,
-                                    seq_len_kv - n_idx * 224,
-                                    -T.infinity(accum_dtype),
-                                )
+                                for i, j in T.Parallel(half_m, 224):
+                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                        acc_s_1[i, j] = -T.infinity(accum_dtype)
                             # A tile needs the mask when its last key lies past the first
                             # row this warpgroup owns.
                             if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
@@ -727,7 +723,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.barrier_arrive(q_full_2)
                         T.barrier_wait(q_full_2, gi_q2 % 2)
                         gi_q2 = gi_q2 + 1
-                        T.call_extern("handle", "tl::fp8_zero_raw_acc_64", acc_o_2.data)
+                        T.clear(acc_o_2)
                         T.clear(ls_2)
                         T.fill(sm_2, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
@@ -768,13 +764,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     qk_descale * attention_scale / softcap,
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_mask_columns_raw_acc_64x224",
-                                    acc_s_2.data,
-                                    seq_len_kv - n_idx * 224,
-                                    -T.infinity(accum_dtype),
-                                )
+                                for i, j in T.Parallel(half_m, 224):
+                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                        acc_s_2[i, j] = -T.infinity(accum_dtype)
                             if (
                                 is_causal
                                 and (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1
