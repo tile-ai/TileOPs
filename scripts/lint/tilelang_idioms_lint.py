@@ -345,6 +345,13 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
             bound = set(last)
             # The final assignment in a scope determines the captured cell value.
             for node in _own_scope(outer):
+                # A def or class statement binds its name to something never scalar.
+                if isinstance(node, _SCOPE) and node.name in free:
+                    bound.add(node.name)
+                    if node.lineno >= last.get(node.name, (-1, None))[0]:
+                        kind = "class" if isinstance(node, ast.ClassDef) else "function"
+                        last[node.name] = (node.lineno, kind)
+                    continue
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                     continue
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]

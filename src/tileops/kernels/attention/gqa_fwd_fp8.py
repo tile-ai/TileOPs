@@ -106,98 +106,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
     causal_offset = seq_len_kv - seq_len_q
 
-    @T.macro
-    def online_softmax_with_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        score_scale_softmax = score_scale * scale
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] *= score_scale
-        for i in T.Parallel(half_m):
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-        # Accumulate lane-local row sums here; the quad reduction is deferred
-        # until finalization instead of running once per K/V tile.
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-    @T.macro
-    def online_softmax_with_causal_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        score_scale_softmax = score_scale * scale
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-    @T.macro
-    def online_softmax_with_softcap_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        # The raw accumulator was capped before masking.  Keeping the tanh
-        # transform in the raw PTX layout avoids a generic fragment loop.
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
-            scores_scale[i] = T.exp2(
-                (scores_max_prev[i] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-            )
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(
-                (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-            )
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -213,6 +121,98 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         ],
     )
     def func():
+        @T.macro
+        def online_softmax_with_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            score_scale_softmax = score_scale * scale
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] *= score_scale
+            for i in T.Parallel(half_m):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
+            # Accumulate lane-local row sums here; the quad reduction is deferred
+            # until finalization instead of running once per K/V tile.
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+        @T.macro
+        def online_softmax_with_causal_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            score_scale_softmax = score_scale * scale
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+        @T.macro
+        def online_softmax_with_softcap_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            # The raw accumulator was capped before masking.  Keeping the tanh
+            # transform in the raw PTX layout avoids a generic fragment loop.
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                scores_scale[i] = T.exp2(
+                    (scores_max_prev[i] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
+                )
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(
+                    (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
+                )
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
         q_shape = (batch, seq_len_q, heads, dim)
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         descale_shape = (batch, heads_kv)
