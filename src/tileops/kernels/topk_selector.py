@@ -10,23 +10,6 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["TopkSelectorKernel"]
 
 
-def convert_to_uint16(x):
-    hval = T.Cast(T.float16, x)
-    bits_uint = T.reinterpret(hval, T.uint16)
-    bits_uint = T.if_then_else(x < 0, ~bits_uint & (0xFFFF), bits_uint | (0x8000))
-    return bits_uint >> 8
-
-
-def convert_to_uint32(x):
-    bits_uint = T.reinterpret(T.Cast(T.float32, x), T.uint32)
-    bits_uint = T.if_then_else(
-        x < 0,
-        ~bits_uint & T.Cast(T.uint32, (0xFFFFFFFF)),
-        bits_uint | T.Cast(T.uint32, (0x80000000)),
-    )
-    return bits_uint
-
-
 @functools.lru_cache(maxsize=32)
 def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
     @tilelang.jit(
@@ -36,6 +19,21 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
         },
     )
     def topk_selector_fwd_func(BLOCK_SIZE=1024):
+        def convert_to_uint16(x):
+            hval = T.Cast(T.float16, x)
+            bits_uint = T.reinterpret(hval, T.uint16)
+            bits_uint = T.if_then_else(x < 0, ~bits_uint & (0xFFFF), bits_uint | (0x8000))
+            return bits_uint >> 8
+
+        def convert_to_uint32(x):
+            bits_uint = T.reinterpret(T.Cast(T.float32, x), T.uint32)
+            bits_uint = T.if_then_else(
+                x < 0,
+                ~bits_uint & T.Cast(T.uint32, (0xFFFFFFFF)),
+                bits_uint | T.Cast(T.uint32, (0x80000000)),
+            )
+            return bits_uint
+
         batch = T.dynamic("batch")
         seq_len_kv = T.dynamic("seq_len_kv")
         RADIX = 1 << 8
@@ -297,24 +295,6 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
     return topk_selector_fwd_func
 
 
-def _topk_selector_run(
-    batch: int,
-    seq_len: int,
-    seq_len_kv: int,
-    kv_group: int,
-    topk: int,
-    in_dtype: str,
-    out_dtype: str,
-    BLOCK_SIZE: int,
-    index_score: torch.Tensor,
-    starts: torch.Tensor,
-    ends: torch.Tensor,
-) -> torch.Tensor:
-    return _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)(
-        BLOCK_SIZE
-    )(index_score, starts, ends)
-
-
 class TopkSelectorKernel(Kernel):
     """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 
@@ -329,6 +309,24 @@ class TopkSelectorKernel(Kernel):
         config: Optional dict with "BLOCK_SIZE".
         tune: Whether to autotune.
     """
+
+    @staticmethod
+    def _topk_selector_run(
+        batch: int,
+        seq_len: int,
+        seq_len_kv: int,
+        kv_group: int,
+        topk: int,
+        in_dtype: str,
+        out_dtype: str,
+        BLOCK_SIZE: int,
+        index_score: torch.Tensor,
+        starts: torch.Tensor,
+        ends: torch.Tensor,
+    ) -> torch.Tensor:
+        return _topk_selector_kernel(
+            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype
+        )(BLOCK_SIZE)(index_score, starts, ends)
 
     supported_archs: list[int] = [90]
 
@@ -428,7 +426,7 @@ class TopkSelectorKernel(Kernel):
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        return _topk_selector_run(
+        return self._topk_selector_run(
             self.batch,
             self.seq_len,
             self.seq_len_kv,

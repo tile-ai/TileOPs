@@ -196,41 +196,6 @@ def clean_logits_(
     return clean_logits_kernel
 
 
-def _fp8_lightning_indexer_run(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    index_dim: int,
-    seq_len_kv: int,
-    kv_group: int,
-    clean_logits: bool,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    block_Q: int,
-    IndexQ: torch.Tensor,
-    IndexK: torch.Tensor,
-    IndexKScale: torch.Tensor,
-    Logits: torch.Tensor,
-    Weights: torch.Tensor,
-    CuSeqLenKS: torch.Tensor,
-    CuSeqLenKE: torch.Tensor,
-) -> None:
-    _fp8_lightning_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv, kv_group)(
-        block_N, num_stages, threads, block_Q
-    )(
-        IndexQ.view(batch, seq_len * heads, index_dim),
-        IndexK,
-        IndexKScale,
-        Logits,
-        Weights,
-        CuSeqLenKS,
-        CuSeqLenKE,
-    )
-    if clean_logits:
-        clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
-
-
 class FP8LightningIndexerKernel(Kernel):
     """FP8 lightning indexer: per-query logits over an fp8-quantized index cache.
 
@@ -253,6 +218,41 @@ class FP8LightningIndexerKernel(Kernel):
     Raises:
         ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
     """
+
+    @staticmethod
+    def _fp8_lightning_indexer_run(
+        batch: int,
+        seq_len: int,
+        heads: int,
+        index_dim: int,
+        seq_len_kv: int,
+        kv_group: int,
+        clean_logits: bool,
+        block_N: int,
+        num_stages: int,
+        threads: int,
+        block_Q: int,
+        IndexQ: torch.Tensor,
+        IndexK: torch.Tensor,
+        IndexKScale: torch.Tensor,
+        Logits: torch.Tensor,
+        Weights: torch.Tensor,
+        CuSeqLenKS: torch.Tensor,
+        CuSeqLenKE: torch.Tensor,
+    ) -> None:
+        _fp8_lightning_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv, kv_group)(
+            block_N, num_stages, threads, block_Q
+        )(
+            IndexQ.view(batch, seq_len * heads, index_dim),
+            IndexK,
+            IndexKScale,
+            Logits,
+            Weights,
+            CuSeqLenKS,
+            CuSeqLenKE,
+        )
+        if clean_logits:
+            clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
     supported_archs: list[int] = [90]
 
@@ -334,7 +334,7 @@ class FP8LightningIndexerKernel(Kernel):
             device=IndexQ.device,
             dtype=torch.float32,
         )
-        _fp8_lightning_indexer_run(
+        self._fp8_lightning_indexer_run(
             self.batch,
             self.seq_len,
             self.heads,

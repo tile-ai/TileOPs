@@ -66,25 +66,6 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     return _fp8_quant_fwd_func
 
 
-def _fp8_quant_run(
-    batch: int,
-    seq_len_kv: int,
-    kv_group: int,
-    index_dim: int,
-    in_dtype: str,
-    threads: int,
-    block_m: int,
-    input_tensor: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    rows = batch * seq_len_kv * kv_group
-    scale, quant = _fp8_quant_kernel(rows, index_dim, in_dtype, threads)(block_m)(
-        input_tensor.view(rows, index_dim)
-    )
-    return scale.view(batch, seq_len_kv, kv_group), quant.view(
-        batch, seq_len_kv, kv_group, index_dim
-    )
-
-
 class FP8QuantKernel(Kernel):
     """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
@@ -107,6 +88,25 @@ class FP8QuantKernel(Kernel):
     Raises:
         ValueError: ``block_m`` is not positive, raised where the kernel is built.
     """
+
+    @staticmethod
+    def _fp8_quant_run(
+        batch: int,
+        seq_len_kv: int,
+        kv_group: int,
+        index_dim: int,
+        in_dtype: str,
+        threads: int,
+        block_m: int,
+        input_tensor: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        rows = batch * seq_len_kv * kv_group
+        scale, quant = _fp8_quant_kernel(rows, index_dim, in_dtype, threads)(block_m)(
+            input_tensor.view(rows, index_dim)
+        )
+        return scale.view(batch, seq_len_kv, kv_group), quant.view(
+            batch, seq_len_kv, kv_group, index_dim
+        )
 
     supported_archs: list[int] = [90]
 
@@ -175,7 +175,7 @@ class FP8QuantKernel(Kernel):
         return [self.default_config]
 
     def forward(self, input_tensor: torch.Tensor):
-        return _fp8_quant_run(
+        return self._fp8_quant_run(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
