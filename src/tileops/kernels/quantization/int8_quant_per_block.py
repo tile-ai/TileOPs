@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import QUANT_SCALE_BLOCK, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantization.call_spec import INT8QuantPerBlockFwdInterface, QuantizeCall
 from tileops.kernels.quantization.int8_codes import (
@@ -22,9 +22,6 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["INT8QuantPerBlockFwdKernel", "INT8QuantPerBlockShiftedFwdKernel"]
 
-# Elements one scale covers along K, fixed by the op's signature.
-_BLOCK = 128
-
 
 @functools.lru_cache(maxsize=32)
 def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
@@ -36,14 +33,14 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     holds its vectors in runs of ``pack`` adjacent ones and stores their codes at once.
     """
     n = m * k
-    nb = -(-k // _BLOCK)
+    nb = -(-k // QUANT_SCALE_BLOCK)
     blocks = m * nb
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
     vec = VECTOR_ACCESS_BYTES // itemsize
     # A vector is held as 32-bit words, ``per_word`` elements to a word.
     words = VECTOR_ACCESS_BYTES // 4
     per_word = 4 // itemsize
-    whole = k % _BLOCK == 0
+    whole = k % QUANT_SCALE_BLOCK == 0
     # The bits of a word's elements that order as their magnitudes do; a NaN orders above
     # every number, as torch's amax takes it.
     magnitude = 0x7FFF7FFF if per_word == 2 else 0x7FFFFFFF
@@ -51,8 +48,8 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _int8_quant_per_block_func(threads: int, lanes: int, pack: int):
         groups = threads // lanes
-        slots = _BLOCK // vec // lanes
-        assert slots * lanes * vec == _BLOCK and slots % pack == 0
+        slots = QUANT_SCALE_BLOCK // vec // lanes
+        assert slots * lanes * vec == QUANT_SCALE_BLOCK and slots % pack == 0
         assert pack * vec <= VECTOR_ACCESS_BYTES
         # Every slot holds a vector of its block, and every block is in the grid.
         exact = whole and blocks % groups == 0
@@ -65,9 +62,13 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
             """The lane's block, its first element and its count of vectors."""
             b = bx * groups + tx // lanes
             if whole:
-                return b, b * _BLOCK, _BLOCK // vec
+                return b, b * QUANT_SCALE_BLOCK, QUANT_SCALE_BLOCK // vec
             j = b % nb
-            return b, b // nb * k + j * _BLOCK, T.min(_BLOCK, k - j * _BLOCK) // vec
+            return (
+                b,
+                b // nb * k + j * QUANT_SCALE_BLOCK,
+                T.min(QUANT_SCALE_BLOCK, k - j * QUANT_SCALE_BLOCK) // vec,
+            )
 
         @T.macro
         def code_one(out, e, value, num, prescale: bool):
@@ -167,7 +168,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
     the CTAs beside it own the rest of them.
     """
     n = m * k
-    nb = -(-k // _BLOCK)
+    nb = -(-k // QUANT_SCALE_BLOCK)
     blocks = m * nb
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
     vec = VECTOR_ACCESS_BYTES // itemsize
@@ -180,17 +181,17 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
     def _int8_quant_per_block_shifted_func(threads: int, lanes: int):
         groups = threads // lanes
         # Vectors' worth of elements in a lane's run, and the words that hold them.
-        vpl = _BLOCK // vec // lanes
+        vpl = QUANT_SCALE_BLOCK // vec // lanes
         span = vpl * vec
         held = vpl * words
-        assert vpl * lanes * vec == _BLOCK
+        assert vpl * lanes * vec == QUANT_SCALE_BLOCK
         # 16-byte chunks of ``q`` a CTA's run spans at most.
-        chunks = groups * _BLOCK // VECTOR_ACCESS_BYTES + 2
+        chunks = groups * QUANT_SCALE_BLOCK // VECTOR_ACCESS_BYTES + 2
 
         def extent(b):
             """The first element of block ``b`` and one past its last."""
-            lo = b // nb * k + b % nb * _BLOCK
-            return lo, T.min(lo + _BLOCK, b // nb * k + k)
+            lo = b // nb * k + b % nb * QUANT_SCALE_BLOCK
+            return lo, T.min(lo + QUANT_SCALE_BLOCK, b // nb * k + k)
 
         def pick(raw, at, skip):
             """Word ``at + skip`` of the vectors ``raw`` holds."""
@@ -347,7 +348,7 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
     def refusal(cls, call: QuantizeCall) -> Optional[str]:
         reason = super().refusal(call)
         # Element indices reach one block past M * K.
-        if reason is None and call.rows * call.cols > 2**31 - 1 - _BLOCK:
+        if reason is None and call.rows * call.cols > 2**31 - 1 - QUANT_SCALE_BLOCK:
             return f"indexes elements with int32, and M * K = {call.rows * call.cols}"
         return reason
 
@@ -368,7 +369,9 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
         self._require_cuda(x=x)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(
-            (self.call.rows, -(-self.call.cols // _BLOCK)), dtype=torch.float32, device=x.device
+            (self.call.rows, -(-self.call.cols // QUANT_SCALE_BLOCK)),
+            dtype=torch.float32,
+            device=x.device,
         )
         # The kernel reads 16-byte vectors from the start of the storage.
         if x.data_ptr() % VECTOR_ACCESS_BYTES:
@@ -410,7 +413,7 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
 
     @property
     def default_config(self) -> dict:
-        blocks = self.call.rows * -(-self.call.cols // _BLOCK)
+        blocks = self.call.rows * -(-self.call.cols // QUANT_SCALE_BLOCK)
         per_sm = torch.cuda.get_device_properties(self.call.device).max_threads_per_multi_processor
         wide = blocks * self._LANES >= self._WIDE_WAVES * self.call.sm_count * per_sm
         return {

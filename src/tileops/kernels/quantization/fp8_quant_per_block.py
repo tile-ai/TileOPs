@@ -8,16 +8,17 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import FP8_E4M3_MAX, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import (
+    FP8_E4M3_MAX,
+    QUANT_SCALE_BLOCK,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantization.call_spec import FP8QuantPerBlockFwdInterface, QuantizeCall
 from tileops.kernels.quantization.int8_codes import SMALL_SCALE, widen
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["FP8QuantPerBlockFwdKernel", "FP8QuantPerBlockUnalignedFwdKernel"]
-
-# Rows and columns one scale covers, fixed by the op's signature.
-_TILE = 128
 
 
 @functools.lru_cache(maxsize=32)
@@ -30,13 +31,13 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
     elements are one vector, loaded at once; otherwise they lie ``cols`` apart and each is
     loaded alone, so that adjacent lanes still read adjacent elements.
     """
-    tn, tk = -(-n // _TILE), -(-k // _TILE)
+    tn, tk = -(-n // QUANT_SCALE_BLOCK), -(-k // QUANT_SCALE_BLOCK)
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
     vec = VECTOR_ACCESS_BYTES // itemsize
     # A thread's elements are held as 32-bit words, ``per_word`` elements to a word.
     words = VECTOR_ACCESS_BYTES // 4
     per_word = 4 // itemsize
-    whole = n % _TILE == 0 and k % _TILE == 0
+    whole = n % QUANT_SCALE_BLOCK == 0 and k % QUANT_SCALE_BLOCK == 0
     # The bits of a word's elements that order as their magnitudes do; a NaN orders above
     # every number, so a tile holding one gets torch's NaN amax.
     magnitude = 0x7FFF7FFF if per_word == 2 else 0x7FFFFFFF
@@ -51,18 +52,18 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _fp8_quant_per_block_func(threads: int, min_blocks: Optional[int], evict_first: bool):
-        cols = _TILE // vec
+        cols = QUANT_SCALE_BLOCK // vec
         rows = threads // cols
-        slots = _TILE // rows
+        slots = QUANT_SCALE_BLOCK // rows
         warps = threads // WARP_LANES
-        assert cols * rows == threads and slots * rows == _TILE
+        assert cols * rows == threads and slots * rows == QUANT_SCALE_BLOCK
 
         def at(s, e, tx, bx, by):
             """The row and column of element ``e`` of slot ``s``."""
-            row = by * _TILE + s * rows + tx // cols
+            row = by * QUANT_SCALE_BLOCK + s * rows + tx // cols
             if aligned:
-                return row, bx * _TILE + tx % cols * vec + e
-            return row, bx * _TILE + tx % cols + e * cols
+                return row, bx * QUANT_SCALE_BLOCK + tx % cols * vec + e
+            return row, bx * QUANT_SCALE_BLOCK + tx % cols + e * cols
 
         @T.macro
         def code_one(quot, at_, value, num, divide: bool):
@@ -223,7 +224,9 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
     def default_config(self) -> dict:
         props = torch.cuda.get_device_properties(self.call.device)
         itemsize = self.call.dtype.itemsize
-        threads = _TILE * _TILE * itemsize // (VECTOR_ACCESS_BYTES * self._SLOTS)
+        threads = (
+            QUANT_SCALE_BLOCK * QUANT_SCALE_BLOCK * itemsize // (VECTOR_ACCESS_BYTES * self._SLOTS)
+        )
         cap = self._REGISTERS
         min_blocks = None if cap is None else props.regs_per_multiprocessor // (threads * cap)
         size = self.call.rows * self.call.cols * itemsize
@@ -241,7 +244,11 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
         self._require_cuda(w=w)
         n, k = self.call.rows, self.call.cols
         q = torch.empty(w.shape, dtype=torch.float8_e4m3fn, device=w.device)
-        scale = torch.empty((-(-n // _TILE), -(-k // _TILE)), dtype=torch.float32, device=w.device)
+        scale = torch.empty(
+            (-(-n // QUANT_SCALE_BLOCK), -(-k // QUANT_SCALE_BLOCK)),
+            dtype=torch.float32,
+            device=w.device,
+        )
         # The aligned kernel reads 16-byte vectors from the start of the storage.
         if self._aligned and w.data_ptr() % VECTOR_ACCESS_BYTES:
             w = w.clone()

@@ -50,3 +50,8 @@ GELU_TANH_COEFF: float = 0.044715
 
 # Largest finite float8_e4m3fn value; quantizers clamp to +-FP8_E4M3_MAX.
 FP8_E4M3_MAX: float = 448.0
+
+# Elements one scale covers in the block-scaled quantization formats the manifest fixes:
+# a run along K for the INT8 and FP8 activation forms, both axes of a tile for the FP8
+# weight form.
+QUANT_SCALE_BLOCK: int = 128
