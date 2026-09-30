@@ -8,7 +8,6 @@ from abc import abstractmethod
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
@@ -17,17 +16,7 @@ __all__ = [
     "TopKMaskFwdInterface",
     "TopKTopPMaskFwdInterface",
     "TopPMaskFwdInterface",
-    "vector_width",
 ]
-
-
-def vector_width(vocab: int, itemsize: int) -> int:
-    """Elements of a 16-byte vector, or 1 where a row's bytes are not a whole number of them.
-
-    Every row starts on a vector only when the row's bytes are; a row that does not is read
-    and written element by element.
-    """
-    return VECTOR_ACCESS_BYTES // itemsize if vocab * itemsize % VECTOR_ACCESS_BYTES == 0 else 1
 
 
 @dataclasses.dataclass(frozen=True)

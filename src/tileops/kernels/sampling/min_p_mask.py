@@ -14,12 +14,18 @@ from tileops.kernels.constants import (
     VECTOR_ACCESS_BYTES,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import (
-    MinPMaskFwdInterface,
-    SamplingCall,
+from tileops.kernels.sampling.call_spec import MinPMaskFwdInterface, SamplingCall
+from tileops.kernels.sampling.row_tiles import (
+    INF_BITS,
+    MAGNITUDE_BITS,
+    QUIET_NAN,
+    block_extremes,
+    fold_extremes,
+    load_vector,
+    store_masked,
     vector_width,
 )
-from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops.utils import WARP_LANES
 
 __all__ = ["MinPMaskFwdKernel"]
 
@@ -42,10 +48,6 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
     chunk = -(-row_tiles // parts)
     grid = batch * parts
     warps = threads // WARP_LANES
-    # A float32's magnitude bits, and the largest of them that is not a NaN.
-    magnitude_bits = 0x7FFFFFFF
-    inf_bits = 0x7F800000
-    quiet_nan = 0x7FC00000
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _min_p_mask_func(reg_tiles: int, smem_tiles: int, pace: int):
@@ -55,63 +57,6 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
         streamed = chunk - kept - parked
         parked_rounds = -(-parked // pace)
         streamed_rounds = -(-streamed // pace)
-
-        @T.macro
-        def load(dst, slot, src, at, evict_first: bool):
-            if vec == 1:
-                dst[slot, 0] = src[at]
-            elif evict_first:
-                T.call_extern(
-                    "handle",
-                    "tl::tileops_load16_evict_first",
-                    T.address_of(dst[slot, 0]),
-                    T.address_of(src[at]),
-                )
-            else:
-                T.call_extern(
-                    "handle",
-                    "tl::tileops_load16",
-                    T.address_of(dst[slot, 0]),
-                    T.address_of(src[at]),
-                )
-
-        @T.macro
-        def fold(top, seen, src, slot):
-            for c in T.unroll(vec):
-                value = T.cast(src[slot, c], "float32")
-                top[0] = T.max(top[0], value)
-                seen[0] = T.max(seen[0], T.reinterpret(value, "uint32") & T.uint32(magnitude_bits))
-
-        @T.macro
-        def store(dst, src, slot, cut, at):
-            for c in T.unroll(vec):
-                value = T.cast(src[slot, c], "float32")
-                src[slot, c] = T.if_then_else(
-                    value < cut, T.cast(-T.infinity("float32"), dtype), src[slot, c]
-                )
-            if vec == 1:
-                dst[at] = src[slot, 0]
-            else:
-                for c in T.vectorized(vec):
-                    dst[at + c] = src[slot, c]
-
-        @T.macro
-        def block_max(top, seen, warp_top, warp_seen):
-            """Leave the block's maxima in ``top[0]`` and ``seen[0]`` of every thread."""
-            tx = T.get_thread_binding()
-            for stage in T.serial(WARP_SHUFFLE_STAGES):
-                reach = T.int32(WARP_LANES // 2) >> stage
-                top[0] = T.max(top[0], T.shfl_xor(top[0], reach, width=WARP_LANES))
-                seen[0] = T.max(seen[0], T.shfl_xor(seen[0], reach, width=WARP_LANES))
-            if tx % WARP_LANES == 0:
-                warp_top[tx // WARP_LANES] = top[0]
-                warp_seen[tx // WARP_LANES] = seen[0]
-            T.sync_threads()
-            top[0] = warp_top[0]
-            seen[0] = warp_seen[0]
-            for w in T.serial(1, warps):
-                top[0] = T.max(top[0], warp_top[w])
-                seen[0] = T.max(seen[0], warp_seen[w])
 
         @T.prim_func
         def _min_p_mask_main(
@@ -140,37 +85,39 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
                 # memory again; a tile it will read again stays cacheable for that read.
                 for j in T.unroll(kept):
                     if head + j * threads < full:
-                        load(in_regs, j, logits, row + (head + j * threads) * vec, True)
+                        load_vector(in_regs, j, logits, row + (head + j * threads) * vec, vec, True)
                 for j in T.unroll(kept):
                     if head + j * threads < full:
-                        fold(top, seen, in_regs, j)
+                        fold_extremes(top, seen, in_regs, j, vec)
                 for r in T.serial(parked_rounds):
                     for j in T.unroll(pace):
                         t = kept + r * pace + j
                         if t < kept + parked and head + t * threads < full:
-                            load(cur, j, logits, row + (head + t * threads) * vec, True)
+                            load_vector(cur, j, logits, row + (head + t * threads) * vec, vec, True)
                     for j in T.unroll(pace):
                         t = kept + r * pace + j
                         if t < kept + parked and head + t * threads < full:
-                            fold(top, seen, cur, j)
+                            fold_extremes(top, seen, cur, j, vec)
                             for c in T.vectorized(vec):
                                 in_smem[t - kept, tx * vec + c] = cur[j, c]
                 for r in T.serial(streamed_rounds):
                     for j in T.unroll(pace):
                         t = kept + parked + r * pace + j
                         if t < chunk and head + t * threads < full:
-                            load(cur, j, logits, row + (head + t * threads) * vec, False)
+                            load_vector(
+                                cur, j, logits, row + (head + t * threads) * vec, vec, False
+                            )
                     for j in T.unroll(pace):
                         t = kept + parked + r * pace + j
                         if t < chunk and head + t * threads < full:
-                            fold(top, seen, cur, j)
-                block_max(top, seen, warp_top, warp_seen)
+                            fold_extremes(top, seen, cur, j, vec)
+                block_extremes(top, seen, warp_top, warp_seen, warps)
 
                 if parts > 1:
                     if tx == 0:
                         partial[bx] = T.if_then_else(
-                            seen[0] > T.uint32(inf_bits),
-                            T.reinterpret(T.uint32(quiet_nan), "float32"),
+                            seen[0] > T.uint32(INF_BITS),
+                            T.reinterpret(T.uint32(QUIET_NAN), "float32"),
                             top[0],
                         )
                     T.sync_grid()
@@ -183,13 +130,13 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
                             value = partial[line * parts + c * threads + tx]
                             top[0] = T.max(top[0], value)
                             seen[0] = T.max(
-                                seen[0], T.reinterpret(value, "uint32") & T.uint32(magnitude_bits)
+                                seen[0], T.reinterpret(value, "uint32") & T.uint32(MAGNITUDE_BITS)
                             )
-                    block_max(top, seen, warp_top, warp_seen)
+                    block_extremes(top, seen, warp_top, warp_seen, warps)
                 # The row's threshold, NaN where the row holds one, as torch's amax leaves it.
                 bound[0] = T.if_then_else(
-                    seen[0] > T.uint32(inf_bits),
-                    T.reinterpret(T.uint32(quiet_nan), "float32"),
+                    seen[0] > T.uint32(INF_BITS),
+                    T.reinterpret(T.uint32(QUIET_NAN), "float32"),
                     top[0] + T.log(min_p[line]),
                 )
 
@@ -198,19 +145,37 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
                     for j in T.unroll(pace):
                         t = kept + parked + r * pace + j
                         if t < chunk and head + t * threads < full:
-                            load(cur, j, logits, row + (head + t * threads) * vec, True)
+                            load_vector(cur, j, logits, row + (head + t * threads) * vec, vec, True)
                     for j in T.unroll(pace):
                         t = kept + parked + r * pace + j
                         if t < chunk and head + t * threads < full:
-                            store(masked, cur, j, bound[0], row + (head + t * threads) * vec)
+                            store_masked(
+                                masked,
+                                cur,
+                                j,
+                                bound[0],
+                                row + (head + t * threads) * vec,
+                                vec,
+                                dtype,
+                            )
                 for t in T.serial(kept, kept + parked):
                     if head + t * threads < full:
                         for c in T.vectorized(vec):
                             cur[0, c] = in_smem[t - kept, tx * vec + c]
-                        store(masked, cur, 0, bound[0], row + (head + t * threads) * vec)
+                        store_masked(
+                            masked, cur, 0, bound[0], row + (head + t * threads) * vec, vec, dtype
+                        )
                 for j in T.unroll(kept):
                     if head + j * threads < full:
-                        store(masked, in_regs, j, bound[0], row + (head + j * threads) * vec)
+                        store_masked(
+                            masked,
+                            in_regs,
+                            j,
+                            bound[0],
+                            row + (head + j * threads) * vec,
+                            vec,
+                            dtype,
+                        )
 
         return _min_p_mask_main
 
