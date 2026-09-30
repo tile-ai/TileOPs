@@ -567,7 +567,6 @@ class LerpTensorFwdKernel(MultiInputElementwiseKernel):
     """
 
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-    DEFAULT_THREADS = 512
     INPUTS = (("a", "tile"), ("b", "tile"), ("w", "tile"))
 
     @staticmethod

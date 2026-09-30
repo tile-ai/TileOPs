@@ -686,12 +686,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    DEFAULT_THREADS = 256
     INPUTS: tuple = ()
-
-    # Elements per thread for a dtype narrower than float32. A float32 thread
-    # takes four, which is one vector.
-    NPT_NON_FP32: int = 8
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
@@ -720,12 +715,29 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else self.NPT_NON_FP32
-        return {"threads": self.DEFAULT_THREADS, "num_per_thread": npt}
+        # The body stages its per-element inputs into fragments and writes the result
+        # back out of one, which is what `register_copy` names elsewhere in the family.
+        cfg = default_launch_config(
+            strategy="register_copy",
+            input_dtype=self.dtype,
+            output_dtype=self.output_dtype,
+            n_total=self.N_total,
+            bytes_per_thread=self.BYTES_PER_THREAD,
+            min_num_per_thread=self.MIN_NUM_PER_THREAD,
+            default_threads=self.DEFAULT_THREADS,
+            register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
+        )
+        return {"threads": cfg["threads"], "num_per_thread": cfg["num_per_thread"]}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return elementwise_autotune_configs(self.dtype)
+        return elementwise_autotune_configs(
+            self.dtype,
+            "register_copy",
+            self.BYTES_PER_THREAD,
+            self.MIN_NUM_PER_THREAD,
+            self.REGISTER_COPY_NUM_PER_THREAD,
+        )
 
     def init_config(self, config=None, tune=False):
         Kernel.init_config(self, config, tune)

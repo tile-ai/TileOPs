@@ -132,8 +132,6 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel):
     at that position.
     """
 
-    DEFAULT_THREADS = 512
-
     def __init__(self, N_total, dtype, has_min, has_max, config=None, tune=False):
         if not (has_min or has_max):
             raise ValueError("ClampTensorFwdKernel requires has_min or has_max to be True")

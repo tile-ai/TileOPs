@@ -16,9 +16,9 @@ from tileops.kernels.elementwise import (
     HardtanhFwdKernel,
     LeakyReluFwdKernel,
     PowFwdKernel,
-    PreluFwdKernel,
     SiluAndMulFwdKernel,
 )
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
 
 # Regression: a parametric kernel's block extent has to follow the config it is given
 
@@ -98,16 +98,30 @@ def test_same_shape_binary_default_npt(kernel_cls, dtype, expected_npt):
 @pytest.mark.parametrize(
     ("dtype", "expected_npt"),
     [
-        (torch.float32, 4),
+        (torch.int8, 16),
         (torch.float16, 8),
-        (torch.bfloat16, 8),
+        (torch.float32, 4),
+        (torch.int64, 4),
     ],
 )
-def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
-    """Prelu is the custom-signature outlier and should keep the same dtype mapping."""
-    kernel = PreluFwdKernel.__new__(PreluFwdKernel)
-    kernel.dtype = dtype
-    assert kernel.default_config["num_per_thread"] == expected_npt
+def test_multi_input_kernels_take_the_shared_launch_config(dtype, expected_npt):
+    """A several-input thread takes one 16-byte vector, floored at four elements.
+
+    They all stage their per-element inputs the way ``register_copy`` does, so none of
+    them states a thread count of its own.
+    """
+    subclasses = MultiInputElementwiseKernel.__subclasses__()
+    assert subclasses, "no several-input kernel was imported"
+    for kernel_cls in subclasses:
+        if kernel_cls.SUPPORTED_DTYPES is not None and dtype not in kernel_cls.SUPPORTED_DTYPES:
+            continue
+        kernel = kernel_cls.__new__(kernel_cls)
+        kernel.dtype = dtype
+        kernel.output_dtype = dtype
+        kernel.N_total = _WIDE_N
+        assert kernel.default_config == {"threads": 128, "num_per_thread": expected_npt}, (
+            kernel_cls.__name__
+        )
 
 
 @pytest.mark.cuda_only
