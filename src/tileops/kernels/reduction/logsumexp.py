@@ -422,6 +422,11 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     return _func
 
 
+# The tiled kernel's two reductions across threads, the tile's max and then its sum, each
+# take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
+_TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
+
+
 class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     """The logsumexp family: the policy the row candidates' regions and plans read."""
 
@@ -445,7 +450,9 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     def _plan_rows(n_padded: int, elem_bytes: int, smem_budget: int) -> "tuple[int, int]":
         """One tile takes the largest block_m that holds the row; tiled rows take the
         block_m with strictly the fewest tiles, the smallest one on a tie."""
-        planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget)
+        planner = BlockConfigPlanner(
+            n_padded, elem_bytes, smem_budget, workspace_bytes=_TILED_WORKSPACE_BYTES
+        )
         threads = max(AUTOTUNE_THREADS)
         best_bm = 1
         best_tile_n = planner.tile_n_for(1, threads)
@@ -603,7 +610,12 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
         self.N_padded = align_up(self.N, DEFAULT_ALIGNMENT)
         self._elem_bytes = call.dtype.itemsize
         self._smem_budget = call.smem_budget
-        self._planner = BlockConfigPlanner(self.N_padded, self._elem_bytes, self._smem_budget)
+        self._planner = BlockConfigPlanner(
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
+            workspace_bytes=_TILED_WORKSPACE_BYTES,
+        )
         self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)
         self.init_config(None)
