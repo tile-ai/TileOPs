@@ -1,6 +1,8 @@
-"""Per-row top-k then top-p logit mask: a cluster of CTAs holds each row in registers, selects
-its k-th largest value by a most-significant-digit radix select over the key bits, and walks the
-same digits weighted by the softmax of the survivors to settle the nucleus bound."""
+"""Per-row top-k then top-p logit mask on one kernel.
+
+The top-k select is ``top_k_mask.py``'s, copied rather than shared: its pieces are regions of
+one prim_func, and the two files hold them at different points of the same kernel body.
+"""
 
 import functools
 from typing import ClassVar, Optional
@@ -22,10 +24,7 @@ __all__ = ["TopKTopPMaskFwdKernel"]
 def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     """Build the top-k then top-p mask of ``batch`` rows of ``vocab`` logits.
 
-    A value is held as its key: its bits with the sign bit flipped when it is non-negative
-    and every bit flipped when it is negative, so keys order as the values do, and every
-    NaN takes the largest key, as ``sort`` places NaN first. A row's cluster pads its last
-    vectors with -inf, which no rank below ``vocab`` reaches.
+    A row's cluster pads its last vectors with -inf, which no rank below ``vocab`` reaches.
     """
     n = batch * vocab
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
@@ -78,7 +77,6 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
         held = slots * words
         warps = threads // WARP_LANES
         assert threads % WARP_LANES == 0 and bins % WARP_LANES == 0
-        # The bins one lane of the warp that walks a bin table owns.
         span = bins // WARP_LANES
         walk_span = walk_bins // WARP_LANES
         # The threads whose first element is inside the row are the ones that sample it, and
@@ -224,30 +222,29 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                     acc[2] = acc[2] + count
 
         @T.macro
-        def bin_holding_weight(wtot, target, pick, wacc, tx):
-            """Warp 0: into ``pick[0]`` the highest bin of ``wtot`` that its own weight and
-            the weight above it reach ``target``, and into ``wacc[3]`` the weight above that
-            bin. ``pick[0]`` stays -1 when the bins never reach ``target``.
+        def bin_holding_weight(wtot, target, hit, outside, lane, upward, running, tx):
+            """Warp 0: into ``hit[0]`` the highest bin of ``wtot`` that its own weight and the
+            weight above it reach ``target``, and into ``outside[0]`` the weight above that
+            bin. ``hit[0]`` stays -1 when the bins never reach ``target``.
             """
-            pick[0] = -1
-            wacc[2] = T.float32(0)
+            hit[0] = -1
+            lane[0] = T.float32(0)
             for i in T.serial(walk_span):
-                wacc[2] = wacc[2] + wtot[tx * walk_span + i]
-            wacc[0] = wacc[2]
+                lane[0] = lane[0] + wtot[tx * walk_span + i]
+            upward[0] = lane[0]
             for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                up = T.shfl_down(wacc[0], 1 << stage, width=WARP_LANES)
+                up = T.shfl_down(upward[0], 1 << stage, width=WARP_LANES)
                 if tx + (1 << stage) < WARP_LANES:
-                    wacc[0] = wacc[0] + up
-            # This lane's bins carry the weight in (wacc[0] - wacc[2], wacc[0]].
-            wacc[1] = wacc[0] - wacc[2]
-            if (wacc[1] < target) & (target <= wacc[0]):
+                    upward[0] = upward[0] + up
+            running[0] = upward[0] - lane[0]
+            if (running[0] < target) & (target <= upward[0]):
                 for i in T.serial(walk_span):
                     b = tx * walk_span + walk_span - 1 - i
-                    if pick[0] < 0:
-                        wacc[3] = wacc[1]
-                        wacc[1] = wacc[1] + wtot[b]
-                        if wacc[1] >= target:
-                            pick[0] = b
+                    if hit[0] < 0:
+                        outside[0] = running[0]
+                        running[0] = running[0] + wtot[b]
+                        if running[0] >= target:
+                            hit[0] = b
 
         @T.prim_func
         def _top_k_top_p_mask_main(
@@ -265,14 +262,12 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 vals = T.alloc_local((held,), "uint32")
                 outw = T.alloc_local((words,), "uint32")
                 acc = T.alloc_local((4,), "int32")
-                pick = T.alloc_local((1,), "int32")
-                wacc = T.alloc_local((4,), "float32")
                 sum32 = T.alloc_local((1,), "uint32")
                 above = T.alloc_local((1,), "int32")
                 weight = T.alloc_local((1,), "float32")
-                # The two row maxima this thread holds, over every key and over the keys that
-                # are not NaN; then the cluster's.
-                peak = T.alloc_local((2,), "uint32")
+                seen_any = T.alloc_local((1,), "uint32")
+                seen_number = T.alloc_local((1,), "uint32")
+                merged = T.alloc_local((1,), "uint32")
                 # The pass's shift and settled bits, and the digit values it counts, read
                 # once: every mention of a shared element is a load of it, and the loop over
                 # the held keys mentions each of them per key.
@@ -289,19 +284,23 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 red = T.alloc_shared((warps,), "int32")
                 wred = T.alloc_shared((warps,), "float32")
                 kred = T.alloc_shared((2 * warps,), "uint32")
-                # The row's maxima, over every key and over the keys that are not NaN.
+                # The maximum over every key of the row and the maximum over the keys that
+                # are not NaN, packed so that a row reads the one its own ``k`` asks for by
+                # index and two threads write both.
                 rowmax = T.alloc_shared((2,), "uint32")
-                # The top-k threshold, the key range the nucleus walk is narrowing, and the
-                # bound the mask finally compares against.
                 pre = T.alloc_shared((1,), "uint32")
-                limits = T.alloc_shared((2,), "uint32")
+                lowest = T.alloc_shared((1,), "uint32")
+                highest = T.alloc_shared((1,), "uint32")
                 nucleus = T.alloc_shared((1,), "uint32")
-                # The nucleus walk: 0 the weight above the settled bits, 1 the weight the
-                # nucleus must reach.
-                walk = T.alloc_shared((2,), "float32")
-                # 0 the bin this level of the nucleus walk picked, or -1; 1 whether the walk
-                # has settled the bound.
-                picked = T.alloc_shared((2,), "int32")
+                above_weight = T.alloc_shared((1,), "float32")
+                goal = T.alloc_shared((1,), "float32")
+                chosen = T.alloc_shared((1,), "int32")
+                settled_bound = T.alloc_shared((1,), "int32")
+                hit = T.alloc_local((1,), "int32")
+                outside = T.alloc_local((1,), "float32")
+                lane = T.alloc_local((1,), "float32")
+                upward = T.alloc_local((1,), "float32")
+                running = T.alloc_local((1,), "float32")
                 # 0 the rank still to find inside the settled bits, 1 whether the select has
                 # finished, 2 the winning bin and 3 the rank inside it, 4 whether this pass
                 # settled the threshold, 5 the digit being settled, 6 and 7 the lowest and
@@ -373,26 +372,30 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
 
                 # The row's largest key and its largest key that is not NaN. The padding a
                 # cluster leaves is -inf, whose key is below every value the row holds.
-                peak[0] = T.uint32(0)
-                peak[1] = T.uint32(0)
+                seen_any[0] = T.uint32(0)
+                seen_number[0] = T.uint32(0)
                 for i in T.unroll(held):
                     for h in T.unroll(per_word):
-                        peak[0] = T.max(peak[0], key_of(vals, i, h))
+                        seen_any[0] = T.max(seen_any[0], key_of(vals, i, h))
                         if key_of(vals, i, h) != T.uint32(nan_key):
-                            peak[1] = T.max(peak[1], key_of(vals, i, h))
+                            seen_number[0] = T.max(seen_number[0], key_of(vals, i, h))
                 for stage in T.unroll(WARP_SHUFFLE_STAGES):
                     reach = T.int32(WARP_LANES // 2) >> stage
-                    peak[0] = T.max(peak[0], T.shfl_xor(peak[0], reach, width=WARP_LANES))
-                    peak[1] = T.max(peak[1], T.shfl_xor(peak[1], reach, width=WARP_LANES))
+                    seen_any[0] = T.max(
+                        seen_any[0], T.shfl_xor(seen_any[0], reach, width=WARP_LANES)
+                    )
+                    seen_number[0] = T.max(
+                        seen_number[0], T.shfl_xor(seen_number[0], reach, width=WARP_LANES)
+                    )
                 if tx % WARP_LANES == 0:
-                    kred[2 * (tx // WARP_LANES)] = peak[0]
-                    kred[2 * (tx // WARP_LANES) + 1] = peak[1]
+                    kred[2 * (tx // WARP_LANES)] = seen_any[0]
+                    kred[2 * (tx // WARP_LANES) + 1] = seen_number[0]
                 T.sync_threads()
                 if tx < 2:
-                    peak[0] = T.uint32(0)
+                    merged[0] = T.uint32(0)
                     for w in T.serial(warps):
-                        peak[0] = T.max(peak[0], kred[2 * w + tx])
-                    rowmax[tx] = peak[0]
+                        merged[0] = T.max(merged[0], kred[2 * w + tx])
+                    rowmax[tx] = merged[0]
 
                 kk = k[row]
                 # The digit values that can hold the k-th key, from one sample per thread.
@@ -506,10 +509,10 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 if cluster > 1:
                     T.cluster_sync()
                     if tx < 2:
-                        peak[0] = T.uint32(0)
+                        merged[0] = T.uint32(0)
                         for c in T.serial(cluster):
-                            peak[0] = T.max(
-                                peak[0],
+                            merged[0] = T.max(
+                                merged[0],
                                 T.call_extern(
                                     "uint32",
                                     "tl::tileops_cluster_load_u32",
@@ -517,19 +520,17 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                                     c,
                                 ),
                             )
-                        peak[1] = peak[0]
+                        seen_any[0] = merged[0]
                     T.sync_threads()
                     if tx < 2:
-                        rowmax[tx] = peak[1]
+                        rowmax[tx] = seen_any[0]
                     T.sync_threads()
                 if tx == 0:
-                    # The nucleus bound starts at the top-k threshold and rises to the
-                    # largest surviving key; each level narrows that range by 8 bits.
-                    limits[0] = keeps_both_zeros(pre[0])
-                    limits[1] = rowmax[T.if_then_else(kk >= vocab, 0, 1)]
-                    walk[0] = T.float32(0)
-                    walk[1] = T.float32(0)
-                    picked[1] = 0
+                    lowest[0] = keeps_both_zeros(pre[0])
+                    highest[0] = rowmax[T.if_then_else(kk >= vocab, 0, 1)]
+                    above_weight[0] = T.float32(0)
+                    goal[0] = T.float32(0)
+                    settled_bound[0] = 0
                 T.sync_threads()
 
                 # The walk weighs each surviving key by the softmax of the values the top-k
@@ -539,12 +540,12 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 # reference's softmax of such a row leaves.
                 high[0] = value_of(rowmax[T.if_then_else(kk >= vocab, 0, 1)])
                 for level in T.serial(digits):
-                    if picked[1] == 0:
+                    if settled_bound[0] == 0:
                         slab = level % 2
-                        settled[0] = limits[0]
-                        bound[0] = limits[1]
-                        # The bins cover the range in 256 steps of this width, so a range
-                        # narrower than 256 keys settles the bound in this one level.
+                        settled[0] = lowest[0]
+                        bound[0] = highest[0]
+                        # The bins cover the range in ``walk_bins`` steps of this width, so
+                        # a range narrower than that settles the bound in this one level.
                         digit_shift[0] = T.cast(
                             T.max(
                                 0,
@@ -590,37 +591,46 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                                 wred[tx // WARP_LANES] = weight[0]
                             T.sync_threads()
                             if tx == 0:
-                                wacc[0] = T.float32(0)
+                                lane[0] = T.float32(0)
                                 for w in T.serial(warps):
-                                    wacc[0] = wacc[0] + wred[w]
-                                walk[1] = p[row] * wacc[0]
+                                    lane[0] = lane[0] + wred[w]
+                                goal[0] = p[row] * lane[0]
                             T.sync_threads()
                         if tx == 0:
-                            picked[0] = -1
+                            chosen[0] = -1
                         T.sync_threads()
                         if tx < WARP_LANES:
-                            bin_holding_weight(wtot, walk[1] - walk[0], pick, wacc, tx)
-                            if pick[0] >= 0:
-                                picked[0] = pick[0]
-                                walk[0] = walk[0] + wacc[3]
+                            bin_holding_weight(
+                                wtot,
+                                goal[0] - above_weight[0],
+                                hit,
+                                outside,
+                                lane,
+                                upward,
+                                running,
+                                tx,
+                            )
+                            if hit[0] >= 0:
+                                chosen[0] = hit[0]
+                                above_weight[0] = above_weight[0] + outside[0]
                         T.sync_threads()
                         if tx == 0:
                             # No bin reaching the target leaves every key of the range in the
                             # nucleus, which is its smallest key and settles the bound.
-                            if picked[0] >= 0:
-                                limits[0] = settled[0] + (
-                                    T.cast(picked[0], "uint32") << digit_shift[0]
+                            if chosen[0] >= 0:
+                                lowest[0] = settled[0] + (
+                                    T.cast(chosen[0], "uint32") << digit_shift[0]
                                 )
-                                limits[1] = T.min(
+                                highest[0] = T.min(
                                     bound[0],
-                                    limits[0] + ((T.uint32(1) << digit_shift[0]) - T.uint32(1)),
+                                    lowest[0] + ((T.uint32(1) << digit_shift[0]) - T.uint32(1)),
                                 )
-                            picked[1] = T.if_then_else(
-                                (picked[0] < 0) | (digit_shift[0] == T.uint32(0)), 1, 0
+                            settled_bound[0] = T.if_then_else(
+                                (chosen[0] < 0) | (digit_shift[0] == T.uint32(0)), 1, 0
                             )
                         T.sync_threads()
                 if tx == 0:
-                    nucleus[0] = keeps_both_zeros(limits[0])
+                    nucleus[0] = keeps_both_zeros(lowest[0])
                 T.sync_threads()
 
                 bound[0] = nucleus[0] * T.uint32(halves)
@@ -669,9 +679,9 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
 
     A cluster of CTAs holds a row in registers. It selects the row's k-th largest key one
     8-bit digit at a time, with one sample per thread bracketing the digit values the k-th
-    key can take, and then walks the same digits again, weighted by the softmax of the keys
-    the top-k filter left, to settle the smallest value the nucleus keeps. Both bounds are a
-    key, so the mask is one comparison per element.
+    key can take, then narrows the key range above that threshold, weighted by the softmax
+    of the keys the filter left, until the smallest key the nucleus keeps is settled. Both
+    bounds are a key, so the mask is one comparison per element.
 
     Args:
         call: The call's shape, dtype and device facts.
