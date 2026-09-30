@@ -44,6 +44,22 @@ def default_launch_config(
     thread carries at least before the shrink; see
     ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
     """
+
+    def _tail_dominated(
+        inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
+    ) -> bool:
+        """Whether doubling the block width pushes more columns onto the guarded tail path.
+
+        A row-broadcast block covers columns of one row, and the remainder the width
+        does not cover runs the slower per-lane path. A width that leaves no
+        remainder there has nothing to push onto it.
+        """
+        if inner is None or n_total is None:
+            return False
+        if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
+            return False
+        return inner % (threads * npt * 2) > inner % (threads * npt)
+
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
@@ -82,22 +98,6 @@ def _register_copy_floor(requested: int, elem_bytes: int) -> int:
     An 8-byte dtype has its two vectors at four elements, and eight run slower.
     """
     return min(requested, 2 * _BYTES_PER_THREAD // elem_bytes)
-
-
-def _tail_dominated(
-    inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
-) -> bool:
-    """Whether doubling the block width pushes more columns onto the guarded tail path.
-
-    A row-broadcast block covers columns of one row, and the remainder the width
-    does not cover runs the slower per-lane path. A width that leaves no
-    remainder there has nothing to push onto it.
-    """
-    if inner is None or n_total is None:
-        return False
-    if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
-        return False
-    return inner % (threads * npt * 2) > inner % (threads * npt)
 
 
 def elementwise_autotune_configs(

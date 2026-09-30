@@ -37,11 +37,6 @@ def _any_fails(held, count):
     return T.Not(functools.reduce(T.And, [held[j] for j in range(count)]))
 
 
-def _vector_lanes(dtype, count):
-    """Elements of *dtype* in one 16-byte vector, at most *count*."""
-    return min(count, 128 // DataType(dtype).bits)
-
-
 def _narrows(dtype, out_dtype):
     """Whether a result is stored narrower than its operand."""
     return DataType(out_dtype).bits < DataType(dtype).bits
@@ -476,6 +471,10 @@ def _make_binary_register_copy(
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
+        def _vector_lanes(dtype, count):
+            """Elements of *dtype* in one 16-byte vector, at most *count*."""
+            return min(count, 128 // DataType(dtype).bits)
+
         op_func = op_func_for(op_name)
         block_size = threads * num_per_thread
         # The fragment copy hands a thread one vector in each block-wide chunk, and

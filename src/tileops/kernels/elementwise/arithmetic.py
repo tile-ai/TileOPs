@@ -247,23 +247,6 @@ def _on_float32(a, b, body):
     )
 
 
-def _remainder(num, den, dtype):
-    """``(tiers, slow())`` for ``a % b``: see ``_floored_tiers`` and ``RemainderFwdKernel``."""
-    zero = T.cast(0.0, "float32")
-
-    def from_quotient(k, q):
-        r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
-        # A zero remainder is fmod's, which keeps the dividend's sign.
-        return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
-
-    def signed(mod):
-        flip = T.And(mod != zero, (den < zero) != (mod < zero))
-        return tirx.Select(flip, mod + den, mod)
-
-    tiers = _floored_tiers(num, den, dtype, _FAST_QUOTIENT, from_quotient)
-    return tiers, _bound(T.fmod(num, den), signed)
-
-
 class RemainderFwdKernel(BinaryKernel):
     """Element-wise remainder: y = a % b, with the sign of b.
 
@@ -271,6 +254,23 @@ class RemainderFwdKernel(BinaryKernel):
     result and b differ in sign: ``a - floor(a / b) * b`` rounded once. Here that is
     one ``fma`` from the exact floored quotient; ``fmodf`` serves the rest.
     """
+
+    @staticmethod
+    def _remainder(num, den, dtype):
+        """``(tiers, slow())`` for ``a % b``: see ``_floored_tiers`` and ``RemainderFwdKernel``."""
+        zero = T.cast(0.0, "float32")
+
+        def from_quotient(k, q):
+            r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
+            # A zero remainder is fmod's, which keeps the dividend's sign.
+            return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+
+        def signed(mod):
+            flip = T.And(mod != zero, (den < zero) != (mod < zero))
+            return tirx.Select(flip, mod + den, mod)
+
+        tiers = _floored_tiers(num, den, dtype, _FAST_QUOTIENT, from_quotient)
+        return tiers, _bound(T.fmod(num, den), signed)
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
@@ -282,7 +282,7 @@ class RemainderFwdKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         def body(num, den):
-            tiers, slow = _remainder(num, den, a.dtype)
+            tiers, slow = RemainderFwdKernel._remainder(num, den, a.dtype)
             return T.Cast(a.dtype, _first_holding(tiers, slow))
 
         return _on_float32(a, b, body)
@@ -291,7 +291,7 @@ class RemainderFwdKernel(BinaryKernel):
     def fast_func(a, b):
         """The cheapest form of ``op_func``, and where it holds."""
         num, den = T.Cast("float32", a), T.Cast("float32", b)
-        value, holds = _remainder(num, den, a.dtype)[0][0]
+        value, holds = RemainderFwdKernel._remainder(num, den, a.dtype)[0][0]
         return T.Cast(a.dtype, value), holds
 
 
@@ -339,48 +339,6 @@ class PowFwdKernel(BinaryKernel):
 _EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
 
 
-def _floor_divide(num, den, dtype):
-    """``(tiers, slow())`` for torch's ``div_floor_floating`` on two float32 values.
-
-    torch divides ``a - fmod(a, b)``, a multiple of b, by b, floors the quotient into
-    *dtype* and rounds it up once where that dropped more than a half; a zero
-    quotient keeps the sign of ``a / b`` and a zero divisor returns ``a / b`` itself.
-    Where the multiple is exact the divide returns ``floor(a / b)``, and rounding
-    that whole number into *dtype* never drops more than a half past the
-    representable value below it without the next one up rounding back to it.
-    Past it the result depends on how torch's divide rounds, and it is computed as
-    torch does.
-    """
-    zero = T.cast(0.0, "float32")
-    one = T.cast(1.0, "float32")
-    # The sign ``a / b`` gives a zero, without dividing.
-    signed_zero = T.copysign(zero, num) * T.copysign(one, den)
-
-    def rounded(div):
-        def bump(floored):
-            up = T.Cast("float32", T.Cast(dtype, floored + one))
-            return tirx.Select(div - floored > T.cast(0.5, "float32"), up, floored)
-
-        near = _bound(T.Cast("float32", T.Cast(dtype, T.floor(div))), bump)
-        return tirx.Select(div != zero, near, signed_zero)
-
-    def slow():
-        def from_mod(mod):
-            flip = T.And(mod != zero, (den < zero) != (mod < zero))
-            div = _ieee_fdiv(num - mod, den)
-            return _bound(tirx.Select(flip, div - one, div), rounded)
-
-        general = _bound(T.fmod(num, den), from_mod)
-        return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
-
-    def whole(k, q):
-        # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.
-        return T.copysign(k, q)
-
-    limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
-    return _floored_tiers(num, den, dtype, limit, whole), slow()
-
-
 class FloorDivideFwdKernel(BinaryKernel):
     """Element-wise floor division: y = floor(a / b), as torch defines it.
 
@@ -389,6 +347,48 @@ class FloorDivideFwdKernel(BinaryKernel):
     dtype. ``floor(a / b)`` differs where ``a / b`` rounds up to a whole number
     (``1.0 // 0.1`` is 9) and at an infinite b.
     """
+
+    @staticmethod
+    def _floor_divide(num, den, dtype):
+        """``(tiers, slow())`` for torch's ``div_floor_floating`` on two float32 values.
+
+        torch divides ``a - fmod(a, b)``, a multiple of b, by b, floors the quotient into
+        *dtype* and rounds it up once where that dropped more than a half; a zero
+        quotient keeps the sign of ``a / b`` and a zero divisor returns ``a / b`` itself.
+        Where the multiple is exact the divide returns ``floor(a / b)``, and rounding
+        that whole number into *dtype* never drops more than a half past the
+        representable value below it without the next one up rounding back to it.
+        Past it the result depends on how torch's divide rounds, and it is computed as
+        torch does.
+        """
+        zero = T.cast(0.0, "float32")
+        one = T.cast(1.0, "float32")
+        # The sign ``a / b`` gives a zero, without dividing.
+        signed_zero = T.copysign(zero, num) * T.copysign(one, den)
+
+        def rounded(div):
+            def bump(floored):
+                up = T.Cast("float32", T.Cast(dtype, floored + one))
+                return tirx.Select(div - floored > T.cast(0.5, "float32"), up, floored)
+
+            near = _bound(T.Cast("float32", T.Cast(dtype, T.floor(div))), bump)
+            return tirx.Select(div != zero, near, signed_zero)
+
+        def slow():
+            def from_mod(mod):
+                flip = T.And(mod != zero, (den < zero) != (mod < zero))
+                div = _ieee_fdiv(num - mod, den)
+                return _bound(tirx.Select(flip, div - one, div), rounded)
+
+            general = _bound(T.fmod(num, den), from_mod)
+            return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
+
+        def whole(k, q):
+            # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.
+            return T.copysign(k, q)
+
+        limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
+        return _floored_tiers(num, den, dtype, limit, whole), slow()
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
@@ -400,7 +400,7 @@ class FloorDivideFwdKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         def body(num, den):
-            tiers, slow = _floor_divide(num, den, a.dtype)
+            tiers, slow = FloorDivideFwdKernel._floor_divide(num, den, a.dtype)
             return T.Cast(a.dtype, _first_holding(tiers, slow))
 
         return _on_float32(a, b, body)
@@ -409,7 +409,7 @@ class FloorDivideFwdKernel(BinaryKernel):
     def fast_func(a, b):
         """The cheapest form of ``op_func``, and where it holds."""
         num, den = T.Cast("float32", a), T.Cast("float32", b)
-        value, holds = _floor_divide(num, den, a.dtype)[0][0]
+        value, holds = FloorDivideFwdKernel._floor_divide(num, den, a.dtype)[0][0]
         return T.Cast(a.dtype, value), holds
 
 
