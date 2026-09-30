@@ -1,11 +1,16 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.call_spec import (
+    GemmCall,
+    GemmFp8Call,
+    GemmFp8FwdInterface,
+    GemmFwdInterface,
+)
 from tileops.kernels.gemm.heuristics import (
     SWAP_AB_MPAD,
     best_config,
@@ -99,14 +104,13 @@ def _dense_entry(cls: type, call: GemmCall) -> Entry:
         call.n,
         call.k,
         call.dtype,
-        tune=call.tune,
         trans_a=call.trans_a,
         trans_b=call.trans_b,
         device_index=index,
     )
 
 
-class _GemmFp8Kernel(Kernel):
+class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
     """Shared body of the two FP8 GEMM kernels; ``BLOCK_SCALED`` picks the scale grid.
 
     Takes :func:`_gemm_fp8_ws_kernel`, or :func:`_gemm_fp8_kernel` on a call
@@ -132,7 +136,7 @@ class _GemmFp8Kernel(Kernel):
         return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
+    def entry_for(cls, call: GemmFp8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.m,
@@ -150,9 +154,8 @@ class _GemmFp8Kernel(Kernel):
             call.k,
             call.dtype,
             call.out_dtype,
-            tune=call.tune,
             device_index=index,
-            b_scale_rows=128 if call.block_scale_grid == "1d2d" else 1,
+            b_scale_rows=128 if cls.block_scale_grid(call) == "1d2d" else 1,
         )
 
     def __init__(
@@ -310,7 +313,7 @@ class GemmFp8TensorScaleKernel(_GemmFp8Kernel):
     BLOCK_SCALED = False
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
+    def applies(cls, call: GemmFp8Call) -> bool:
         return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
 
 
@@ -325,8 +328,8 @@ class GemmFp8BlockScaleKernel(_GemmFp8Kernel):
     general = True
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return call.block_scale_grid is not None
+    def applies(cls, call: GemmFp8Call) -> bool:
+        return cls.block_scale_grid(call) is not None
 
 
 @functools.lru_cache(maxsize=32)
@@ -2588,7 +2591,7 @@ def _gemm_coop2s_kernel(
     return _gemm_coop2s_func
 
 
-class GemmTmaKernel(Kernel):
+class GemmTmaKernel(Kernel, GemmFwdInterface):
     """Dense GEMM kernel family: hand-written SM90 implementations.
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
@@ -2599,11 +2602,11 @@ class GemmTmaKernel(Kernel):
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
-    through TMA and runs its math on WGMMA.
+    through TMA and runs its math on WGMMA, so it claims the shapes whose operands
+    TMA can address and ``GemmCpAsyncKernel`` takes the rest.
     """
 
     supported_archs: list[int] = [90]
-    general = True
 
     _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
 
@@ -2626,14 +2629,11 @@ class GemmTmaKernel(Kernel):
         super().init_config(config, tune)
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return (
-            _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
-            is None
-        )
+    def applies(cls, call: GemmCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
+    def refusal(cls, call: GemmCall) -> Optional[str]:
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
@@ -2917,7 +2917,7 @@ def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
     ]
 
 
-class GemvKernel(Kernel):
+class GemvKernel(Kernel, GemmFwdInterface):
     """The bandwidth-bound band of ``GemmFwdOp``: at most two rows contracted over K.
 
     Three bands build one body, :func:`_gemm_small_batch_kernel`, which reduces over
@@ -2938,10 +2938,28 @@ class GemvKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+    # A vector operand is TMA-addressable as often as any other shape, so this band
+    # overlaps the warp-specialized kernel; reducing over K on CUDA cores wins there.
+    preferred_over = frozenset({"gemm_tma"})
 
     #: The bands this class serves. ``lhs_row`` and ``rhs_col`` name the vector
     #: operand; ``lhs_rows`` is the two-row NT band.
     BANDS: tuple[str, ...] = ("lhs_row", "rhs_col", "lhs_rows")
+
+    @classmethod
+    def _vector_operand(cls, call: GemmCall) -> Optional[str]:
+        """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
+
+        ``a`` is a single row with ``b`` transposed, or ``b`` is a single column with
+        neither transposed; the other two layouts have no GEMV form here.
+        """
+        if call.trans_a:
+            return None
+        if call.m == 1 and call.trans_b:
+            return "lhs_row"
+        if call.n == 1 and not call.trans_b:
+            return "rhs_col"
+        return None
 
     @classmethod
     def band_for(cls, call: GemmCall) -> Optional[str]:
@@ -2949,8 +2967,9 @@ class GemvKernel(Kernel):
 
         Read by :meth:`applies` and by :meth:`entry_for`, so the region is stated once.
         """
-        if call.gemv_mode is not None:
-            return call.gemv_mode
+        vector = cls._vector_operand(call)
+        if vector is not None:
+            return vector
         if call.trans_a or not call.trans_b or call.m != 2:
             return None
         if not swap_ab_grid_underfills(call.n, call.sm_count):
@@ -2976,7 +2995,6 @@ class GemvKernel(Kernel):
             call.n,
             call.k,
             call.dtype,
-            tune=call.tune,
             device_index=index,
         )
 
@@ -3183,15 +3201,17 @@ def _gemm_basic_kernel(
     return _gemm_basic_func
 
 
-class GemmCpAsyncKernel(Kernel):
+class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
     """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout —
     the same contract as ``GemmTmaKernel`` — via ``T.Pipelined`` + plain
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
-    sm89). fp16 / bf16 inputs, fp32 accumulation. ``block_k`` must divide
-    ``k`` (the smallest fallback is 16); M / N need not be multiples of the
-    block sizes (epilogue guard). A config with ``split_k > 1`` returns the
+    sm89). It loads through ``cp.async``, which addresses any extent, so it is the
+    general implementation: it serves every shape no other one claims, SM90 shapes
+    TMA cannot address included. fp16 / bf16 inputs, fp32 accumulation. ``block_k``
+    must divide ``k`` (the smallest fallback is 16); M / N need not be multiples of
+    the block sizes (epilogue guard). A config with ``split_k > 1`` returns the
     reduced ``[M, N]`` result and requires exact M / N / K tiles.
     """
 
@@ -3206,9 +3226,8 @@ class GemmCpAsyncKernel(Kernel):
         units, so a row shorter than that is rejected by the backend. K need not be
         16-aligned beyond this — the backend zero-pads K tails.
 
-        Read three times: by ``applies`` and ``refusal``, so an unservable K is
-        refused during selection rather than reaching a builder, and by the
-        constructor, which is also entered directly.
+        Read by ``refusal``, so an unservable K is refused during selection rather
+        than reaching a builder, and by the constructor, which is also entered directly.
         """
         if k * dtype.itemsize >= 4:
             return None
@@ -3218,36 +3237,12 @@ class GemmCpAsyncKernel(Kernel):
         )
 
     @classmethod
-    def applies(cls, call: Any) -> bool:
-        """Every architecture, less the SM90 shapes :class:`GemmTmaKernel` supersedes.
-
-        ``GemmTmaKernel`` serves an SM90 call whose operands TMA can address, so this
-        class states that one exclusion and keeps the rest of SM90 — the pipelined
-        mainloop loads through ``cp.async`` and has no such requirement. Excluding
-        all of SM90 instead left a TMA-misaligned shape with no implementation at
-        all, though this one runs it.
-
-        Why the exclusion is here rather than in ``supported_archs``: that list also
-        gates direct construction, and this class runs on SM90.
-        """
-        if cls._narrow_k_row(call.k, call.dtype) is not None:
-            return False
-        if call.arch != 90:
-            return True
-        return (
-            _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
-            is not None
-        )
+    def applies(cls, call: GemmCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: Any) -> Optional[str]:
-        """The narrow-K reason where that is what refuses, else the base answer."""
-        archs = cls.supported_archs
-        if archs is not None and call.arch in archs:
-            narrow = cls._narrow_k_row(call.k, call.dtype)
-            if narrow is not None:
-                return narrow
-        return super().refusal(call)
+    def refusal(cls, call: GemmCall) -> Optional[str]:
+        return cls._narrow_k_row(call.k, call.dtype)
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:

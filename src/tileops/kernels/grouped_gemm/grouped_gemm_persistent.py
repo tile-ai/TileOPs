@@ -4,7 +4,11 @@ from typing import Optional
 
 import torch
 
-from tileops.kernels.grouped_gemm.call import GroupedGemmCall
+from tileops.kernels.grouped_gemm.call import (
+    GroupedGemmCall,
+    GroupedGemmFwdInterface,
+    grouped_gemm_entry,
+)
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -12,37 +16,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 __all__ = ["GroupedGemmPersistentKernel"]
 
 
-def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
-    """The entry for a grouped-GEMM candidate: both take the same construction arguments.
-
-    The device index is in the identity because the kernel is compiled for the
-    architecture it is built on.
-    """
-    index = call.device.index if call.device is not None else None
-    identity = (
-        call.numel,
-        call.num_experts,
-        call.n,
-        call.k,
-        call.dtype,
-        call.transpose_a,
-        call.transpose_b,
-        index,
-    )
-    return identity, lambda: cls(
-        call.numel,
-        call.num_experts,
-        call.n,
-        call.k,
-        call.dtype,
-        transpose_a=call.transpose_a,
-        transpose_b=call.transpose_b,
-        tune=call.tune,
-        device_index=index,
-    )
-
-
-class GroupedGemmPersistentKernel(Kernel):
+class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
     """``GroupedGemmFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
 
     An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
@@ -62,7 +36,7 @@ class GroupedGemmPersistentKernel(Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
+    def applies(cls, call: GroupedGemmCall) -> bool:
         if call.dtype not in (torch.bfloat16, torch.float16):
             return False
         # ``call.n`` is a's non-group extent, ``call.k`` b's; TT also strides b by numel.
@@ -84,7 +58,6 @@ class GroupedGemmPersistentKernel(Kernel):
         dtype: torch.dtype = torch.float16,
         transpose_a: bool = False,
         transpose_b: bool = True,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -98,9 +71,7 @@ class GroupedGemmPersistentKernel(Kernel):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = GemmTemplate(
-            gemm_type, num_groups=batch_count, tune=tune, device_index=device_index
-        )
+        self.inner = GemmTemplate(gemm_type, num_groups=batch_count, device_index=device_index)
 
     def forward(
         self,
@@ -108,13 +79,11 @@ class GroupedGemmPersistentKernel(Kernel):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """One GEMM per group, packed along rows (NT / NN) or along K (TN / TT)."""
         if self.transpose_a:
             # a [batch_sum, M] and b [batch_sum, N] or [N, batch_sum]: the groups split K.
             b_logical = b if self.transpose_b else b.transpose(0, 1)
-            return self.inner(a.transpose(0, 1), b_logical, grouped_layout=batch_sizes, out=out)
+            return self.inner(a.transpose(0, 1), b_logical, grouped_layout=batch_sizes)
         b_logical = b if self.transpose_b else b.transpose(1, 2)
-        ends = batch_offsets + batch_sizes
-        return self.inner(a, b_logical, grouped_layout=ends, out=out)
+        return self.inner(a, b_logical, grouped_layout=batch_offsets + batch_sizes)

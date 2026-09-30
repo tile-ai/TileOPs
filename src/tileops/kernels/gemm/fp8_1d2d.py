@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.call_spec import GemmFp8Call, GemmFp8FwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
@@ -467,7 +467,7 @@ def _gemm_fp8_1d2d_kernel(
     return kernel_func
 
 
-class GemmFp81D2DFwdKernel(Kernel):
+class GemmFp81D2DFwdKernel(Kernel, GemmFp8FwdInterface):
     """FP8 NT GEMM for 1D2D scales, bfloat16 output, no bias.
 
     ``scale_a`` is ``[M, ceil(K/128)]`` and ``scale_b`` is
@@ -539,9 +539,9 @@ class GemmFp81D2DFwdKernel(Kernel):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
+    def applies(cls, call: GemmFp8Call) -> bool:
         return (
-            call.block_scale_grid == "1d2d"
+            cls.block_scale_grid(call) == "1d2d"
             and call.dtype == torch.float8_e4m3fn
             and call.out_dtype == torch.bfloat16
             and not call.has_bias
@@ -555,7 +555,7 @@ class GemmFp81D2DFwdKernel(Kernel):
         )
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
+    def entry_for(cls, call: GemmFp8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(
@@ -564,7 +564,6 @@ class GemmFp81D2DFwdKernel(Kernel):
             call.k,
             call.dtype,
             call.out_dtype,
-            tune=call.tune,
             device_index=index,
         )
 

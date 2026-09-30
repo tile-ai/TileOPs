@@ -193,4 +193,5 @@ def test_selection_prefers_the_template_where_tma_can_address_the_operands(
         transpose_a=transpose_a,
         transpose_b=transpose_b,
     )
-    assert op.select_kernel(call).__name__ == expected
+    key = op.select_implementation("grouped_gemm", call)
+    assert op.kernel_map[key].__name__ == expected

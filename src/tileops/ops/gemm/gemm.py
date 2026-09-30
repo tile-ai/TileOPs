@@ -4,18 +4,26 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.gemm.call_spec import GemmCall
-from tileops.kernels.gemm.dense import (
+from tileops.kernels.gemm import (
+    GemmCall,
     GemmCpAsyncKernel,
     GemmFp8BlockScaleKernel,
+    GemmFp8Call,
+    GemmFp8FwdInterface,
     GemmFp8TensorScaleKernel,
+    GemmFp81D2DFwdKernel,
+    GemmFwdInterface,
     GemmTmaKernel,
+    GemmW4A16Call,
+    GemmW4A16FwdInterface,
+    GemmW4A16Kernel,
     GemvKernel,
+    W4A16RepackCall,
+    W4A16RepackInterface,
+    W4A16RepackKernel,
 )
-from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
-from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT, GemmW4A16Kernel
-from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -39,10 +47,11 @@ class GemmFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_tma_kernel": GemmTmaKernel,
-        "gemm_cp_async_kernel": GemmCpAsyncKernel,
-        "gemv_kernel": GemvKernel,
+        "gemm_tma": GemmTmaKernel,
+        "gemm_cp_async": GemmCpAsyncKernel,
+        "gemv": GemvKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm": GemmFwdInterface}
 
     def __init__(
         self,
@@ -68,26 +77,6 @@ class GemmFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def _call_spec(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        device: Optional[torch.device] = None,
-    ) -> GemmCall:
-        """State this call, for selection to filter candidates against."""
-        return GemmCall(
-            m=m,
-            n=n,
-            k=k,
-            dtype=dtype,
-            trans_a=self.trans_a,
-            trans_b=self.trans_b,
-            device=device,
-            tune=self.tune,
-        )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiply the two matrices under the layout the constructor selected.
@@ -116,9 +105,16 @@ class GemmFwdOp(Op):
         """
         a, b = a.contiguous(), b.contiguous()
         m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
-        n = b.shape[0] if self.trans_b else b.shape[1]
-        kernel = self.kernel_for("gemm", (a, b), self._call_spec(m, n, k, a.dtype, a.device))
-        return kernel(a, b)
+        call = GemmCall(
+            m=m,
+            n=b.shape[0] if self.trans_b else b.shape[1],
+            k=k,
+            dtype=a.dtype,
+            trans_a=self.trans_a,
+            trans_b=self.trans_b,
+            device=a.device,
+        )
+        return self.kernel_for("gemm", (a, b), call)(a, b)
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.last_call.ix["T"])
@@ -137,10 +133,11 @@ class GemmFp8FwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_fp8_tensor_scale_kernel": GemmFp8TensorScaleKernel,
-        "gemm_fp8_block_scale_kernel": GemmFp8BlockScaleKernel,
-        "gemm_fp8_1d2d_kernel": GemmFp81D2DFwdKernel,
+        "gemm_fp8_tensor_scale": GemmFp8TensorScaleKernel,
+        "gemm_fp8_block_scale": GemmFp8BlockScaleKernel,
+        "gemm_fp8_1d2d": GemmFp81D2DFwdKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GemmFp8FwdInterface}
 
     def __init__(
         self,
@@ -211,18 +208,16 @@ class GemmFp8FwdOp(Op):
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
-        call = GemmCall(
+        call = GemmFp8Call(
             m=m,
             n=n,
             k=k,
             dtype=a.dtype,
-            trans_b=True,
             scale_a_shape=tuple(scale_a.shape),
             scale_b_shape=tuple(scale_b.shape),
             out_dtype=self.out_dtype,
             has_bias=bias is not None,
             device=a.device,
-            tune=self.tune,
         )
         self.kernel = self.kernel_for("gemm_fp8", (a, b, scale_a, scale_b, bias), call)
         return self.kernel(a, b, scale_a, scale_b, bias)
@@ -245,7 +240,14 @@ class GemmW4A16FwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gemm_w4a16_kernel": GemmW4A16Kernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gemm_w4a16": GemmW4A16Kernel,
+        "w4a16_repack": W4A16RepackKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gemm_w4a16": GemmW4A16FwdInterface,
+        "w4a16_repack": W4A16RepackInterface,
+    }
 
     def __init__(
         self,
@@ -285,9 +287,12 @@ class GemmW4A16FwdOp(Op):
             stacklevel=2,
         )
 
-    @staticmethod
-    def repack(packed_weight: torch.Tensor) -> torch.Tensor:
+    def repack(self, packed_weight: torch.Tensor) -> torch.Tensor:
         """Put a row-major packed weight into the order ``forward`` reads.
+
+        The order is a contract between this op's repack and its GEMM, so both come
+        from the same set of kernels: replacing one through ``kernel_map=`` replaces
+        the other with it.
 
         Args:
             packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:
@@ -310,10 +315,9 @@ class GemmW4A16FwdOp(Op):
                 f"repack needs K/2={packed_k} to be a multiple of {W4A16_LAYOUT.mma_step_k // 2}, the"
                 " packed width of one MMA K step"
             )
-        # Built with the weight's device current, as Op.kernel_for builds every kernel.
-        with torch.cuda.device(packed_weight.device):
-            kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
-            return kernel(packed_weight)
+        packed_weight = packed_weight.contiguous()
+        call = W4A16RepackCall(n=n, packed_k=packed_k, device=packed_weight.device)
+        return self.kernel_for("w4a16_repack", (packed_weight,), call)(packed_weight)
 
     def forward(
         self,
@@ -360,15 +364,13 @@ class GemmW4A16FwdOp(Op):
             t.contiguous() for t in (activation, packed_weight, weight_scale, weight_zero)
         )
         (m, k), n = activation.shape, packed_weight.shape[0]
-        call = GemmCall(
+        call = GemmW4A16Call(
             m=m,
             n=n,
             k=k,
             dtype=activation.dtype,
-            trans_b=True,
             group_size=self.group_size,
             device=activation.device,
-            tune=self.tune,
         )
         self.kernel = self.kernel_for("gemm_w4a16", inputs, call)
         return self.kernel(*inputs)
