@@ -26,6 +26,7 @@ from workloads.sampling import (
     TopKMaskWorkload,
     TopKTopPMaskWorkload,
     TopPMaskWorkload,
+    chain_speculative_sampling,
     min_p_mask,
     probability_above,
     sampling_call,
@@ -160,11 +161,13 @@ def test_top_k_mask_cuts_a_row_its_samples_misplace():
     assert torch.equal(out, top_k_mask(logits, k))
 
 
+@pytest.mark.in_tree_kernels
 def test_top_k_mask_selects_its_one_implementation():
     call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
     assert TopKMaskFwdOp().select_implementation("top_k_mask_fwd", call) == "top_k_mask_fwd"
 
 
+@pytest.mark.in_tree_kernels
 def test_top_k_mask_refuses_a_call_int32_cannot_index():
     call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
     with pytest.raises(ValueError, match="B \\* V"):
@@ -217,6 +220,7 @@ def test_top_p_mask(dtype):
     _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= _MARGIN)
 
 
+@pytest.mark.in_tree_kernels
 def test_top_p_mask_selects_its_one_implementation():
     call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
     assert TopPMaskFwdOp().select_implementation("top_p_mask_fwd", call) == "top_p_mask_fwd"
@@ -404,6 +408,69 @@ def test_chain_speculative_sampling():
     out = _run(op, *inputs)
     _assert_verifies_chains(*out, draft_ids, draft, target, accepted)
     assert all(map(torch.equal, out, op(*inputs)))
+
+
+@pytest.mark.in_tree_kernels
+def test_chain_speculative_sampling_selects_its_one_implementation():
+    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, num_draft=4)
+    op = ChainSpeculativeSamplingFwdOp()
+    assert (
+        op.select_implementation("chain_speculative_sampling", call) == "chain_speculative_sampling"
+    )
+
+
+@pytest.mark.in_tree_kernels
+def test_chain_speculative_sampling_refuses_a_call_int32_cannot_index():
+    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, num_draft=1)
+    with pytest.raises(ValueError, match=r"B \* \(N \+ 1\) \* V"):
+        ChainSpeculativeSamplingFwdOp().select_implementation("chain_speculative_sampling", call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch, vocab, num_draft",
+    [
+        # A row split across blocks, a row one block holds, a row whose bytes are not a whole
+        # number of 16-byte vectors, which is folded weight by weight, and a chain longer than
+        # the block, whose uniforms one thread each takes over several rounds.
+        (2, 151936, 3),
+        (300, 32000, 3),
+        (8, 4099, 3),
+        (4, 64, 600),
+    ],
+)
+def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, num_draft):
+    """``num_accepted`` and the accepted prefix are the reference's, at every launch shape.
+
+    The uniforms and the float32 ``u * draft < target`` test are the reference's, and neither
+    names a launch fact, so the verification agrees exactly however the row is split. The
+    token after the prefix follows the same distribution but is not required to be the
+    reference's index.
+    """
+    device = run_device()
+    torch.manual_seed(11)
+    draft = torch.randn(batch, num_draft, vocab, device=device).softmax(-1)
+    target = torch.randn(batch, num_draft + 1, vocab, device=device).softmax(-1)
+    ids = torch.multinomial(draft.reshape(-1, vocab), 1).view(batch, num_draft)
+    inputs = (
+        draft,
+        ids.to(torch.int32).contiguous(),
+        target,
+        torch.tensor([1234], dtype=torch.int64, device=device),
+        torch.tensor([7], dtype=torch.int64, device=device),
+    )
+    ref_tokens, ref_num = chain_speculative_sampling(*inputs)
+    tokens, num = _run(ChainSpeculativeSamplingFwdOp(), *inputs)
+    assert torch.equal(num, ref_num)
+    position = torch.arange(num_draft + 1, device=device)[None]
+    prefix = position < num[:, None]
+    assert torch.equal(tokens[prefix], ref_tokens[prefix])
+    assert (tokens[position > num[:, None]] == -1).all()
+    # The drawn token carries residual weight at the position the chain stopped on.
+    rows = torch.arange(batch, device=device)
+    padded = torch.cat([draft, torch.zeros_like(draft[:, :1])], 1)
+    weights = (target[rows, num.long()] - padded[rows, num.long()]).clamp_min(0)
+    assert (weights[rows, tokens[rows, num.long()].long()] > 0).all()
 
 
 _SMALL_CALLS = {

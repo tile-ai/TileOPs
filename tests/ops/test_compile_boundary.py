@@ -73,6 +73,7 @@ from tileops.ops.rope import (
     RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
+from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
 from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
 from tileops.ops.sampling.sampling_from_probs import SamplingFromProbsFwdOp
 from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
@@ -564,7 +565,7 @@ def _other_cases():
 
 
 def _sampling_cases():
-    """The logit filters and the token draw, each with the inputs it is built for."""
+    """The logit filters, the token draw and the chain verification, each with the inputs it is built for."""
 
     def min_p_mask():
         logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
@@ -586,11 +587,19 @@ def _sampling_cases():
         state = torch.tensor([7], dtype=torch.int64, device=run_device())
         return SamplingFromProbsFwdOp(), (probs, state, state)
 
+    def chain_speculative_sampling():
+        draft = torch.rand(4, 2, 256, device=run_device()).softmax(-1)
+        target = torch.rand(4, 3, 256, device=run_device()).softmax(-1)
+        ids = torch.randint(0, 256, (4, 2), dtype=torch.int32, device=run_device())
+        state = torch.tensor([7], dtype=torch.int64, device=run_device())
+        return ChainSpeculativeSamplingFwdOp(), (draft, ids, target, state, state)
+
     return (
         ("min-p-mask", min_p_mask),
         ("top-k-mask", top_k_mask),
         ("top-p-mask", top_p_mask),
         ("sampling-from-probs", sampling_from_probs),
+        ("chain-speculative-sampling", chain_speculative_sampling),
     )
 
 
@@ -775,6 +784,7 @@ for _op_cls in (
     DeltaNetDecodeFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
+    ChainSpeculativeSamplingFwdOp,
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
     INT8DequantPerBlockFwdOp,
