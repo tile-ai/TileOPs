@@ -284,20 +284,13 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
     def default_config(self) -> dict:
         return {"threads": 128}
 
-    @property
-    def output_size(self) -> int:
-        return self.required_output_size(self.num_tokens, self.top_k, self.num_experts)
-
-    @staticmethod
-    def required_output_size(num_tokens: int, top_k: int, num_experts: int) -> int:
-        return _route_metadata_size(num_experts, num_tokens * top_k, num_tokens)
-
     def forward(self, expert_ids: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         expected = (self.num_tokens, self.top_k)
         if tuple(expert_ids.shape) != expected or expert_ids.dtype is not torch.int32:
             raise ValueError(f"expert_ids must be {expected} int32")
-        if tuple(out.shape) != (self.output_size,) or out.dtype is not torch.int32:
-            raise ValueError(f"out must be ({self.output_size},) int32")
+        size = _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
+        if tuple(out.shape) != (size,) or out.dtype is not torch.int32:
+            raise ValueError(f"out must be ({size},) int32")
         self.kernel(**self.config)(expert_ids, out)
         return out
 

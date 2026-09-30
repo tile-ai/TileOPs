@@ -330,18 +330,27 @@ class IndexedRouteStatsFwdInterface(KernelInterface):
 
     request = IndexedExpertCall
 
+    @classmethod
+    def output_size(cls, call: "IndexedExpertCall") -> int:
+        """How many ``int32`` elements *out* holds.
+
+        Per-expert route counts, then each route's rank within its expert, then up to
+        ``call.num_tokens`` routes listed per expert. The op allocates *out* from this,
+        so every implementation writes the same layout.
+        """
+        return call.num_experts * (1 + call.num_tokens) + call.num_tokens * call.top_k
+
     @abstractmethod
     def forward(self, expert_ids: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         """Count each expert's routes and list them, so a GEMM block computes a whole group.
 
-        Reached only when ``call.grouped_dispatch``. *out* is written in place and returned;
-        its length is the implementation's ``output_size``, which the caller reads off the
-        built kernel rather than computing.
+        Reached only when ``call.grouped_dispatch``. *out* is written in place and returned.
 
         Args:
             expert_ids: Contiguous ``int32`` ``(call.num_tokens, call.top_k)``, each in
                 ``[0, call.num_experts)``, on ``call.device``.
-            out: A contiguous ``int32`` buffer of ``output_size`` elements on ``call.device``.
+            out: A contiguous ``int32`` buffer of ``output_size(call)`` elements on
+                ``call.device``.
 
         Returns:
             *out*, holding the per-expert route counts, each route's rank within its expert,

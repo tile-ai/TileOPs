@@ -118,9 +118,9 @@ class IndexedExpertMLPFwdOp(Op):
         )
         metadata = None
         if call.grouped_dispatch:
-            stats = self.kernel_for("route_stats", (topk_ids,), call)
-            metadata = torch.empty(stats.output_size, dtype=torch.int32, device=topk_ids.device)
-            stats(topk_ids, metadata)
+            size = IndexedRouteStatsFwdInterface.output_size(call)
+            metadata = torch.empty(size, dtype=torch.int32, device=topk_ids.device)
+            self.kernel_for("route_stats", (topk_ids, metadata), call)(topk_ids, metadata)
         hidden_rows = hidden_states.new_empty(tokens, top_k, call.ffn_size)
         route_output = hidden_states.new_empty(tokens, top_k, hidden)
         gate_up = self.kernel_for(
