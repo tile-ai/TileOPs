@@ -3,8 +3,9 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.attention import MlaDecodeCall, MLADecodeWsKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.attention import MLADecodeWsKernel
+from tileops.kernels.attention.call_spec import MlaDecodeCall, MLADecodeFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -16,6 +17,9 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mla_decode_kernel": MLADecodeWsKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "mla_decode_kernel": MLADecodeFwdInterface
+    }
 
     def __init__(
         self,
@@ -71,7 +75,6 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
             pe_dim=q_pe.shape[2],
             dtype=q.dtype,
             device=q.device,
-            tune=self.tune,
         )
         return self.kernel_for("mla_decode_kernel", inputs, call)(*inputs)
 

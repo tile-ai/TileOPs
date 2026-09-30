@@ -10,11 +10,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.linear_attention.gated_deltanet.prefill.common import prepare_chunk_offsets
+from tileops.kernels.linear_attention.gated_deltanet.prefill_common import prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)
-def _prefill_chunk_local_cumsum_bthd_tl(
+def prefill_chunk_local_cumsum_bthd_tl(
     batch: int,
     head: int,
     seq_len: int,
@@ -462,7 +462,7 @@ def _prefill_blocksolve_A_bthd_tl(
     return _func(32)
 
 
-def _prefill_blocksolve_A_bthd(
+def prefill_blocksolve_A_bthd(
     k: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,

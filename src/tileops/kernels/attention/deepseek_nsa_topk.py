@@ -5,8 +5,9 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.attention.call_spec import NSACall, NSATopkFwdInterface
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -214,44 +215,27 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func
 
 
-def _nsa_topk_varlen_run(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    selected_block_num: int,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    q: torch.Tensor,
-    k_cmp: torch.Tensor,
-    offsets: torch.Tensor,
-    chunk_offsets: torch.Tensor,
-    token_indices: torch.Tensor,
-) -> torch.Tensor:
-    return _nsa_topk_varlen_kernel(
-        seq_num,
-        c_seq_len,
-        heads,
-        dim,
-        chunk_num,
-        group,
-        scale,
-        selected_block_num,
-        bc,
-        bs,
-        dtype,
-        accum_dtype,
-    )(threads)(q, k_cmp, offsets, chunk_offsets, token_indices)
-
-
-class NSATopkVarlenKernel(Kernel):
+class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        """The chunk tile width is the block size: the candidate pool keeps the best
+        tile-width chunks."""
+        return call, lambda: cls(
+            seq_num=call.batch,
+            c_seq_len=call.c_seq_len,
+            heads=call.heads,
+            dim=call.dim,
+            chunk_num=call.chunk_num,
+            group=call.heads // call.heads_kv,
+            scale=call.scale,
+            selected_block_num=call.selected_blocks,
+            bc=call.block_size,
+            bs=call.block_size,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
 
     def __init__(
         self,
@@ -305,7 +289,7 @@ class NSATopkVarlenKernel(Kernel):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _nsa_topk_varlen_run(
+        return _nsa_topk_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
             self.heads,
@@ -318,7 +302,7 @@ class NSATopkVarlenKernel(Kernel):
             self.bs,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["threads"],
+        )(self.config["threads"])(
             q.to(self.dtype),
             k_cmp.to(self.dtype),
             offsets.to(torch.int32),

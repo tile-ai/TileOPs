@@ -392,11 +392,9 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
 @pytest.mark.parametrize(
     "op_name, shape, key",
     [
-        ("CumsumFwdOp", (127, 16384), "cumulative_row_scan"),
         ("CumsumFwdOp", (127, 8448), "cumulative_row_scan"),
         ("CumsumFwdOp", (127, 8200), "cumulative_parallel_scan"),
         ("CumsumFwdOp", (128, 8200), "cumulative_fwd"),
-        ("CumsumFwdOp", (64, 8192), "cumulative_row_scan"),
         ("CumsumFwdOp", (64, 262144), "cumulative_parallel_scan"),
         ("CumprodFwdOp", (64, 262144), "cumulative_fwd"),
         ("CumprodFwdOp", (64, 16384), "cumulative_row_scan"),

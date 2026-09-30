@@ -8,11 +8,9 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
+    AttentionCall,
     GQADenseFwdInterface,
-    dense_fp8_limit_refusal,
-    dense_fp8_refusal,
 )
-from tileops.kernels.attention.dense_entry import dense_fp8_entry
 from tileops.kernels.attention.gqa_dense import make_dense_qk_rope_preprocessor
 from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
 from tileops.kernels.constants import LOG2E
@@ -879,45 +877,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     return func
 
 
-def _gqa_dense_fwd_fp8_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seq_len_q: int,
-    seq_len_kv: int,
-    dim: int,
-    out_dtype: str,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    q_descale: torch.Tensor,
-    k_descale: torch.Tensor,
-    v_descale: torch.Tensor,
-    sm_count: int,
-) -> torch.Tensor:
-    num_tasks = batch * heads * ((seq_len_q + 127) // 128)
-    num_waves = (num_tasks + sm_count - 1) // sm_count
-    grid_size = (num_tasks + num_waves - 1) // num_waves
-    return _gqa_fwd_fp8_bn224_tma_v_kernel(
-        batch,
-        heads,
-        heads_kv,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        out_dtype,
-        is_causal,
-        sm_scale,
-        softcap,
-        False,
-        grid_size,
-    )()(q, k, v, q_descale, k_descale, v_descale)[0]
-
-
-def _validate_fa3_gqa_descales(
+def validate_fa3_gqa_descales(
     q_descale: torch.Tensor,
     k_descale: torch.Tensor,
     v_descale: torch.Tensor,
@@ -950,20 +910,68 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        if not call.is_fp8:
+            return "does not serve this call"
+        return cls._limit_refusal(
+            dim=call.dim,
+            seq_len_q=call.max_seqlen_q,
+            seq_len_kv=call.seqlen_kv,
+            is_causal=call.is_causal,
+            softcap=call.softcap,
+            window=(call.window_size_left, call.window_size_right),
+            fuse_rope=call.fuse_rope,
+        )
 
     @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_fp8_refusal(call)
+    def _limit_refusal(
+        *,
+        dim: int,
+        seq_len_q: int,
+        seq_len_kv: int,
+        is_causal: bool,
+        softcap: float,
+        window: tuple[int, int],
+        fuse_rope: bool,
+    ) -> Optional[str]:
+        """Why the program cannot build this shape; read by the region and the constructor,
+        which a caller can reach directly."""
+        if window != (-1, -1):
+            return "does not serve sliding windows"
+        if fuse_rope and seq_len_q == 1:
+            return "does not serve RoPE with one query position"
+        if not is_causal and seq_len_q != seq_len_kv:
+            return "non-causal attention requires equal Q and KV lengths"
+        if not is_causal and softcap != 0.0:
+            return "does not serve a softcap without the causal mask"
+        if dim != 128:
+            return "requires head dimension 128"
+        return None
 
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_fp8_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Compiles exact extents, so both sequence lengths are in the identity."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len_q=call.max_seqlen_q,
+            seq_len_kv=call.seqlen_kv,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            window_size_left=call.window_size_left,
+            window_size_right=call.window_size_right,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
 
     def __init__(
         self,
@@ -1027,7 +1035,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("native-FP8 Dense GQA outputs float16 or bfloat16")
         if self.is_causal and self.seq_len_q > self.seq_len_kv:
             raise ValueError("causal FP8 Dense GQA requires seq_len_q <= seq_len_kv")
-        reason = dense_fp8_limit_refusal(
+        reason = self._limit_refusal(
             dim=self.dim,
             seq_len_q=self.seq_len_q,
             seq_len_kv=self.seq_len_kv,
@@ -1065,7 +1073,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("GQADenseFP8Kernel requires float8_e4m3fn q, k, and v")
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQADenseFP8Kernel requires q_scale, k_scale, and v_scale")
-        _validate_fa3_gqa_descales(
+        validate_fa3_gqa_descales(
             q_scale,
             k_scale,
             v_scale,
@@ -1078,7 +1086,10 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             q, k = self.rope(q, k, rope_cos, rope_sin)
         elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
-        return _gqa_dense_fwd_fp8_run(
+        num_tasks = self.batch * self.heads * ((self.seq_len_q + 127) // 128)
+        num_waves = (num_tasks + self.sm_count - 1) // self.sm_count
+        grid_size = (num_tasks + num_waves - 1) // num_waves
+        return _gqa_fwd_fp8_bn224_tma_v_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1089,11 +1100,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             self.is_causal,
             self.sm_scale,
             self.softcap,
-            q,
-            k,
-            v,
-            q_scale,
-            k_scale,
-            v_scale,
-            self.sm_count,
-        )
+            False,
+            grid_size,
+        )()(q, k, v, q_scale, k_scale, v_scale)[0]

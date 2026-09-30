@@ -16,7 +16,8 @@ import torch
 
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
-    paged_decode_refusal,
+    GQAPagedFwdInterface,
+    MHAPagedDecodeFwdInterface,
 )
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
@@ -47,11 +48,6 @@ def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
     if block_ns:
         return block_ns
     raise ValueError(f"page_size={page_size} matches no supported block_N")
-
-
-def gqa_decode_paged_block_n(page_size: int) -> int:
-    """Return the widest key tile height that keeps one tile inside one page."""
-    return gqa_decode_paged_block_ns(page_size)[0]
 
 
 def _softmax_scale(dim, sm_scale, softcap):
@@ -176,7 +172,7 @@ def _make_tile_steps(
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_no_split_paged_kernel(
+def gqa_decode_no_split_paged_kernel(
     batch,
     heads,
     heads_kv,
@@ -513,120 +509,7 @@ def _gqa_decode_split_paged_kernel(
     return _func
 
 
-def _gqa_decode_paged_no_split_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    """Run the one-pass variant; ``Q`` is ``[batch, seqlen_q, heads, dim]`` or packed."""
-    kernel = _gqa_decode_no_split_paged_kernel(
-        batch,
-        heads,
-        heads_kv,
-        seqlen_q,
-        seqlen_kv,
-        dim,
-        page_size,
-        max_pages_per_req,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_M, block_N, num_stages, threads)
-    q = Q.view(batch, seqlen_q, heads, dim)
-    return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
-
-
-def _gqa_decode_paged_split_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    num_split: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-    acc_split_length: torch.Tensor,
-) -> torch.Tensor:
-    kernel = _gqa_decode_split_paged_kernel(
-        batch,
-        heads,
-        heads_kv,
-        seqlen_q,
-        seqlen_kv,
-        dim,
-        page_size,
-        max_pages_per_req,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_M, block_N, num_split, num_stages, threads)
-    q = Q.view(batch, seqlen_q, heads, dim)
-    out = kernel(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
-    return out.view(Q.shape)
-
-
-def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
-    """The entry for the paged-decode kernel.
-
-    A one-token causal query sees the whole cache, so it builds the non-causal
-    kernel. The device index is in the identity because the kernel is compiled
-    for the architecture it is built on.
-    """
-    index = call.device.index if call.device is not None else None
-    args = (
-        call.batch,
-        call.heads,
-        call.heads_kv,
-        call.max_seqlen_q,
-        call.seqlen_kv,
-        call.dim,
-        call.page_size,
-        call.max_pages_per_req,
-        call.is_causal and call.max_seqlen_q > 1,
-        call.dtype,
-    )
-    extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
-    identity = (*args, *extra.values(), index)
-    return identity, lambda: cls(*args, **extra, tune=call.tune, device_index=index)
-
-
-class GQADecodePagedKernel(Kernel):
+class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterface):
     """Paged decode for any head grouping and one query length shared by every request."""
 
     supported_archs: list[int] = [80, 89, 90]
@@ -634,17 +517,13 @@ class GQADecodePagedKernel(Kernel):
     general: bool = True
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: AttentionCall) -> Optional[str]:
         """Why *call* is outside the decode region or no key tile covers its pages."""
-        reason = paged_decode_refusal(call)
+        reason = call.paged_decode_refusal
         if reason is not None:
             return reason
         try:
@@ -655,7 +534,25 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        return paged_decode_entry(cls, call)
+        """A one-token causal query sees the whole cache, so it builds the non-causal
+        kernel. The device index is in the identity: the kernel is compiled for its
+        architecture."""
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.batch,
+            call.heads,
+            call.heads_kv,
+            call.max_seqlen_q,
+            call.seqlen_kv,
+            call.dim,
+            call.page_size,
+            call.max_pages_per_req,
+            call.is_causal and call.max_seqlen_q > 1,
+            call.dtype,
+        )
+        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
+        identity = (*args, *extra.values(), index)
+        return identity, lambda: cls(*args, **extra, device_index=index)
 
     def __init__(
         self,
@@ -789,14 +686,15 @@ class GQADecodePagedKernel(Kernel):
     ):
         """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache."""
         c = self.config
-        args = (*self._builder_args, c["block_M"], c["block_N"])
         # A cache shorter than one tile per split is not worth splitting.
         real_max = int(real_seqlen_kv.max().item())
         num_split = c["num_split"]
         if real_max < num_split * c["block_N"]:
-            return _gqa_decode_paged_no_split_run(
-                *args, c["num_stages"], c["threads"], Q, K, V, real_seqlen_kv, block_table
+            kernel = gqa_decode_no_split_paged_kernel(*self._builder_args)(
+                c["block_M"], c["block_N"], c["num_stages"], c["threads"]
             )
+            q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
+            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
         chunk_size = real_max // (num_split * c["block_N"]) * c["block_N"]
         split_length = torch.full(
@@ -812,17 +710,9 @@ class GQADecodePagedKernel(Kernel):
             dtype=self.dtype,
             device=Q.device,
         )
-        return _gqa_decode_paged_split_run(
-            *args,
-            num_split,
-            c["num_stages"],
-            c["threads"],
-            Q,
-            K,
-            V,
-            real_seqlen_kv,
-            block_table,
-            glse,
-            Output_partial,
-            acc_split_length,
+        kernel = _gqa_decode_split_paged_kernel(*self._builder_args)(
+            c["block_M"], c["block_N"], num_split, c["num_stages"], c["threads"]
         )
+        q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
+        out = kernel(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+        return out.view(Q.shape)

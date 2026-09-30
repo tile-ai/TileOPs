@@ -18,13 +18,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import uses_sliding_window
 from tileops.kernels.attention.online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
+from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.grouped_tiling import GroupTiling
 
 __all__ = [
@@ -130,16 +129,12 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
     @classmethod
     def applies(cls, call) -> bool:
         return (
-            uses_sliding_window(call)
+            call.uses_sliding_window
             and not call.is_fp8
             and not call.fuse_rope
             and call.sm_scale is None
             and call.softcap == 0.0
         )
-
-    @classmethod
-    def entry_for(cls, call):
-        return varlen_entry(cls, call)
 
     def _make_kernel(self) -> Callable:
         return _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(

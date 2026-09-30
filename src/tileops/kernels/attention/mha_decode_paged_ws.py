@@ -30,7 +30,11 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
+from tileops.kernels.attention.call_spec import (
+    ATTENTION_DTYPES,
+    AttentionCall,
+    MHAPagedDecodeFwdInterface,
+)
 from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import WARP_LANES
@@ -357,7 +361,7 @@ def _mha_decode_paged_ws_kernel(
     return _func
 
 
-class MHADecodePagedWsKernel(Kernel):
+class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
     """SM90 paged MHA decode: hand-written warp specialization, no MMA."""
 
     supported_archs: list[int] = [90]
@@ -392,7 +396,7 @@ class MHADecodePagedWsKernel(Kernel):
             and call.softcap == 0.0
             and call.dtype in ATTENTION_DTYPES
             and not call.is_fp8
-            and not uses_sliding_window(call)
+            and not call.uses_sliding_window
             and call.dim % WARP_LANES == 0
             and 0 < call.dim <= cls._MAX_DIM
             and bool(cls._tile_heights(call.page_size, call.seqlen_kv))
@@ -412,7 +416,7 @@ class MHADecodePagedWsKernel(Kernel):
             call.is_causal,
             call.dtype,
         )
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,

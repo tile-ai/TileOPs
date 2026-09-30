@@ -4,44 +4,33 @@ from typing import Callable, Optional
 
 import torch
 
-from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.attention.call_spec import AttentionCall, GQAVarlenFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 
-__all__ = ["VarlenKernel", "varlen_entry"]
+__all__ = ["VarlenKernel"]
 
 
-def _device_index(call: AttentionCall) -> Optional[int]:
-    return call.device.index if call.device is not None else None
-
-
-def varlen_entry(cls: type, call: AttentionCall) -> Entry:
-    """Build one reusable Varlen kernel object from call-independent facts.
-
-    Packed totals are deliberately absent. The object reads them from Q/K on
-    every forward call; the TileLang program factory then caches the compiled
-    specialization it needs.
-    """
-    args = dict(
-        batch=call.batch,
-        heads=call.heads,
-        heads_kv=call.heads_kv,
-        dim=call.dim,
-        is_causal=call.is_causal,
-        dtype=call.dtype,
-        sm_scale=call.sm_scale,
-        softcap=call.softcap,
-        window_size_left=call.window_size_left,
-        window_size_right=call.window_size_right,
-        accum_dtype=call.accum_dtype,
-        device_index=_device_index(call),
-        tune=call.tune,
-    )
-    identity = tuple(v for k, v in args.items() if k != "tune")
-    return identity, lambda: cls(**args)
-
-
-class VarlenKernel(Kernel):
+class VarlenKernel(Kernel, GQAVarlenFwdInterface):
     """Facts shared by in-tree kernels serving the Varlen Op."""
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """One object per call-independent fact set; it reads the packed totals from Q/K on
+        every forward, and its program factory caches the specialization each needs."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            window_size_left=call.window_size_left,
+            window_size_right=call.window_size_right,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
 
     def __init__(
         self,

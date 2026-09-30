@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.reduction import ArgmaxWorkload
 
@@ -636,32 +636,6 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
     values, indices = partial(256, ctas_per_row)(x)
     got = final()(values, indices)
     torch.testing.assert_close(got, torch.argmax(x, dim=-1))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, dim, expect_strided",
-    [
-        ((4, 128, 4096), 0, True),  # short strided axis: read it in place
-        ((1, 32768, 8), 1, False),  # long strided axis: transposing wins
-    ],
-)
-def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
-    """A strided axis is read in place only while walking it stays cheap.
-
-    Output-parallel gives one thread the whole axis, so choosing it on
-    contiguity alone makes a long axis orders of magnitude slower.
-    """
-    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
-
-    x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
-    op = ArgmaxFwdOp(dim=dim)
-    torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
-    if served_in_tree(op):
-        from tileops.kernels.reduction.argreduce import ArgreduceStridedKernel
-
-        strided = [isinstance(k, ArgreduceStridedKernel) for k in op.iter_kernels()]
-        assert any(strided) is expect_strided, strided
 
 
 @pytest.mark.cuda_only

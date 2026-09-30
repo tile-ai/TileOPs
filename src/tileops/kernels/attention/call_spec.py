@@ -1,8 +1,7 @@
-"""The facts of one attention call, the regions kernels answer for, and the kernel interface.
+"""The attention call specs and kernel interfaces.
 
-``AttentionCall`` is what an op states about a call; the region helpers are the
-predicates kernel classes answer ``applies`` with, kept here because more than
-one class reads each. See docs/design/ops-design.md § Kernel selection.
+``AttentionCall``'s properties are the region predicates more than one kernel class
+reads. See docs/design/ops-design.md § Kernel selection.
 """
 
 import dataclasses
@@ -17,24 +16,21 @@ from tileops.kernels.kernel_base import KernelInterface
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
+    "GQABwdInterface",
+    "GQABwdPreprocessInterface",
     "GQADenseFwdInterface",
-    "dense_decode_limit_refusal",
-    "dense_decode_refusal",
-    "dense_decode_region",
-    "dense_fp8_decode_refusal",
-    "dense_long_context_decode_refusal",
-    "dense_fp8_limit_refusal",
-    "dense_fp8_refusal",
-    "dense_long_context_decode_region",
-    "dense_fp8_decode_region",
-    "dense_sliding_window_refusal",
-    "dense_sliding_window_region",
-    "dense_ws_refusal",
-    "dense_ws_region",
-    "decode_bs1_region",
-    "paged_decode_region",
-    "paged_decode_refusal",
-    "uses_sliding_window",
+    "GQAPagedFwdInterface",
+    "GQAPrefillPagedFwdInterface",
+    "GQAVarlenFwdInterface",
+    "MHAPagedDecodeFwdInterface",
+    "MLADecodeFwdInterface",
+    "MlaDecodeCall",
+    "NSACall",
+    "NSACmpFwdInterface",
+    "NSAFwdInterface",
+    "NSATopkFwdInterface",
+    "SparseMLADecodeFwdInterface",
+    "SparseMlaCall",
 ]
 
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
@@ -72,7 +68,123 @@ class AttentionCall(CallSpec):
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
-    accum_dtype: torch.dtype = torch.float32
+
+    @property
+    def rope_args(self) -> dict:
+        """The fused-RoPE construction arguments the contiguous kernels take."""
+        return {
+            "fuse_rope": self.fuse_rope,
+            "max_position": self.max_position if self.max_position is not None else 1,
+            "rotary_dim": self.rotary_dim if self.rotary_dim is not None else 0,
+            "rope_layout": self.rope_layout,
+        }
+
+    @property
+    def uses_sliding_window(self) -> bool:
+        """Whether either window bound is set, which restricts what may serve the call."""
+        return self.window_size_left != -1 or self.window_size_right != -1
+
+    @property
+    def dense_decode_region(self) -> bool:
+        """The contiguous decode region: one query position, no window, not FP8."""
+        return not self.is_fp8 and self.max_seqlen_q == 1 and not self.uses_sliding_window
+
+    @property
+    def decode_bs1_region(self) -> bool:
+        """The batch-1 decode shape the contiguous and paged batch-1 kernels share."""
+        if not (
+            self.batch == 1
+            and self.dtype == torch.float16
+            and self.dim == 128
+            and self.softcap == 0.0
+        ):
+            return False
+        if self.heads_kv <= 0 or self.heads % self.heads_kv != 0:
+            return False
+        return 1 <= self.heads // self.heads_kv <= 64
+
+    @property
+    def paged_decode_refusal(self) -> Optional[str]:
+        """Why the paged-decode kernels cannot serve this call, or ``None`` when they can.
+
+        They serve one query length shared by every request against a 16-bit cache of
+        the query's dtype, with no window, RoPE or FP8.
+        """
+        if self.max_seqlen_q < 1 or not self.is_uniform:
+            return "requires the same query length for every request"
+        if self.dtype not in ATTENTION_DTYPES:
+            return "requires float16 or bfloat16 Q"
+        if self.cache_dtype != self.dtype:
+            return "requires Q and KV to share a dtype"
+        if self.is_fp8:
+            return "does not serve FP8"
+        if self.uses_sliding_window:
+            return "does not serve sliding windows"
+        if self.fuse_rope:
+            return "does not serve RoPE"
+        return None
+
+    @property
+    def tensor_core_dim_refusal(self) -> Optional[str]:
+        """The contiguous prefill and windowed kernels step the head dimension by one MMA
+        k-slice."""
+        return None if self.dim % 16 == 0 else "requires head dimension a multiple of 16"
+
+
+@dataclasses.dataclass(frozen=True)
+class MlaDecodeCall(CallSpec):
+    """One Multi-Head Latent Attention (MLA) decode call: shapes and element type."""
+
+    batch: int = 0
+    heads: int = 0
+    heads_kv: int = 0
+    seqlen_kv: int = 0
+    dim: int = 0
+    pe_dim: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SparseMlaCall(CallSpec):
+    """One sparse MLA decode call: shapes, element type and the op's fixed params."""
+
+    batch: int = 0
+    seq_len: int = 0
+    seq_len_kv: int = 0
+    heads: int = 0
+    dim: int = 0
+    tail_dim: int = 0
+    dtype: Optional[torch.dtype] = None
+    topk: int = 0
+    kv_stride: int = 0
+    q_start_index_s: int = 0
+    kv_group: int = 1
+    sm_scale: Optional[float] = None
+    is_causal: bool = True
+    cp0: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class NSACall(CallSpec):
+    """One Native Sparse Attention (NSA) call over a packed batch.
+
+    ``batch`` requests hold ``c_seq_len`` tokens in all; ``chunk_num`` counts the compressed
+    chunks and ``selected_blocks`` the blocks each token keeps. ``block_size``, ``scale`` and
+    ``is_causal`` are the op's fixed params. Each NSA interface reads the fields it needs.
+    """
+
+    batch: int = 0
+    c_seq_len: int = 0
+    heads: int = 0
+    heads_kv: int = 0
+    dim: int = 0
+    dim_v: int = 0
+    chunk_num: int = 0
+    selected_blocks: int = 0
+    block_size: int = 0
+    scale: float = 1.0
+    is_causal: bool = True
+    dtype: Optional[torch.dtype] = None
 
 
 class GQADenseFwdInterface(KernelInterface):
@@ -113,194 +225,347 @@ class GQADenseFwdInterface(KernelInterface):
         """
 
 
-def uses_sliding_window(call: AttentionCall) -> bool:
-    """Whether either window bound is set, which restricts what may serve the call."""
-    return call.window_size_left != -1 or call.window_size_right != -1
+class GQAVarlenFwdInterface(KernelInterface):
+    """Grouped-query attention over packed variable-length requests."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Attend each request's queries to its own keys; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``; Q, K and V are in ``call.dtype``.
+
+        Args:
+            q: ``(total_q, heads, dim)``, requests back to back.
+            k: ``(total_kv, heads_kv, dim)``.
+            v: ``(total_kv, heads_kv, dim)``.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in ``q``.
+            cu_seqlens_kv: ``int32`` ``(batch + 1,)`` request boundaries in ``k`` and ``v``.
+            q_scale: FP8 scale, passed exactly when ``call.is_fp8``; so are the other two.
+            k_scale: The same, for ``k``.
+            v_scale: The same, for ``v``.
+            rope_cos: RoPE table, passed exactly when ``call.fuse_rope``.
+            rope_sin: The same, passed exactly when ``rope_cos`` is.
+
+        Returns:
+            A new ``(total_q, heads, dim)`` output in ``call.dtype``.
+        """
 
 
-def dense_decode_region(call: AttentionCall) -> bool:
-    """The contiguous decode region: one query position, no window, not FP8."""
-    return not call.is_fp8 and call.max_seqlen_q == 1 and not uses_sliding_window(call)
+class GQAPagedFwdInterface(KernelInterface):
+    """Grouped-query attention of packed queries over a paged KV pool it only reads."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_pool: torch.Tensor,
+        v_pool: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        page_table: torch.Tensor,
+    ) -> torch.Tensor:
+        """Attend each request's ``call.max_seqlen_q`` queries, aligned to the end of its cache.
+
+        Every tensor is contiguous on ``call.device``, and nothing is written in place.
+
+        Args:
+            q: ``(batch * max_seqlen_q, heads, dim)`` in ``call.dtype``.
+            k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
+                a page.
+            v_pool: The same layout, for the values.
+            cache_seqlens: ``int32`` ``(batch,)``, each cache's length, its queries included.
+            page_table: ``int32`` ``(batch, max_pages_per_req)`` pool page of each logical page.
+
+        Returns:
+            A new output shaped like *q*, in ``call.dtype``.
+        """
 
 
-def paged_decode_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the paged-decode kernels cannot serve *call*, or ``None`` when they can.
+class MHAPagedDecodeFwdInterface(KernelInterface):
+    """Multi-head attention of BSHD queries over a paged KV pool it only reads."""
 
-    They serve one query length shared by every request against a 16-bit cache of
-    the query's dtype, with no window, RoPE or FP8.
-    """
-    if call.max_seqlen_q < 1 or not call.is_uniform:
-        return "requires the same query length for every request"
-    if call.dtype not in ATTENTION_DTYPES:
-        return "requires float16 or bfloat16 Q"
-    if call.cache_dtype != call.dtype:
-        return "requires Q and KV to share a dtype"
-    if call.is_fp8:
-        return "does not serve FP8"
-    if uses_sliding_window(call):
-        return "does not serve sliding windows"
-    if call.fuse_rope:
-        return "does not serve RoPE"
-    return None
+    request = AttentionCall
 
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_pool: torch.Tensor,
+        v_pool: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
+        """Attend each request's queries, aligned to the end of its cache.
 
-def paged_decode_region(call: AttentionCall) -> bool:
-    """The region the paged-decode kernels share; see :func:`paged_decode_refusal`."""
-    return paged_decode_refusal(call) is None
+        Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
+        Args:
+            q: ``(batch, max_seqlen_q, heads, dim)`` in ``call.dtype``.
+            k_pool: ``(seqlen_kv, heads, dim)`` in ``call.cache_dtype``, ``page_size`` rows a
+                page.
+            v_pool: The same layout, for the values.
+            real_seqlen_kv: ``int32`` ``(batch,)``, each cache's length.
+            block_table: ``int32`` ``(batch, max_pages_per_req)`` pool page of each logical page.
 
-def dense_long_context_decode_region(call: AttentionCall) -> bool:
-    """The one decode shape the long-context split serves."""
-    return (
-        dense_decode_region(call)
-        and not call.fuse_rope
-        and call.seqlen_kv >= 1024
-        and call.batch == 1
-        and call.heads == 32
-        and call.heads_kv == 4
-        and call.dim == 128
-        and call.dtype == torch.float16
-        and call.softcap == 0.0
-    )
+        Returns:
+            A new output shaped like *q*, in ``call.dtype``.
+        """
 
 
-def dense_fp8_decode_region(call: AttentionCall) -> bool:
-    """The FP8 decode region: batch 1, one query position, a long cache."""
-    return (
-        call.is_fp8
-        and call.batch == 1
-        and call.max_seqlen_q == 1
-        and call.seqlen_kv >= 2048
-        and call.heads_kv > 0
-        and call.heads // call.heads_kv <= 16
-        and not uses_sliding_window(call)
-        and not call.fuse_rope
-    )
+class GQAPrefillPagedFwdInterface(KernelInterface):
+    """Packed GQA prefill that appends its keys and values to a paged cache."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+        cos_table: Optional[torch.Tensor] = None,
+        sin_table: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Append the new tokens to each request's pages, then attend the chunk to the cache.
+
+        Every tensor is on ``call.device`` and all but the pools are contiguous. ``k_pages``
+        and ``v_pages`` are written in place: the rows the block table names past each
+        ``cache_seqlens`` entry receive the new keys and values (rotated keys under
+        ``call.fuse_rope``).
+
+        Args:
+            q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
+            k_new: ``(total_q, heads_kv, dim)`` in ``call.dtype``.
+            v_new: The same, for the values.
+            k_pages: ``(pool_rows, heads_kv, dim)`` in ``call.cache_dtype``.
+            v_pages: The same, for the values.
+            k_scale: ``float32`` ``(1,)`` dequantization scale of an FP8 pool.
+            v_scale: The same, for ``v_pages``.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in ``q``.
+            cache_seqlens: ``int32`` ``(batch,)`` cache lengths before the append.
+            block_table: ``int32`` ``(batch, max_pages_per_req)``.
+            max_seqlen_q: The longest request the launch covers.
+            cos_table: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
+                when ``call.fuse_rope``.
+            sin_table: The same layout, passed exactly when ``cos_table`` is.
+
+        Returns:
+            A new ``(total_q, heads, dim)`` output in ``call.dtype``.
+        """
 
 
-def dense_sliding_window_region(call: AttentionCall) -> bool:
-    """The contiguous windowed region, which FP8 has its own implementation for."""
-    return not call.is_fp8 and uses_sliding_window(call)
+class GQABwdPreprocessInterface(KernelInterface):
+    """The row statistics a grouped-query attention backward consumes."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(self, o: torch.Tensor, do: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return ``delta = rowsum(o * do)`` and a zeroed ``dq`` accumulator.
+
+        *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
+        ``call.device``; nothing is written in place.
+
+        Returns:
+            New ``float32`` ``(delta (batch, heads, max_seqlen_q), dq_accum)``, ``dq_accum``
+            zero-filled with as many elements as *o*.
+        """
 
 
-def dense_ws_region(call: AttentionCall) -> bool:
-    """The contiguous prefill region: more than one query position, no window."""
-    return not call.is_fp8 and call.max_seqlen_q != 1 and not uses_sliding_window(call)
+class GQABwdInterface(KernelInterface):
+    """Grouped-query attention backward from the saved log-sum-exp."""
+
+    request = AttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+        delta: torch.Tensor,
+        dq_accum: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; ``dq_accum`` is written in place.
+
+        Every tensor is on ``call.device``, and ``do`` is contiguous.
+
+        Args:
+            q: ``(batch, max_seqlen_q, heads, dim)`` in ``call.dtype``.
+            k: ``(batch, max_seqlen_q, heads_kv, dim)`` in ``call.dtype``.
+            v: The same, for the values.
+            do: Shaped like *q*.
+            lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
+            delta: What ``GQABwdPreprocessInterface`` returned first.
+            dq_accum: What it returned second; this call accumulates into it, in its own order.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
 
 
-# What the contiguous kernels refuse inside their regions. Each returns the limit a
-# call fails, or ``None``; outside the region it answers "does not serve this call".
-_OUTSIDE_REGION = "does not serve this call"
+class MLADecodeFwdInterface(KernelInterface):
+    """Multi-Head Latent Attention (MLA) decode of one query position against a cache."""
+
+    request = MlaDecodeCall
+
+    @abstractmethod
+    def forward(
+        self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
+    ) -> torch.Tensor:
+        """Attend each query head to the cache; nothing is written in place.
+
+        Every tensor is contiguous in ``call.dtype`` on ``call.device``.
+
+        Args:
+            q: ``(batch, heads, dim)``.
+            q_pe: ``(batch, heads, pe_dim)`` positional part.
+            k: ``(batch, seqlen_kv, heads_kv, dim)``, also the values.
+            k_pe: ``(batch, seqlen_kv, heads_kv, pe_dim)``.
+
+        Returns:
+            A new ``(batch, heads, dim)`` output.
+        """
 
 
-def _tensor_core_dim_refusal(dim: int) -> Optional[str]:
-    """The prefill and windowed kernels step the head dimension by one MMA k-slice."""
-    return None if dim % 16 == 0 else "requires head dimension a multiple of 16"
+class SparseMLADecodeFwdInterface(KernelInterface):
+    """Sparse MLA decode: each query attends to the ``call.topk`` cache rows it indexes."""
+
+    request = SparseMlaCall
+
+    @abstractmethod
+    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """Attend each query row to its selected rows; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``; *q* and *kv* are in ``call.dtype``.
+
+        Args:
+            q: ``(batch, seq_len, heads, dim + tail_dim)``.
+            kv: ``(batch, seq_len_kv, kv_group, dim + tail_dim)``, the first ``dim`` columns
+                also the values.
+            indices: ``int32`` ``(batch, seq_len, kv_group, topk)``; ``seq_len_kv`` pads.
+
+        Returns:
+            A new ``(batch, seq_len, heads, dim)`` output.
+        """
 
 
-def dense_decode_limit_refusal(*, dim: int, seq_len_kv: int) -> Optional[str]:
-    """Why the contiguous decode kernel cannot build this shape, or ``None``.
+class NSATopkFwdInterface(KernelInterface):
+    """Native Sparse Attention (NSA) block selection over a packed batch."""
 
-    Read by the kernel's region and by its constructor, which a caller can reach directly.
-    Past 128 the split-KV tile has no register layout.
-    """
-    if seq_len_kv <= 0:
-        return "requires a non-empty KV cache"
-    if dim % 16 != 0 or not 16 <= dim <= 128:
-        return "requires head dimension a multiple of 16 in [16, 128]"
-    return None
+    request = NSACall
 
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pick the blocks each token attends to; nothing is written in place.
 
-def dense_ws_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the contiguous prefill kernel cannot serve *call*, or ``None``."""
-    if not dense_ws_region(call):
-        return _OUTSIDE_REGION
-    return _tensor_core_dim_refusal(call.dim)
+        Every tensor is on ``call.device``; integer inputs are ``int32``.
 
+        Args:
+            q: ``(c_seq_len, heads, dim)`` in ``call.dtype``.
+            k_cmp: ``(chunk_num, heads_kv, dim)`` compressed keys.
+            offsets: ``(batch + 1,)`` request boundaries.
+            chunk_offsets: ``(batch + 1,)`` each request's first chunk.
+            token_indices: ``(c_seq_len, 2)`` request id and in-request position.
 
-def dense_sliding_window_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the contiguous windowed kernel cannot serve *call*, or ``None``."""
-    if not dense_sliding_window_region(call):
-        return _OUTSIDE_REGION
-    if call.max_seqlen_q != call.seqlen_kv:
-        return "a sliding window requires equal Q and KV lengths"
-    return _tensor_core_dim_refusal(call.dim)
-
-
-def dense_decode_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the contiguous decode kernels cannot serve *call*, or ``None``."""
-    if not dense_decode_region(call):
-        return _OUTSIDE_REGION
-    return dense_decode_limit_refusal(dim=call.dim, seq_len_kv=call.seqlen_kv)
+        Returns:
+            New ``int32`` ``(c_seq_len, heads_kv, selected_blocks)`` block ids.
+        """
 
 
-def dense_long_context_decode_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the long-context decode kernel cannot serve *call*, or ``None``."""
-    return None if dense_long_context_decode_region(call) else _OUTSIDE_REGION
+class NSAFwdInterface(KernelInterface):
+    """NSA attention of each token to the blocks selected for it."""
+
+    request = NSACall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Attend each token to its selected blocks; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``; integer inputs are ``int32``.
+
+        Args:
+            q: ``(c_seq_len, heads, dim)`` in ``call.dtype``.
+            k: ``(c_seq_len, heads_kv, dim)``.
+            v: The same, for the values.
+            block_indices: ``(c_seq_len, heads_kv, selected_blocks)``.
+            block_counts: ``(c_seq_len, heads_kv)`` valid entries of ``block_indices``.
+            offsets: ``(batch + 1,)`` request boundaries.
+            token_indices: ``(c_seq_len, 2)`` request id and in-request position.
+
+        Returns:
+            A new ``(c_seq_len, heads, dim)`` output in ``call.dtype``.
+        """
 
 
-def dense_fp8_decode_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the FP8 decode kernel cannot serve *call*, or ``None``."""
-    if not dense_fp8_decode_region(call):
-        return _OUTSIDE_REGION
-    # Each of the four consumer warps takes a quarter of the head dimension in 8-wide tiles.
-    if call.dim % 32 != 0 or not 32 <= call.dim <= 128:
-        return "requires head dimension a multiple of 32 in [32, 128]"
-    return None
+class NSACmpFwdInterface(KernelInterface):
+    """NSA attention of each token to its request's compressed chunks."""
 
+    request = NSACall
 
-def dense_fp8_refusal(call: AttentionCall) -> Optional[str]:
-    """Why the FP8 main kernel cannot serve *call*, or ``None``."""
-    if not call.is_fp8 or dense_fp8_decode_region(call):
-        return _OUTSIDE_REGION
-    return dense_fp8_limit_refusal(
-        dim=call.dim,
-        seq_len_q=call.max_seqlen_q,
-        seq_len_kv=call.seqlen_kv,
-        is_causal=call.is_causal,
-        softcap=call.softcap,
-        window=(call.window_size_left, call.window_size_right),
-        fuse_rope=call.fuse_rope,
-    )
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Attend each token to the closed chunks before it; nothing is written in place.
 
+        Every tensor is on ``call.device``; integer inputs are ``int32``.
 
-def dense_fp8_limit_refusal(
-    *,
-    dim: int,
-    seq_len_q: int,
-    seq_len_kv: int,
-    is_causal: bool,
-    softcap: float,
-    window: tuple[int, int],
-    fuse_rope: bool,
-) -> Optional[str]:
-    """Why the FP8 main kernel cannot build this shape, or ``None``.
+        Args:
+            q: ``(c_seq_len, heads, dim)`` in ``call.dtype``.
+            k_cmp: ``(chunk_num, heads_kv, dim)``.
+            v_cmp: ``(chunk_num, heads_kv, dim_v)``.
+            offsets: ``(batch + 1,)`` request boundaries.
+            chunk_offsets: ``(batch + 1,)`` each request's first chunk.
+            token_indices: ``(c_seq_len, 2)`` request id and in-request position.
 
-    Read by the kernel's region and by its constructor, which a caller can reach directly.
-    """
-    if window != (-1, -1):
-        return "does not serve sliding windows"
-    if fuse_rope and seq_len_q == 1:
-        return "does not serve RoPE with one query position"
-    if not is_causal and seq_len_q != seq_len_kv:
-        return "non-causal attention requires equal Q and KV lengths"
-    if not is_causal and softcap != 0.0:
-        return "does not serve a softcap without the causal mask"
-    if dim != 128:
-        return "requires head dimension 128"
-    return None
-
-
-def decode_bs1_region(call: AttentionCall) -> bool:
-    """The SM90 batch-1 decode region, shared by contiguous and paged decode.
-
-    Owned by the batch-1 kernels; the paged batch-1 kernel narrows it further with
-    a page-tile condition only it can answer.
-    """
-    if not (
-        call.batch == 1 and call.dtype == torch.float16 and call.dim == 128 and call.softcap == 0.0
-    ):
-        return False
-    if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:
-        return False
-    return 1 <= call.heads // call.heads_kv <= 64
+        Returns:
+            New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+        """

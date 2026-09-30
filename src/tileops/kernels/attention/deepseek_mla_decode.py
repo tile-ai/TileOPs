@@ -1,4 +1,3 @@
-import dataclasses
 import functools
 import itertools
 from typing import Optional
@@ -7,24 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.attention.call_spec import MlaDecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-__all__ = ["MLADecodeWsKernel", "MlaDecodeCall"]
-
-
-@dataclasses.dataclass(frozen=True)
-class MlaDecodeCall(CallSpec):
-    """One MLA decode call: the construction arguments the kernel takes."""
-
-    batch: int = 0
-    heads: int = 0
-    heads_kv: int = 0
-    seqlen_kv: int = 0
-    dim: int = 0
-    pe_dim: int = 0
-    dtype: Optional[torch.dtype] = None
+__all__ = ["MLADecodeWsKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -644,44 +630,15 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     return _mla_decode_ws_func
 
 
-def _mla_decode_ws_run(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype)(
-        block_H, block_N, num_split, num_stages, threads
-    )(Q, Q_pe, Kv, K_pe, glse, Output_partial)
-
-
-class MLADecodeWsKernel(Kernel):
+class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
     def applies(cls, call: MlaDecodeCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: MlaDecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:
             return f"serves one KV head, got {call.heads_kv}"
@@ -703,7 +660,6 @@ class MLADecodeWsKernel(Kernel):
             call.dim,
             call.pe_dim,
             call.dtype,
-            tune=call.tune,
             device_index=call.device.index if call.device is not None else None,
         )
 
@@ -788,7 +744,7 @@ class MLADecodeWsKernel(Kernel):
             dtype=self.dtype,
             device=q.device,
         )
-        return _mla_decode_ws_run(
+        return _mla_decode_ws_kernel(
             self.batch,
             self.heads,
             self.kv_head_num,
@@ -796,15 +752,10 @@ class MLADecodeWsKernel(Kernel):
             self.dim,
             self.pe_dim,
             self.dtype_str,
+        )(
             self.config["block_H"],
             self.config["block_N"],
+            self.config["num_split"],
             self.config["num_stages"],
             self.config["threads"],
-            self.config["num_split"],
-            q,
-            q_pe,
-            k,
-            k_pe,
-            glse,
-            Output_partial,
-        )
+        )(q, q_pe, k, k_pe, glse, Output_partial)

@@ -57,7 +57,7 @@ def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expe
     page_table = torch.empty(batch, extents["pages"], dtype=torch.int32, device="cuda")
     cu_seqlens_q = torch.arange(batch + 1, dtype=torch.int32, device="cuda")
     call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
-    assert op.select_kernel(call).__name__ == expected
+    assert op.kernel_map[op.select_implementation("gqa_paged", call)].__name__ == expected
 
 
 @pytest.mark.smoke
@@ -75,8 +75,8 @@ def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expe
 def test_paged_prefill_dispatch_is_unchanged(ctor: dict, expected: str) -> None:
     """Paged prefill keeps its plain and fused-RoPE regions."""
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=256, max_seqlen_q=512, **ctor)
-    candidate = op.select_kernel(op.attention_call(*_prefill_call_tensors())).__name__
-    assert candidate == expected
+    call = op.attention_call(*_prefill_call_tensors())
+    assert op.kernel_map[op.select_implementation("gqa_prefill_paged", call)].__name__ == expected
 
 
 @pytest.mark.smoke
@@ -87,5 +87,6 @@ def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         page_size=256, max_seqlen_q=512, cache_dtype=torch.float8_e4m3fn
     )
-    candidate = op.select_kernel(op.attention_call(*_prefill_call_tensors())).__name__
-    assert candidate == "GQAPrefillPagedWithFP8KVCacheFwdKernel"
+    call = op.attention_call(*_prefill_call_tensors())
+    key = op.select_implementation("gqa_prefill_paged", call)
+    assert op.kernel_map[key].__name__ == "GQAPrefillPagedWithFP8KVCacheFwdKernel"
