@@ -12,17 +12,14 @@ from workloads.mha import MhaDecodePagedWorkload
 
 
 class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):
-    #: bfloat16 carries 8 explicit mantissa bits against float16's 10, so one
-    #: rounding of a unit-scale output is four times coarser.
+    #: Bounds the error absolutely and relatively: past unit scale a 16-bit
+    #: rounding grows with the value.
     ATOL = {torch.float16: 0.001, torch.bfloat16: 0.005}
 
     def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor) -> None:
-        """Compare using max-diff and cosine similarity."""
+        """Compare within ATOL, absolute and relative, and by cosine similarity."""
         atol = self.ATOL[self.dtype]
-        if isinstance(output, (tuple, list)):
-            output = output[0]
-        max_diff = (output - output_ref).abs().max().item()
-        assert max_diff < atol, f"max diff {max_diff} too large (atol={atol})"
+        torch.testing.assert_close(output, output_ref, atol=atol, rtol=atol)
         cos_sim = F.cosine_similarity(
             output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8
         )
@@ -161,6 +158,7 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:

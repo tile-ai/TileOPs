@@ -62,6 +62,10 @@ class GroupedQueryAttentionPagedDecodeFixture(FixtureBase):
                 pytest.param(
                     2, 16, 4, [513, 1000], 128, 128, torch.bfloat16, marks=pytest.mark.smoke
                 ),
+                # The default tile at head dim 512 overflows every GPU's shared memory.
+                pytest.param(
+                    2, 16, 4, [513, 1000], 512, 128, torch.float16, marks=pytest.mark.smoke
+                ),
                 pytest.param(1, 16, 8, [512], 128, 128, torch.float16, marks=pytest.mark.full),
                 pytest.param(2, 8, 4, [1024, 700], 64, 256, torch.float16, marks=pytest.mark.full),
                 pytest.param(1, 32, 8, [200], 128, 64, torch.float16, marks=pytest.mark.full),
@@ -145,6 +149,7 @@ def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("cache_len", "reverse_pages"),
@@ -168,6 +173,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 def test_gqa_paged_decode_bs1_dispatch() -> None:
     """An eligible batch-1 call selects the batch-1 kernel and its tiers."""

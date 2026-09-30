@@ -27,6 +27,7 @@ from tileops.kernels.attention.online_softmax import (
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
 __all__ = ["GQADecodePagedKernel"]
 
@@ -660,13 +661,36 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
 
     @property
     def default_config(self) -> dict:
-        return {
+        wide = {
             "block_M": self._block_M_choices()[-1],
             "block_N": self._supported_block_ns[0],
             "num_split": 16,
             "num_stages": 2,
             "threads": 128,
         }
+        # Where shared memory cannot hold the wide tiles (SM89 holds 99 KB): one stage of at
+        # most 64 keys, then 64 query rows, then narrower key tiles.
+        block_ns = [n for n in self._supported_block_ns if n <= 64]
+        candidates = [
+            wide,
+            {**wide, "block_N": block_ns[0], "num_stages": 1},
+            *({**wide, "block_M": 64, "block_N": n, "num_stages": 1} for n in block_ns),
+        ]
+        cap = get_shared_memory_optin(self.device_index)
+        for config in candidates:
+            if self._shared_bytes(config) <= cap:
+                return config
+        raise ValueError(
+            f"{type(self).__name__} needs {self._shared_bytes(candidates[-1])} bytes of shared "
+            f"memory at head dimension {self.dim}; the device grants {cap}"
+        )
+
+    def _shared_bytes(self, config: dict) -> int:
+        """Shared memory the split program, the larger of the two, allocates for *config*: the
+        query rows, a K and a V tile per stage, and the split offsets. The tail tiles reuse
+        the pipeline's space."""
+        rows = config["block_M"] + 2 * config["num_stages"] * config["block_N"]
+        return rows * self.dim * getattr(torch, self.dtype_str).itemsize + 4 * config["num_split"]
 
     @property
     def autotune_configs(self) -> list[dict]:
