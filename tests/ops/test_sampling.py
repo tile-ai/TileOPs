@@ -26,6 +26,7 @@ from workloads.sampling import (
     TopKMaskWorkload,
     TopKTopPMaskWorkload,
     TopPMaskWorkload,
+    min_p_mask,
     probability_above,
     sampling_call,
     top_k_mask,
@@ -181,6 +182,25 @@ def test_min_p_mask(dtype):
     values = logits.float()
     threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
     _assert_same_mask(out, ref, logits, (values - threshold).abs() <= _MARGIN)
+
+
+def test_min_p_mask_rows_without_a_finite_threshold():
+    """A row whose maximum is not a number passes through, at each shape the kernel plans for.
+
+    ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
+    row one block holds, which takes no barrier; and a row whose bytes are not a whole number
+    of 16-byte vectors, which is read and written element by element.
+    """
+    device = run_device()
+    for vocab in (_V, 512, 4099):
+        logits = torch.randn(5, vocab, device=device)
+        logits[1] = -_INF
+        logits[2, vocab // 2] = float("nan")
+        logits[3, 0] = _INF
+        min_p = torch.tensor([0.0, 0.5, 0.5, 0.5, 1.0], device=device)
+        out = _run(MinPMaskFwdOp(), logits, min_p)
+        ref = min_p_mask(logits, min_p)
+        assert ((out == ref) | (out.isnan() & ref.isnan())).all(), vocab
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)

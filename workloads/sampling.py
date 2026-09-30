@@ -166,11 +166,18 @@ class TopKMaskWorkload(CallWorkload):
 
 
 class MinPMaskWorkload(CallWorkload):
-    """Logits of one ``MinPMaskFwdOp`` call, with ``min_p`` uniform in ``[0.05, 0.25)``."""
+    """Logits of one ``MinPMaskFwdOp`` call, with ``min_p`` uniform in ``[0.05, 0.25)``.
+
+    The first two rows take the contract's endpoints instead: 1, which keeps only the logits
+    equal to the row max, and 0, which masks nothing. 1 comes first so that a one-row call
+    still exercises a threshold.
+    """
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         logits, min_p = CallWorkload.gen_inputs(self)
-        return logits, torch.rand_like(min_p) * 0.2 + 0.05
+        min_p = torch.rand_like(min_p) * 0.2 + 0.05
+        min_p[:2] = torch.tensor([1.0, 0.0], device=min_p.device)[: min_p.numel()]
+        return logits, min_p
 
     def ref_program(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
         return min_p_mask(logits, min_p)
