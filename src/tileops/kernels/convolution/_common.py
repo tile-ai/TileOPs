@@ -39,6 +39,19 @@ def conv_autotune_configs(
     produces, and both ways win on some shapes. Callers narrow the other axes to keep
     the search the size it was before this one joined it.
     """
+
+    def conv_shared_memory_bytes(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        dtype: torch.dtype,
+    ) -> int:
+        dtype_bytes = torch.tensor([], dtype=dtype).element_size()
+        per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
+        out_shared_bytes = block_m * block_n * dtype_bytes
+        return per_stage_bytes * max(1, num_stages) + out_shared_bytes
+
     limit = get_shared_memory_optin(device_index)
     valid = []
     for bm, bn, bk, ns, th, rast in itertools.product(
@@ -62,19 +75,6 @@ def conv_autotune_configs(
             }
         )
     return valid
-
-
-def conv_shared_memory_bytes(
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    dtype: torch.dtype,
-) -> int:
-    dtype_bytes = torch.tensor([], dtype=dtype).element_size()
-    per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
-    out_shared_bytes = block_m * block_n * dtype_bytes
-    return per_stage_bytes * max(1, num_stages) + out_shared_bytes
 
 
 def _launch(
