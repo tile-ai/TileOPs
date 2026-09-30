@@ -54,40 +54,6 @@ def _shared_bytes(block_h: int, chunk_len: int) -> int:
     return block_h * ((chunk_len + _ROW_PAD) * 4 + chunk_len)
 
 
-def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
-    """Threads that share one row's scan, each taking a run of at least four positions."""
-    groups = 1
-    while (
-        groups * 2 <= threads // block_h
-        and chunk_len % (groups * 2) == 0
-        and chunk_len // (groups * 2) >= 4
-    ):
-        groups *= 2
-    return groups
-
-
-def _head_tile(n_heads: int, chunk_len: int) -> int:
-    """Widest power-of-two head tile the heads and the shared budget allow, at most eight.
-
-    A row stride of ``chunk_len + _ROW_PAD`` puts head ``h`` and position ``p`` on bank
-    ``(4h + p) % 32``, so eight heads is the widest a warp's head-major write spreads
-    over all 32 banks. The pad stays a multiple of 4 so the chunk-major read-back of a
-    row keeps its 16-byte vectors.
-    """
-    tile = 8
-    while tile > 1 and (tile > n_heads or _shared_bytes(tile, chunk_len) > _MAX_SHARED_BYTES):
-        tile //= 2
-    return tile
-
-
-def _thread_count(block_h: int, chunk_len: int) -> int:
-    """Largest power of two up to 512 that every thread still has a tile element for."""
-    threads = 32
-    while threads * 2 <= min(512, block_h * chunk_len):
-        threads *= 2
-    return threads
-
-
 @functools.lru_cache(maxsize=32)
 def _da_cumsum_fwd_kernel(
     batch: int,
@@ -128,6 +94,17 @@ def _da_cumsum_fwd_kernel(
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
+        def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
+            """Threads that share one row's scan, each taking a run of at least four positions."""
+            groups = 1
+            while (
+                groups * 2 <= threads // block_h
+                and chunk_len % (groups * 2) == 0
+                and chunk_len // (groups * 2) >= 4
+            ):
+                groups *= 2
+            return groups
+
         groups = _scan_groups(block_h, threads, Q)
         span = Q // groups
         store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
@@ -213,6 +190,28 @@ class DaCumsumFwdKernel(Kernel):
         dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
     """
 
+    @staticmethod
+    def _head_tile(n_heads: int, chunk_len: int) -> int:
+        """Widest power-of-two head tile the heads and the shared budget allow, at most eight.
+
+        A row stride of ``chunk_len + _ROW_PAD`` puts head ``h`` and position ``p`` on bank
+        ``(4h + p) % 32``, so eight heads is the widest a warp's head-major write spreads
+        over all 32 banks. The pad stays a multiple of 4 so the chunk-major read-back of a
+        row keeps its 16-byte vectors.
+        """
+        tile = 8
+        while tile > 1 and (tile > n_heads or _shared_bytes(tile, chunk_len) > _MAX_SHARED_BYTES):
+            tile //= 2
+        return tile
+
+    @staticmethod
+    def _thread_count(block_h: int, chunk_len: int) -> int:
+        """Largest power of two up to 512 that every thread still has a tile element for."""
+        threads = 32
+        while threads * 2 <= min(512, block_h * chunk_len):
+            threads *= 2
+        return threads
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     # This backend's own capability, which may be narrower than the manifest
@@ -266,8 +265,8 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        block_h = _head_tile(self.n_heads, self.chunk_len)
-        return {"block_h": block_h, "threads": _thread_count(block_h, self.chunk_len)}
+        block_h = self._head_tile(self.n_heads, self.chunk_len)
+        return {"block_h": block_h, "threads": self._thread_count(block_h, self.chunk_len)}
 
     @property
     def autotune_configs(self) -> list[dict]:
