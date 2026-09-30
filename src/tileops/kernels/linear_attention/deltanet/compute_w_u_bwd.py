@@ -35,8 +35,15 @@ def compute_w_u_bwd_tl(
     dim_k: int,
     dim_v: int,
     dtype: str = "float32",
+    lean: bool = False,
 ):
-    """TileLang: fused wu_bwd + A_inv backward + dw_corr + dk merge."""
+    """TileLang: fused wu_bwd + A_inv backward + dw_corr + dk merge.
+
+    ``lean`` builds a program that holds less in shared memory at once, for GPUs that
+    cannot hold the default: it finishes the u side (Au, du, v_beta) before loading the w
+    side (S, dw, k, Aw), and reads v, dk_partial and dk_corr from global where they are
+    used. It computes the same values in the same order.
+    """
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
@@ -49,6 +56,50 @@ def compute_w_u_bwd_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _kernel_func(num_stages, threads=128):
+        @T.macro
+        def a_inv_backward(dAw_frag, dAu_frag, Aw_s, k_s, k_beta_s, beta_s, dP_s, dk_A_frag):
+            """Carry dAw + dAu back through A_inv: leaves dP in ``dP_s`` and returns dk_A."""
+            dA_inv_s = T.alloc_shared([block_C, block_C], accum_dtype)
+            for i, j in T.Parallel(block_C, block_C):
+                dA_inv_s[i, j] = dAw_frag[i, j] + dAu_frag[i, j]
+
+            # dA = -(Aw^T @ dA_inv @ Aw^T)
+            dA_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+            T.clear(dA_frag)
+            T.gemm(dA_inv_s, Aw_s, dA_frag, transpose_B=True)
+            T.copy(dA_frag, dP_s)
+            dA_frag2 = T.alloc_fragment([block_C, block_C], accum_dtype)
+            T.clear(dA_frag2)
+            T.gemm(Aw_s, dP_s, dA_frag2, transpose_A=True)
+
+            for i, j in T.Parallel(block_C, block_C):
+                dP_s[i, j] = T.if_then_else(i > j, -dA_frag2[i, j], T.float32(0.0))
+
+            # dk_A = beta * (dP @ k) + dP^T @ k_beta
+            T.clear(dk_A_frag)
+            T.gemm(dP_s, k_s, dk_A_frag)
+            dk_A_frag2 = T.alloc_fragment([block_C, dim_k], accum_dtype)
+            for i, j in T.Parallel(block_C, dim_k):
+                dk_A_frag2[i, j] = dk_A_frag[i, j] * beta_s[i]
+            T.clear(dk_A_frag)
+            T.gemm(dP_s, k_beta_s, dk_A_frag, transpose_A=True)
+            for i, j in T.Parallel(block_C, dim_k):
+                dk_A_frag2[i, j] = dk_A_frag2[i, j] + dk_A_frag[i, j]
+            return dk_A_frag2
+
+        @T.macro
+        def write_dbeta(k_s, dP_s, dbeta_s, dbeta, bid, hid, by):
+            # dbeta_A = (dP * KK^T).sum(-1)
+            kkt_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+            T.clear(kkt_frag)
+            T.gemm(k_s, k_s, kkt_frag, transpose_B=True)
+            for i, j in T.Parallel(block_C, block_C):
+                dP_s[i, j] = dP_s[i, j] * kkt_frag[i, j]
+            dbeta_A_tmp = T.alloc_shared([block_C], accum_dtype)
+            T.reduce_sum(dP_s, dbeta_A_tmp, dim=1)
+            for i in T.Parallel(block_C):
+                dbeta[bid, hid, by * block_C + i] = dbeta_s[i] + dbeta_A_tmp[i]
+
         @T.prim_func
         def compute_w_u_bwd(
             dw: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -172,32 +223,9 @@ def compute_w_u_bwd_tl(
                     dbeta_s[i] = dbeta_s[i] + dbeta_v_tmp[i]
 
                 # ===== A_inv backward =====
-                dA_inv_s = T.alloc_shared([block_C, block_C], accum_dtype)
-                for i, j in T.Parallel(block_C, block_C):
-                    dA_inv_s[i, j] = dAw_frag[i, j] + dAu_frag[i, j]
-
-                # dA = -(Aw^T @ dA_inv @ Aw^T)
-                dA_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
-                T.clear(dA_frag)
-                T.gemm(dA_inv_s, Aw_s, dA_frag, transpose_B=True)
-                T.copy(dA_frag, dP_s)
-                dA_frag2 = T.alloc_fragment([block_C, block_C], accum_dtype)
-                T.clear(dA_frag2)
-                T.gemm(Aw_s, dP_s, dA_frag2, transpose_A=True)
-
-                for i, j in T.Parallel(block_C, block_C):
-                    dP_s[i, j] = T.if_then_else(i > j, -dA_frag2[i, j], T.float32(0.0))
-
-                # dk_A = beta * (dP @ k) + dP^T @ k_beta
-                T.clear(dk_A_frag)
-                T.gemm(dP_s, k_s, dk_A_frag)
-                dk_A_frag2 = T.alloc_fragment([block_C, dim_k], accum_dtype)
-                for i, j in T.Parallel(block_C, dim_k):
-                    dk_A_frag2[i, j] = dk_A_frag[i, j] * beta_s[i]
-                T.clear(dk_A_frag)
-                T.gemm(dP_s, k_beta_s, dk_A_frag, transpose_A=True)
-                for i, j in T.Parallel(block_C, dim_k):
-                    dk_A_frag2[i, j] = dk_A_frag2[i, j] + dk_A_frag[i, j]
+                dk_A_frag2 = a_inv_backward(
+                    dAw_frag, dAu_frag, Aw_s, k_s, k_beta_s, beta_s, dP_s, dk_A_frag
+                )
 
                 # dk = dk_partial + dk_corr + dk_direct*beta + dk_A
                 for i, j in T.Parallel(block_C, dim_k):
@@ -208,17 +236,115 @@ def compute_w_u_bwd_tl(
                         + dk_A_frag2[i, j]
                     )
 
-                # dbeta_A = (dP * KK^T).sum(-1)
-                kkt_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
-                T.clear(kkt_frag)
-                T.gemm(k_s, k_s, kkt_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, block_C):
-                    dP_s[i, j] = dP_s[i, j] * kkt_frag[i, j]
-                dbeta_A_tmp = T.alloc_shared([block_C], accum_dtype)
-                T.reduce_sum(dP_s, dbeta_A_tmp, dim=1)
-                for i in T.Parallel(block_C):
-                    dbeta[bid, hid, by * block_C + i] = dbeta_s[i] + dbeta_A_tmp[i]
+                write_dbeta(k_s, dP_s, dbeta_s, dbeta, bid, hid, by)
 
-        return compute_w_u_bwd
+        @T.prim_func
+        def compute_w_u_bwd_lean(
+            dw: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            du_partial: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], accum_dtype),
+            Aw: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+            Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+            k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            v: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            beta: T.Tensor([batch, head, seq_len], dtype),
+            dk_partial: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            dk_corr: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            # Outputs
+            dk: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            dv: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            dbeta: T.Tensor([batch, head, seq_len], dtype),
+        ):
+            with T.Kernel(batch, head, num_chunks, threads=threads) as (bid, hid, by):
+                beta_s = T.alloc_shared([block_C], accum_dtype)
+                dbeta_s = T.alloc_shared([block_C], accum_dtype)
+                T.copy(beta[bid, hid, by * block_C : (by + 1) * block_C], beta_s, disable_tma=True)
+
+                # u side: du = du_partial + du_corr, dAu = du @ v_beta^T, d_v_beta = Au^T @ du
+                Au_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                du_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                du_corr_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                v_beta_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                dAu_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+                d_v_beta_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
+                T.copy(Au[bid, hid, by * block_C : (by + 1) * block_C, :], Au_s, disable_tma=True)
+                T.copy(
+                    du_partial[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    du_s,
+                    disable_tma=True,
+                )
+                T.copy(
+                    du_corr[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    du_corr_s,
+                    disable_tma=True,
+                )
+                for i, j in T.Parallel(block_C, dim_v):
+                    du_s[i, j] = du_s[i, j] + du_corr_s[i, j]
+                for i, j in T.Parallel(block_C, dim_v):
+                    v_beta_s[i, j] = (
+                        T.cast(v[bid, hid, by * block_C + i, j], accum_dtype) * beta_s[i]
+                    )
+                T.clear(dAu_frag)
+                T.gemm(du_s, v_beta_s, dAu_frag, transpose_B=True)
+                T.clear(d_v_beta_frag)
+                T.gemm(Au_s, du_s, d_v_beta_frag, transpose_A=True)
+                for i, j in T.Parallel(block_C, dim_v):
+                    dv[bid, hid, by * block_C + i, j] = d_v_beta_frag[i, j] * beta_s[i]
+                d_v_beta_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                T.copy(d_v_beta_frag, d_v_beta_s)
+                for i, j in T.Parallel(block_C, dim_v):
+                    d_v_beta_s[i, j] = d_v_beta_s[i, j] * T.cast(
+                        v[bid, hid, by * block_C + i, j], accum_dtype
+                    )
+                dbeta_v_tmp = T.alloc_shared([block_C], accum_dtype)
+                T.reduce_sum(d_v_beta_s, dbeta_v_tmp, dim=1)
+
+                # w side: dw_total = dw - du_corr @ S^T, dAw = dw @ k_beta^T, d_k_beta = Aw^T @ dw
+                S_s = T.alloc_shared([dim_k, dim_v], accum_dtype)
+                dw_s = T.alloc_shared([block_C, dim_k], accum_dtype)
+                dw_corr_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
+                T.copy(S[bid, hid, by, :, :], S_s, disable_tma=True)
+                T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)
+                T.clear(dw_corr_frag)
+                T.gemm(du_corr_s, S_s, dw_corr_frag, transpose_B=True)
+                for i, j in T.Parallel(block_C, dim_k):
+                    dw_s[i, j] = dw_s[i, j] - dw_corr_frag[i, j]
+                k_s = T.alloc_shared([block_C, dim_k], accum_dtype)
+                k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
+                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_s, disable_tma=True)
+                for i, j in T.Parallel(block_C, dim_k):
+                    k_beta_s[i, j] = k_s[i, j] * beta_s[i]
+                Aw_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
+                dAw_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+                T.clear(dAw_frag)
+                T.gemm(dw_s, k_beta_s, dAw_frag, transpose_B=True)
+                d_k_beta_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
+                T.clear(d_k_beta_frag)
+                T.gemm(Aw_s, dw_s, d_k_beta_frag, transpose_A=True)
+                d_k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
+                T.copy(d_k_beta_frag, d_k_beta_s)
+                for i, j in T.Parallel(block_C, dim_k):
+                    d_k_beta_s[i, j] = d_k_beta_s[i, j] * k_s[i, j]
+                T.reduce_sum(d_k_beta_s, dbeta_s, dim=1)
+                for i in T.Parallel(block_C):
+                    dbeta_s[i] = dbeta_s[i] + dbeta_v_tmp[i]
+
+                dP_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                dk_A_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
+                dk_A_frag2 = a_inv_backward(
+                    dAw_frag, dAu_frag, Aw_s, k_s, k_beta_s, beta_s, dP_s, dk_A_frag
+                )
+                for i, j in T.Parallel(block_C, dim_k):
+                    dk[bid, hid, by * block_C + i, j] = (
+                        dk_partial[bid, hid, by * block_C + i, j]
+                        + dk_corr[bid, hid, by * block_C + i, j]
+                        + d_k_beta_frag[i, j] * beta_s[i]
+                        + dk_A_frag2[i, j]
+                    )
+                write_dbeta(k_s, dP_s, dbeta_s, dbeta, bid, hid, by)
+
+        return compute_w_u_bwd_lean if lean else compute_w_u_bwd
 
     return _kernel_func

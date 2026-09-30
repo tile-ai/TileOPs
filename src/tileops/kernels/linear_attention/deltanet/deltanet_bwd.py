@@ -23,6 +23,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetBwdInterface, DeltaNetChunkCall
+from tileops.utils import get_shared_memory_optin
 
 __all__ = [
     "DeltaNetBwdKernel",
@@ -342,6 +343,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         threads: int,
         parallel_threads: int,
         recurrence_threads: int,
+        wu_lean: bool,
         do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -381,6 +383,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
             dim_k,
             dim_v,
             dtype,
+            lean=wu_lean,
         )(num_stages, threads)
 
         dq, dk_partial, dw, du_partial, v_new, dh_local = bwd_parallel_fn(do, q, k, w, u, S)
@@ -440,17 +443,39 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
+        cap = get_shared_memory_optin(self.device_index)
+        # The phase-ordered w/u backward where shared memory cannot hold the default.
+        self._wu_lean = self._wu_shared_bytes() > cap
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         threads = 256 if self.chunk_size >= 64 else 128
+        # One stage where shared memory cannot hold two (fp32 on SM89's 99 KB).
+        fits = self._recurrence_shared_bytes(2) <= get_shared_memory_optin(self.device_index)
         return {
-            "num_stages": 2,
+            "num_stages": 2 if fits else 1,
             "threads": threads,
             "parallel_threads": threads,
             "recurrence_threads": threads,
         }
+
+    def _recurrence_shared_bytes(self, num_stages: int) -> int:
+        """Shared memory the dh recurrence allocates: k, w, v_new and the fp32 dh_local tile
+        per stage, then dP, dh_buf and k_dh."""
+        elem = getattr(torch, self.dtype_str).itemsize
+        c, k, v = self.chunk_size, self.dim_k, self.dim_v
+        per_stage = (2 * c * k + c * v) * elem + k * v * 4
+        return num_stages * per_stage + (c * k + k * v + c * v) * elem
+
+    def _wu_shared_bytes(self) -> int:
+        """Peak shared memory of the default w/u backward: five fp32 row tiles, two chunk
+        squares and the state live at once, with the dk_partial and dk_corr tiles. The
+        wider of dim_k and dim_v stands for both, which over-counts when they differ."""
+        elem = getattr(torch, self.dtype_str).itemsize
+        c, k, v = self.chunk_size, self.dim_k, self.dim_v
+        d = max(k, v)
+        return (5 * c * d + 2 * c * c + k * v + c) * 4 + 2 * c * k * elem
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune each sub-kernel independently and merge best configs."""
@@ -497,7 +522,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
 
         wu_bwd_configs = [{"num_stages": ns, "threads": t} for ns in [1, 2] for t in [128, 256]]
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
-        wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
+        wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt, lean=self._wu_lean)
         _wu_bwd_at = dict(configs=wu_bwd_configs, warmup=warmup, rep=rep)
         _wu_bwd_dns = list(self._autotune_initial_kwargs(wu_bwd_jit, wu_bwd_configs[0]).keys())
         if _wu_bwd_dns:
@@ -543,6 +568,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
             self.config.get("threads", 256),
             self.config.get("parallel_threads", 256),
             self.config.get("recurrence_threads", 256),
+            self._wu_lean,
             do,
             q,
             k,
