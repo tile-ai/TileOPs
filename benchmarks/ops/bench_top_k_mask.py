@@ -12,6 +12,8 @@ from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
+    assert_matches_reference,
+    assert_output_spec,
     compiled_reference,
     flashinfer_op,
     vllm_op,
@@ -25,7 +27,7 @@ from workloads.sampling import TopKMaskWorkload
 def test_top_k_mask_bench(call) -> None:
     workload = TopKMaskWorkload(call)
     logits, k = workload.gen_inputs()
-    reference = workload.ref_program(logits, k)
+    spec = call.specs["masked_logits"]
 
     op = TopKMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -36,24 +38,28 @@ def test_top_k_mask_bench(call) -> None:
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
 
-    # flashinfer's top_k_mask_logits keeps ties at the threshold, as the reference does.
+    # flashinfer's top_k_mask_logits keeps ties at the threshold, as the reference does, so
+    # the two agree entry for entry and the helper's exact comparison fits.
     flashinfer_mask = flashinfer_op("sampling.top_k_mask_logits")
-    assert torch.equal(flashinfer_mask(logits, k), reference)
+    assert_matches_reference(flashinfer_mask, workload.ref_program, logits, k, rtol=0.0, atol=0.0)
     functors[FLASHINFER_TAG] = flashinfer_mask
 
     # vllm's apply_top_k_only masks its logits in place and subtracts one from its k in
-    # place, and a k above V has no meaning to it. It therefore gets a private row buffer,
-    # made once so that the timed call does not carry a copy the other tags do not: masking
-    # an already-masked row again selects the same values and so leaves it unchanged. Only
-    # the per-row k, a few bytes, is refreshed per call.
+    # place, and a k above V has no meaning to it. Both therefore come from private buffers
+    # refilled per call: a row it has already masked is not the row the other tags read, and
+    # a topk over a row of -inf is another input. ``count_copies`` stays false at the
+    # comparison below, so the refills are excluded from ``device_busy_ms``.
     apply_top_k_only = vllm_op("apply_top_k_only", "v1.sample.ops.topk_topp_sampler")
-    vllm_logits = logits.clone()
+    vllm_logits = torch.empty_like(logits)
     vllm_k = k.clamp(max=call.ix["V"])
 
     def vllm_mask(logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        return apply_top_k_only(vllm_logits, vllm_k.clone())
+        return apply_top_k_only(vllm_logits.copy_(logits), vllm_k.clone())
 
-    assert torch.equal(vllm_mask(logits, k), reference)
+    assert_matches_reference(vllm_mask, workload.ref_program, logits, k, rtol=0.0, atol=0.0)
     functors[VLLM_TAG] = vllm_mask
+
+    for tag, functor in functors.items():
+        assert_output_spec(functor(logits, k), spec, tag)
 
     bm.compare(functors, logits, k)

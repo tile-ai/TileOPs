@@ -8,7 +8,13 @@ byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    assert_output_spec,
+    compiled_reference,
+    vllm_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.sampling import TopKTopPMaskFwdOp
 from workloads.sampling import TopKTopPMaskWorkload, top_k_mask
@@ -30,6 +36,7 @@ def test_top_k_top_p_mask_bench(call) -> None:
     workload = TopKTopPMaskWorkload(call)
     logits, k, p = workload.gen_inputs()
     reference = workload.ref_program(logits, k, p)
+    spec = call.specs["masked_logits"]
 
     op = TopKTopPMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -53,6 +60,8 @@ def test_top_k_top_p_mask_bench(call) -> None:
         def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
             return apply_top_k_top_p(logits.clone(), vllm_k, p)
 
+        # Hand-written rather than ``assert_matches_reference``: the helper compares every
+        # entry, and the two legitimately disagree inside the tied run at the cut.
         got = vllm_mask(logits, k, p)
         kept = reference != -float("inf")
         taken = got != -float("inf")
@@ -61,5 +70,8 @@ def test_top_k_top_p_mask_bench(call) -> None:
         assert ((probs / lowest - 1).abs()[taken ^ kept] <= _MARGIN).all()
         assert torch.equal(got[taken & kept], reference[taken & kept])
         functors[VLLM_TAG] = vllm_mask
+
+    for tag, functor in functors.items():
+        assert_output_spec(functor(logits, k, p), spec, tag)
 
     bm.compare(functors, logits, k, p)
