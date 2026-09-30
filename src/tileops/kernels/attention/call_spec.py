@@ -25,6 +25,8 @@ __all__ = [
     "MHAPagedDecodeFwdInterface",
     "MLADecodeFwdInterface",
     "MlaDecodeCall",
+    "MlaVarlenCall",
+    "MlaVarlenFwdInterface",
     "NSACall",
     "NSACmpFwdInterface",
     "NSAFwdInterface",
@@ -184,6 +186,24 @@ class NSACall(CallSpec):
     block_size: int = 0
     scale: float = 1.0
     is_causal: bool = True
+    dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class MlaVarlenCall(CallSpec):
+    """What one packed-varlen MLA prefill call is, as the op knows it.
+
+    Packed totals are absent: the kernel reads them from the tensors it is
+    handed, so one built kernel serves every packing of these head shapes.
+    """
+
+    batch: int = 0
+    heads: int = 0
+    dim_nope: int = 0
+    dim_pe: int = 0
+    dim_v: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
     dtype: Optional[torch.dtype] = None
 
 
@@ -450,6 +470,43 @@ class MLADecodeFwdInterface(KernelInterface):
 
         Returns:
             A new ``(batch, heads, dim)`` output.
+        """
+
+
+class MlaVarlenFwdInterface(KernelInterface):
+    """MLA prefill over packed requests, after the latent is decompressed."""
+
+    request = MlaVarlenCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_nope: torch.Tensor,
+        k_pe: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ) -> "tuple[torch.Tensor, torch.Tensor]":
+        """Attend each query row to the keys its own request's mask admits.
+
+        The key of head ``h`` is ``k_nope[:, h]`` followed by ``k_pe``, which is
+        one row per token and shared by every head. Queries and keys are the
+        same tokens, so ``cu_seqlens`` describes both and the causal mask sits
+        on the diagonal.
+
+        Every tensor is contiguous on ``call.device``, and nothing is written in
+        place.
+
+        Args:
+            q: ``(total_tokens, heads, dim_nope + dim_pe)``.
+            k_nope: ``(total_tokens, heads, dim_nope)``.
+            k_pe: ``(total_tokens, dim_pe)``.
+            v: ``(total_tokens, heads, dim_v)``.
+            cu_seqlens: ``(batch + 1)`` packed request offsets.
+
+        Returns:
+            A new ``(total_tokens, heads, dim_v)`` output in ``call.dtype``, and
+            its float32 ``(total_tokens, heads)`` log-sum-exp.
         """
 
 
