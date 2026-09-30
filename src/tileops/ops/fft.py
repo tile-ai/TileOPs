@@ -3,8 +3,13 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.fft import FFTC2CCall, FFTC2CDecomposedKernel, FFTC2COneCTAKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.fft import (
+    FFTC2CCall,
+    FFTC2CDecomposedKernel,
+    FFTC2CFwdInterface,
+    FFTC2COneCTAKernel,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["FFTC2CFwdOp"]
@@ -34,6 +39,7 @@ class FFTC2CFwdOp(Op):
         "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
         "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fft_c2c": FFTC2CFwdInterface}
 
     def __init__(
         self,
@@ -73,6 +79,6 @@ class FFTC2CFwdOp(Op):
         if n == 1:
             self.kernel = None
             return input.clone()
-        call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device, tune=self.tune)
+        call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device)
         self.kernel = self.kernel_for("fft_c2c", (input,), call)
         return self.kernel(input)

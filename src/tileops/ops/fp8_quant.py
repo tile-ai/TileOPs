@@ -3,8 +3,8 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.fp8_quant import FP8QuantKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.fp8_quant import FP8QuantCall, FP8QuantFwdInterface, FP8QuantKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["FP8QuantFwdOp"]
@@ -25,6 +25,7 @@ class FP8QuantFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fp8_quant": FP8QuantFwdInterface}
 
     def __init__(
         self,
@@ -46,13 +47,6 @@ class FP8QuantFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, seq_len_kv, kv_group, index_dim, in_dtype, _device_index = call
-        return call, lambda: self.kernel_map["fp8_quant_kernel"](
-            batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
-        )
-
     def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize ``input_tensor`` row by row.
 
@@ -69,6 +63,14 @@ class FP8QuantFwdOp(Op):
     def _eager_forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Resolve the kernel and launch, inside the operator."""
         input_tensor = input_tensor.contiguous()
-        call = (*input_tensor.shape, input_tensor.dtype, input_tensor.device.index)
-        self.kernel = self.kernel_for("fp8_quant_kernel", (input_tensor,), call)
+        batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
+        call = FP8QuantCall(
+            batch=batch,
+            seq_len_kv=seq_len_kv,
+            kv_group=kv_group,
+            index_dim=index_dim,
+            dtype=input_tensor.dtype,
+            device=input_tensor.device,
+        )
+        self.kernel = self.kernel_for("fp8_quant", (input_tensor,), call)
         return self.kernel(input_tensor)

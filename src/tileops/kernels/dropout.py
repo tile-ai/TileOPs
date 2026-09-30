@@ -8,15 +8,53 @@ where mask ~ Bernoulli(1 - p), using TileLang's T.rng_init / T.rng_rand_float
 Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 """
 
+import dataclasses
 import functools
+from abc import abstractmethod
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["DropoutKernel"]
+__all__ = ["DropoutCall", "DropoutFwdInterface", "DropoutKernel"]
+
+
+@dataclasses.dataclass(frozen=True)
+class DropoutCall(CallSpec):
+    """One dropout call; the probability and the seed are baked into the program."""
+
+    count: int = 0
+    p: float = 0.5
+    seed: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+class DropoutFwdInterface(KernelInterface):
+    """Inverted dropout over a flat run of elements."""
+
+    request = DropoutCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Scale the elements a Bernoulli draw keeps; nothing is written in place.
+
+        Element ``i`` becomes ``x[i] / (1 - call.p)`` where its draw keeps it and zero where
+        it does not. The draws come from ``call.seed`` through the thread layout the built
+        program fixes, so two calls on one built kernel with the same ``call.seed`` produce
+        the same mask.
+
+        Args:
+            x: ``(call.count,)`` in ``call.dtype`` on ``call.device``, contiguous. The op
+                passes a flat view; the caller's shape is restored outside the kernel.
+
+        Returns:
+            A new ``(call.count,)`` tensor in ``call.dtype``.
+        """
+
 
 _FLOAT_DTYPES = (
     torch.float16,
@@ -67,7 +105,7 @@ def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
     return kernel
 
 
-class DropoutKernel(Kernel):
+class DropoutKernel(Kernel, DropoutFwdInterface):
     """Dropout kernel with deterministic mask generation via TileLang RNG.
 
     Applies inverted dropout: output = x * mask / (1 - p) where mask is
@@ -85,6 +123,10 @@ class DropoutKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @classmethod
+    def entry_for(cls, call: DropoutCall) -> Entry:
+        return call, lambda: cls(call.count, call.dtype, p=call.p, seed=call.seed)
 
     def __init__(self, N_total, dtype, p=0.5, seed=0, config=None, tune=False):
         super().__init__()

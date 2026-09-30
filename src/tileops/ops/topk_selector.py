@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.topk_selector import TopkSelectorKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.topk_selector import (
+    TopkSelectorCall,
+    TopkSelectorFwdInterface,
+    TopkSelectorKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["TopkSelectorFwdOp"]
@@ -26,6 +30,9 @@ class TopkSelectorFwdOp(Op):
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "topk_selector_kernel": TopkSelectorKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "topk_selector": TopkSelectorFwdInterface
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -59,13 +66,6 @@ class TopkSelectorFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device; ``out_dtype`` is the op's."""
-        batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, _device_index = call
-        return call, lambda: self.kernel_map["topk_selector_kernel"](
-            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=self.tune
-        )
-
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
@@ -89,17 +89,15 @@ class TopkSelectorFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
-        self.kernel = self.kernel_for(
-            "topk_selector_kernel",
-            (index_score, starts, ends),
-            (
-                batch,
-                seq_len,
-                seq_len_kv,
-                kv_group,
-                self.topk,
-                index_score.dtype,
-                index_score.device.index,
-            ),
+        call = TopkSelectorCall(
+            batch=batch,
+            seq_len=seq_len,
+            seq_len_kv=seq_len_kv,
+            kv_group=kv_group,
+            topk=self.topk,
+            dtype=index_score.dtype,
+            out_dtype=self.out_dtype,
+            device=index_score.device,
         )
+        self.kernel = self.kernel_for("topk_selector", (index_score, starts, ends), call)
         return self.kernel(index_score, starts, ends)

@@ -1,14 +1,76 @@
+import dataclasses
 import functools
 import itertools
+from abc import abstractmethod
 from typing import Optional
 
 import tilelang
 import torch
 from tilelang import language as T
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["FP8LightningIndexerKernel"]
+__all__ = [
+    "FP8LightningIndexerCall",
+    "FP8LightningIndexerFwdInterface",
+    "FP8LightningIndexerKernel",
+]
+
+
+@dataclasses.dataclass(frozen=True)
+class FP8LightningIndexerCall(CallSpec):
+    """One lightning-indexer call over FP8 index keys."""
+
+    batch: int = 0
+    seq_len: int = 0
+    heads: int = 0
+    index_dim: int = 0
+    seq_len_kv: int = 0
+    kv_group: int = 0
+    clean_logits: bool = True
+
+
+class FP8LightningIndexerFwdInterface(KernelInterface):
+    """Lightning-indexer logits over FP8 index keys."""
+
+    request = FP8LightningIndexerCall
+
+    @abstractmethod
+    def forward(
+        self,
+        IndexQ: torch.Tensor,
+        IndexK: torch.Tensor,
+        IndexKScale: torch.Tensor,
+        Weights: torch.Tensor,
+        CuSeqLenKS: torch.Tensor,
+        CuSeqLenKE: torch.Tensor,
+    ) -> torch.Tensor:
+        """Score each key inside its query's window; nothing is written in place.
+
+        The logit of query ``s`` and key ``t`` of group ``g`` sums ``Weights[s, h]`` times
+        ``relu(IndexQ[s, h] . IndexK[t, g] * IndexKScale[t, g])`` over the heads of group
+        ``g``. Where ``call.clean_logits``, a key outside ``[CuSeqLenKS[s], CuSeqLenKE[s])``
+        is set to negative infinity; otherwise its slot holds whatever the scan left.
+
+        Every tensor is contiguous on ``call.device``.
+
+        Args:
+            IndexQ: ``float8_e4m3fn`` ``(call.batch, call.seq_len, call.heads,
+                call.index_dim)``.
+            IndexK: ``float8_e4m3fn`` ``(call.batch, call.seq_len_kv, call.kv_group,
+                call.index_dim)``.
+            IndexKScale: ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)``, one
+                scale per key row.
+            Weights: ``float32`` ``(call.seq_len, call.heads)``.
+            CuSeqLenKS: ``int32`` ``(call.seq_len,)``, the first key of each window.
+            CuSeqLenKE: ``int32`` ``(call.seq_len,)``, one past the last key.
+
+        Returns:
+            A new ``float32`` ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)``
+            logit tensor.
+        """
+
 
 # block_Q == 1 deadlocks the software pipeline (some warps never reach the
 # pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
@@ -196,7 +258,7 @@ def _clean_logits_(
     return clean_logits_kernel
 
 
-class FP8LightningIndexerKernel(Kernel):
+class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     """FP8 lightning indexer: per-query logits over an fp8-quantized index cache.
 
     Args:
@@ -255,6 +317,18 @@ class FP8LightningIndexerKernel(Kernel):
             _clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: FP8LightningIndexerCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.seq_len,
+            call.heads,
+            call.index_dim,
+            call.seq_len_kv,
+            call.kv_group,
+            call.clean_logits,
+        )
 
     def __init__(
         self,

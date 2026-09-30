@@ -1,5 +1,3 @@
-from typing import Optional
-
 import pytest
 import torch
 
@@ -47,10 +45,10 @@ class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
 class FP8LightningIndexerFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune",
+            "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, tune",
             [
-                pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, marks=pytest.mark.smoke),
-                pytest.param(1, 4096, 32, 64, 8192, 1, True, None, True, marks=pytest.mark.full),
+                pytest.param(1, 4096, 32, 64, 8192, 1, True, False, marks=pytest.mark.smoke),
+                pytest.param(1, 4096, 32, 64, 8192, 1, True, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -65,13 +63,12 @@ def test_indexer(
     seq_len_kv: int,
     kv_group: int,
     clean_logits: bool,
-    config: Optional[dict],
     tune: bool,
 ) -> None:
     test = FP8LightningIndexerTest(
-        batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config
+        batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits
     )
-    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, config=config, tune=tune)
+    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
     test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
 
 

@@ -9,13 +9,13 @@ Edge cases:
 - training=False: identity pass-through
 """
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.dropout import DropoutKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.dropout import DropoutCall, DropoutFwdInterface, DropoutKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["DropoutFwdOp"]
@@ -36,7 +36,8 @@ class DropoutFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types = {"dropout": DropoutKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"dropout": DropoutKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dropout": DropoutFwdInterface}
 
     def __init__(
         self,
@@ -66,13 +67,6 @@ class DropoutFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per element count, dtype and device."""
-        count, dtype, _device_index = call
-        return call, lambda: self.kernel_map["dropout"](
-            count, dtype, p=self.p, seed=self.seed, tune=self.tune
-        )
-
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         if not self.training or self.p == 0.0:
             return input.clone()
@@ -80,7 +74,10 @@ class DropoutFwdOp(Op):
             return torch.zeros_like(input)
         flat = input.contiguous().reshape(-1)
         # The kernel is handed the flat view; the signature declares `input` itself.
-        kernel = self.kernel_for("dropout", (input,), (flat.numel(), flat.dtype, flat.device.index))
+        call = DropoutCall(
+            count=flat.numel(), p=self.p, seed=self.seed, dtype=flat.dtype, device=flat.device
+        )
+        kernel = self.kernel_for("dropout", (input,), call)
         return kernel(flat).reshape(input.shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:

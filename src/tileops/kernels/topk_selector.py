@@ -1,13 +1,56 @@
+import dataclasses
 import functools
+from abc import abstractmethod
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["TopkSelectorKernel"]
+__all__ = ["TopkSelectorCall", "TopkSelectorFwdInterface", "TopkSelectorKernel"]
+
+
+@dataclasses.dataclass(frozen=True)
+class TopkSelectorCall(CallSpec):
+    """One windowed top-k selection over a $[B \\times S \\times S\\_kv \\times G]$ score tensor."""
+
+    batch: int = 0
+    seq_len: int = 0
+    seq_len_kv: int = 0
+    kv_group: int = 0
+    topk: int = 0
+    dtype: Optional[torch.dtype] = None
+    out_dtype: Optional[torch.dtype] = None
+
+
+class TopkSelectorFwdInterface(KernelInterface):
+    """The highest-scoring key positions of each query row's own window."""
+
+    request = TopkSelectorCall
+
+    @abstractmethod
+    def forward(
+        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
+    ) -> torch.Tensor:
+        """Select each row's top ``call.topk`` keys; nothing is written in place.
+
+        Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``. The
+        positions come back in no particular order along the ``topk`` axis, and a window
+        holding fewer than ``call.topk`` positions fills the rest with ``call.seq_len_kv``.
+
+        Args:
+            index_score: ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)`` in
+                ``call.dtype`` on ``call.device``, contiguous.
+            starts: ``int32`` ``(call.batch, call.seq_len)``, the first key of each window.
+            ends: ``int32`` ``(call.batch, call.seq_len)``, one past the last key.
+
+        Returns:
+            A new ``(call.batch, call.seq_len, call.kv_group, call.topk)`` tensor in
+            ``call.out_dtype``.
+        """
 
 
 @functools.lru_cache(maxsize=32)
@@ -295,7 +338,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
     return topk_selector_fwd_func
 
 
-class TopkSelectorKernel(Kernel):
+class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
     """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 
     Args:
@@ -329,6 +372,18 @@ class TopkSelectorKernel(Kernel):
         )(BLOCK_SIZE)(index_score, starts, ends)
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: TopkSelectorCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.seq_len,
+            call.seq_len_kv,
+            call.kv_group,
+            call.topk,
+            call.dtype,
+            call.out_dtype,
+        )
 
     def __init__(
         self,
