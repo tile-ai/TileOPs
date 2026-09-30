@@ -137,7 +137,7 @@ INT4QuantPerGroupFwdOp:
 SmoothQuantFwdOp:
   # q = quantize_per_row(x / smooth): per-channel smoothing, then symmetric INT8 per row.
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -152,6 +152,9 @@ SmoothQuantFwdOp:
   - {M: 4096, K: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {M: 32, K: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   - {M: 4096, K: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-prefill}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
+  - {M: 17, K: 4099, dtype_cases: [{T: bfloat16}], label: ragged-k-decode}
   roofline:
     # Per element: the smoothing divide, abs, the max, the scaling, round and clamp; per row:
     # the scale and its zero guard.

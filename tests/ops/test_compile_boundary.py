@@ -63,6 +63,7 @@ from tileops.ops.quantization import (
     INT8QuantPerBlockFwdOp,
     INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
+    SmoothQuantFwdOp,
 )
 from tileops.ops.rope import (
     RopeLlama31FwdOp,
@@ -106,6 +107,7 @@ from workloads.quantization import (
     INT8QuantPerBlockWorkload,
     INT8QuantPerChannelWorkload,
     INT8QuantPerTensorWorkload,
+    SmoothQuantWorkload,
 )
 
 
@@ -526,6 +528,9 @@ def _other_cases():
             64, 256, torch.float16
         ).gen_inputs()
 
+    def smooth_quant():
+        return SmoothQuantFwdOp(), SmoothQuantWorkload(64, 64, torch.bfloat16).gen_inputs()
+
     def mean_pooling():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
@@ -542,6 +547,7 @@ def _other_cases():
         ("int8-quant-per-channel", int8_quant_per_channel),
         ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
+        ("smooth-quant", smooth_quant),
     )
 
 
@@ -733,6 +739,7 @@ for _op_cls in (
     INT8QuantPerBlockFwdOp,
     INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
+    SmoothQuantFwdOp,
     MeanPoolingFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import TestBase, allclose_compare, exact_compare
-from tileops.backend import OpNotAvailableError
+from tileops.backend import BUILTIN, OpNotAvailableError
 from tileops.kernels.quantization import (
     INT8QuantPerChannelFwdKernel,
     INT8QuantPerTensorFwdKernel,
@@ -353,6 +353,68 @@ def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "rows, cols, dtype, offset, ieee",
+    [
+        # An odd K over more rows than the SMs hold at once: rows start inside a vector, and
+        # a CTA quantizes several rows at one column offset.
+        pytest.param(1000, 999, torch.bfloat16, 0, False, id="odd-k"),
+        # Whole vectors that do not split evenly over the threads: the last ones idle.
+        pytest.param(37, 264, torch.float16, 0, False, id="aligned-inexact"),
+        # A copy of smooth in a view that starts one element into its storage, off the
+        # 16-byte vector boundary.
+        pytest.param(64, 1024, torch.bfloat16, 1, False, id="misaligned-smooth"),
+        # Factors below 2**-60 and an all-zero row, which IEEE division serves.
+        pytest.param(64, 1024, torch.bfloat16, 0, True, id="ieee-division"),
+    ],
+)
+def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
+    test = type("QuantizeTest", (SmoothQuantWorkload, TestBase), {})(rows, cols, dtype)
+    x, smooth = test.gen_inputs()
+    if ieee:
+        # A reciprocal-corrected quotient of this pair is one float32 ulp off, and it is
+        # its row's amax, so the scale differs unless the tiny factors send the row to IEEE
+        # division.
+        smooth.fill_(6.031807955764232e-29)
+        x[0] = 1.0432512363547802e-37
+        x[rows // 2] = 0
+    # Signed factors; the exact scale compare also fails a divide that is not correctly
+    # rounded, since each row's amax is one quotient.
+    sign = torch.where(torch.rand(cols, device=smooth.device) < 0.5, -1.0, 1.0)
+    shifted = torch.empty(cols + offset, dtype=smooth.dtype, device=smooth.device)[offset:]
+    shifted.copy_(smooth * sign)
+    test.check(SmoothQuantFwdOp(), x, shifted, compare=[exact_compare, exact_compare])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op, interface",
+    [
+        (INT8QuantPerChannelFwdOp(target=BUILTIN), "int8_quant_per_channel_fwd"),
+        (SmoothQuantFwdOp(target=BUILTIN), "smooth_quant_fwd"),
+    ],
+    ids=lambda v: v if isinstance(v, str) else type(v).__name__,
+)
+def test_each_per_row_region_selects_its_one_implementation(op, interface: str) -> None:
+    """Every call whose elements int32 indexes has the one per-row program; a larger has none."""
+    served = QuantizeCall(arch=90, sm_count=132, rows=4096, cols=4096, dtype=torch.bfloat16)
+    assert op.select_implementation(interface, served) == interface
+    too_large = QuantizeCall(arch=90, sm_count=132, rows=2**16, cols=2**15, dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="int32"):
+        op.select_implementation(interface, too_large)
+
+
+@pytest.mark.smoke
+def test_per_row_quantize_of_no_rows() -> None:
+    """``M = 0`` is a valid call; one CTA per row would launch an empty grid."""
+    x = torch.empty(0, 1024, dtype=torch.float16, device=run_device())
+    smooth = torch.ones(1024, device=run_device())
+    for q, scale in (INT8QuantPerChannelFwdOp()(x), SmoothQuantFwdOp()(x, smooth)):
+        assert q.shape == x.shape and q.dtype == torch.int8
+        assert scale.shape == (0,) and scale.dtype == torch.float32
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("op_cls", list(_WORKLOADS), ids=lambda c: c.__name__)
 def test_generated_checks_reject_an_invalid_call(op_cls) -> None:
     inputs = _WORKLOADS[op_cls](256, 256, torch.float64).gen_inputs()
@@ -536,7 +598,7 @@ def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
         (4099, torch.float16, "fp8_quant_per_block_unaligned_fwd"),
     ],
 )
-def test_each_region_selects_its_one_implementation(cols, dtype, key) -> None:
+def test_each_fp8_per_block_region_selects_its_one_implementation(cols, dtype, key) -> None:
     """Rows that all start on a 16-byte vector take the register kernel, any other K the
     unaligned one."""
     call = QuantizeCall(arch=90, sm_count=132, rows=256, cols=cols, dtype=dtype)

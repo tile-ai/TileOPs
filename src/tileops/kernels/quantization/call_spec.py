@@ -21,6 +21,7 @@ __all__ = [
     "INT8QuantPerChannelFwdInterface",
     "INT8QuantPerTensorFwdInterface",
     "QuantizeCall",
+    "SmoothQuantFwdInterface",
 ]
 
 
@@ -189,4 +190,23 @@ class FP8QuantPerBlockFwdInterface(KernelInterface):
         Returns:
             A new ``q`` shaped like *w* in ``float8_e4m3fn`` and a new ``scale``
             ``[ceil(call.rows / 128), ceil(call.cols / 128)]`` in ``float32``.
+        """
+
+
+class SmoothQuantFwdInterface(KernelInterface):
+    """SmoothQuant: divide each column by its smoothing factor, then INT8 per row."""
+
+    request = QuantizeCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Quantize each of the ``call.rows`` rows of ``x / smooth``; nothing is written in place.
+
+        Args:
+            x: ``[call.rows, call.cols]``, contiguous, in ``call.dtype`` on ``call.device``.
+            smooth: ``[call.cols]``, contiguous, in ``float32`` on ``call.device``.
+
+        Returns:
+            A new ``q`` shaped like *x* in ``int8`` and a new ``scale`` ``[call.rows]`` in
+            ``float32``.
         """
