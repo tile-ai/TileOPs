@@ -60,30 +60,6 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     return _func
 
 
-def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None") -> Kernel:
-    """Build the SM90 dense GEMM kernel whose region holds *call*.
-
-    Raises:
-        ValueError: Neither kernel serves the shape; the message names both refusals.
-    """
-    candidates = (GemmTmaKernel, GemmCpAsyncKernel)
-    for cls in candidates:
-        if (cls.unavailable(call) or cls.refusal(call)) is None:
-            return cls(
-                m=call.m,
-                n=call.n,
-                k=call.k,
-                dtype=call.dtype,
-                trans_b=True,
-                config=config,
-                device_index=device_index,
-            )
-    reasons = "; ".join(
-        f"{cls.__name__}: {cls.unavailable(call) or cls.refusal(call)}" for cls in candidates
-    )
-    raise ValueError(f"no dense GEMM serves {call.m}x{call.n}x{call.k}: {reasons}")
-
-
 class SharedExpertMLPKernel(Kernel):
     """Shared expert MLP producing ``[T, H]``.
 
@@ -91,6 +67,30 @@ class SharedExpertMLPKernel(Kernel):
     ``w_down[H, F]``. SM90 uses the dense template for wide shared experts
     above ``template_min_m``; other calls use the existing dense implementations.
     """
+
+    @staticmethod
+    def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None") -> Kernel:
+        """Build the SM90 dense GEMM kernel whose region holds *call*.
+
+        Raises:
+            ValueError: Neither kernel serves the shape; the message names both refusals.
+        """
+        candidates = (GemmTmaKernel, GemmCpAsyncKernel)
+        for cls in candidates:
+            if (cls.unavailable(call) or cls.refusal(call)) is None:
+                return cls(
+                    m=call.m,
+                    n=call.n,
+                    k=call.k,
+                    dtype=call.dtype,
+                    trans_b=True,
+                    config=config,
+                    device_index=device_index,
+                )
+        reasons = "; ".join(
+            f"{cls.__name__}: {cls.unavailable(call) or cls.refusal(call)}" for cls in candidates
+        )
+        raise ValueError(f"no dense GEMM serves {call.m}x{call.n}x{call.k}: {reasons}")
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -159,7 +159,7 @@ class SharedExpertMLPKernel(Kernel):
             )
         elif sm_version == 90:
             gemm_config = self.config if config is not None else None
-            self._gemm_gate_up = _dense_gemm(gate_up_call, gemm_config, device_index)
+            self._gemm_gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
             small_m_config = (
                 small_m_splitk_config(
                     num_tokens,
@@ -182,7 +182,7 @@ class SharedExpertMLPKernel(Kernel):
                     device_index=device_index,
                 )
             else:
-                self._gemm_down = _dense_gemm(down_call, gemm_config, device_index)
+                self._gemm_down = self._dense_gemm(down_call, gemm_config, device_index)
             gate_config = self._gemm_gate_up.config
             if (
                 isinstance(self._gemm_gate_up, GemmTmaKernel)
