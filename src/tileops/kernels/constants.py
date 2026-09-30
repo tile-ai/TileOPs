@@ -30,6 +30,9 @@ BLOCK_SHARED_BYTES_OPT_IN: dict[int, int] = {
 # Threads one block may hold.
 MAX_BLOCK_THREADS: int = 1024
 
+# Blocks one thread-block cluster may hold without opting in to a non-portable size.
+MAX_PORTABLE_CLUSTER_BLOCKS: int = 8
+
 # Blocks one SM may hold resident at once, by architecture.
 SM_RESIDENT_BLOCKS: dict[int, int] = {
     80: 32,

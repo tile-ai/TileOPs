@@ -5,8 +5,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import SamplingCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.sampling import SamplingCall, TopKMaskFwdInterface, TopKMaskFwdKernel
 from tileops.ops.op_base import Op
 
 __all__ = ["TopKMaskFwdOp"]
@@ -17,13 +17,20 @@ class TopKMaskFwdOp(Op):
 
     Every logit equal to the ``k[b]``-th largest is kept, so a tie at the threshold keeps
     more than ``k[b]``, and a row with ``k[b] >= V`` is returned unchanged, as FlashInfer's
-    ``top_k_mask_logits`` does. The output has the shape and dtype of ``logits``.
+    ``top_k_mask_logits`` does. The output has the shape and dtype of ``logits``, and each
+    kept logit is passed through bit for bit.
 
-    No in-tree kernel implements this op yet, so a call raises ``OpNotAvailableError``
-    unless a target serves it.
+    NaN ranks above every number, as ``torch.sort`` places it, and is masked wherever the
+    row is filtered, as ``logits >= kth`` is false at a NaN; a row with ``k[b] >= V`` keeps
+    its NaNs.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_k_mask_fwd": TopKMaskFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "top_k_mask_fwd": TopKMaskFwdInterface
+    }
 
     def __init__(
         self,
@@ -54,11 +61,13 @@ class TopKMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
+        return self._call_boundary(logits, k)
+
+    def _eager_forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         k = k.contiguous()
         batch, vocab = logits.shape
-        call = SamplingCall(
-            device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype, tune=self.tune
-        )
-        kernel = self.kernel_for("top_k_mask", (logits, k), call)
+        call = SamplingCall(device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype)
+        kernel = self.kernel_for("top_k_mask_fwd", (logits, k), call)
         return kernel(logits, k)
