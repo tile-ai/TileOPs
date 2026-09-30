@@ -31,98 +31,6 @@ __all__ = [
 ]
 
 
-def _make_apply_mask(
-    is_causal, has_window, window_size_left, window_size_right, accum_dtype, block_m, block_n
-):
-    """Create a masked attention score initialization macro.
-
-    All parameters are compile-time constants baked into the macro via closure.
-    The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
-    conditions, using four compile-time paths:
-
-    - causal + window (left only)
-    - causal only
-    - window only (left and/or right)
-    - no masking (OOB guard only)
-
-    Args:
-        is_causal: Whether causal masking is applied.
-        has_window: Whether any window constraint is active.
-        window_size_left: Left window size (-1 = unlimited).
-        window_size_right: Right window size (-1 = unlimited).
-        accum_dtype: Accumulator data type string (e.g. "float").
-        block_m: Tile size along the Q dimension.
-        block_n: Tile size along the KV dimension.
-
-    Returns:
-        apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
-    """
-
-    @T.macro
-    def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
-        if is_causal and has_window:
-            for i, j in T.Parallel(block_m, block_n):
-                causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                left_mask = (window_size_left >= 0) and (
-                    k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                )
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        elif is_causal:
-            for i, j in T.Parallel(block_m, block_n):
-                causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        elif has_window:
-            for i, j in T.Parallel(block_m, block_n):
-                left_mask = (window_size_left >= 0) and (
-                    k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                )
-                right_mask = (window_size_right >= 0) and (
-                    k_idx * block_n + j > bx * block_m + i + offset + window_size_right
-                )
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
-        else:
-            for i, j in T.Parallel(block_m, block_n):
-                q_oob = bx * block_m + i >= q_len
-                k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
-
-    def inside(k_idx, bx, q_len, kv_len, offset):
-        # Whether no mask condition reaches the tile, so it needs zeros only.
-        q_first = bx * block_m
-        q_last = q_first + block_m - 1
-        k_first = k_idx * block_n
-        k_last = k_first + block_n - 1
-        cond = (q_last < q_len) & (k_last < kv_len)
-        if is_causal:
-            cond = cond & (k_last <= q_first + offset)
-        elif window_size_right >= 0:
-            cond = cond & (k_last <= q_first + offset + window_size_right)
-        if window_size_left >= 0:
-            cond = cond & (k_first >= q_last + offset - window_size_left)
-        return cond
-
-    @T.macro
-    def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
-        if inside(k_idx, bx, q_len, kv_len, offset):
-            T.clear(acc_s)
-        else:
-            mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
-
-    return apply_mask
-
-
 class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
     """Shared base for variable-length GQA sliding window forward kernels."""
 
@@ -177,6 +85,103 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_varlen_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
+        def _make_apply_mask(
+            is_causal,
+            has_window,
+            window_size_left,
+            window_size_right,
+            accum_dtype,
+            block_m,
+            block_n,
+        ):
+            """Create a masked attention score initialization macro.
+
+            All parameters are compile-time constants baked into the macro via closure.
+            The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
+            conditions, using four compile-time paths:
+
+            - causal + window (left only)
+            - causal only
+            - window only (left and/or right)
+            - no masking (OOB guard only)
+
+            Args:
+                is_causal: Whether causal masking is applied.
+                has_window: Whether any window constraint is active.
+                window_size_left: Left window size (-1 = unlimited).
+                window_size_right: Right window size (-1 = unlimited).
+                accum_dtype: Accumulator data type string (e.g. "float").
+                block_m: Tile size along the Q dimension.
+                block_n: Tile size along the KV dimension.
+
+            Returns:
+                apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
+            """
+
+            @T.macro
+            def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
+                if is_causal and has_window:
+                    for i, j in T.Parallel(block_m, block_n):
+                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
+                        left_mask = (window_size_left >= 0) and (
+                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
+                        )
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                elif is_causal:
+                    for i, j in T.Parallel(block_m, block_n):
+                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                elif has_window:
+                    for i, j in T.Parallel(block_m, block_n):
+                        left_mask = (window_size_left >= 0) and (
+                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
+                        )
+                        right_mask = (window_size_right >= 0) and (
+                            k_idx * block_n + j > bx * block_m + i + offset + window_size_right
+                        )
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
+
+            def inside(k_idx, bx, q_len, kv_len, offset):
+                # Whether no mask condition reaches the tile, so it needs zeros only.
+                q_first = bx * block_m
+                q_last = q_first + block_m - 1
+                k_first = k_idx * block_n
+                k_last = k_first + block_n - 1
+                cond = (q_last < q_len) & (k_last < kv_len)
+                if is_causal:
+                    cond = cond & (k_last <= q_first + offset)
+                elif window_size_right >= 0:
+                    cond = cond & (k_last <= q_first + offset + window_size_right)
+                if window_size_left >= 0:
+                    cond = cond & (k_first >= q_last + offset - window_size_left)
+                return cond
+
+            @T.macro
+            def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+                if inside(k_idx, bx, q_len, kv_len, offset):
+                    T.clear(acc_s)
+                else:
+                    mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
+
+            return apply_mask
+
         total_q = T.dynamic("total_q")
         total_k = T.dynamic("total_k")
         q_shape = (total_q, heads, dim)
