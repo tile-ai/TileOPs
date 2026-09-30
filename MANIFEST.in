@@ -10,6 +10,7 @@ prune .claude
 prune scripts
 
 # Same rule, for root files rather than trees.
+exclude .clang-format
 exclude .gitignore
 exclude .pre-commit-config.yaml
 exclude CLAUDE.md

@@ -86,7 +86,7 @@ TopKTopPMaskFwdOp:
   # TopPMaskFwdOp(TopKMaskFwdOp(logits, k), p): top-p's probabilities are renormalized
   # over the tokens top-k keeps. 0 < p < 1 is the caller's obligation.
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
@@ -102,6 +102,8 @@ TopKTopPMaskFwdOp:
   - {V: 128256, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
   - {V: 128256, k_list: "repeat(50, 256)", dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
   - {V: 151936, k_list: "repeat(20, 128)", dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  - {V: 50257, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 50257, 51257, 3], dtype_cases: [{T: float16}], label: gpt2-b17-mixed}
+  - {V: 129280, k_list: "repeat(40, 100)", dtype_cases: [{T: bfloat16}], label: deepseek-v3-b100}
   roofline:
     # Top-k on the rows k restricts, top-p over each row's survivors, the final mask.
     func: "tileops.perf.formulas.top_k_top_p_mask_roofline"
