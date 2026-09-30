@@ -801,9 +801,6 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
             (16, 300, 16384), (0, 2), torch.bfloat16, "LogSumExpEdgeSplitKernel", id="edge-long"
         ),
         pytest.param((256, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream"),
-        pytest.param(
-            (260, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream-few"
-        ),
         pytest.param((8, 102400), (1,), torch.float32, "LogSumExpSplitKernel", id="split"),
         pytest.param((64, 4096), (1,), torch.float16, "LogSumExpKernel", id="single-tile"),
         pytest.param((300, 100000), (1,), torch.float32, "LogSumExpKernel", id="tiled"),

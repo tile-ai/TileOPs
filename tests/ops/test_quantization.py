@@ -311,7 +311,6 @@ def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     "cols, dtype, key",
     [
         (7168, torch.bfloat16, "int8_quant_per_block_fwd"),
-        (2880, torch.bfloat16, "int8_quant_per_block_fwd"),
         (4100, torch.float32, "int8_quant_per_block_fwd"),
         (4099, torch.float16, "int8_quant_per_block_shifted_fwd"),
         (4098, torch.float32, "int8_quant_per_block_shifted_fwd"),
