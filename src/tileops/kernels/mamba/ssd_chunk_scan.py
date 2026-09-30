@@ -61,6 +61,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInterface
+from tileops.utils import get_sm_version
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
@@ -535,6 +536,9 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             d_state,
             n_groups,
             self.dtype_str,
+            # The diagonal micro-blocks write quadrants of an MMA operand fragment, whose loop
+            # layout TileLang infers only for the SM90 fragment.
+            diagonal_microtile_size=32 if get_sm_version() == 90 else 0,
         )
         self.init_config(config, tune)
 
