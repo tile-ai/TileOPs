@@ -108,16 +108,6 @@ def row_scan_threads(N_padded: int, elem_bytes: int) -> int:
     return widest
 
 
-def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
-    """Whether a row of *N_padded* can be scanned by one thread block."""
-    threads = row_scan_threads(N_padded, elem_bytes)
-    if N_padded % threads:
-        return False
-    chunk = N_padded // threads
-    staged = threads * (chunk + row_scan_pad(chunk, elem_bytes)) * elem_bytes
-    return staged <= smem_budget and row_scan_chunk_ok(chunk, elem_bytes, threads)
-
-
 @functools.lru_cache(maxsize=32)
 def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
     """Build a one-block-per-row inclusive prefix scan.
@@ -410,13 +400,23 @@ class _CumulativeKernelBase(Kernel):
         config: Optional kernel configuration dict.
     """
 
+    @staticmethod
+    def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
+        """Whether a row of *N_padded* can be scanned by one thread block."""
+        threads = row_scan_threads(N_padded, elem_bytes)
+        if N_padded % threads:
+            return False
+        chunk = N_padded // threads
+        staged = threads * (chunk + row_scan_pad(chunk, elem_bytes)) * elem_bytes
+        return staged <= smem_budget and row_scan_chunk_ok(chunk, elem_bytes, threads)
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def stages_whole_row(cls, call: CumulativeCall) -> bool:
         """Whether one thread block stages the whole row, aligned, in shared memory."""
         n_padded = align_up(call.n, DEFAULT_ALIGNMENT)
-        return n_padded == call.n and row_scan_fits(
+        return n_padded == call.n and cls.row_scan_fits(
             n_padded, torch_dtype_nbytes(call.dtype), call.smem_budget
         )
 

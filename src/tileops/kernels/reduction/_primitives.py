@@ -101,16 +101,6 @@ def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
     return torch.empty(0, dtype=dtype).element_size()
 
 
-def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
-    """Return the column count one thread-block pass covers.
-
-    Each thread takes one ``VECTOR_ACCESS_BYTES`` chunk per pass, so a pass is
-    ``threads`` chunks wide.  ``layout_ok`` is what callers should ask; this is
-    the granularity it measures against and generation aligns to.
-    """
-    return threads * VECTOR_ACCESS_BYTES // elem_bytes
-
-
 class BlockConfigPlanner:
     """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
 
@@ -129,6 +119,16 @@ class BlockConfigPlanner:
             Registers, not shared memory: a tile that fits in shared memory can still
             spill.
     """
+
+    @staticmethod
+    def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
+        """Return the column count one thread-block pass covers.
+
+        Each thread takes one ``VECTOR_ACCESS_BYTES`` chunk per pass, so a pass is
+        ``threads`` chunks wide.  ``layout_ok`` is what callers should ask; this is
+        the granularity it measures against and generation aligns to.
+        """
+        return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
     _BLOCK_MS = (1, 2, 4, 8)
     # Extra tile widths offered to the autotuner beyond the default pick.
@@ -189,7 +189,7 @@ class BlockConfigPlanner:
         """
         if block_m == 1:
             return max(DEFAULT_ALIGNMENT, threads)
-        return reduce_column_alignment(self.elem_bytes, threads)
+        return self.reduce_column_alignment(self.elem_bytes, threads)
 
     def tile_n_for(self, block_m: int, threads: int) -> int:
         """Return the tile width to use untuned (0: this pair needs no tiling).
@@ -280,7 +280,7 @@ class BlockConfigPlanner:
         """
         if block_m == 1:
             return cols % threads == 0
-        one_pass = reduce_column_alignment(self.elem_bytes, threads)
+        one_pass = self.reduce_column_alignment(self.elem_bytes, threads)
         return cols % one_pass == 0 or one_pass % cols == 0
 
     def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
@@ -304,7 +304,7 @@ class BlockConfigPlanner:
                     f"tile_n={tile_n} is not a multiple of threads={threads}, so a "
                     f"(1, tile_n) fragment has no reducible layout"
                 )
-            one_pass = reduce_column_alignment(self.elem_bytes, threads)
+            one_pass = self.reduce_column_alignment(self.elem_bytes, threads)
             return (
                 f"tile_n={tile_n} neither divides nor is a multiple of the "
                 f"{one_pass}-column thread-block pass (threads={threads}, "
@@ -779,45 +779,6 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     return (k, j)
 
 
-def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
-    """Create the per-op macros used by the down-rows reduction."""
-
-    @T.macro
-    def init(acc):
-        if op_kind == "amax":
-            T.fill(acc, -T.infinity("float32"))
-        elif op_kind == "amin":
-            T.fill(acc, T.infinity("float32"))
-        elif op_kind == "prod":
-            T.fill(acc, 1.0)
-        else:
-            T.fill(acc, 0.0)
-
-    @T.macro
-    def combine(acc, slot, value):
-        if op_kind == "amax":
-            acc[slot] = T.max(acc[slot], value)
-        elif op_kind == "amin":
-            acc[slot] = T.min(acc[slot], value)
-        elif op_kind == "prod":
-            acc[slot] = acc[slot] * value
-        else:
-            acc[slot] = acc[slot] + value
-
-    @T.macro
-    def finish(out_local, slot, accumulated):
-        if divisor and epilogue == "sqrt":
-            out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
-        elif divisor:
-            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
-        elif epilogue == "sqrt":
-            out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
-        else:
-            out_local[slot] = T.cast(accumulated, out_dtype)
-
-    return init, combine, finish
-
-
 @functools.lru_cache(maxsize=32)
 def _down_rows_kernel(
     A: int,
@@ -856,6 +817,45 @@ def _down_rows_kernel(
         epilogue: ``"sqrt"`` applies a square root before the output cast, for a
             caller whose outer pass finishes a sum-of-squares; ``""`` for none.
     """
+
+    def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
+        """Create the per-op macros used by the down-rows reduction."""
+
+        @T.macro
+        def init(acc):
+            if op_kind == "amax":
+                T.fill(acc, -T.infinity("float32"))
+            elif op_kind == "amin":
+                T.fill(acc, T.infinity("float32"))
+            elif op_kind == "prod":
+                T.fill(acc, 1.0)
+            else:
+                T.fill(acc, 0.0)
+
+        @T.macro
+        def combine(acc, slot, value):
+            if op_kind == "amax":
+                acc[slot] = T.max(acc[slot], value)
+            elif op_kind == "amin":
+                acc[slot] = T.min(acc[slot], value)
+            elif op_kind == "prod":
+                acc[slot] = acc[slot] * value
+            else:
+                acc[slot] = acc[slot] + value
+
+        @T.macro
+        def finish(out_local, slot, accumulated):
+            if divisor and epilogue == "sqrt":
+                out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
+            elif divisor:
+                out_local[slot] = T.cast(accumulated / divisor, out_dtype)
+            elif epilogue == "sqrt":
+                out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
+            else:
+                out_local[slot] = T.cast(accumulated, out_dtype)
+
+        return init, combine, finish
+
     block_b = threads * _LEADING_POLICY.cols_per_thread
     rows_per_split = ceildiv_int(A, splits)
     exact = B % block_b == 0
