@@ -49,14 +49,13 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
         """Score each key inside its query's window; nothing is written in place.
 
         The logit of query ``s`` and key ``t`` of group ``g`` sums ``Weights[s, h]`` times
-        ``relu(IndexQ[s, h] . IndexK[t, g] * IndexKScale[t, g])`` over the heads of group
+        ``relu(IndexQ[s, h] . IndexK[t, g]) * IndexKScale[t, g]`` over the heads of group
         ``g``. Where ``call.clean_logits``, a key outside ``[CuSeqLenKS[s], CuSeqLenKE[s])``
         is set to negative infinity; otherwise its slot holds whatever the scan left.
         Nothing is written in place, and the output aliases no input.
 
-        Every tensor is on ``call.device``, row-major in the axis order given. The op
-        passes the caller's tensors as they are on the externally scaled path, so an
-        implementation that needs a dense layout makes one.
+        Every tensor is on ``call.device``, contiguous and row-major in the axis order
+        given; the op makes them contiguous before the call.
 
         Args:
             IndexQ: ``float8_e4m3fn``

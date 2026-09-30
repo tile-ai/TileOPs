@@ -159,6 +159,14 @@ class RopeNeoxPositionIdsFwdInterface(KernelInterface):
             A new contiguous tensor on ``call.device``, shaped and typed as *x*.
         """
 
+    @abstractmethod
+    def take_out_of_range(self) -> bool:
+        """Whether a call since the previous ask saw a position outside the table.
+
+        The op asks after every call and raises when the answer is true, so an
+        implementation that clamps silently still reports here.
+        """
+
 
 # Kernel factories for 1D and 2D layouts
 

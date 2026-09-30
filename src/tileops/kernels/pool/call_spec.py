@@ -204,7 +204,7 @@ class MaxPool1dFwdInterface(KernelInterface):
             A new contiguous ``(call.n, call.c_in, out_l)`` tensor in ``call.dtype`` on
             ``call.device``, with the output extents ``torch.nn.functional.max_pool1d``
             gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
-            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
+            and ``call.ceil_mode``. The comparison runs in float32 and the result is stored in ``call.dtype``.
         """
 
 
@@ -230,7 +230,7 @@ class MaxPool2dFwdInterface(KernelInterface):
             A new contiguous ``(call.n, call.c_in, out_h, out_w)`` tensor in ``call.dtype`` on
             ``call.device``, with the output extents ``torch.nn.functional.max_pool2d``
             gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
-            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
+            and ``call.ceil_mode``. The comparison runs in float32 and the result is stored in ``call.dtype``.
         """
 
 
@@ -256,7 +256,7 @@ class MaxPool3dFwdInterface(KernelInterface):
             A new contiguous ``(call.n, call.c_in, out_d, out_h, out_w)`` tensor in ``call.dtype`` on
             ``call.device``, with the output extents ``torch.nn.functional.max_pool3d``
             gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
-            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
+            and ``call.ceil_mode``. The comparison runs in float32 and the result is stored in ``call.dtype``.
         """
 
 

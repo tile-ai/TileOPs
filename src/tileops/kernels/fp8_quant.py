@@ -35,10 +35,11 @@ class FP8QuantFwdInterface(KernelInterface):
         """Scale each row by its own maximum; nothing is written in place.
 
         A row is the trailing ``call.index_dim`` axis. Its scale is the absolute maximum
-        over the finite elements, floored at ``1e-4``, divided by 448. A row holding an
-        infinity or a NaN is quantized against its finite maximum, so neither output
-        propagates the non-finite value. Nothing is written in place, and neither output
-        aliases the input.
+        over the row, floored at ``1e-4``, divided by 448; each element is multiplied by
+        the reciprocal of that scale and clamped to the ``float8_e4m3fn`` range. A row
+        holding an infinity or a NaN has no defined result: whether the maximum and the
+        clamp carry the non-finite value is left to the implementation. Nothing is written
+        in place, and neither output aliases the input.
 
         Args:
             input_tensor: The input,

@@ -117,7 +117,10 @@ class FP8LightningIndexerFwdOp(Op):
             clean_logits=self.clean_logits,
             device=index_q.device,
         )
-        inputs = (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
+        inputs = tuple(
+            t.contiguous()
+            for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
+        )
         self.kernel = self.kernel_for("fp8_lightning_indexer", inputs, call)
         return self.kernel(*inputs)
 

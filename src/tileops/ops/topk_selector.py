@@ -89,6 +89,8 @@ class TopkSelectorFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
+        index_score = index_score.contiguous()
+        starts, ends = starts.contiguous(), ends.contiguous()
         call = TopkSelectorCall(
             batch=batch,
             seq_len=seq_len,
