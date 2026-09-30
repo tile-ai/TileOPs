@@ -79,7 +79,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     torch.float16,
                     False,
                     marks=pytest.mark.smoke,
-                ),  # D=128 uses the two-stage sliding pipeline
+                ),  # D=128 uses the two-stage sliding pipeline on SM90
                 pytest.param(
                     1,
                     [6],
@@ -363,6 +363,7 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "q_lens, kv_lens, is_causal, wl, wr",
