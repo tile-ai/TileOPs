@@ -171,34 +171,6 @@ def _warn_off_calibration_board(device_index: Optional[int]) -> None:
         )
 
 
-def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
-    """Modelled milliseconds for one launch of ``cfg``."""
-    block_m, block_n = cfg["block_m"], cfg["block_n"]
-    block_k, num_stages, threads = cfg["block_k"], cfg["num_stages"], cfg["threads"]
-    split_k = cfg.get("split_k", 1)
-    c = _CALIBRATION
-    k_eff = k / split_k
-    waves = -(-((-(-m // block_m)) * (-(-n // block_n)) * split_k) // sms)
-    math_warpgroups = min(threads // 128, block_n // 64)
-    rows_per_warpgroup = block_n / math_warpgroups
-    warp_specialized = threads > 128
-    cost = waves * (
-        rows_per_warpgroup * k_eff * (c.dequant + c.dequant_ws * warp_specialized)
-        + rows_per_warpgroup * block_m * k_eff * (c.mma + c.mma_big * (block_m >= 256))
-        + (k_eff / block_k) * (c.iter_ws * warp_specialized + c.iter_ns / num_stages)
-        + c.wave
-    )
-    if split_k > 1:
-        reduce_bytes = split_k * m * n * 4 + m * n * 2
-        cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
-    if cfg.get("stream_ctas", 0):
-        ctas = -(-m // block_m) * -(-n // block_n)
-        cost *= ctas / cfg["stream_ctas"]
-        reduce_bytes = _CONFIG_SPACE.stream_slots * m * n * 4 + m * n * 2
-        cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
-    return cost
-
-
 def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] = None):
     """Every tile the builder accepts for this shape; stream-K variants only when ``sms`` is given."""
     for block_m in _CONFIG_SPACE.block_ms:
@@ -285,6 +257,34 @@ def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     """Choose a tile shape, then its lowest-cost whole-K, split-K, or stream-K variant."""
+
+    def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
+        """Modelled milliseconds for one launch of ``cfg``."""
+        block_m, block_n = cfg["block_m"], cfg["block_n"]
+        block_k, num_stages, threads = cfg["block_k"], cfg["num_stages"], cfg["threads"]
+        split_k = cfg.get("split_k", 1)
+        c = _CALIBRATION
+        k_eff = k / split_k
+        waves = -(-((-(-m // block_m)) * (-(-n // block_n)) * split_k) // sms)
+        math_warpgroups = min(threads // 128, block_n // 64)
+        rows_per_warpgroup = block_n / math_warpgroups
+        warp_specialized = threads > 128
+        cost = waves * (
+            rows_per_warpgroup * k_eff * (c.dequant + c.dequant_ws * warp_specialized)
+            + rows_per_warpgroup * block_m * k_eff * (c.mma + c.mma_big * (block_m >= 256))
+            + (k_eff / block_k) * (c.iter_ws * warp_specialized + c.iter_ns / num_stages)
+            + c.wave
+        )
+        if split_k > 1:
+            reduce_bytes = split_k * m * n * 4 + m * n * 2
+            cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
+        if cfg.get("stream_ctas", 0):
+            ctas = -(-m // block_m) * -(-n // block_n)
+            cost *= ctas / cfg["stream_ctas"]
+            reduce_bytes = _CONFIG_SPACE.stream_slots * m * n * 4 + m * n * 2
+            cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
+        return cost
+
     legal = list(_legal_configs(m, n, k, group_size, sms))
     scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
     if not scored:

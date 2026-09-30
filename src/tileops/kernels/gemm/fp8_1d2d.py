@@ -70,55 +70,6 @@ _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
 }
 
 
-def _calibrated_epilogue(m: int, n: int, k: int, calibration: Optional[str]) -> bool:
-    """Whether the schedule calibrated on *calibration*'s board stores through shared memory.
-
-    False off a calibrated board or shape: the packed global store has the
-    smaller unit, so it addresses every shape the other one does.
-    """
-    tuned = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
-    return bool(tuned["shared_epilogue"]) if tuned is not None else False
-
-
-def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> Optional[str]:
-    """Why this schedule cannot address these shapes, or ``None`` when it can.
-
-    ``a``, ``b`` and ``scale_a`` arrive through TMA, whose descriptors address the
-    innermost (contiguous) dimension in 16-byte units: ``k`` for the fp8 operands,
-    ``ceil(k / 128)`` for the fp32 ``scale_a``. The epilogue adds its own
-    unit: two BF16 columns per packed global store, or a descriptor row stride of
-    16 bytes for the shared-memory path. Below one 128-row tile the tile is
-    mostly padding.
-    """
-    if m < 128:
-        return f"m={m} is below one 128-row tile"
-    store_unit = 8 if shared_epilogue else 2
-    offenders = [
-        f"{name}={value} is not a multiple of {unit} ({what})"
-        for name, value, unit, what in (
-            ("k", k, 16, "a and b are read K-major through TMA, 16 fp8 per 16 bytes"),
-            (
-                "ceil(k / 128)",
-                -(-k // 128),
-                4,
-                "scale_a is read row-major through TMA, 4 fp32 per 16 bytes",
-            ),
-            (
-                "n",
-                n,
-                store_unit,
-                "the TMA epilogue needs a 16-byte row stride in c"
-                if shared_epilogue
-                else "the epilogue writes c two BF16 columns at a time",
-            ),
-        )
-        if value % unit
-    ]
-    if not offenders:
-        return None
-    return "; ".join(offenders)
-
-
 @functools.lru_cache(maxsize=32)
 def _gemm_fp8_1d2d_kernel(
     m: int,
@@ -536,6 +487,55 @@ class GemmFp81D2DFwdKernel(Kernel):
             it with TMA. ``None`` takes the calibrated choice for this shape.
     """
 
+    @staticmethod
+    def _calibrated_epilogue(m: int, n: int, k: int, calibration: Optional[str]) -> bool:
+        """Whether the schedule calibrated on *calibration*'s board stores through shared memory.
+
+        False off a calibrated board or shape: the packed global store has the
+        smaller unit, so it addresses every shape the other one does.
+        """
+        tuned = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
+        return bool(tuned["shared_epilogue"]) if tuned is not None else False
+
+    @staticmethod
+    def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> Optional[str]:
+        """Why this schedule cannot address these shapes, or ``None`` when it can.
+
+        ``a``, ``b`` and ``scale_a`` arrive through TMA, whose descriptors address the
+        innermost (contiguous) dimension in 16-byte units: ``k`` for the fp8 operands,
+        ``ceil(k / 128)`` for the fp32 ``scale_a``. The epilogue adds its own
+        unit: two BF16 columns per packed global store, or a descriptor row stride of
+        16 bytes for the shared-memory path. Below one 128-row tile the tile is
+        mostly padding.
+        """
+        if m < 128:
+            return f"m={m} is below one 128-row tile"
+        store_unit = 8 if shared_epilogue else 2
+        offenders = [
+            f"{name}={value} is not a multiple of {unit} ({what})"
+            for name, value, unit, what in (
+                ("k", k, 16, "a and b are read K-major through TMA, 16 fp8 per 16 bytes"),
+                (
+                    "ceil(k / 128)",
+                    -(-k // 128),
+                    4,
+                    "scale_a is read row-major through TMA, 4 fp32 per 16 bytes",
+                ),
+                (
+                    "n",
+                    n,
+                    store_unit,
+                    "the TMA epilogue needs a 16-byte row stride in c"
+                    if shared_epilogue
+                    else "the epilogue writes c two BF16 columns at a time",
+                ),
+            )
+            if value % unit
+        ]
+        if not offenders:
+            return None
+        return "; ".join(offenders)
+
     supported_archs = [90]
 
     @classmethod
@@ -545,11 +545,11 @@ class GemmFp81D2DFwdKernel(Kernel):
             and call.dtype == torch.float8_e4m3fn
             and call.out_dtype == torch.bfloat16
             and not call.has_bias
-            and _shape_refusal(
+            and cls._shape_refusal(
                 call.m,
                 call.n,
                 call.k,
-                shared_epilogue=_calibrated_epilogue(call.m, call.n, call.k, call.calibration),
+                shared_epilogue=cls._calibrated_epilogue(call.m, call.n, call.k, call.calibration),
             )
             is None
         )
@@ -597,12 +597,12 @@ class GemmFp81D2DFwdKernel(Kernel):
         if self._calibrated is not None:
             self.sm_count = int(self._calibrated.get("sm_count", self.sm_count))
         self.shared_epilogue = (
-            _calibrated_epilogue(m, n, k, calibration)
+            self._calibrated_epilogue(m, n, k, calibration)
             if shared_epilogue is None
             else bool(shared_epilogue)
         )
 
-        refusal = _shape_refusal(m, n, k, shared_epilogue=self.shared_epilogue)
+        refusal = self._shape_refusal(m, n, k, shared_epilogue=self.shared_epilogue)
         if refusal is not None:
             raise ValueError(f"{type(self).__name__} cannot serve m={m} n={n} k={k}: {refusal}")
 

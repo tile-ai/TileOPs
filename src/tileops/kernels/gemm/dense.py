@@ -724,53 +724,6 @@ def _fp8_ws_plain_drain(ab_empty, acc, prev, scale_a, scale_b, *, num_regs: int,
         acc[i, j] *= scale_a[0, 0] * scale_b[0, 0]
 
 
-@T.macro
-def _fp8_ws_epilogue(
-    c,
-    bias,
-    acc,
-    out,
-    c_smem,
-    m_start,
-    n_start,
-    rows,
-    cols,
-    *,
-    bar: int,
-    block_n: int,
-    n: int,
-    out_dtype: str,
-    has_bias: bool,
-    stage_store: bool,
-):
-    """Cast one consumer's tile and store it: one TMA box when full, elements otherwise.
-
-    ``stage_store`` is False where no row tile can be full — every ``m`` inside
-    one consumer's half — and the staging tile is then not allocated.
-    """
-    half_m = _FP8_WS_HALF_M
-    if has_bias:
-        for i, j in T.Parallel(half_m, block_n):
-            out[i, j] = T.cast(acc[i, j], out_dtype) + bias[T.min(n_start + j, n - 1)]
-    else:
-        T.copy(acc, out)
-    if not stage_store:
-        if rows > T.int32(0):
-            for i, j in T.Parallel(half_m, block_n):
-                if i < rows and j < cols:
-                    c[m_start + i, n_start + j] = out[i, j]
-    elif rows == T.int32(half_m) and cols == T.int32(block_n):
-        T.sync_threads(barrier_id=bar, arrive_count=128)
-        T.copy(out, c_smem)
-        T.fence_proxy_async()
-        T.sync_threads(barrier_id=bar, arrive_count=128)
-        T.copy(c_smem, c[m_start, n_start])
-    elif rows > T.int32(0):
-        for i, j in T.Parallel(half_m, block_n):
-            if i < rows and j < cols:
-                c[m_start + i, n_start + j] = out[i, j]
-
-
 @functools.lru_cache(maxsize=32)
 def _gemm_fp8_ws_kernel(
     m: int,
@@ -838,6 +791,52 @@ def _gemm_fp8_ws_kernel(
         num_stages: int = 4,
         group_size_m: int = 8,
     ) -> Callable:
+        @T.macro
+        def _fp8_ws_epilogue(
+            c,
+            bias,
+            acc,
+            out,
+            c_smem,
+            m_start,
+            n_start,
+            rows,
+            cols,
+            *,
+            bar: int,
+            block_n: int,
+            n: int,
+            out_dtype: str,
+            has_bias: bool,
+            stage_store: bool,
+        ):
+            """Cast one consumer's tile and store it: one TMA box when full, elements otherwise.
+
+            ``stage_store`` is False where no row tile can be full — every ``m`` inside
+            one consumer's half — and the staging tile is then not allocated.
+            """
+            half_m = _FP8_WS_HALF_M
+            if has_bias:
+                for i, j in T.Parallel(half_m, block_n):
+                    out[i, j] = T.cast(acc[i, j], out_dtype) + bias[T.min(n_start + j, n - 1)]
+            else:
+                T.copy(acc, out)
+            if not stage_store:
+                if rows > T.int32(0):
+                    for i, j in T.Parallel(half_m, block_n):
+                        if i < rows and j < cols:
+                            c[m_start + i, n_start + j] = out[i, j]
+            elif rows == T.int32(half_m) and cols == T.int32(block_n):
+                T.sync_threads(barrier_id=bar, arrive_count=128)
+                T.copy(out, c_smem)
+                T.fence_proxy_async()
+                T.sync_threads(barrier_id=bar, arrive_count=128)
+                T.copy(c_smem, c[m_start, n_start])
+            elif rows > T.int32(0):
+                for i, j in T.Parallel(half_m, block_n):
+                    if i < rows and j < cols:
+                        c[m_start + i, n_start + j] = out[i, j]
+
         half_m = block_m // 2
         nr = (half_m * block_n) // 128
         num_pid_m = -(-m // block_m)

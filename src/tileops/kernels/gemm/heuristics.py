@@ -180,47 +180,43 @@ class _Cand:
         }
 
 
-def _strip_width(bm: int, bn: int, sm_count: int) -> int:
-    """L2-footprint-minimizing rasterization panel width.
-
-    DeepGEMM's ``get_num_1d_blocks_per_group`` (scheduler/gemm.cuh): choose
-    the group size whose resident-CTA footprint ``g*bm + ceil(SMs/g)*bn``
-    is smallest.
-    """
-    return min((4, 8, 10, 16), key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
-
-
-def _ns_basic(bm: int, bn: int, bk: int) -> int:
-    ring = (bm + bn) * bk * 2
-    return min(_NS_CAP["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
-
-
-def _coop2_ns_sn(bn: int, bk: int):
-    """Deepest ring under ``_NS_CAP`` the SMEM budget allows; shrink the epilogue
-    staging chunk (stage_n) when that buys another pipeline stage."""
-    ring = (128 + bn) * bk * 2
-    best = None
-    for sn in (bn, bn // 2, bn // 4):
-        if sn < 32 or bn % sn:
-            continue
-        ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
-        if ns < 3:
-            continue
-        if best is None or (ns, sn) > best[:2]:
-            best = (ns, sn)
-    if best is None:
-        return None
-    ns, sn = best
-    return ns, (0 if sn == bn else sn)
-
-
-def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
-    if ns < 3:
-        return False
-    return not (bm * bn < 128 * 192 and ns < 4)
-
-
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
+    def _strip_width(bm: int, bn: int, sm_count: int) -> int:
+        """L2-footprint-minimizing rasterization panel width.
+
+        DeepGEMM's ``get_num_1d_blocks_per_group`` (scheduler/gemm.cuh): choose
+        the group size whose resident-CTA footprint ``g*bm + ceil(SMs/g)*bn``
+        is smallest.
+        """
+        return min((4, 8, 10, 16), key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
+
+    def _ns_basic(bm: int, bn: int, bk: int) -> int:
+        ring = (bm + bn) * bk * 2
+        return min(_NS_CAP["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
+
+    def _coop2_ns_sn(bn: int, bk: int):
+        """Deepest ring under ``_NS_CAP`` the SMEM budget allows; shrink the epilogue
+        staging chunk (stage_n) when that buys another pipeline stage."""
+        ring = (128 + bn) * bk * 2
+        best = None
+        for sn in (bn, bn // 2, bn // 4):
+            if sn < 32 or bn % sn:
+                continue
+            ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
+            if ns < 3:
+                continue
+            if best is None or (ns, sn) > best[:2]:
+                best = (ns, sn)
+        if best is None:
+            return None
+        ns, sn = best
+        return ns, (0 if sn == bn else sn)
+
+    def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
+        if ns < 3:
+            return False
+        return not (bm * bn < 128 * 192 and ns < 4)
+
     nt = (not trans_a) and trans_b
     out = []
 
@@ -291,33 +287,6 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     return out
 
 
-def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
-    """Predicted microseconds; only the relative ordering is meaningful."""
-    bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
-    elem, elem_out = 2, 2
-    num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
-    num_waves = math.ceil(num_blocks / sm_count)
-    wave_eff = num_blocks / (num_waves * sm_count)
-    k_exp = k / sk
-    ws = 4 if sk > 1 else elem_out
-
-    l2_ab = k_exp * (bm + bn) * elem
-    l1_ab = k_exp * (bm + bn) * elem
-    l1_tc = k_exp * (max(64, bm) + bn) * elem + bm * bn * ws
-    cd_bytes = bm * bn * ws
-
-    l2_us = (l2_ab + cd_bytes) * num_blocks / (cal.l2_tbps * 1e6)
-    l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (cal.l1_tbps * 1e6)
-    tc_us = 2.0 * m * n * k / (cal.tc_tflops(cd.structure) * 1e6)
-    issue_us = (k_exp / cd.block_k) * num_waves * cal.issue_ns * 1e-3
-
-    us = max(tc_us, l1_us, l2_us) / wave_eff + issue_us
-    if sk > 1:
-        red_bytes = sk * m * n * 4 + m * n * elem_out
-        us += red_bytes / (cal.reduce_tbps * 1e6) + cal.launch_us
-    return us
-
-
 def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
     """Whether ``ceil(n / _SWAP_AB_BLOCK_NN)`` CTAs sit below three-eighths of a wave.
 
@@ -350,59 +319,85 @@ def _swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
     return 4 if ctas * 4 >= sm_count * 3 else 8
 
 
-def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
-    """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
-
-    The score above divides byte terms by wave efficiency, which is right when
-    SMs bound the shape and wrong at m <= 8, where the kernel is a weight stream
-    (arithmetic intensity ~= m) and DRAM is shared across the CTAs carrying it.
-
-    - long K: grid-z split-K on the 64-row tile, ``split_k=4`` while the K-tile
-      count leaves at least 12 iterations per slice; shorter slices pay the
-      warp-specialized pipeline's fill and drain.
-    - short K: the plain 64-row tile. Its slices are too short to amortize the
-      reduce, and ``simple`` needs ``m % block_m == 0``, never true here.
-
-    Both use ``block_n=128``: half the CTAs of ``bn=64`` still saturate the
-    weight stream, and it halves the padded-``A`` re-read through L2. Wherever
-    the operand-swapped kernel's grid fills the device it removes that re-read
-    instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
-    leaves.
-    """
-    stages = _swap_ab_stages(n, sm_count)
-    if stages is not None:
-        return {
-            "swap_ab": True,
-            "block_nn": _SWAP_AB_BLOCK_NN,
-            "block_k": 128,
-            "num_stages": stages,
-        }
-    k_iters = math.ceil(k / 128)
-    for sk in (4, 2):
-        if k_iters % sk == 0 and k_iters // sk >= 12:
-            return {
-                "block_m": 64,
-                "block_n": TINY_M_BLOCK_N,
-                "block_k": 128,
-                "num_stages": 4,
-                "panel_size": 16,
-                "split_k": sk,
-            }
-    return {
-        "block_m": 64,
-        "block_n": TINY_M_BLOCK_N,
-        "block_k": 128,
-        "num_stages": 4,
-        "panel_size": 8,
-        "split_k": 1,
-    }
-
-
 @functools.lru_cache(maxsize=512)
 def _best_config_cached(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, cal: _Calibration
 ) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
+
+    def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
+        """Predicted microseconds; only the relative ordering is meaningful."""
+        bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
+        elem, elem_out = 2, 2
+        num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
+        num_waves = math.ceil(num_blocks / sm_count)
+        wave_eff = num_blocks / (num_waves * sm_count)
+        k_exp = k / sk
+        ws = 4 if sk > 1 else elem_out
+
+        l2_ab = k_exp * (bm + bn) * elem
+        l1_ab = k_exp * (bm + bn) * elem
+        l1_tc = k_exp * (max(64, bm) + bn) * elem + bm * bn * ws
+        cd_bytes = bm * bn * ws
+
+        l2_us = (l2_ab + cd_bytes) * num_blocks / (cal.l2_tbps * 1e6)
+        l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (cal.l1_tbps * 1e6)
+        tc_us = 2.0 * m * n * k / (cal.tc_tflops(cd.structure) * 1e6)
+        issue_us = (k_exp / cd.block_k) * num_waves * cal.issue_ns * 1e-3
+
+        us = max(tc_us, l1_us, l2_us) / wave_eff + issue_us
+        if sk > 1:
+            red_bytes = sk * m * n * 4 + m * n * elem_out
+            us += red_bytes / (cal.reduce_tbps * 1e6) + cal.launch_us
+        return us
+
+    def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
+        """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
+
+        The score above divides byte terms by wave efficiency, which is right when
+        SMs bound the shape and wrong at m <= 8, where the kernel is a weight stream
+        (arithmetic intensity ~= m) and DRAM is shared across the CTAs carrying it.
+
+        - long K: grid-z split-K on the 64-row tile, ``split_k=4`` while the K-tile
+          count leaves at least 12 iterations per slice; shorter slices pay the
+          warp-specialized pipeline's fill and drain.
+        - short K: the plain 64-row tile. Its slices are too short to amortize the
+          reduce, and ``simple`` needs ``m % block_m == 0``, never true here.
+
+        Both use ``block_n=128``: half the CTAs of ``bn=64`` still saturate the
+        weight stream, and it halves the padded-``A`` re-read through L2. Wherever
+        the operand-swapped kernel's grid fills the device it removes that re-read
+        instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
+        leaves.
+        """
+        stages = _swap_ab_stages(n, sm_count)
+        if stages is not None:
+            return {
+                "swap_ab": True,
+                "block_nn": _SWAP_AB_BLOCK_NN,
+                "block_k": 128,
+                "num_stages": stages,
+            }
+        k_iters = math.ceil(k / 128)
+        for sk in (4, 2):
+            if k_iters % sk == 0 and k_iters // sk >= 12:
+                return {
+                    "block_m": 64,
+                    "block_n": TINY_M_BLOCK_N,
+                    "block_k": 128,
+                    "num_stages": 4,
+                    "panel_size": 16,
+                    "split_k": sk,
+                }
+        return {
+            "block_m": 64,
+            "block_n": TINY_M_BLOCK_N,
+            "block_k": 128,
+            "num_stages": 4,
+            "panel_size": 8,
+            "split_k": 1,
+        }
+
     if m <= 8 and not trans_a and trans_b:
         return _tiny_m_config(n, k, sm_count)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
@@ -518,18 +513,6 @@ def small_m_splitk_config(
     }
 
 
-def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
-    """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
-
-    A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
-    block128 scale vectors when staged. The epilogue's two staging tiles are
-    live alongside the ring, and exist only for ``m`` over one consumer's half.
-    """
-    per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
-    epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
-    return (_SMEM_BUDGET - epilogue) // per_stage
-
-
 def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> dict:
     """Tile, ring depth and K split for the warp-specialized FP8 GEMM.
 
@@ -549,6 +532,18 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
     - split-K: only where the sliced grid still fits one wave and every slice
       keeps enough K-tiles to amortize the fill and the fp32 workspace.
     """
+
+    def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
+        """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
+
+        A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
+        block128 scale vectors when staged. The epilogue's two staging tiles are
+        live alongside the ring, and exist only for ``m`` over one consumer's half.
+        """
+        per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
+        epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
+        return (_SMEM_BUDGET - epilogue) // per_stage
+
     block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
     k_iters = -(-k // 128)
     deepest = _fp8_ws_stages(m, block_n, block_scaled)
