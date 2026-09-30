@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tileops.backend import OpNotAvailableError
+from tileops.kernels.sampling import SamplingCall
 from tileops.sampling import (
     ChainSpeculativeSamplingFwdOp,
     MinPMaskFwdOp,
@@ -107,6 +108,64 @@ def test_top_k_mask(dtype):
     assert torch.equal(kept[k >= _V], torch.full_like(kept[k >= _V], _V))
     out = _run(TopKMaskFwdOp(), logits, k)
     assert out.dtype == logits.dtype and torch.equal(out, ref)
+
+
+def _special_rows(vocab: int, dtype: torch.dtype) -> torch.Tensor:
+    """Six rows: noise, both zeros, both infinities, NaN, one repeated value, and two."""
+    device = run_device()
+    rows = torch.randn(6, vocab, device=device).to(dtype)
+    rows[1, ::2], rows[1, 1::2] = 0.0, -0.0
+    rows[2, :7], rows[2, 7:14] = _INF, -_INF
+    rows[3, :5] = float("nan")
+    rows[4] = 1.5
+    rows[5] = torch.where(torch.arange(vocab, device=device) % 3 == 0, 2.0, -2.0).to(dtype)
+    return rows
+
+
+@pytest.mark.parametrize(
+    "dtype, vocab",
+    [
+        # 16-bit keys with the row on the vector, 16-bit and 32-bit keys with it off.
+        (torch.bfloat16, 4096),
+        (torch.float16, 999),
+        (torch.float32, 999),
+    ],
+)
+def test_top_k_mask_matches_the_reference_bit_for_bit(dtype: torch.dtype, vocab: int):
+    """Each row is cut where its own special values sit: at a zero, at an infinity, at a
+    NaN, among equal values, and at a k the row leaves whole."""
+    logits = _special_rows(vocab, dtype)
+    k = torch.tensor(
+        [1, vocab // 2, 3, 2, vocab // 4, vocab], dtype=torch.int32, device=logits.device
+    )
+    ref = top_k_mask(logits, k)
+    out = _run(TopKMaskFwdOp(), logits, k)
+    bits = torch.int16 if logits.element_size() == 2 else torch.int32
+    # Bit patterns, so that -0.0 kept where the reference keeps 0.0 is a failure.
+    assert torch.equal(out.view(bits), ref.view(bits))
+
+
+def test_top_k_mask_cuts_a_row_its_samples_misplace():
+    """Every value a sample can land on is the row's smallest, so the bracket the samples
+    give holds no rank the k-th value can take."""
+    vocab = 8192
+    device = run_device()
+    columns = torch.arange(vocab, device=device)
+    logits = torch.where(columns % 4 == 0, 0.0, 1.0).to(torch.float32)[None]
+    k = torch.tensor([vocab // 2], dtype=torch.int32, device=device)
+    out = _run(TopKMaskFwdOp(), logits, k)
+    assert torch.equal(out, top_k_mask(logits, k))
+
+
+def test_top_k_mask_selects_its_one_implementation():
+    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
+    assert TopKMaskFwdOp().select_implementation("top_k_mask_fwd", call) == "top_k_mask_fwd"
+
+
+def test_top_k_mask_refuses_a_call_int32_cannot_index():
+    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="B \\* V"):
+        TopKMaskFwdOp().select_implementation("top_k_mask_fwd", call)
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)

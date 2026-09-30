@@ -9,7 +9,7 @@ TopKMaskFwdOp:
   # Keeps the k[b] largest logits of row b, ties at the threshold kept; a row with
   # k[b] >= V is unchanged (FlashInfer top_k_mask_logits).
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
@@ -23,6 +23,8 @@ TopKMaskFwdOp:
   - {V: 128256, k_list: "repeat(50, 256)", dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
   - {V: 151936, k_list: "repeat(20, 128)", dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
   - {V: 201088, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: gpt-oss-120b-b64}
+  - {V: 50257, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 50257, 51257, 3], dtype_cases: [{T: float16}], label: gpt2-b17-mixed}
+  - {V: 129280, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 129280, 130280, 3], dtype_cases: [{T: bfloat16}], label: deepseek-v3-b17-mixed}
   roofline:
     # The threshold search and the mask on each row k restricts; a row with k >= V is the identity.
     func: "tileops.perf.formulas.top_k_mask_roofline"
