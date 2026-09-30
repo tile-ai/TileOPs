@@ -14,6 +14,7 @@ from tileops.kernels.attention.online_softmax import (
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
 __all__ = ["GQADecodeKernel"]
 
@@ -640,13 +641,21 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 "num_stages": 2,
                 "threads": 128,
             }
-        return {
-            "block_H": 64,
-            "block_N": 128,
-            "num_split": 16,
-            "num_stages": 2,
-            "threads": 128,
-        }
+        wide = {"block_H": 64, "block_N": 128, "num_split": 16, "num_stages": 2, "threads": 128}
+        # One stage of 64 keys where shared memory cannot hold two of 128 (SM89 holds 99 KB).
+        narrow = {**wide, "block_N": 64, "num_stages": 1}
+        fits = self._shared_bytes(wide) <= get_shared_memory_optin(self.device_index)
+        return wide if fits else narrow
+
+    def _shared_bytes(self, config: dict) -> int:
+        """Shared memory the no-split program, the larger of the two, allocates for *config*:
+        the query rows, a K and a V tile per stage, and the output rows."""
+        rows = (
+            config["block_H"]
+            + 2 * config["num_stages"] * config["block_N"]
+            + min(config["block_H"], self.heads // self.groups)
+        )
+        return rows * self.dim * getattr(torch, self.dtype_str).itemsize
 
     @property
     def autotune_configs(self) -> list[dict]:

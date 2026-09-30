@@ -28,7 +28,9 @@ def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 @pytest.mark.parametrize(
     ("ctor", "dtype", "expected"),
     [
-        pytest.param({}, torch.float16, "GQADecodePagedBs1Kernel", id="bs1-fp16"),
+        pytest.param(
+            {}, torch.float16, "GQADecodePagedBs1Kernel", id="bs1-fp16", marks=pytest.mark.sm90
+        ),
         pytest.param({}, torch.bfloat16, "GQADecodePagedKernel", id="bf16-falls-back"),
         pytest.param({"batch": 2}, torch.float16, "GQADecodePagedKernel", id="batched"),
         pytest.param({"dim": 64}, torch.float16, "GQADecodePagedKernel", id="head-dim"),
