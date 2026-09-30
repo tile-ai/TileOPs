@@ -1,10 +1,9 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmKernel
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
-from tileops.utils import get_sm_version
 from workloads.gemm import (
     GroupedGemmWorkload,
 )
@@ -108,10 +107,13 @@ def test_grouped_gemm(
     transpose_a: bool,
     transpose_b: bool,
     tune: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=tune)
-    test.check(op, *test.gen_inputs())
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # What `tune=True` measures
@@ -184,7 +186,7 @@ def test_selection_prefers_the_template_where_tma_can_address_the_operands(
     """The SM90 template serves every layout with 8-aligned extents; the general kernel the rest."""
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
     call = GroupedGemmCall(
-        arch=get_sm_version(),
+        arch=90,
         numel=numel,
         num_experts=16,
         n=n,
