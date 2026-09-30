@@ -8,9 +8,22 @@ import tilelang.language as T
 import torch
 from tilelang.transform import PassConfigKey
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.moe.call_spec import (
+    IndexedExpertCall,
+    IndexedExpertDownFwdInterface,
+    IndexedExpertGateUpFwdInterface,
+    IndexedRouteStatsFwdInterface,
+    IndexedWeightedReduceFwdInterface,
+)
 
-__all__ = ["IndexedExpertGemmTemplate"]
+__all__ = [
+    "IndexedExpertDownKernel",
+    "IndexedExpertGateUpKernel",
+    "IndexedExpertGemmTemplate",
+    "IndexedRouteStatsKernel",
+    "IndexedWeightedReduceKernel",
+]
 
 
 def _route_metadata_size(num_experts: int, num_routes: int, num_tokens: int) -> int:
@@ -238,13 +251,29 @@ def _weighted_reduce(
     return _kernel
 
 
-class IndexedRouteStatsKernel(Kernel):
+class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
     """Describe same-expert route groups on device."""
 
     supported_archs = [90]
 
-    def __init__(self, num_tokens: int, top_k: int, num_experts: int) -> None:
-        super().__init__()
+    @classmethod
+    def entry_for(cls, call: IndexedExpertCall) -> Entry:
+        """One build per route extents and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.num_tokens, call.top_k, call.num_experts, index)
+        return identity, lambda: cls(
+            call.num_tokens, call.top_k, call.num_experts, device_index=index
+        )
+
+    def __init__(
+        self,
+        num_tokens: int,
+        top_k: int,
+        num_experts: int,
+        *,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
         self.top_k = top_k
         self.num_experts = num_experts
@@ -255,20 +284,13 @@ class IndexedRouteStatsKernel(Kernel):
     def default_config(self) -> dict:
         return {"threads": 128}
 
-    @property
-    def output_size(self) -> int:
-        return self.required_output_size(self.num_tokens, self.top_k, self.num_experts)
-
-    @staticmethod
-    def required_output_size(num_tokens: int, top_k: int, num_experts: int) -> int:
-        return _route_metadata_size(num_experts, num_tokens * top_k, num_tokens)
-
     def forward(self, expert_ids: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         expected = (self.num_tokens, self.top_k)
         if tuple(expert_ids.shape) != expected or expert_ids.dtype is not torch.int32:
             raise ValueError(f"expert_ids must be {expected} int32")
-        if tuple(out.shape) != (self.output_size,) or out.dtype is not torch.int32:
-            raise ValueError(f"out must be ({self.output_size},) int32")
+        size = _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
+        if tuple(out.shape) != (size,) or out.dtype is not torch.int32:
+            raise ValueError(f"out must be ({size},) int32")
         self.kernel(**self.config)(expert_ids, out)
         return out
 
@@ -295,8 +317,9 @@ class IndexedExpertGemmTemplate(Kernel):
         route_input: bool = False,
         dispatch_mode: str = "direct",
         config: Optional[dict] = None,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         if activation not in ("none", "silu_and_mul"):
             raise ValueError("activation must be 'none' or 'silu_and_mul'")
         if dispatch_mode not in ("direct", "grouped"):
@@ -387,10 +410,31 @@ class IndexedExpertGemmTemplate(Kernel):
         return out
 
 
-class IndexedWeightedReduceKernel(Kernel):
+class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
     """Apply routing weights and reduce route-major expert output to tokens."""
 
     supported_archs = [90]
+
+    @classmethod
+    def entry_for(cls, call: IndexedExpertCall) -> Entry:
+        """One build per token count, route width, hidden width, scale, dtype and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.num_tokens,
+            call.top_k,
+            call.hidden_size,
+            call.dtype,
+            call.routed_scaling_factor,
+            index,
+        )
+        return identity, lambda: cls(
+            call.num_tokens,
+            call.top_k,
+            call.hidden_size,
+            call.dtype,
+            call.routed_scaling_factor,
+            device_index=index,
+        )
 
     def __init__(
         self,
@@ -399,8 +443,10 @@ class IndexedWeightedReduceKernel(Kernel):
         hidden_size: int,
         dtype: torch.dtype,
         scaling: float,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
@@ -432,3 +478,68 @@ class IndexedWeightedReduceKernel(Kernel):
             raise TypeError("topk_weights must be float32")
         self.kernel(**self.config)(expert_output, topk_weights, output)
         return output
+
+
+class IndexedExpertGateUpKernel(IndexedExpertGemmTemplate, IndexedExpertGateUpFwdInterface):
+    """The gate/up projection on the indexed template, with SiLU fused into the epilogue."""
+
+    @classmethod
+    def entry_for(cls, call: IndexedExpertCall) -> Entry:
+        """One build per route extents, projection widths, dtype and device.
+
+        ``grouped_dispatch`` decides whether the program reads route metadata; it is a
+        parameter of this one program, so it belongs in the build identity and not in a
+        second implementation.
+        """
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.num_tokens,
+            call.num_experts,
+            call.top_k,
+            call.ffn_size,
+            call.hidden_size,
+            call.dtype,
+            call.grouped_dispatch,
+            index,
+        )
+        return identity, lambda: cls(
+            call.num_tokens,
+            call.num_experts,
+            call.top_k,
+            call.ffn_size,
+            call.hidden_size,
+            call.dtype,
+            activation="silu_and_mul",
+            dispatch_mode="grouped" if call.grouped_dispatch else "direct",
+            device_index=index,
+        )
+
+
+class IndexedExpertDownKernel(IndexedExpertGemmTemplate, IndexedExpertDownFwdInterface):
+    """The down projection on the indexed template, reading one row per route."""
+
+    @classmethod
+    def entry_for(cls, call: IndexedExpertCall) -> Entry:
+        """One build per route extents, projection widths, dtype and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.num_tokens,
+            call.num_experts,
+            call.top_k,
+            call.hidden_size,
+            call.ffn_size,
+            call.dtype,
+            call.grouped_dispatch,
+            index,
+        )
+        return identity, lambda: cls(
+            call.num_tokens,
+            call.num_experts,
+            call.top_k,
+            call.hidden_size,
+            call.ffn_size,
+            call.dtype,
+            route_input=True,
+            dispatch_mode="grouped" if call.grouped_dispatch else "direct",
+            device_index=index,
+        )

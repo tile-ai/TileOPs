@@ -5,8 +5,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.moe import SharedExpertMLPKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.moe import (
+    SharedExpertMLPCall,
+    SharedExpertMLPFwdInterface,
+    SharedExpertMLPKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -24,6 +28,9 @@ class SharedExpertMLPFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "shared_expert_mlp": SharedExpertMLPKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "shared_expert_mlp": SharedExpertMLPFwdInterface
     }
 
     def __init__(
@@ -49,18 +56,6 @@ class SharedExpertMLPFwdOp(Op):
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.ix["D"])
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per token count, width, expert width, dtype and device."""
-        tokens, hidden, ffn, dtype, device_index = call
-        return call, lambda: self.kernel_map[role](
-            num_tokens=tokens,
-            hidden_size=hidden,
-            ffn_size=ffn,
-            dtype=dtype,
-            tune=self.tune,
-            device_index=device_index,
-        )
-
     def forward(
         self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:
@@ -82,5 +77,11 @@ class SharedExpertMLPFwdOp(Op):
         """Resolve the kernel and launch, inside the operator."""
         tokens, hidden = hidden_states.shape
         tensors = (hidden_states, w_gate_up, w_down)
-        call = (tokens, hidden, w_down.shape[1], hidden_states.dtype, hidden_states.device.index)
+        call = SharedExpertMLPCall(
+            num_tokens=tokens,
+            hidden_size=hidden,
+            ffn_size=w_down.shape[1],
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
         return self.kernel_for("shared_expert_mlp", tensors, call)(*tensors)

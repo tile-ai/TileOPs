@@ -233,10 +233,10 @@ def test_fused_topk_kernel_cache_specializations() -> None:
     gating3 = gating1.to(torch.bfloat16)
 
     op(gating1)
-    assert len(op.built_kernels("fused_topk_kernel")) == 1
+    assert len(op.built_kernels("fused_topk")) == 1
     op(gating1)
-    assert len(op.built_kernels("fused_topk_kernel")) == 1
+    assert len(op.built_kernels("fused_topk")) == 1
     op(gating2)
-    assert len(op.built_kernels("fused_topk_kernel")) == 2
+    assert len(op.built_kernels("fused_topk")) == 2
     op(gating3)
-    assert len(op.built_kernels("fused_topk_kernel")) == 3
+    assert len(op.built_kernels("fused_topk")) == 3

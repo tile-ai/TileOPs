@@ -6,13 +6,18 @@ from typing import ClassVar, Mapping
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.moe import (
+    MGroupedGemmCall,
+    MGroupedGemmFwdInterface,
     MoeGroupedGemmKernel,
     MoePrePermuteContiguousKernel,
     MoeUnpermuteKernel,
+    PostPermuteCall,
+    PostPermuteFwdInterface,
+    PrePermuteCall,
+    PrePermuteFwdInterface,
 )
-from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.moe.contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -25,47 +30,6 @@ __all__ = [
 ]
 
 
-class _ContiguousPostPermuteKernel(Kernel):
-    """Adapt contiguous staged indices to the shipped weighted unpermute kernel."""
-
-    supported_archs = [80, 86, 89, 90]
-
-    @classmethod
-    def applies(cls, call: PostPermuteCall) -> bool:
-        return (
-            call.layout_key in ("tight_physical_psum", "aligned_per_row")
-            and call.input_dtype in (torch.bfloat16, torch.float16)
-            and call.output_dtype == call.input_dtype
-        )
-
-    def __init__(self, call: PostPermuteCall) -> None:
-        """Build the weighted no-pad inverse specialization selected by ``call``."""
-        device_index = call.device.index if call.device is not None else None
-        super().__init__(device_index=device_index)
-        self.inner = MoeUnpermuteKernel(
-            call.num_tokens,
-            call.top_k,
-            call.hidden_size,
-            call.materialized_rows,
-            scaling=call.epilogue.routed_scaling_factor,
-            dtype=call.input_dtype,
-            sm_count=call.sm_count,
-            tune=call.tune,
-            device_index=device_index,
-        )
-
-    def forward(
-        self,
-        expert_output: torch.Tensor,
-        inverse_indices: torch.Tensor,
-        topk_weights: torch.Tensor,
-        *,
-        out: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Restore token order and apply the configured routing epilogue."""
-        return self.inner(expert_output, inverse_indices, topk_weights, out=out)
-
-
 class MoePrePermuteFwdOp(Op):
     """Materialize rank-grouped activations into a local expert layout.
 
@@ -75,7 +39,10 @@ class MoePrePermuteFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "contiguous": MoePrePermuteContiguousKernel
+        "pre_permute_contiguous": MoePrePermuteContiguousKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "pre_permute": PrePermuteFwdInterface
     }
 
     def __init__(
@@ -120,14 +87,12 @@ class MoePrePermuteFwdOp(Op):
         call = PrePermuteCall(
             device=device,
             layout=self.layout,
-            device_type=device.type,
             input_dtype=hidden_states.dtype,
             num_experts=self.num_local_experts,
             num_tokens=hidden_states.shape[0],
             hidden_size=hidden_states.shape[1],
             top_k=local_expert_ids.shape[1],
             routing_input_kind="local_expert_ids",
-            tune=self.tune,
         )
         kernel = self.kernel_for("pre_permute", (hidden_states, local_expert_ids), call)
         return kernel(hidden_states, local_expert_ids)
@@ -162,6 +127,9 @@ class MoeGroupedGemmFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"grouped_gemm": MoeGroupedGemmKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "grouped_gemm": MGroupedGemmFwdInterface
+    }
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The valid rows this call's layout metadata marks, which its flops follow."""
@@ -249,9 +217,8 @@ class MoeGroupedGemmFwdOp(Op):
             m=a.numel() // k,
             n=n,
             k=k,
-            tune=self.tune,
         )
-        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata), call)
+        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata, out), call)
         return kernel(a, b, layout_metadata, out=out)
 
 
@@ -336,7 +303,10 @@ class MoePostPermuteFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "contiguous": _ContiguousPostPermuteKernel
+        "post_permute_contiguous": MoeUnpermuteKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "post_permute": PostPermuteFwdInterface
     }
 
     def __init__(
@@ -392,7 +362,6 @@ class MoePostPermuteFwdOp(Op):
             layout_key=self.layout.selection_key,
             max_m=self.layout.max_m,
             epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,
-            device_type=device.type,
             input_dtype=expert_output.dtype,
             routing_weight_dtype=topk_weights.dtype,
             output_dtype=expert_output.dtype if self.out_dtype is None else self.out_dtype,
@@ -401,9 +370,8 @@ class MoePostPermuteFwdOp(Op):
             num_tokens=topk_weights.shape[0],
             hidden_size=expert_output.shape[-1],
             top_k=topk_weights.shape[1],
-            tune=self.tune,
         )
         kernel = self.kernel_for(
-            "post_permute", (expert_output, topk_weights, inverse_indices), call
+            "post_permute", (expert_output, inverse_indices, topk_weights, out), call
         )
         return kernel(expert_output, inverse_indices, topk_weights, out=out)

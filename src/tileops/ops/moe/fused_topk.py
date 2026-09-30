@@ -5,8 +5,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.moe.fused_topk import FusedTopKKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.moe import FusedTopKCall, FusedTopKFwdInterface, FusedTopKKernel
 from tileops.ops.op_base import Op
 
 __all__ = ["FusedTopKFwdOp"]
@@ -28,7 +28,10 @@ class FusedTopKFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fused_topk_kernel": FusedTopKKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fused_topk": FusedTopKKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "fused_topk": FusedTopKFwdInterface
+    }
 
     def __init__(
         self,
@@ -39,7 +42,6 @@ class FusedTopKFwdOp(Op):
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        config: Optional[dict] = None,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -54,31 +56,13 @@ class FusedTopKFwdOp(Op):
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel map override.
             tune: Whether to autotune the kernel.
-            config: Optional kernel config dict.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-        self.config = config
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, bias presence, dtype and device."""
-        num_tokens, num_experts, with_correction_bias, dtype, device_index = call
-        return call, lambda: self.kernel_map[role](
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=self.top_k,
-            scoring_func=self.scoring_func,
-            renormalize=self.renormalize,
-            with_correction_bias=with_correction_bias,
-            dtype=dtype,
-            config=self.config,
-            tune=self.tune,
-            device_index=device_index,
-        )
 
     def forward(
         self,
@@ -105,12 +89,15 @@ class FusedTopKFwdOp(Op):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Launch inside the operator, where dynamo does not follow the kernel call."""
         num_tokens, num_experts = gating_output.shape
-        call = (
-            num_tokens,
-            num_experts,
-            correction_bias is not None,
-            gating_output.dtype,
-            gating_output.device.index,
+        call = FusedTopKCall(
+            num_tokens=num_tokens,
+            num_experts=num_experts,
+            top_k=self.top_k,
+            scoring_func=self.scoring_func,
+            renormalize=self.renormalize,
+            with_correction_bias=correction_bias is not None,
+            dtype=gating_output.dtype,
+            device=gating_output.device,
         )
-        kernel = self.kernel_for("fused_topk_kernel", (gating_output, correction_bias), call)
+        kernel = self.kernel_for("fused_topk", (gating_output, correction_bias), call)
         return kernel(gating_output, correction_bias)

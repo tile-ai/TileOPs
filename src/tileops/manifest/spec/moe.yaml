@@ -112,18 +112,6 @@ IndexedExpertMLPFwdOp:
   roofline:
     # Only the experts topk_ids selects are read.
     func: "tileops.perf.formulas.routed_expert_mlp_roofline"
-  composition:
-    kind: composite
-    stages:
-    # The staged pipeline, held for calls on a card without SM90.
-    - {name: pre_permute, op: MoePrePermuteFwdOp, optional: true}
-    - {name: expert_mlp, op: MoeExpertMLPFwdOp, optional: true}
-    - {name: post_permute, op: MoePostPermuteFwdOp, optional: true}
-    # The indexed kernels, built on SM90; the route statistics pass is skipped for a
-    # single token.
-    - {name: route_stats, kernel: route_stats, optional: true}
-    - {name: expert_gemm, kernel: expert_gemm, optional: true}
-    - {name: weighted_reduce, kernel: weighted_reduce, optional: true}
 
 FusedTopKFwdOp:
   family: moe
