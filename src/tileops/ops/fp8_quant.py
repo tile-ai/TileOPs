@@ -18,8 +18,8 @@ class FP8QuantFwdOp(Op):
     scale, so for a finite row every element is within one ``float8_e4m3fn`` code of
     ``clamp(input / scale, -448, 448)`` rather than equal to it.
 
-    Neither output propagates a non-finite input: a row holding an infinity or a NaN is
-    quantized against the maximum of its finite values.
+    A row holding an infinity or a NaN has no defined result: whether the row maximum and
+    the clamp carry the non-finite value depends on the kernel serving the call.
     """
 
     compile_boundary: ClassVar[bool] = True
