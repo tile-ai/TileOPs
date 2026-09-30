@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_gemm.call import (
+from tileops.kernels.grouped_gemm.call_spec import (
     GroupedGemmCall,
     GroupedGemmFwdInterface,
     grouped_gemm_entry,
