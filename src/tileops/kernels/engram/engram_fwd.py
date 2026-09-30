@@ -31,7 +31,7 @@ from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramGateConvFwdKernel"]
 
-CONV_KERNEL_SIZE = 4
+_CONV_KERNEL_SIZE = 4
 
 
 @functools.lru_cache(maxsize=32)
@@ -51,7 +51,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
             v: T.Tensor((M, seq_len, d_padded), dtype),
             rms_w_h: T.Tensor((d_padded,), dtype),
             rms_w_v: T.Tensor((d_padded,), dtype),
-            conv_w: T.Tensor((CONV_KERNEL_SIZE, d_padded), dtype),
+            conv_w: T.Tensor((_CONV_KERNEL_SIZE, d_padded), dtype),
             Y: T.Tensor((M, seq_len, d_padded), dtype),
             vhat_buf: T.Tensor((M, seq_len, d_padded), dtype),
             alpha_buf: T.Tensor((M, seq_len), accum_dtype),
@@ -135,8 +135,8 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
 
                 # PyTorch conv1d with left-padding: output[t] = sum_p w[p] * input[t - (K-1) + p]
                 # So conv_w[p] multiplies vhat_norm at position t - (K-1) + p
-                for p in T.serial(CONV_KERNEL_SIZE):
-                    src_t = tid - (CONV_KERNEL_SIZE - 1) + p
+                for p in T.serial(_CONV_KERNEL_SIZE):
+                    src_t = tid - (_CONV_KERNEL_SIZE - 1) + p
                     for j in T.Parallel(d_padded):
                         raw_val = T.if_then_else(
                             src_t >= 0,
@@ -163,7 +163,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
             v: T.Tensor((M, seq_len, d_padded), dtype),
             rms_w_h: T.Tensor((d_padded,), dtype),
             rms_w_v: T.Tensor((d_padded,), dtype),
-            conv_w: T.Tensor((CONV_KERNEL_SIZE, d_padded), dtype),
+            conv_w: T.Tensor((_CONV_KERNEL_SIZE, d_padded), dtype),
             Y: T.Tensor((M, seq_len, d_padded), dtype),
             vhat_buf: T.Tensor((M, seq_len, d_padded), dtype),
             alpha_buf: T.Tensor((M, seq_len), accum_dtype),

@@ -213,61 +213,61 @@ def _output_o_tl(
     return _func
 
 
-def _deltanet_fwd_run(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    fused_num_stages: int,
-    fused_threads: int,
-    h_num_stages: int,
-    h_threads: int,
-    h_block_v: int,
-    o_threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    fused_fn = fused_prepare_compute_w_u_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-    )(fused_num_stages, fused_threads)
-    h_fn = _h_recurrence_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-        block_v=h_block_v,
-    )(h_num_stages, h_threads)
-    o_fn = _output_o_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-    )(o_threads)
-    S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    Aw, Au, w, u = fused_fn(k, v, beta)
-    S_buf, v_new = h_fn(k, w, u, S_0)
-    o = o_fn(q, k, S_buf, v_new)
-    return o, S_buf, Aw, Au, w, u
-
-
 class DeltaNetFwdKernel(Kernel):
+    @staticmethod
+    def _deltanet_fwd_run(
+        batch: int,
+        head: int,
+        seq_len: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str,
+        fused_num_stages: int,
+        fused_threads: int,
+        h_num_stages: int,
+        h_threads: int,
+        h_block_v: int,
+        o_threads: int,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        fused_fn = fused_prepare_compute_w_u_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(fused_num_stages, fused_threads)
+        h_fn = _h_recurrence_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+            block_v=h_block_v,
+        )(h_num_stages, h_threads)
+        o_fn = _output_o_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(o_threads)
+        S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
+        Aw, Au, w, u = fused_fn(k, v, beta)
+        S_buf, v_new = h_fn(k, w, u, S_0)
+        o = o_fn(q, k, S_buf, v_new)
+        return o, S_buf, Aw, Au, w, u
+
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(
@@ -325,7 +325,7 @@ class DeltaNetFwdKernel(Kernel):
         v: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _deltanet_fwd_run(
+        return self._deltanet_fwd_run(
             self.batch,
             self.head,
             self.seq_len,

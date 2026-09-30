@@ -35,16 +35,6 @@ __all__ = [
 ]
 
 
-def _num_1d_blocks_per_group(block_m: int, block_n: int, num_sms: int) -> int:
-    """Return the number of M tiles in one L2 swizzle group."""
-    best, best_usage = 0, None
-    for candidate in (8, 16):
-        usage = candidate * block_m + -(-num_sms // candidate) * block_n
-        if best_usage is None or usage < best_usage:
-            best, best_usage = candidate, usage
-    return best
-
-
 def _make_prim_func(
     gemm_type: str,
     a_k_major: bool,
@@ -66,6 +56,16 @@ def _make_prim_func(
     swizzle_group_m: int,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
+
+    def _num_1d_blocks_per_group(block_m: int, block_n: int, num_sms: int) -> int:
+        """Return the number of M tiles in one L2 swizzle group."""
+        best, best_usage = 0, None
+        for candidate in (8, 16):
+            usage = candidate * block_m + -(-num_sms // candidate) * block_n
+            if best_usage is None or usage < best_usage:
+                best, best_usage = candidate, usage
+        return best
+
     dtype = ab_dtype
     accum_dtype = "float"
     gtype = GemmType(gemm_type)

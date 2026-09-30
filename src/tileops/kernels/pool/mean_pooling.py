@@ -173,40 +173,40 @@ def _mean_pooling_kernel(
     return _mean_pooling_func
 
 
-def _mean_pooling_run(
-    batch_size: int,
-    seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    chunks_per_batch: int,
-    seq_num: int,
-    use_offsets: int,
-    dtype: str,
-    accum_dtype: str,
-    bwidth: int,
-    threads: int,
-    x: torch.Tensor,
-    offsets: torch.Tensor,
-    indices: torch.Tensor,
-) -> torch.Tensor:
-    width = heads * dim
-    pooled = _mean_pooling_kernel(
-        batch_size=batch_size,
-        seq_len=seq_len,
-        heads=heads,
-        dim=dim,
-        chunk_size=chunk_size,
-        chunks_per_batch=chunks_per_batch,
-        seq_num=seq_num,
-        use_offsets=use_offsets,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-    )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
-    return pooled.view(batch_size, chunks_per_batch, heads, dim)
-
-
 class MeanPoolingFwdKernel(Kernel):
+    @staticmethod
+    def _mean_pooling_run(
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_batch: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: str,
+        accum_dtype: str,
+        bwidth: int,
+        threads: int,
+        x: torch.Tensor,
+        offsets: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> torch.Tensor:
+        width = heads * dim
+        pooled = _mean_pooling_kernel(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            heads=heads,
+            dim=dim,
+            chunk_size=chunk_size,
+            chunks_per_batch=chunks_per_batch,
+            seq_num=seq_num,
+            use_offsets=use_offsets,
+            dtype=dtype,
+            accum_dtype=accum_dtype,
+        )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
+        return pooled.view(batch_size, chunks_per_batch, heads, dim)
+
     supported_archs: list[int] = [90]
 
     def __init__(
@@ -322,7 +322,7 @@ class MeanPoolingFwdKernel(Kernel):
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
         self._require_cuda(x=x, offsets=offsets, indices=indices)
-        return _mean_pooling_run(
+        return self._mean_pooling_run(
             self.batch_size,
             self.seq_len,
             self.heads,

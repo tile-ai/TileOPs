@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.elementwise._dtype import _FLOAT_DTYPES
+from tileops.kernels.elementwise._dtype import FLOAT_DTYPES
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
@@ -85,7 +85,7 @@ class SinusoidalFwdKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     def __init__(self, seq_len, d_model, dtype, config=None, tune=False, device_index=None):
         super().__init__(device_index=device_index)

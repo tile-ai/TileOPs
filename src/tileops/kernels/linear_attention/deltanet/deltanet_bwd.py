@@ -314,79 +314,6 @@ def _dh_recurrence_bwd_tl(
     return _func
 
 
-def _deltanet_bwd_run(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    parallel_threads: int,
-    recurrence_threads: int,
-    do: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    S: torch.Tensor,
-    Aw: torch.Tensor,
-    Au: torch.Tensor,
-    w: torch.Tensor,
-    u: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
-
-    bwd_parallel_fn = _bwd_parallel_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-    )(parallel_threads)
-    dh_recurrence_bwd_fn = _dh_recurrence_bwd_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-    )(num_stages, recurrence_threads)
-    wu_bwd_fn = compute_w_u_bwd_tl(
-        batch,
-        head,
-        seq_len,
-        chunk_size,
-        dim_k,
-        dim_v,
-        dtype,
-    )(num_stages, threads)
-
-    dq, dk_partial, dw, du_partial, v_new, dh_local = bwd_parallel_fn(do, q, k, w, u, S)
-    dk_corr, du_corr = dh_recurrence_bwd_fn(k, w, v_new, dh_local)
-
-    # Fused: dw_corr + du merge + wu_bwd + A_inv backward + dk merge
-    dk, dv, dbeta = wu_bwd_fn(
-        dw,
-        du_partial,
-        du_corr,
-        S,
-        Aw,
-        Au,
-        k,
-        v,
-        beta,
-        dk_partial,
-        dk_corr,
-    )
-    return dq, dk, dv, dbeta
-
-
 class DeltaNetBwdKernel(Kernel):
     """DeltaNet backward kernel.
 
@@ -400,6 +327,79 @@ class DeltaNetBwdKernel(Kernel):
       4. compute_w_u_bwd: dw, du -> dk_wu, dv, dbeta
       5. merge: dk = dk_partial + dk_correction + dk_wu
     """
+
+    @staticmethod
+    def _deltanet_bwd_run(
+        batch: int,
+        head: int,
+        seq_len: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str,
+        num_stages: int,
+        threads: int,
+        parallel_threads: int,
+        recurrence_threads: int,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        S: torch.Tensor,
+        Aw: torch.Tensor,
+        Au: torch.Tensor,
+        w: torch.Tensor,
+        u: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
+
+        bwd_parallel_fn = _bwd_parallel_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(parallel_threads)
+        dh_recurrence_bwd_fn = _dh_recurrence_bwd_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(num_stages, recurrence_threads)
+        wu_bwd_fn = compute_w_u_bwd_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(num_stages, threads)
+
+        dq, dk_partial, dw, du_partial, v_new, dh_local = bwd_parallel_fn(do, q, k, w, u, S)
+        dk_corr, du_corr = dh_recurrence_bwd_fn(k, w, v_new, dh_local)
+
+        # Fused: dw_corr + du merge + wu_bwd + A_inv backward + dk merge
+        dk, dv, dbeta = wu_bwd_fn(
+            dw,
+            du_partial,
+            du_corr,
+            S,
+            Aw,
+            Au,
+            k,
+            v,
+            beta,
+            dk_partial,
+            dk_corr,
+        )
+        return dq, dk, dv, dbeta
 
     supported_archs: list[int] = [80, 89, 90]
 
@@ -514,7 +514,7 @@ class DeltaNetBwdKernel(Kernel):
         w: torch.Tensor,
         u: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _deltanet_bwd_run(
+        return self._deltanet_bwd_run(
             self.batch,
             self.head,
             self.seq_len,

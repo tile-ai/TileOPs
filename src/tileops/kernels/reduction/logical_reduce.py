@@ -87,40 +87,6 @@ def _fold_threads(row_units: int, vec: int) -> int:
     return max(_FOLD_MIN_THREADS, min(lanes, _FOLD_MAX_THREADS))
 
 
-def _fold_term(op_kind: str, held, e, components: int, pack: int):
-    """What element (or word) *e* of a lane's vector adds to its accumulator."""
-    if pack > 1:
-        word = held[e]
-        high = T.Cast("uint32", _BYTE_HIGH)
-        if op_kind == "count_nonzero":
-            # Nonzero bytes: ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven
-            # bits are not all clear, never carrying into the next byte; or-ing in ``b``
-            # adds bit 7 itself.
-            low = T.Cast("uint32", _BYTE_LOW)
-            return T.popcount((((word & low) + low) | word) & high)
-        if op_kind == "any":
-            return word
-        # Nonzero exactly when some byte is zero: ``(w - 0x01010101) & ~w & 0x80808080``,
-        # a zero byte borrows into its own bit 7. ``w ^ ~0`` stands for ``~w``, which
-        # CUDA's vector types do not define.
-        return (word - T.Cast("uint32", _BYTE_ONES)) & (word ^ T.Cast("uint32", 0xFFFFFFFF)) & high
-    # An element is nonzero when any of its scalars compares unequal to zero in its own
-    # dtype, so -0.0 is zero and NaN is not, as in torch.
-    zero = T.cast(0, held.dtype)
-    nonzero = held[e * components] != zero
-    for q in range(1, components):
-        nonzero = T.Or(nonzero, held[e * components + q] != zero)
-    if op_kind == "all":
-        nonzero = T.Not(nonzero)
-    return nonzero
-
-
-def _fold_combine(op_kind: str, acc, term):
-    """Fold *term* into the accumulator value *acc*: a sum for a count, else an or."""
-    term = T.cast(term, acc.dtype)
-    return acc + term if op_kind == "count_nonzero" else acc | term
-
-
 @functools.lru_cache(maxsize=32)
 def _logical_fold_kernel(
     lead: int,
@@ -162,6 +128,42 @@ def _logical_fold_kernel(
 
     @tilelang.jit(out_idx=[1])
     def _func(threads):
+        def _fold_term(op_kind: str, held, e, components: int, pack: int):
+            """What element (or word) *e* of a lane's vector adds to its accumulator."""
+            if pack > 1:
+                word = held[e]
+                high = T.Cast("uint32", _BYTE_HIGH)
+                if op_kind == "count_nonzero":
+                    # Nonzero bytes: ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven
+                    # bits are not all clear, never carrying into the next byte; or-ing in ``b``
+                    # adds bit 7 itself.
+                    low = T.Cast("uint32", _BYTE_LOW)
+                    return T.popcount((((word & low) + low) | word) & high)
+                if op_kind == "any":
+                    return word
+                # Nonzero exactly when some byte is zero: ``(w - 0x01010101) & ~w & 0x80808080``,
+                # a zero byte borrows into its own bit 7. ``w ^ ~0`` stands for ``~w``, which
+                # CUDA's vector types do not define.
+                return (
+                    (word - T.Cast("uint32", _BYTE_ONES))
+                    & (word ^ T.Cast("uint32", 0xFFFFFFFF))
+                    & high
+                )
+            # An element is nonzero when any of its scalars compares unequal to zero in its own
+            # dtype, so -0.0 is zero and NaN is not, as in torch.
+            zero = T.cast(0, held.dtype)
+            nonzero = held[e * components] != zero
+            for q in range(1, components):
+                nonzero = T.Or(nonzero, held[e * components + q] != zero)
+            if op_kind == "all":
+                nonzero = T.Not(nonzero)
+            return nonzero
+
+        def _fold_combine(op_kind: str, acc, term):
+            """Fold *term* into the accumulator value *acc*: a sum for a count, else an or."""
+            term = T.cast(term, acc.dtype)
+            return acc + term if op_kind == "count_nonzero" else acc | term
+
         step = threads * vec
         full_steps = run_units // step
         tail = full_steps * step != run_units

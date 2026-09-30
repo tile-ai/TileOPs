@@ -9,7 +9,7 @@ import torch
 BOOL_STORAGE_DTYPE = "int8"
 
 
-_BITWISE_DTYPES = (
+BITWISE_DTYPES = (
     torch.bool,
     torch.uint8,
     torch.int8,
@@ -22,18 +22,18 @@ _FP8_DTYPES = (
     torch.float8_e4m3fn,
     torch.float8_e5m2,
 )
-_FLOAT_DTYPES = (
+FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
 )
-_LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
-_BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
+LOGICAL_DTYPES = BITWISE_DTYPES + FLOAT_DTYPES
+BINARY_FULL_DTYPES = BITWISE_DTYPES + (
     torch.float16,
     torch.bfloat16,
     torch.float32,
 )
-_BINARY_NO_BOOL_DTYPES = tuple(dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool)
+BINARY_NO_BOOL_DTYPES = tuple(dt for dt in BINARY_FULL_DTYPES if dt is not torch.bool)
 
 
 def log_for_output_precision(value, wide):
@@ -41,16 +41,16 @@ def log_for_output_precision(value, wide):
     return T.log(wide) if value.dtype == "float32" else T.__log(wide)
 
 
-def _torch_dtype_nbytes(dtype: torch.dtype) -> int:
+def torch_dtype_nbytes(dtype: torch.dtype) -> int:
     """Return the byte width of a torch dtype."""
     return torch.empty(0, dtype=dtype).element_size()
 
 
-def _clamp_to_dtype_range(value, dtype: torch.dtype):
+def clamp_to_dtype_range(value, dtype: torch.dtype):
     """Normalize *value* into the storage representation of *dtype*."""
     if dtype == torch.bool:
         return 1 if bool(value) else 0
-    if dtype in _BITWISE_DTYPES:
+    if dtype in BITWISE_DTYPES:
         if isinstance(value, float) and math.isinf(value):
             iinfo = torch.iinfo(dtype)
             return iinfo.max if value > 0 else iinfo.min

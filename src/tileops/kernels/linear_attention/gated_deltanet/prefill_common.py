@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 
-def tensor_cache(
+def _tensor_cache(
     fn: Callable[..., torch.Tensor],
 ) -> Callable[..., torch.Tensor]:
     """
@@ -102,7 +102,7 @@ def _build_prepare_chunk_offsets_kernel(
     return prepare_chunk_offsets_kernel
 
 
-@tensor_cache
+@_tensor_cache
 def prepare_chunk_offsets(
     cu_seqlens: torch.LongTensor,
     chunk_size: int,

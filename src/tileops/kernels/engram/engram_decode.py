@@ -49,15 +49,6 @@ from tileops.kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramDecodeKernel"]
 
 
-def _projection_block_k(d_mem: int) -> int:
-    """Choose a supported MMA K tile; the kernel predicates a partial tail."""
-    if d_mem >= 64:
-        return 64
-    if d_mem >= 32:
-        return 32
-    return 16
-
-
 @functools.lru_cache(maxsize=32)
 def _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype):
     """Both projections of one decode step, plus the cache shift they do not depend on.
@@ -279,6 +270,15 @@ class EngramDecodeKernel(Kernel):
         dtype: data type.
     """
 
+    @staticmethod
+    def _projection_block_k(d_mem: int) -> int:
+        """Choose a supported MMA K tile; the kernel predicates a partial tail."""
+        if d_mem >= 64:
+            return 64
+        if d_mem >= 32:
+            return 32
+        return 16
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def __init__(
@@ -336,7 +336,7 @@ class EngramDecodeKernel(Kernel):
         return {
             "block_m": 16,
             "block_n": min(64, self.d_padded),
-            "block_k": _projection_block_k(self.d_mem),
+            "block_k": self._projection_block_k(self.d_mem),
             "num_stages": 4,
             "threads": 128,
             "step_threads": 128,
@@ -344,7 +344,7 @@ class EngramDecodeKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_k = _projection_block_k(self.d_mem)
+        block_k = self._projection_block_k(self.d_mem)
         configs = []
         for block_n in (64, 128):
             if block_n > self.d_padded:

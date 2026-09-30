@@ -3,10 +3,10 @@
 import tilelang.language as T
 
 from tileops.kernels.elementwise._base import (
-    _BITWISE_DTYPES,
+    BITWISE_DTYPES,
     BinaryKernel,
+    Uint8StorageBinaryKernel,
     UnaryKernel,
-    _Uint8StorageBinaryKernel,
 )
 
 __all__ = [
@@ -23,14 +23,14 @@ __all__ = [
 class BitwiseAndFwdKernel(BinaryKernel):
     """Element-wise bitwise AND: y = a & b (integer inputs)."""
 
-    SUPPORTED_DTYPES = _BITWISE_DTYPES
+    SUPPORTED_DTYPES = BITWISE_DTYPES
 
     @staticmethod
     def op_func(a, b):
         return a & b
 
 
-class BitwiseAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class BitwiseAndBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise bitwise AND on uint8-backed bool storage."""
 
     @staticmethod
@@ -41,14 +41,14 @@ class BitwiseAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class BitwiseOrFwdKernel(BinaryKernel):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
-    SUPPORTED_DTYPES = _BITWISE_DTYPES
+    SUPPORTED_DTYPES = BITWISE_DTYPES
 
     @staticmethod
     def op_func(a, b):
         return a | b
 
 
-class BitwiseOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class BitwiseOrBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise bitwise OR on uint8-backed bool storage."""
 
     @staticmethod
@@ -59,14 +59,14 @@ class BitwiseOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class BitwiseXorFwdKernel(BinaryKernel):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
 
-    SUPPORTED_DTYPES = _BITWISE_DTYPES
+    SUPPORTED_DTYPES = BITWISE_DTYPES
 
     @staticmethod
     def op_func(a, b):
         return a ^ b
 
 
-class BitwiseXorBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class BitwiseXorBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise bitwise XOR on uint8-backed bool storage."""
 
     @staticmethod
@@ -85,7 +85,7 @@ class BitwiseNotFwdKernel(UnaryKernel):
     input is still coerced to the scalar path, by the dtype rule in ``UnaryKernel``.
     """
 
-    SUPPORTED_DTYPES = _BITWISE_DTYPES
+    SUPPORTED_DTYPES = BITWISE_DTYPES
 
     @staticmethod
     def op_func(x):
