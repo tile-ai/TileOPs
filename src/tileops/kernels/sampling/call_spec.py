@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
-__all__ = ["SamplingCall", "TopKMaskFwdInterface"]
+__all__ = ["MinPMaskFwdInterface", "SamplingCall", "TopKMaskFwdInterface"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,6 +40,24 @@ class TopKMaskFwdInterface(KernelInterface):
         Args:
             logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
             k: ``[call.batch]`` ``int32``, each at least 1, on ``call.device``.
+
+        Returns:
+            A new tensor shaped like *logits*, ``-inf`` where masked.
+        """
+
+
+class MinPMaskFwdInterface(KernelInterface):
+    """Min-p logit mask: keep each row's logits at least its row max plus ``log(min_p[b])``."""
+
+    request = SamplingCall
+
+    @abstractmethod
+    def forward(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
+        """Mask each of the ``call.batch`` rows of *logits*; nothing is written in place.
+
+        Args:
+            logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
+            min_p: ``[call.batch]`` ``float32`` in ``[0, 1]``, on ``call.device``.
 
         Returns:
             A new tensor shaped like *logits*, ``-inf`` where masked.

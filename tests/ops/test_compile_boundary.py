@@ -73,6 +73,7 @@ from tileops.ops.rope import (
     RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
+from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
 from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
@@ -536,11 +537,6 @@ def _other_cases():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
 
-    def top_k_mask():
-        logits = torch.randn(2, 256, dtype=torch.bfloat16, device=run_device())
-        k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
-        return TopKMaskFwdOp(), (logits, k)
-
     return (
         ("fft-c2c", fft_c2c),
         ("fp8-quant", fp8_quant),
@@ -554,8 +550,23 @@ def _other_cases():
         ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
         ("smooth-quant", smooth_quant),
-        ("top-k-mask", top_k_mask),
     )
+
+
+def _sampling_cases():
+    """The logit filters, each with the inputs it is built for."""
+
+    def min_p_mask():
+        logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
+        min_p = torch.full((4,), 0.1, device=run_device())
+        return MinPMaskFwdOp(), (logits, min_p)
+
+    def top_k_mask():
+        logits = torch.randn(2, 256, dtype=torch.bfloat16, device=run_device())
+        k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
+        return TopKMaskFwdOp(), (logits, k)
+
+    return (("min-p-mask", min_p_mask), ("top-k-mask", top_k_mask))
 
 
 def _sequence_modeling_cases():
@@ -677,6 +688,7 @@ _FAMILIES = (
     _gemm_cases,
     _mamba_cases,
     _linear_attention_cases,
+    _sampling_cases,
     _sequence_modeling_cases,
     _rope_cases,
     _other_cases,
@@ -748,6 +760,7 @@ for _op_cls in (
     INT8QuantPerTensorFwdOp,
     SmoothQuantFwdOp,
     MeanPoolingFwdOp,
+    MinPMaskFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,

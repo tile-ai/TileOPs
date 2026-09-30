@@ -1,9 +1,16 @@
 """Logit filter and token draw kernels and their call records."""
 
-from tileops.kernels.sampling.call_spec import SamplingCall, TopKMaskFwdInterface
+from tileops.kernels.sampling.call_spec import (
+    MinPMaskFwdInterface,
+    SamplingCall,
+    TopKMaskFwdInterface,
+)
+from tileops.kernels.sampling.min_p_mask import MinPMaskFwdKernel
 from tileops.kernels.sampling.top_k_mask import TopKMaskFwdKernel
 
 __all__: list[str] = [
+    "MinPMaskFwdInterface",
+    "MinPMaskFwdKernel",
     "SamplingCall",
     "TopKMaskFwdInterface",
     "TopKMaskFwdKernel",

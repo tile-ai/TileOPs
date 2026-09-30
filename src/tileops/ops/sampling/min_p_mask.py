@@ -5,8 +5,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import SamplingCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.sampling import MinPMaskFwdInterface, MinPMaskFwdKernel, SamplingCall
 from tileops.ops.op_base import Op
 
 __all__ = ["MinPMaskFwdOp"]
@@ -17,14 +17,21 @@ class MinPMaskFwdOp(Op):
 
     A token's probability is below ``min_p[b] * max(prob[b])`` exactly when its logit is
     below ``max_logit + log(min_p[b])``; those logits become ``-inf`` and the rest pass
-    unchanged. ``0 < min_p <= 1`` is the caller's obligation. The output has the shape and
-    dtype of ``logits``.
+    through bit for bit. ``0 <= min_p <= 1`` is the caller's obligation. The output has the
+    shape and dtype of ``logits``.
 
-    No in-tree kernel implements this op yet, so a call raises ``OpNotAvailableError``
-    unless a target serves it.
+    ``min_p = 0`` masks nothing, the value vLLM gives a request that disables min-p, and
+    ``min_p = 1`` keeps only the logits equal to the row max. A row holding a NaN has a NaN
+    threshold, so every comparison against it is false and the row passes through whole, as
+    ``torch.amax`` and ``<`` leave it.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"min_p_mask_fwd": MinPMaskFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "min_p_mask_fwd": MinPMaskFwdInterface
+    }
 
     def __init__(
         self,
@@ -55,11 +62,13 @@ class MinPMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
+        return self._call_boundary(logits, min_p)
+
+    def _eager_forward(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         min_p = min_p.contiguous()
         batch, vocab = logits.shape
-        call = SamplingCall(
-            device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype, tune=self.tune
-        )
-        kernel = self.kernel_for("min_p_mask", (logits, min_p), call)
+        call = SamplingCall(device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype)
+        kernel = self.kernel_for("min_p_mask_fwd", (logits, min_p), call)
         return kernel(logits, min_p)

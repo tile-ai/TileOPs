@@ -31,9 +31,11 @@ TopKMaskFwdOp:
 
 MinPMaskFwdOp:
   # Masks every logit whose probability is below min_p[b] * max(prob[b]), i.e. every
-  # logit below max_logit + log(min_p[b]). 0 < min_p <= 1 is the caller's obligation.
+  # logit below max_logit + log(min_p[b]). 0 <= min_p <= 1 is the caller's obligation:
+  # min_p = 0 masks nothing, the value vLLM gives a request that disables min-p, and
+  # min_p = 1 keeps only the logits equal to the row max.
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -48,6 +50,8 @@ MinPMaskFwdOp:
   - {B: 64, V: 128256, dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
   - {B: 256, V: 128256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
   - {B: 128, V: 151936, dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  - {B: 17, V: 129280, dtype_cases: [{T: bfloat16}], label: deepseek-v3-b17}
+  - {B: 100, V: 32000, dtype_cases: [{T: float16}], label: llama2-7b-b100}
   roofline:
     # Per element: the row max and the masking compare-select; per row: the threshold (log, add).
     flops: "2 * B * V + 2 * B"
