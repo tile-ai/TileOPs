@@ -5,7 +5,8 @@ from typing import Any, Callable, ClassVar, NamedTuple, Optional, Tuple
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import AdaptivePool2dCall
 
 # Window sums promote to fp32 and cast back at the store: a narrow accumulator loses the
 # low bits of a window this wide.
@@ -219,6 +220,12 @@ class AdaptivePool2dKernelBase(Kernel):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     _build: ClassVar[Callable[..., Any]]
     _dispatch: ClassVar[Callable[..., Any]]
+
+    @classmethod
+    def entry_for(cls, call: AdaptivePool2dCall) -> Entry:
+        return call, lambda: cls(
+            call.n, call.c_in, call.h_in, call.w_in, call.out_h, call.out_w, call.dtype
+        )
 
     def __init__(
         self,

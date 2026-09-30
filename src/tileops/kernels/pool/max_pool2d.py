@@ -6,7 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import (
+    MaxPool2dFwdInterface,
+    MaxPool2dIndicesFwdInterface,
+    MaxPoolCall,
+)
 from tileops.kernels.pool.common import pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
@@ -239,6 +244,20 @@ class _MaxPool2dKernelBase(Kernel):
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
+    @classmethod
+    def entry_for(cls, call: MaxPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            *call.dilation,
+            call.ceil_mode,
+            call.dtype,
+        )
+
     def __init__(
         self,
         n: int,
@@ -331,7 +350,7 @@ class _MaxPool2dKernelBase(Kernel):
         )
 
 
-class MaxPool2dKernel(_MaxPool2dKernelBase):
+class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     """Max pooling forward kernel (return_indices=False).
 
     One thread owns a ``tile_h`` by ``tile_w`` block of outputs. The input band
@@ -443,7 +462,7 @@ class MaxPool2dKernel(_MaxPool2dKernelBase):
         return (tile - 1) * stride + (kernel - 1) * dilation + 1
 
 
-class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase):
+class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase, MaxPool2dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
 
     @staticmethod

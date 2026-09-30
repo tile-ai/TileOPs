@@ -6,23 +6,37 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.pool import (
+    AdaptiveAvgPool2dFwdInterface,
     AdaptiveAvgPool2dKernel,
+    AdaptiveMaxPool2dFwdInterface,
+    AdaptiveMaxPool2dIndicesFwdInterface,
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dWithIndicesKernel,
+    AdaptivePool2dCall,
+    AvgPool1dFwdInterface,
     AvgPool1dKernel,
-    AvgPool1dSpatialKernel,
+    AvgPool2dFwdInterface,
     AvgPool2dKernel,
-    AvgPool2dSpatialKernel,
+    AvgPool3dFwdInterface,
     AvgPool3dKernel,
-    AvgPool3dSpatialKernel,
+    AvgPoolCall,
+    MaxPool1dFwdInterface,
+    MaxPool1dIndicesFwdInterface,
     MaxPool1dKernel,
     MaxPool1dWithIndicesKernel,
+    MaxPool2dFwdInterface,
+    MaxPool2dIndicesFwdInterface,
     MaxPool2dKernel,
     MaxPool2dWithIndicesKernel,
+    MaxPool3dFwdInterface,
+    MaxPool3dIndicesFwdInterface,
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
+    MaxPoolCall,
+    MeanPoolingCall,
+    MeanPoolingFwdInterface,
     MeanPoolingFwdKernel,
 )
 from tileops.ops.op_base import Op
@@ -42,17 +56,6 @@ __all__ = [
     "MaxPool3dIndicesFwdOp",
     "MeanPoolingFwdOp",
 ]
-
-
-# Per-axis name suffixes, indexed by spatial dimensionality.
-_POOL_DIM_NAMES: Dict[int, Tuple[str, ...]] = {1: ("l",), 2: ("h", "w"), 3: ("d", "h", "w")}
-# Kernel-kwarg suffixes for kernel_size/stride/padding(/dilation).
-# Why: the 1d max-pool kernels name their pooling axis `w`, not `l`.
-_MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
-    1: ("w",),
-    2: ("h", "w"),
-    3: ("d", "h", "w"),
-}
 
 
 def _per_axis(value: "int | Sequence[int]", ndim: int) -> tuple[int, ...]:
@@ -137,6 +140,9 @@ class MeanPoolingFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mean_pooling_fwd_kernel": MeanPoolingFwdKernel
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "mean_pooling": MeanPoolingFwdInterface
+    }
 
     def __init__(
         self,
@@ -173,34 +179,6 @@ class MeanPoolingFwdOp(Op):
         if key not in self._placeholders:
             self._placeholders[key] = torch.zeros(shape, dtype=torch.int32, device=device)
         return self._placeholders[key]
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, chunking, offsets presence and device."""
-        (
-            batch_size,
-            seq_len,
-            heads,
-            dim,
-            chunks_per_batch,
-            seq_num,
-            use_offsets,
-            dtype,
-            device_index,
-        ) = call
-        return call, lambda: self.kernel_map["mean_pooling_fwd_kernel"](
-            batch_size=batch_size,
-            seq_len=seq_len,
-            heads=heads,
-            dim=dim,
-            chunk_size=self.chunk_size,
-            chunks_per_batch=chunks_per_batch,
-            seq_num=seq_num,
-            use_offsets=use_offsets,
-            dtype=dtype,
-            accum_dtype=self.accum_dtype,
-            tune=self.tune,
-            device_index=device_index,
-        )
 
     def forward(
         self,
@@ -255,21 +233,20 @@ class MeanPoolingFwdOp(Op):
             offsets_arg = self._placeholder((2,), x.device)
             indices_arg = self._placeholder((chunks, 2), x.device)
 
-        kernel = self.kernel_for(
-            "mean_pooling_fwd_kernel",
-            (x, offsets, indices),
-            (
-                batch_size,
-                seq_len,
-                heads,
-                dim,
-                chunks,
-                seq_num,
-                int(ragged),
-                x.dtype,
-                x.device.index,
-            ),
+        call = MeanPoolingCall(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            heads=heads,
+            dim=dim,
+            chunk_size=self.chunk_size,
+            chunks_per_batch=chunks,
+            seq_num=seq_num,
+            use_offsets=ragged,
+            dtype=x.dtype,
+            accum_dtype=self.accum_dtype,
+            device=x.device,
         )
+        kernel = self.kernel_for("mean_pooling", (x, offsets, indices), call)
         return kernel(x, offsets_arg, indices=indices_arg)
 
     def _validate_ragged(
@@ -328,8 +305,8 @@ class MeanPoolingFwdOp(Op):
 class _AvgPoolFwdOpBase(Op):
     """Generic average-pooling forward, parametrized by class-attribute ``ndim``.
 
-    Concrete subclasses set ``ndim`` and ``kernel_types`` and state the manifest's
-    ``__init__``; the signature's checks, shape inference and roofline are generated per
+    Concrete subclasses set ``ndim``, ``kernel_types`` and ``interfaces`` and state the
+    manifest's ``__init__``; the signature's checks, shape inference and roofline are generated per
     concrete class.
     """
 
@@ -344,68 +321,6 @@ class _AvgPoolFwdOpBase(Op):
         self._stride = self._kernel_size if self.stride is None else _per_axis(self.stride, nd)
         self._padding = _per_axis(self.padding, nd)
         self._divisor_override = getattr(self, "divisor_override", None)
-        self._has_explicit_generic_kernel = (
-            kernel_map is not None and self._generic_slot in kernel_map
-        )
-        self._has_explicit_spatial_kernel = (
-            kernel_map is not None and self._spatial_slot in kernel_map
-        )
-
-    @property
-    def _generic_slot(self) -> str:
-        return f"avg_pool{self.ndim}d_kernel"
-
-    @property
-    def _spatial_slot(self) -> str:
-        return f"avg_pool{self.ndim}d_spatial_kernel"
-
-    def _use_spatial_fast_path(self) -> bool:
-        # Strict 1d/3d policy: an explicit generic-kernel override opts out of
-        # the spatial fast path unless the spatial kernel is also explicit.
-        # AvgPool2dFwdOp overrides this with a laxer 2d policy.
-        return (
-            not self.ceil_mode
-            and self.count_include_pad
-            and self._divisor_override is None
-            and (not self._has_explicit_generic_kernel or self._has_explicit_spatial_kernel)
-        )
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """The spatial fast path picks the implementation, so its name is in the identity."""
-        n, c_in, in_dims, dtype, device_index = call
-        use_spatial_fast_path = self._use_spatial_fast_path()
-        kernel_name = self._spatial_slot if use_spatial_fast_path else self._generic_slot
-        key = (
-            kernel_name,
-            n,
-            c_in,
-            *in_dims,
-            self._kernel_size,
-            self._stride,
-            self._padding,
-            self.ceil_mode,
-            self.count_include_pad,
-            self._divisor_override,
-            dtype,
-            device_index,
-        )
-
-        def build() -> Kernel:
-            kernel_kwargs: Dict[str, object] = dict(n=n, c_in=c_in, dtype=dtype, tune=self.tune)
-            for k, name in enumerate(_POOL_DIM_NAMES[self.ndim]):
-                kernel_kwargs[f"{name}_in"] = in_dims[k]
-                kernel_kwargs[f"kernel_{name}"] = self._kernel_size[k]
-                kernel_kwargs[f"stride_{name}"] = self._stride[k]
-                kernel_kwargs[f"pad_{name}"] = self._padding[k]
-            if not use_spatial_fast_path:
-                kernel_kwargs["ceil_mode"] = self.ceil_mode
-                kernel_kwargs["count_include_pad"] = self.count_include_pad
-                if self.ndim > 1:
-                    # The 1d generic kernel has no divisor_override parameter.
-                    kernel_kwargs["divisor_override"] = self._divisor_override
-            return self.kernel_map[kernel_name](**kernel_kwargs)
-
-        return key, build
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
@@ -414,9 +329,20 @@ class _AvgPoolFwdOpBase(Op):
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
-        self.kernel = self.kernel_for(
-            "avg_pool", (input,), (n, c_in, tuple(in_dims), input.dtype, input.device.index)
+        call = AvgPoolCall(
+            n=n,
+            c_in=c_in,
+            size=tuple(in_dims),
+            window=self._kernel_size,
+            stride=self._stride,
+            pad=self._padding,
+            ceil_mode=self.ceil_mode,
+            count_include_pad=self.count_include_pad,
+            divisor_override=self._divisor_override,
+            dtype=input.dtype,
+            device=input.device,
         )
+        self.kernel = self.kernel_for("avg_pool", (input,), call)
         return self.kernel(input)
 
 
@@ -424,10 +350,8 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCL inputs."""
 
     ndim = 1
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "avg_pool1d_kernel": AvgPool1dKernel,
-        "avg_pool1d_spatial_kernel": AvgPool1dSpatialKernel,
-    }
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"avg_pool1d_kernel": AvgPool1dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"avg_pool": AvgPool1dFwdInterface}
 
     def __init__(
         self,
@@ -468,10 +392,8 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCHW inputs."""
 
     ndim = 2
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "avg_pool2d_kernel": AvgPool2dKernel,
-        "avg_pool2d_spatial_kernel": AvgPool2dSpatialKernel,
-    }
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"avg_pool2d_kernel": AvgPool2dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"avg_pool": AvgPool2dFwdInterface}
 
     def __init__(
         self,
@@ -509,20 +431,13 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         self.tune = tune
         self._setup(kernel_map)
 
-    def _use_spatial_fast_path(self) -> bool:
-        # Laxer 2d policy: an explicit generic-kernel override does not opt out
-        # of the spatial fast path (asymmetric with 1d/3d).
-        return not self.ceil_mode and self.count_include_pad and self._divisor_override is None
-
 
 class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCDHW inputs."""
 
     ndim = 3
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "avg_pool3d_kernel": AvgPool3dKernel,
-        "avg_pool3d_spatial_kernel": AvgPool3dSpatialKernel,
-    }
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"avg_pool3d_kernel": AvgPool3dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"avg_pool": AvgPool3dFwdInterface}
 
     def __init__(
         self,
@@ -564,12 +479,11 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
 class _MaxPoolFwdOpBase(Op):
     """Generic max-pooling forward, parametrized by class attributes.
 
-    Concrete subclasses set ``ndim``, ``_kernel_slot`` and ``kernel_types`` and state the
+    Concrete subclasses set ``ndim``, ``kernel_types`` and ``interfaces`` and state the
     manifest's ``__init__``.
     """
 
     ndim: ClassVar[int]
-    _kernel_slot: ClassVar[str] = ""
     compile_boundary = True
 
     def __init__(
@@ -610,41 +524,6 @@ class _MaxPoolFwdOpBase(Op):
         self._padding = _per_axis(padding, nd)
         self._dilation = _per_axis(dilation, nd)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, window, stride, padding and dilation."""
-        n, c_in, in_dims, dtype, device_index = call
-        key = (
-            n,
-            c_in,
-            *in_dims,
-            self._kernel_size,
-            self._stride,
-            self._padding,
-            self._dilation,
-            self.ceil_mode,
-            dtype,
-            device_index,
-        )
-
-        def build() -> Kernel:
-            kernel_kwargs: Dict[str, object] = dict(
-                n=n,
-                c_in=c_in,
-                ceil_mode=self.ceil_mode,
-                dtype=dtype,
-                tune=self.tune,
-            )
-            for k, name in enumerate(_POOL_DIM_NAMES[self.ndim]):
-                kernel_kwargs[f"{name}_in"] = in_dims[k]
-            for k, name in enumerate(_MAX_POOL_PARAM_SUFFIXES[self.ndim]):
-                kernel_kwargs[f"kernel_{name}"] = self._kernel_size[k]
-                kernel_kwargs[f"stride_{name}"] = self._stride[k]
-                kernel_kwargs[f"pad_{name}"] = self._padding[k]
-                kernel_kwargs[f"dilation_{name}"] = self._dilation[k]
-            return self.kernel_map[self._kernel_slot](**kernel_kwargs)
-
-        return key, build
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         return self._call_boundary(input)
@@ -652,9 +531,19 @@ class _MaxPoolFwdOpBase(Op):
     def _eager_forward(self, input: torch.Tensor):
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
-        self.kernel = self.kernel_for(
-            "max_pool", (input,), (n, c_in, tuple(in_dims), input.dtype, input.device.index)
+        call = MaxPoolCall(
+            n=n,
+            c_in=c_in,
+            size=tuple(in_dims),
+            window=self._kernel_size,
+            stride=self._stride,
+            pad=self._padding,
+            dilation=self._dilation,
+            ceil_mode=self.ceil_mode,
+            dtype=input.dtype,
+            device=input.device,
         )
+        self.kernel = self.kernel_for("max_pool", (input,), call)
         return self.kernel(input)
 
 
@@ -662,8 +551,8 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCL inputs (return_indices=False)."""
 
     ndim = 1
-    _kernel_slot = "max_pool1d_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"max_pool1d_kernel": MaxPool1dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"max_pool": MaxPool1dFwdInterface}
 
     def __init__(
         self,
@@ -705,9 +594,11 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCL inputs (return_indices=True)."""
 
     ndim = 1
-    _kernel_slot = "max_pool1d_with_indices_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "max_pool1d_with_indices_kernel": MaxPool1dWithIndicesKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "max_pool": MaxPool1dIndicesFwdInterface
     }
 
     def __init__(
@@ -761,8 +652,8 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
 
     ndim = 2
-    _kernel_slot = "max_pool2d_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"max_pool2d_kernel": MaxPool2dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"max_pool": MaxPool2dFwdInterface}
 
     def __init__(
         self,
@@ -804,9 +695,11 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=True)."""
 
     ndim = 2
-    _kernel_slot = "max_pool2d_with_indices_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "max_pool": MaxPool2dIndicesFwdInterface
     }
 
     def __init__(
@@ -860,8 +753,8 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCDHW inputs (return_indices=False)."""
 
     ndim = 3
-    _kernel_slot = "max_pool3d_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"max_pool3d_kernel": MaxPool3dKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"max_pool": MaxPool3dFwdInterface}
 
     def __init__(
         self,
@@ -903,9 +796,11 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCDHW inputs (return_indices=True)."""
 
     ndim = 3
-    _kernel_slot = "max_pool3d_with_indices_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "max_pool3d_with_indices_kernel": MaxPool3dWithIndicesKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "max_pool": MaxPool3dIndicesFwdInterface
     }
 
     def __init__(
@@ -958,12 +853,11 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
 class _AdaptivePool2dFwdOpBase(Op):
     """Generic adaptive 2D pooling forward over CHW/NCHW inputs.
 
-    Concrete subclasses set ``_kernel_slot`` and ``kernel_types`` and state the manifest's
+    Concrete subclasses set ``kernel_types`` and ``interfaces`` and state the manifest's
     ``__init__``. A CHW input is handed to the kernel as it is; the kernel adds and drops
     the batch axis.
     """
 
-    _kernel_slot: ClassVar[str] = ""
     compile_boundary = True
 
     def __init__(
@@ -1000,42 +894,28 @@ class _AdaptivePool2dFwdOpBase(Op):
     def _eager_forward(self, input: torch.Tensor):
         input = input.contiguous()
         c_in, h_in, w_in = input.shape[-3:]
-        out_h = h_in if self._output_size[0] is None else self._output_size[0]
-        out_w = w_in if self._output_size[1] is None else self._output_size[1]
-        key = (
-            prod(input.shape[:-3]),
-            c_in,
-            h_in,
-            w_in,
-            out_h,
-            out_w,
-            input.dtype,
-            input.device.index,
-        )
-        self.kernel = self.kernel_for("adaptive_pool", (input,), key)
-        return self.kernel(input)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per input and output extents, dtype and device."""
-        n, c_in, h_in, w_in, out_h, out_w, dtype, _device = call
-        return call, lambda: self.kernel_map[self._kernel_slot](
-            n=n,
+        call = AdaptivePool2dCall(
+            n=prod(input.shape[:-3]),
             c_in=c_in,
             h_in=h_in,
             w_in=w_in,
-            out_h=out_h,
-            out_w=out_w,
-            dtype=dtype,
-            tune=self.tune,
+            out_h=h_in if self._output_size[0] is None else self._output_size[0],
+            out_w=w_in if self._output_size[1] is None else self._output_size[1],
+            dtype=input.dtype,
+            device=input.device,
         )
+        self.kernel = self.kernel_for("adaptive_pool", (input,), call)
+        return self.kernel(input)
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive average pooling over PyTorch-compatible CHW/NCHW inputs."""
 
-    _kernel_slot = "adaptive_avg_pool2d_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "adaptive_avg_pool2d_kernel": AdaptiveAvgPool2dKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "adaptive_pool": AdaptiveAvgPool2dFwdInterface
     }
 
     def __init__(
@@ -1060,9 +940,11 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=False)."""
 
-    _kernel_slot = "adaptive_max_pool2d_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "adaptive_max_pool2d_kernel": AdaptiveMaxPool2dKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "adaptive_pool": AdaptiveMaxPool2dFwdInterface
     }
 
     def __init__(
@@ -1087,9 +969,11 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=True)."""
 
-    _kernel_slot = "adaptive_max_pool2d_with_indices_kernel"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "adaptive_max_pool2d_with_indices_kernel": AdaptiveMaxPool2dWithIndicesKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "adaptive_pool": AdaptiveMaxPool2dIndicesFwdInterface
     }
 
     def __init__(

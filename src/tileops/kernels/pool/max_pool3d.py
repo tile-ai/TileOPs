@@ -6,7 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import (
+    MaxPool3dFwdInterface,
+    MaxPool3dIndicesFwdInterface,
+    MaxPoolCall,
+)
 from tileops.kernels.pool.common import pool_output_dim
 
 __all__ = ["MaxPool3dKernel", "MaxPool3dWithIndicesKernel"]
@@ -217,6 +222,20 @@ class _MaxPool3dKernelBase(Kernel):
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
+    @classmethod
+    def entry_for(cls, call: MaxPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            *call.dilation,
+            call.ceil_mode,
+            call.dtype,
+        )
+
     def __init__(
         self,
         n: int,
@@ -330,7 +349,7 @@ class _MaxPool3dKernelBase(Kernel):
         )
 
 
-class MaxPool3dKernel(_MaxPool3dKernelBase):
+class MaxPool3dKernel(_MaxPool3dKernelBase, MaxPool3dFwdInterface):
     """Max pooling forward kernel (return_indices=False).
 
     One thread owns one output position and folds its window into a register, so
@@ -391,7 +410,7 @@ class MaxPool3dKernel(_MaxPool3dKernelBase):
     _dispatch = _launch_max_pool3d
 
 
-class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase):
+class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
 
     @staticmethod

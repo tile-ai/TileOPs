@@ -6,10 +6,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
-__all__ = ["AvgPool3dKernel", "AvgPool3dSpatialKernel"]
+__all__ = ["AvgPool3dKernel"]
 
 
 class _WideRun(NamedTuple):
@@ -204,8 +205,8 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool3d_wide_func
 
 
-class _AvgPool3dKernelBase(Kernel):
-    """Shape, launch planning and dispatch shared by the two avg_pool3d kernels."""
+class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
+    """Average pooling over an NCDHW volume, with every PyTorch flag combination."""
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     # One output per thread, so the block size is the whole launch space: a parallel loop
@@ -214,6 +215,21 @@ class _AvgPool3dKernelBase(Kernel):
     # to rank, so a candidate list would pick from noise. Move this value on a
     # measurement, and keep `autotune_configs` naming whatever it holds.
     _BLOCK_THREADS: ClassVar[int] = 256
+
+    @classmethod
+    def entry_for(cls, call: AvgPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            call.ceil_mode,
+            call.count_include_pad,
+            call.divisor_override,
+            call.dtype,
+        )
 
     def __init__(
         self,
@@ -273,54 +289,3 @@ class _AvgPool3dKernelBase(Kernel):
         kernel = self.kernel(self.config["threads"])
         volumes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)
-
-
-class AvgPool3dSpatialKernel(_AvgPool3dKernelBase):
-    """Fast path for common NCDHW avg_pool3d workloads: zero-padded, floor-mode."""
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_d: int,
-        stride_h: int,
-        stride_w: int,
-        pad_d: int,
-        pad_h: int,
-        pad_w: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__(
-            n,
-            c_in,
-            d_in,
-            h_in,
-            w_in,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            stride_d,
-            stride_h,
-            stride_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            False,
-            True,
-            None,
-            dtype,
-            config,
-            tune,
-        )
-
-
-class AvgPool3dKernel(_AvgPool3dKernelBase):
-    """Average pooling over an NCDHW volume, with every PyTorch flag combination."""

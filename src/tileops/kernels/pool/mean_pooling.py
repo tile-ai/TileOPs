@@ -5,7 +5,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import MeanPoolingCall, MeanPoolingFwdInterface
 from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = ["MeanPoolingFwdKernel"]
@@ -173,7 +174,7 @@ def _mean_pooling_kernel(
     return _mean_pooling_func
 
 
-class MeanPoolingFwdKernel(Kernel):
+class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
     @staticmethod
     def _mean_pooling_run(
         batch_size: int,
@@ -208,6 +209,22 @@ class MeanPoolingFwdKernel(Kernel):
         return pooled.view(batch_size, chunks_per_batch, heads, dim)
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def entry_for(cls, call: MeanPoolingCall) -> Entry:
+        return call, lambda: cls(
+            batch_size=call.batch_size,
+            seq_len=call.seq_len,
+            heads=call.heads,
+            dim=call.dim,
+            chunk_size=call.chunk_size,
+            chunks_per_batch=call.chunks_per_batch,
+            seq_num=call.seq_num,
+            use_offsets=int(call.use_offsets),
+            dtype=call.dtype,
+            accum_dtype=call.accum_dtype,
+            device_index=call.device.index if call.device is not None else None,
+        )
 
     def __init__(
         self,

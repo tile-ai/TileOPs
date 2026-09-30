@@ -5,10 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
 
-__all__ = ["AvgPool2dKernel", "AvgPool2dSpatialKernel"]
+__all__ = ["AvgPool2dKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -80,14 +81,29 @@ def _avg_pool2d_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool2d_func
 
 
-class _AvgPool2dKernelBase(Kernel):
-    """Shape, launch planning and dispatch shared by the two avg_pool2d kernels."""
+class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
+    """Average pooling over an NCHW plane, with every PyTorch flag combination."""
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
     _THREAD_CHOICES: ClassVar[tuple[int, ...]] = (128, 256, 512)
     _DEFAULT_THREADS: ClassVar[int] = 256
+
+    @classmethod
+    def entry_for(cls, call: AvgPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            call.ceil_mode,
+            call.count_include_pad,
+            call.divisor_override,
+            call.dtype,
+        )
 
     def __init__(
         self,
@@ -138,46 +154,3 @@ class _AvgPool2dKernelBase(Kernel):
         kernel = self.kernel(self.config["threads"])
         planes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return planes.view(self.n, self.c_in, *self.window.out)
-
-
-class AvgPool2dSpatialKernel(_AvgPool2dKernelBase):
-    """Fast path for common NCHW avg_pool2d workloads: floor-mode, one divisor."""
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__(
-            n,
-            c_in,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            False,
-            True,
-            None,
-            dtype,
-            config,
-            tune,
-        )
-
-
-class AvgPool2dKernel(_AvgPool2dKernelBase):
-    """Average pooling over an NCHW plane, with every PyTorch flag combination."""
