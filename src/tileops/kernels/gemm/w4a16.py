@@ -90,13 +90,13 @@ def _w4a16_streamk_reduce_kernel(
 ) -> Callable:
     """Sum the ``[tiles_n, slots, m, block_n]`` FP32 stream-K partials into ``[m, n]``."""
 
-    def slot_sum(partials, tile, row, offset):
-        return functools.reduce(
-            operator.add, [partials[tile, slot, row, offset] for slot in range(slots)]
-        )
-
     @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
     def build(elems_per_cta: int = 1024) -> Callable:
+        def slot_sum(partials, tile, row, offset):
+            return functools.reduce(
+                operator.add, [partials[tile, slot, row, offset] for slot in range(slots)]
+            )
+
         @T.prim_func
         def main(
             partials: T.Tensor((tiles_n, slots, m, block_n), "float"),  # type: ignore
