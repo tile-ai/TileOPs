@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
-from tileops.kernels.elementwise._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _clamp_to_dtype_range
+from tileops.kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, clamp_to_dtype_range
 
 __all__ = [
     "MaskedFillFwdKernel",
@@ -14,7 +14,7 @@ __all__ = [
 ]
 
 # uint8/intN + fp16/bf16/fp32. bool operands arrive in uint8 storage.
-_MASKED_FILL_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES
+_MASKED_FILL_DTYPES = BITWISE_DTYPES[1:] + FLOAT_DTYPES
 
 
 @functools.lru_cache(maxsize=32)
@@ -74,7 +74,7 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel):
     INPUTS = (("x", "tile"), ("mask", "mask"))
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
-        self.fill_value = _clamp_to_dtype_range(fill_value, dtype)
+        self.fill_value = clamp_to_dtype_range(fill_value, dtype)
         super().__init__(N_total, dtype, config=config, tune=tune)
 
     @staticmethod

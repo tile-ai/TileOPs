@@ -27,11 +27,16 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm._config import make_row_reduce, select_row_config, select_row_configs
+from tileops.kernels.norm.call_spec import (
+    AdaLayerNormFwdInterface,
+    AdaLayerNormZeroFwdInterface,
+    LayerNormCall,
+)
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
-__all__ = ["AdaLayerNormKernel"]
+__all__ = ["AdaLayerNormKernel", "AdaLayerNormZeroKernel"]
 
 
 def _should_use_cp_async(
@@ -212,7 +217,7 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
     return _func
 
 
-class AdaLayerNormKernel(Kernel):
+class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     """Adaptive LayerNorm kernel.
 
     Supports both AdaLN and AdaLN-Zero variants via the `has_gate` parameter.
@@ -228,6 +233,11 @@ class AdaLayerNormKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     def __init__(
         self,
@@ -317,3 +327,12 @@ class AdaLayerNormKernel(Kernel):
         else:
             y = program(rows, scale, shift, dummy)
         return y.reshape(original_shape)
+
+
+class AdaLayerNormZeroKernel(AdaLayerNormKernel, AdaLayerNormZeroFwdInterface):
+    """The AdaLN-Zero variant: `AdaLayerNormKernel` built with the gate."""
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity, has_gate=True)

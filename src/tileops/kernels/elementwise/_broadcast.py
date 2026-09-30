@@ -8,17 +8,17 @@ import torch
 _CUDA_MAX_GRID_Y = 65535
 
 
-def _flat(t):
+def flat(t):
     """The flat view every PrimFunc here takes."""
     return t.reshape(-1)
 
 
-def _broadcast_target(*tensors):
+def broadcast_target(*tensors):
     """The output shape a multi-operand kernel writes, from the operands it got."""
     return torch.broadcast_shapes(*(tuple(t.shape) for t in tensors if t is not None))
 
 
-def _expand_flat(t, shape):
+def expand_flat(t, shape):
     """Broadcast *t* to *shape*, then flatten it."""
     if tuple(t.shape) != tuple(shape):
         t = t.expand(shape)
@@ -67,7 +67,7 @@ def coalesce_broadcast_dims(a_shape, b_shape):
     return out_shape, coalesced_shape, a_strides, b_strides
 
 
-def _compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
+def compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
     """Compute a_off and b_off from flat_idx using compile-time unrolled divmod chain."""
     a_off = 0
     b_off = 0
@@ -96,7 +96,7 @@ def row_tile_leaves_tail(inner, rows, threads, num_per_thread, staged):
     return bool(staged and (rows * (inner // num_per_thread)) % threads)
 
 
-def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
+def is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     """Return True when both inputs are contiguous with the same shape (no broadcast)."""
     return (
         len(coalesced_shape) == 1

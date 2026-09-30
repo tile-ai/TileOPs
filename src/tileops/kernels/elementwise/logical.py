@@ -4,11 +4,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._base import (
-    _LOGICAL_DTYPES,
+    LOGICAL_DTYPES,
     BinaryKernel,
     LogicalUnaryKernel,
-    _Uint8StorageBinaryKernel,
-    _Uint8StorageUnaryKernel,
+    Uint8StorageBinaryKernel,
+    Uint8StorageUnaryKernel,
 )
 
 __all__ = [
@@ -24,7 +24,7 @@ __all__ = [
 class LogicalAndFwdKernel(BinaryKernel):
     """Element-wise logical AND with non-zero truthiness."""
 
-    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -34,7 +34,7 @@ class LogicalAndFwdKernel(BinaryKernel):
         return a_nonzero & b_nonzero
 
 
-class LogicalAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class LogicalAndBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise logical AND on uint8-backed bool storage."""
 
     @staticmethod
@@ -45,7 +45,7 @@ class LogicalAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class LogicalOrFwdKernel(BinaryKernel):
     """Element-wise logical OR with non-zero truthiness."""
 
-    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -55,7 +55,7 @@ class LogicalOrFwdKernel(BinaryKernel):
         return a_nonzero | b_nonzero
 
 
-class LogicalOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class LogicalOrBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise logical OR on uint8-backed bool storage."""
 
     @staticmethod
@@ -71,7 +71,7 @@ class LogicalNotFwdKernel(LogicalUnaryKernel):
         return x == T.cast(0, x.dtype)
 
 
-class LogicalNotBoolStorageFwdKernel(_Uint8StorageUnaryKernel):
+class LogicalNotBoolStorageFwdKernel(Uint8StorageUnaryKernel):
     """Element-wise logical NOT on uint8-backed bool storage."""
 
     @staticmethod

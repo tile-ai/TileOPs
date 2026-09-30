@@ -524,17 +524,21 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_reduce_candidate_regions() -> None:
     """Each call is served by the one implementation whose region names it."""
     from tileops.kernels.reduction.call_spec import ReduceCall
-    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp, VarFwdOp
+    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp, VarFwdOp, VarMeanFwdOp
 
     f16 = torch.float16
     cases = [
         (SumFwdOp, (8, 4096), (1,), "reduce_fold"),
         (SumFwdOp, (8, 4095), (1,), "reduce"),
+        (ProdFwdOp, (8, 4096), (1,), "reduce_fold"),
         (ProdFwdOp, (8, 4095), (1,), "reduce_prod"),
         (VarFwdOp, (8, 4096), (1,), "reduce_welford"),
-        (SumFwdOp, (64, 1000), (0,), "reduce_leading"),
+        # Leading and edge axes read in place win over the fold where both apply.
+        (SumFwdOp, (1024, 8), (0,), "reduce_leading"),
+        (ProdFwdOp, (1024, 8), (0,), "reduce_leading"),
         (SumFwdOp, (4, 128, 4096), (0, 2), "reduce_edge"),
         (VarFwdOp, (4, 128, 4096), (0, 2), "reduce_welford_edge"),
+        (VarMeanFwdOp, (4, 128, 4096), (0, 2), "reduce_welford_edge"),
         # Past fp32's exact integer range the Welford merge drifts, so the rows take it.
         (VarFwdOp, (1024, 4, 32768), (0, 2), "reduce_welford"),
     ]
@@ -549,7 +553,7 @@ def test_reduce_candidate_regions() -> None:
             op_kind=op._op_kind,
             dtype=f16,
         )
-        assert op.select_kernel_key(tuple(op.kernel_map), call) == key, (op_cls, shape, axes)
+        assert op.select_implementation("reduce", call) == key, (op_cls, shape, axes)
 
 
 @pytest.mark.smoke

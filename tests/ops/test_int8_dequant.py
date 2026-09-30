@@ -2,9 +2,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.backend import OpNotAvailableError
 from tileops.kernels.quantization import (
     DequantizeCall,
+    INT8DequantPerBlockFwdKernel,
     INT8DequantPerChannelFwdKernel,
     INT8DequantPerTensorFwdKernel,
 )
@@ -64,10 +64,24 @@ class INT8DequantFixture(FixtureBase):
                 pytest.param(
                     INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
                 ),
+                # Per-block rows shorter than a vector: every block converts code by code.
+                pytest.param(
+                    INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                ),
+                # Per-block, K % 128 = 3: a vector crosses a row's short last group and the
+                # row end, so its codes take three scales.
+                pytest.param(
+                    INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.smoke
+                ),
                 # Per-tensor, past the small-matrix kernel's region, with a tail whose length
                 # is not a multiple of any vector width.
                 pytest.param(
                     INT8DequantPerTensorFwdOp, 2051, 1025, torch.bfloat16, marks=pytest.mark.full
+                ),
+                # Per-block, past the small-matrix kernel's region, float32 with K % 128 = 1:
+                # the staged kernel with three scales per vector and a tail.
+                pytest.param(
+                    INT8DequantPerBlockFwdOp, 4100, 129, torch.float32, marks=pytest.mark.full
                 ),
             ],
         ),
@@ -77,14 +91,8 @@ class INT8DequantFixture(FixtureBase):
 @INT8DequantFixture
 def test_int8_dequant_op(op_cls: type, m: int, k: int, out_dtype: torch.dtype) -> None:
     test = _TESTS[op_cls](m, k, out_dtype)
-    op = op_cls(out_dtype)
-    try:
-        # One float32 multiply and one cast: a conforming kernel is bit-exact.
-        test.check(op, *test.gen_inputs(), atol=0, rtol=0)
-    except OpNotAvailableError:
-        if op_cls.kernel_types:
-            raise
-        pytest.skip(f"{op_cls.__name__} has no in-tree kernel")
+    # One float32 multiply and one cast: a conforming kernel is bit-exact.
+    test.check(op_cls(out_dtype), *test.gen_inputs(), atol=0, rtol=0)
 
 
 @pytest.mark.smoke
@@ -104,7 +112,9 @@ def test_int8_dequant_rejects_wrong_scale_shape(op_cls: type, scale_shape: tuple
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls", [INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp])
+@pytest.mark.parametrize(
+    "op_cls", [INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp, INT8DequantPerBlockFwdOp]
+)
 def test_int8_dequant_misaligned_input(op_cls: type) -> None:
     """A ``q`` whose storage is off the vector boundary, rows that split a thread's codes, a tail."""
     test = _TESTS[op_cls](5, 1001, torch.bfloat16)
@@ -116,15 +126,27 @@ def test_int8_dequant_misaligned_input(op_cls: type) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "kernel_cls, granularity",
+    "kernel_cls",
+    [INT8DequantPerChannelFwdKernel, INT8DequantPerTensorFwdKernel, INT8DequantPerBlockFwdKernel],
+)
+def test_int8_dequant_refuses_a_last_block_past_int32(kernel_cls: type) -> None:
+    """The last block indexes up to one block past ``M * K``, so ``M * K = 2^31 - 1`` is refused."""
+    call = DequantizeCall(m=1, k=2**31 - 1, out_dtype=torch.bfloat16, device=run_device())
+    assert "int32" in (kernel_cls.refusal(call) or "")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, m, key",
     [
-        (INT8DequantPerChannelFwdKernel, "channel"),
-        (INT8DequantPerTensorFwdKernel, "tensor"),
+        (INT8DequantPerTensorFwdOp, 127, "int8_dequant_per_tensor_small"),
+        (INT8DequantPerTensorFwdOp, 128, "int8_dequant_per_tensor"),
+        (INT8DequantPerChannelFwdOp, 1, "int8_dequant_per_channel"),
+        (INT8DequantPerBlockFwdOp, 127, "int8_dequant_per_block_small"),
+        (INT8DequantPerBlockFwdOp, 128, "int8_dequant_per_block"),
     ],
 )
-def test_int8_dequant_refuses_a_last_block_past_int32(kernel_cls: type, granularity: str) -> None:
-    """The last block indexes up to one block past ``M * K``, so ``M * K = 2^31 - 1`` is refused."""
-    call = DequantizeCall(
-        m=1, k=2**31 - 1, granularity=granularity, out_dtype=torch.bfloat16, device=run_device()
-    )
-    assert "int32" in (kernel_cls.refusal(call) or "")
+def test_each_region_selects_its_one_implementation(op_cls: type, m: int, key: str) -> None:
+    """Below 2^19 codes the small-matrix kernel serves a call, the general one from there."""
+    call = DequantizeCall(arch=90, sm_count=132, m=m, k=4096, out_dtype=torch.bfloat16)
+    assert op_cls(torch.bfloat16).select_implementation("dequant", call) == key

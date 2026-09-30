@@ -54,7 +54,17 @@ from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.ops.pool import MeanPoolingFwdOp
-from tileops.ops.quantization import INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp
+from tileops.ops.quantization import (
+    FP8QuantPerBlockFwdOp,
+    INT4QuantPerGroupFwdOp,
+    INT8DequantPerBlockFwdOp,
+    INT8DequantPerChannelFwdOp,
+    INT8DequantPerTensorFwdOp,
+    INT8QuantPerBlockFwdOp,
+    INT8QuantPerChannelFwdOp,
+    INT8QuantPerTensorFwdOp,
+    SmoothQuantFwdOp,
+)
 from tileops.ops.rope import (
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
@@ -84,9 +94,21 @@ from workloads.gqa import (
     GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
-from workloads.int8_dequant import INT8DequantPerChannelWorkload, INT8DequantPerTensorWorkload
+from workloads.int8_dequant import (
+    INT8DequantPerBlockWorkload,
+    INT8DequantPerChannelWorkload,
+    INT8DequantPerTensorWorkload,
+)
 from workloads.mha import MhaDecodePagedWorkload
 from workloads.paged_kv_cache import make_unit_cache_scales
+from workloads.quantization import (
+    FP8QuantPerBlockWorkload,
+    INT4QuantPerGroupWorkload,
+    INT8QuantPerBlockWorkload,
+    INT8QuantPerChannelWorkload,
+    INT8QuantPerTensorWorkload,
+    SmoothQuantWorkload,
+)
 
 
 def _attention_cases():
@@ -469,13 +491,45 @@ def _other_cases():
         x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
         return FP8QuantFwdOp(), (x,)
 
+    def fp8_quant_per_block():
+        return FP8QuantPerBlockFwdOp(), FP8QuantPerBlockWorkload(
+            200, 392, torch.bfloat16
+        ).gen_inputs()
+
     def int8_dequant_per_channel():
         case = INT8DequantPerChannelWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerChannelFwdOp(torch.bfloat16), case.gen_inputs()
 
+    def int8_dequant_per_block():
+        case = INT8DequantPerBlockWorkload(64, 64, torch.bfloat16)
+        return INT8DequantPerBlockFwdOp(torch.bfloat16), case.gen_inputs()
+
     def int8_dequant_per_tensor():
         case = INT8DequantPerTensorWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerTensorFwdOp(torch.bfloat16), case.gen_inputs()
+
+    def int8_quant_per_block():
+        return INT8QuantPerBlockFwdOp(), INT8QuantPerBlockWorkload(
+            64, 256, torch.bfloat16
+        ).gen_inputs()
+
+    def int8_quant_per_channel():
+        return INT8QuantPerChannelFwdOp(), INT8QuantPerChannelWorkload(
+            64, 64, torch.bfloat16
+        ).gen_inputs()
+
+    def int8_quant_per_tensor():
+        return INT8QuantPerTensorFwdOp(), INT8QuantPerTensorWorkload(
+            64, 64, torch.bfloat16
+        ).gen_inputs()
+
+    def int4_quant_per_group():
+        return INT4QuantPerGroupFwdOp(), INT4QuantPerGroupWorkload(
+            64, 256, torch.float16
+        ).gen_inputs()
+
+    def smooth_quant():
+        return SmoothQuantFwdOp(), SmoothQuantWorkload(64, 64, torch.bfloat16).gen_inputs()
 
     def mean_pooling():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
@@ -484,9 +538,16 @@ def _other_cases():
     return (
         ("fft-c2c", fft_c2c),
         ("fp8-quant", fp8_quant),
+        ("fp8-quant-per-block", fp8_quant_per_block),
+        ("int4-quant-per-group", int4_quant_per_group),
+        ("int8-dequant-per-block", int8_dequant_per_block),
         ("int8-dequant-per-channel", int8_dequant_per_channel),
         ("int8-dequant-per-tensor", int8_dequant_per_tensor),
+        ("int8-quant-per-block", int8_quant_per_block),
+        ("int8-quant-per-channel", int8_quant_per_channel),
+        ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
+        ("smooth-quant", smooth_quant),
     )
 
 
@@ -670,8 +731,15 @@ for _op_cls in (
     DeltaNetDecodeFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
+    FP8QuantPerBlockFwdOp,
+    INT4QuantPerGroupFwdOp,
+    INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
+    INT8QuantPerBlockFwdOp,
+    INT8QuantPerChannelFwdOp,
+    INT8QuantPerTensorFwdOp,
+    SmoothQuantFwdOp,
     MeanPoolingFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,

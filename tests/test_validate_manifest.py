@@ -3,10 +3,10 @@
 The signature, workload and roofline checks the validator renders are tested where they are
 implemented (tests/test_manifest_signature.py, tests/test_manifest_workload.py). This file
 covers what the script itself owns: the entry schema, `composition`, the class parity check,
-the benchmark contract, the CLI scoping, and a run over the real manifest.
+the benchmark contract and the CLI scoping. The run over the real manifest is the preflight
+`validate-manifest` job.
 """
 
-import subprocess
 import sys
 import textwrap
 import types
@@ -49,23 +49,6 @@ def _write_manifest(tmp_path: Path, ops: dict) -> Path:
     path = tmp_path / "ops_manifest.yaml"
     path.write_text(yaml.safe_dump(ops))
     return path
-
-
-class TestIntegration:
-    """Run the actual validator script and verify it passes."""
-
-    def test_validator_passes_on_current_codebase(self):
-        result = subprocess.run(
-            [sys.executable, str(VALIDATOR_SCRIPT)],
-            capture_output=True,
-            text=True,
-            cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0, (
-            f"Validator failed with return code {result.returncode}.\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
 
 
 class TestSchema:

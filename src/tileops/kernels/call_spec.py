@@ -7,6 +7,9 @@ import torch
 
 __all__ = ["CallSpec"]
 
+# The facts a call spec derives from its device.
+_DEVICE_FACTS = ("arch", "calibration", "sm_count", "smem_budget")
+
 
 class _DeviceFact:
     """A device fact of a call record: the value the caller stated, else the device's own.
@@ -40,7 +43,7 @@ class CallSpec:
     ``refusal`` / ``entry_for``, and nothing a tensor's contents decide. Equality and the
     hash cover those facts and ``device``, normalized to an explicit type and index.
 
-    The device facts (``arch``, ``calibration``, ``sm_count``) are derived from ``device``
+    The device facts (``arch``, ``calibration``, ``sm_count``, ``smem_budget``) are derived from ``device``
     and take no part in equality: one left unstated is read from ``device`` when selection
     or a builder first reads it, which the dispatcher does only on a miss. A caller may state
     them to ask ``select_implementation`` about a device it is not on; ``kernel_for`` refuses
@@ -52,6 +55,8 @@ class CallSpec:
     # or ``None``. A family's fitted tuning data is keyed by it.
     calibration: "str | None" = dataclasses.field(default=_DeviceFact("calibration"), compare=False)
     sm_count: int = dataclasses.field(default=_DeviceFact("sm_count"), compare=False)
+    # Shared memory one block may take after opting in, in bytes.
+    smem_budget: int = dataclasses.field(default=_DeviceFact("smem_budget"), compare=False)
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
     # FIXME(staged-rollout): tuning policy travels on the record of an unmigrated call.
@@ -62,7 +67,7 @@ class CallSpec:
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
-        stated = frozenset(f for f in ("arch", "calibration", "sm_count") if f"_{f}" in vars(self))
+        stated = frozenset(f for f in _DEVICE_FACTS if f"_{f}" in vars(self))
         object.__setattr__(self, "stated_device_facts", stated)
         device = self.device
         if device is None:
@@ -76,20 +81,24 @@ class CallSpec:
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 
-        A device other than a CUDA one has none: no architecture, board or SM.
+        A device other than a CUDA one has none: no architecture, board, SM or shared memory.
+        A record that named no device has none either where the process has no CUDA device.
         """
         from tileops.utils import device_facts
 
-        if self.device is not None and self.device.type != "cuda":
-            arch, calibration, sm_count = -1, None, 0
+        if (self.device is not None and self.device.type != "cuda") or (
+            self.device is None and not torch.cuda.is_available()
+        ):
+            arch, calibration, sm_count, smem_budget = -1, None, 0, 0
         else:
-            arch, calibration, sm_count = device_facts(
+            arch, calibration, sm_count, smem_budget = device_facts(
                 self.device.index if self.device is not None else None
             )
         facts = self.__dict__
         facts.setdefault("_arch", arch)
         facts.setdefault("_calibration", calibration)
         facts.setdefault("_sm_count", sm_count)
+        facts.setdefault("_smem_budget", smem_budget)
 
     def refuse_unkeyable(self) -> None:
         """Raise unless every compared field is an immutable value.
@@ -123,23 +132,12 @@ class CallSpec:
         A selection failure names the call, and a record of mostly default
         fields buries the device facts that decided it.
         """
-        default = type(self)(
-            arch=self.arch,
-            calibration=self.calibration,
-            sm_count=self.sm_count,
-            device=self.device,
-        )
+        facts = {name: getattr(self, name) for name in _DEVICE_FACTS}
+        default = type(self)(**facts, device=self.device)
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in ("arch", "calibration", "sm_count", "device", "tune")
+            if f.name not in (*_DEVICE_FACTS, "device", "tune")
             and getattr(self, f.name) != getattr(default, f.name)
         ]
-        return ", ".join(
-            [
-                f"arch={self.arch}",
-                f"calibration={self.calibration}",
-                f"sm_count={self.sm_count}",
-                *stated,
-            ]
-        )
+        return ", ".join([*(f"{name}={value}" for name, value in facts.items()), *stated])

@@ -27,14 +27,14 @@ from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramGateConvBwdKernel"]
 
-CONV_KERNEL_SIZE = 4
+_CONV_KERNEL_SIZE = 4
 
 
 @functools.lru_cache(maxsize=32)
 def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
     d_padded = align_up(d, ALIGNMENT)
-    KS = CONV_KERNEL_SIZE
+    KS = _CONV_KERNEL_SIZE
 
     @tilelang.jit(
         out_idx=[12, 13, 14, 15, 16, 17, 18, 19],

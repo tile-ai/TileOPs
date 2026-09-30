@@ -4,11 +4,12 @@ import functools
 
 import tilelang
 import tilelang.language as T
+from tvm import DataType
 
 from tileops.kernels.elementwise._broadcast import (
-    _compute_broadcast_offsets,
-    _is_contiguous_same_shape,
     broadcast_plan_for,
+    compute_broadcast_offsets,
+    is_contiguous_same_shape,
     row_broadcast_split,
     row_tile_leaves_tail,
 )
@@ -36,6 +37,11 @@ def _any_fails(held, count):
     return T.Not(functools.reduce(T.And, [held[j] for j in range(count)]))
 
 
+def _narrows(dtype, out_dtype):
+    """Whether a result is stored narrower than its operand."""
+    return DataType(out_dtype).bits < DataType(dtype).bits
+
+
 def _backwards(j, count):
     """Slot ``count - 1 - j`` of a thread's *count*: the order a guarded fallback reads in.
 
@@ -60,7 +66,7 @@ def _broadcast_index_terms(plan_name):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
+def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
@@ -81,7 +87,7 @@ def _make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
+def make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     out_dtype = output_dtype or dtype
 
@@ -103,7 +109,7 @@ def _make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
+def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
@@ -112,15 +118,30 @@ def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_p
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
 
+        # A narrower result is stored from a thread's own contiguous run, in one
+        # store; the fragment layout would split it into one store per vector.
+        contiguous = _narrows(dtype, out_dtype) and N % block_size == 0
+
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                x_reg = T.alloc_fragment((block_size,), dtype)
-                y_reg = T.alloc_fragment((block_size,), out_dtype)
-                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
-                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                if contiguous:
+                    base = bx * block_size + T.get_thread_binding() * npt_arg
+                    x_run = T.alloc_local((npt_arg,), dtype)
+                    y_run = T.alloc_local((npt_arg,), out_dtype)
+                    for v in T.vectorized(npt_arg):
+                        x_run[v] = x[base + v]
+                    for v in T.unroll(npt_arg):
+                        y_run[v] = op_func(x_run[v])
+                    for v in T.vectorized(npt_arg):
+                        y[base + v] = y_run[v]
+                else:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), out_dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -269,7 +290,7 @@ def _row_broadcast_prim(
             """The *j*-th column of vector *v*, wherever in the grid that lands."""
             row = v // vecs_per_row
             col = (v % vecs_per_row) * num_per_thread + j
-            a_base, b_base = _compute_broadcast_offsets(
+            a_base, b_base = compute_broadcast_offsets(
                 row * inner, ndim, divisors, a_strides, b_strides
             )
             write_col(a, b, y, a_base, b_base, row, col)
@@ -294,7 +315,7 @@ def _row_broadcast_prim(
             for i, j in T.Parallel(threads, num_per_thread):
                 v = bx * threads + i
                 col = (v % vecs_per_row) * num_per_thread + j
-                a_base, b_base = _compute_broadcast_offsets(
+                a_base, b_base = compute_broadcast_offsets(
                     (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
                 )
                 if a_inner:
@@ -302,7 +323,7 @@ def _row_broadcast_prim(
                 if b_inner:
                     b_reg[i * num_per_thread + j] = b[b_base + col * b_inner]
             for i in T.Parallel(threads):
-                a_base, b_base = _compute_broadcast_offsets(
+                a_base, b_base = compute_broadcast_offsets(
                     ((bx * threads + i) // vecs_per_row) * inner,
                     ndim,
                     divisors,
@@ -334,7 +355,7 @@ def _row_broadcast_prim(
                     v = bx * threads + i
                     jr = _backwards(j, num_per_thread)
                     col = (v % vecs_per_row) * num_per_thread + jr
-                    a_base, b_base = _compute_broadcast_offsets(
+                    a_base, b_base = compute_broadcast_offsets(
                         (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
                     )
                     if _any_fails(held, num_per_thread):
@@ -383,7 +404,7 @@ def _row_broadcast_prim(
                     with T.Then():
                         by = bx // full_blocks
                         bxc = bx % full_blocks
-                        a_base, b_base = _compute_broadcast_offsets(
+                        a_base, b_base = compute_broadcast_offsets(
                             by * inner, ndim, divisors, a_strides, b_strides
                         )
                         write_full_block(a, b, y, a_base, b_base, by, bxc)
@@ -393,7 +414,7 @@ def _row_broadcast_prim(
                             with T.If(slot < tail_slots):  # noqa: SIM117
                                 with T.Then():
                                     tail_row = slot // tail_cols
-                                    ta_base, tb_base = _compute_broadcast_offsets(
+                                    ta_base, tb_base = compute_broadcast_offsets(
                                         tail_row * inner, ndim, divisors, a_strides, b_strides
                                     )
                                     write_col(
@@ -417,7 +438,7 @@ def _row_broadcast_prim(
         with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (bx, by):
             if fast is not None and stage:
                 T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
-            a_base, b_base = _compute_broadcast_offsets(
+            a_base, b_base = compute_broadcast_offsets(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
             if exact:
@@ -437,7 +458,7 @@ def _row_broadcast_prim(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_register_copy(
+def make_binary_register_copy(
     N_total,
     dtype,
     op_name,
@@ -450,11 +471,23 @@ def _make_binary_register_copy(
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
+        def _vector_lanes(dtype, count):
+            """Elements of *dtype* in one 16-byte vector, at most *count*."""
+            return min(count, 128 // DataType(dtype).bits)
+
         op_func = op_func_for(op_name)
         block_size = threads * num_per_thread
-        # A ragged last block bounds-checks its copies, and the fallback loop below
-        # has no layout against that; it runs the body per element instead.
-        fast = _fast_of(op_func) if N_total % block_size == 0 else None
+        # The fragment copy hands a thread one vector in each block-wide chunk, and
+        # the guarded loops below walk it in that order. A ragged last block, or a
+        # thread holding part of a vector, has no such layout; it runs the body per
+        # element instead.
+        lanes = _vector_lanes(dtype, num_per_thread)
+        chunks = num_per_thread // lanes
+        whole = N_total % block_size == 0 and num_per_thread % lanes == 0
+        fast = _fast_of(op_func) if whole else None
+        # A narrower result is stored from a thread's own contiguous run, in one
+        # store; the fragment layout would split it into one store per vector.
+        contiguous = _narrows(dtype, out_dtype) and N_total % block_size == 0
 
         @T.prim_func
         def main(
@@ -463,29 +496,43 @@ def _make_binary_register_copy(
             y: T.Tensor((N_total,), out_dtype),
         ):
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
-                if fast is not None:
-                    T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
-                a_reg = T.alloc_fragment((block_size,), dtype)
-                b_reg = T.alloc_fragment((block_size,), dtype)
-                y_reg = T.alloc_fragment((block_size,), out_dtype)
-                T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
-                T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
-                if fast is None:
-                    for i, j in T.Parallel(threads, num_per_thread):
-                        idx = i * num_per_thread + j
-                        y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                if contiguous:
+                    base = bx * block_size + T.get_thread_binding() * num_per_thread
+                    a_run = T.alloc_local((num_per_thread,), dtype)
+                    b_run = T.alloc_local((num_per_thread,), dtype)
+                    y_run = T.alloc_local((num_per_thread,), out_dtype)
+                    for v in T.vectorized(num_per_thread):
+                        a_run[v] = a[base + v]
+                    for v in T.vectorized(num_per_thread):
+                        b_run[v] = b[base + v]
+                    for v in T.unroll(num_per_thread):
+                        y_run[v] = op_func(a_run[v], b_run[v])
+                    for v in T.vectorized(num_per_thread):
+                        y[base + v] = y_run[v]
                 else:
-                    held = T.alloc_local((num_per_thread,), "bool")
-                    for i, j in T.Parallel(threads, num_per_thread):
-                        idx = i * num_per_thread + j
-                        value, holds = fast(a_reg[idx], b_reg[idx])
-                        y_reg[idx] = value
-                        held[j] = holds
-                    for i, j in T.Parallel(threads, num_per_thread):
-                        e = i * num_per_thread + _backwards(j, num_per_thread)
-                        if _any_fails(held, num_per_thread):
-                            y_reg[e] = op_func(a[bx * block_size + e], b[bx * block_size + e])
-                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                    if fast is not None:
+                        T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
+                    a_reg = T.alloc_fragment((block_size,), dtype)
+                    b_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), out_dtype)
+                    T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
+                    T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
+                    if fast is None:
+                        for i, j in T.Parallel(threads, num_per_thread):
+                            idx = i * num_per_thread + j
+                            y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                    else:
+                        held = T.alloc_local((num_per_thread,), "bool")
+                        for c, i, v in T.Parallel(chunks, threads, lanes):
+                            idx = (c * threads + i) * lanes + v
+                            value, holds = fast(a_reg[idx], b_reg[idx])
+                            y_reg[idx] = value
+                            held[c * lanes + v] = holds
+                        for c, i, v in T.Parallel(chunks, threads, lanes):
+                            e = (_backwards(c, chunks) * threads + i) * lanes + _backwards(v, lanes)
+                            if _any_fails(held, num_per_thread):
+                                y_reg[e] = op_func(a[bx * block_size + e], b[bx * block_size + e])
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -493,7 +540,7 @@ def _make_binary_register_copy(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_direct(
+def make_binary_direct(
     N_total,
     dtype,
     op_name,
@@ -507,7 +554,7 @@ def _make_binary_direct(
     out_dtype = output_dtype or dtype
     plan = broadcast_plan_for(plan_name)
 
-    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+    if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads):
@@ -552,7 +599,7 @@ def _make_binary_direct(
             with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
                 for i in T.Parallel(threads):
                     flat_idx = bx * threads + i
-                    a_off, b_off = _compute_broadcast_offsets(
+                    a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
                         ndim,
                         divisors,
@@ -567,7 +614,7 @@ def _make_binary_direct(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_explicit(
+def make_binary_explicit(
     N_total,
     dtype,
     op_name,
@@ -602,7 +649,7 @@ def _make_binary_explicit(
 
         return kernel
 
-    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+    if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
@@ -639,7 +686,7 @@ def _make_binary_explicit(
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
                 for i, j in T.Parallel(threads, num_per_thread):
                     flat_idx = (bx * threads + i) * num_per_thread + j
-                    a_off, b_off = _compute_broadcast_offsets(
+                    a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
                         ndim,
                         divisors,
@@ -654,7 +701,7 @@ def _make_binary_explicit(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_direct(M, N, dtype, op_name, threads=256):
+def make_fused_gated_direct(M, N, dtype, op_name, threads=256):
     """FusedGated direct: 1 element per thread."""
 
     @tilelang.jit(out_idx=[1])
@@ -676,7 +723,7 @@ def _make_fused_gated_direct(M, N, dtype, op_name, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
+def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread."""
 
     @tilelang.jit(out_idx=[1])

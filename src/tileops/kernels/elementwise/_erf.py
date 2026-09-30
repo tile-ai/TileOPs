@@ -45,25 +45,25 @@ def erf(x, out_dtype):
     Returns:
         erf(x) in float32.
     """
+
+    def _clamped_polynomial(wide):
+        """erf of float32 *wide* by the clamped polynomial; the clamps drop a NaN argument."""
+        one = T.cast(1.0, "float32")
+        clamped = T.min(T.max(wide, T.cast(-_CLAMP, "float32")), T.cast(_CLAMP, "float32"))
+        # Scaling the clamp out before squaring, not after, is what makes w exactly zero
+        # at the clamp: float32(1 / _CLAMP) * _CLAMP is 1.0, where 1 - x**2 / _CLAMP**2
+        # leaves 1e-8 once the backend contracts it into an FMA.
+        scaled = clamped * T.cast(1.0 / _CLAMP, "float32")
+        w = one - scaled * scaled
+        acc = T.cast(_POLY_COEFFS[0], "float32")
+        for coeff in _POLY_COEFFS[1:]:
+            acc = acc * w + T.cast(coeff, "float32")
+        # The clip keeps the backend from contracting the product into a caller's add,
+        # which would evaluate it to full width and land the tail 7e-9 short of +-1.
+        # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
+        return T.min(T.max(clamped * acc, -one), one)
+
     wide = T.cast(x, "float32")
     if out_dtype == "float32":
         return T.erf(wide)
     return keep_nan(wide, _clamped_polynomial)
-
-
-def _clamped_polynomial(wide):
-    """erf of float32 *wide* by the clamped polynomial; the clamps drop a NaN argument."""
-    one = T.cast(1.0, "float32")
-    clamped = T.min(T.max(wide, T.cast(-_CLAMP, "float32")), T.cast(_CLAMP, "float32"))
-    # Scaling the clamp out before squaring, not after, is what makes w exactly zero
-    # at the clamp: float32(1 / _CLAMP) * _CLAMP is 1.0, where 1 - x**2 / _CLAMP**2
-    # leaves 1e-8 once the backend contracts it into an FMA.
-    scaled = clamped * T.cast(1.0 / _CLAMP, "float32")
-    w = one - scaled * scaled
-    acc = T.cast(_POLY_COEFFS[0], "float32")
-    for coeff in _POLY_COEFFS[1:]:
-        acc = acc * w + T.cast(coeff, "float32")
-    # The clip keeps the backend from contracting the product into a caller's add,
-    # which would evaluate it to full width and land the tail 7e-9 short of +-1.
-    # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
-    return T.min(T.max(clamped * acc, -one), one)

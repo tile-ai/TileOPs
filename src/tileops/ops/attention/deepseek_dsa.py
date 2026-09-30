@@ -3,8 +3,9 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall, SparseMlaKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaKernel
+from tileops.kernels.attention.call_spec import SparseMlaCall, SparseMLADecodeFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -30,6 +31,9 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "sparse_mla_kernel": SparseMlaKernel,
         "sparse_mla_basic_kernel": SparseMlaBasicKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "sparse_mla": SparseMLADecodeFwdInterface
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -104,7 +108,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
             is_causal=self.is_causal,
             cp0=self._cp0,
             device=q.device,
-            tune=self.tune,
         )
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:

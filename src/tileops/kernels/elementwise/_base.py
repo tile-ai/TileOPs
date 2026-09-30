@@ -7,30 +7,30 @@ import torch
 
 from tileops.kernels.elementwise._broadcast import (
     BroadcastPlan,
-    _broadcast_target,
-    _expand_flat,
-    _flat,
-    _is_contiguous_same_shape,
+    broadcast_target,
     coalesce_broadcast_dims,
+    expand_flat,
+    flat,
+    is_contiguous_same_shape,
     register_broadcast_plan,
     row_broadcast_split,
 )
 from tileops.kernels.elementwise._builders import (
-    _make_binary_direct,
-    _make_binary_explicit,
-    _make_binary_register_copy,
-    _make_fused_gated_direct,
-    _make_fused_gated_explicit,
-    _make_unary_direct,
-    _make_unary_explicit,
-    _make_unary_regcopy,
+    make_binary_direct,
+    make_binary_explicit,
+    make_binary_register_copy,
+    make_fused_gated_direct,
+    make_fused_gated_explicit,
+    make_unary_direct,
+    make_unary_explicit,
+    make_unary_regcopy,
 )
-from tileops.kernels.elementwise._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES
+from tileops.kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, LOGICAL_DTYPES
 from tileops.kernels.elementwise._op_body import (
     GuardedOpFunc,
-    _store_binary_bool_as_int8,
-    _store_unary_bool_as_int8,
     register_op_func,
+    store_binary_bool_as_int8,
+    store_unary_bool_as_int8,
 )
 from tileops.kernels.elementwise._policy import (
     choose_binary_strategy,
@@ -67,6 +67,9 @@ class _ElementwiseKernel(Kernel):
     SUPPORTED_DTYPES = None
     # Thread count this family launches with, or ``None`` to take the strategy's.
     DEFAULT_THREADS: int | None = None
+    # Elements a ``register_copy`` thread carries at least, up to two 16-byte vectors,
+    # before the grid-filling shrink; the dtype's one vector decides above it.
+    REGISTER_COPY_NUM_PER_THREAD: int = 4
     # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
 
@@ -102,12 +105,17 @@ class _StrategyKernel(_ElementwiseKernel):
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
             default_threads=self.DEFAULT_THREADS,
+            register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
     @property
     def autotune_configs(self) -> list[dict]:
         return elementwise_autotune_configs(
-            self.dtype, self.strategy, self.BYTES_PER_THREAD, self.MIN_NUM_PER_THREAD
+            self.dtype,
+            self.strategy,
+            self.BYTES_PER_THREAD,
+            self.MIN_NUM_PER_THREAD,
+            self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
     def init_config(self, config=None, tune=False) -> None:
@@ -178,7 +186,7 @@ class UnaryKernel(_StrategyKernel):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
-            return name, _store_unary_bool_as_int8(self.op_func)
+            return name, store_unary_bool_as_int8(self.op_func)
         return name, self.op_func
 
     def _op_func_name(self) -> str:
@@ -197,7 +205,7 @@ class UnaryKernel(_StrategyKernel):
         cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
-            return _make_unary_direct(
+            return make_unary_direct(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -205,7 +213,7 @@ class UnaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
-            return _make_unary_explicit(
+            return make_unary_explicit(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -214,7 +222,7 @@ class UnaryKernel(_StrategyKernel):
                 num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
-            return _make_unary_regcopy(
+            return make_unary_regcopy(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -231,7 +239,7 @@ class UnaryKernel(_StrategyKernel):
 
     def forward(self, x):
         self._require_cuda(x=x)
-        result = self._compiled_fn(_flat(x))
+        result = self._compiled_fn(flat(x))
         return self._restore_output_dtype(result).reshape(x.shape)
 
 
@@ -263,6 +271,9 @@ class BinaryKernel(_StrategyKernel):
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    # Eight elements a thread keep two 16-byte loads of a 4-byte operand in flight;
+    # a single load streams slower. A body whose arithmetic outlasts its loads sets 4.
+    REGISTER_COPY_NUM_PER_THREAD = 8
 
     @staticmethod
     def op_func(a, b):
@@ -290,7 +301,7 @@ class BinaryKernel(_StrategyKernel):
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
-        self._same_shape = _is_contiguous_same_shape(
+        self._same_shape = is_contiguous_same_shape(
             coalesced_shape,
             a_strides,
             b_strides,
@@ -333,7 +344,7 @@ class BinaryKernel(_StrategyKernel):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
-            return name, _store_binary_bool_as_int8(self.op_func)
+            return name, store_binary_bool_as_int8(self.op_func)
         if self.fast_func is not None:
             return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
@@ -355,7 +366,7 @@ class BinaryKernel(_StrategyKernel):
             else None
         )
         if strategy == "direct":
-            return _make_binary_direct(
+            return make_binary_direct(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -366,7 +377,7 @@ class BinaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
-            return _make_binary_explicit(
+            return make_binary_explicit(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -379,7 +390,7 @@ class BinaryKernel(_StrategyKernel):
                 stage=self.stage_broadcast,
             )
         elif strategy == "register_copy":
-            return _make_binary_register_copy(
+            return make_binary_register_copy(
                 self.N_total,
                 self.dtype_str,
                 effective_op,
@@ -392,7 +403,7 @@ class BinaryKernel(_StrategyKernel):
 
     def forward(self, a, b):
         self._require_cuda(a=a, b=b)
-        result = self._compiled_fn(_flat(a), _flat(b))
+        result = self._compiled_fn(flat(a), flat(b))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
@@ -455,7 +466,7 @@ class FusedGatedKernel(_StrategyKernel):
         cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
-            return _make_fused_gated_direct(
+            return make_fused_gated_direct(
                 self.M,
                 self.N,
                 self.dtype_str,
@@ -463,7 +474,7 @@ class FusedGatedKernel(_StrategyKernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
-            return _make_fused_gated_explicit(
+            return make_fused_gated_explicit(
                 self.M,
                 self.N,
                 self.dtype_str,
@@ -493,7 +504,7 @@ class FusedGatedKernel(_StrategyKernel):
 class FloatUnaryKernel(UnaryKernel):
     """Unary kernel base for float-only elementwise ops."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
 
 class FloatPredicateKernel(FloatUnaryKernel):
@@ -507,11 +518,11 @@ class LogicalUnaryKernel(UnaryKernel):
     """Unary kernel base for logical predicates with bool output."""
 
     DEFAULT_STRATEGY = "register_copy"
-    SUPPORTED_DTYPES = _LOGICAL_DTYPES
+    SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
 
-class _Uint8StorageUnaryKernel(UnaryKernel):
+class Uint8StorageUnaryKernel(UnaryKernel):
     """Unary kernel that computes on uint8 but accepts and returns bool."""
 
     DEFAULT_STRATEGY = "register_copy"
@@ -525,7 +536,7 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
         return result.view(torch.bool) if as_bool else result
 
 
-class _Uint8StorageBinaryKernel(BinaryKernel):
+class Uint8StorageBinaryKernel(BinaryKernel):
     """Binary kernel that computes on uint8 but accepts and returns bool."""
 
     DEFAULT_STRATEGY = "explicit_parallel"
@@ -541,7 +552,7 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
         return result.view(torch.bool) if as_bool else result
 
 
-class _AlphaScaledBinaryKernel(BinaryKernel):
+class AlphaScaledBinaryKernel(BinaryKernel):
     """Shared base for ``y = a (op) alpha * b`` kernels.
 
     Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
@@ -558,7 +569,7 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         raise NotImplementedError(
-            "_AlphaScaledBinaryKernel uses a per-instance op_func built from "
+            "AlphaScaledBinaryKernel uses a per-instance op_func built from "
             "alpha; use the kernel via __init__ instead of calling op_func."
         )
 
@@ -589,7 +600,7 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
 
             return op_func
 
-        if self.dtype in _BITWISE_DTYPES:
+        if self.dtype in BITWISE_DTYPES:
             # Native integer arithmetic. Coerce alpha into the input dtype's
             # representable range in Python before T.cast: TVM rejects a
             # negative literal cast to an unsigned dtype, so reproduce
@@ -631,7 +642,7 @@ class ScalarParamUnaryKernel(UnaryKernel):
     raises.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     STRATEGIES = ["register_copy"]
     DEFAULT_STRATEGY = "register_copy"
     DEFAULT_THREADS = 256
@@ -674,7 +685,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     DEFAULT_THREADS = 256
     INPUTS: tuple = ()
 
@@ -729,7 +740,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         """
         self._require_cuda(**tensors)
         present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
-        out_shape = _broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
+        out_shape = broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
         as_bool = tensors[next(n for n, kind in present if kind == "tile")].dtype == torch.bool
 
         args = []
@@ -741,7 +752,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
                 continue
             if kind == "mask" or as_bool:
                 tensor = tensor.view(torch.uint8)
-            args.append(_expand_flat(tensor, out_shape))
+            args.append(expand_flat(tensor, out_shape))
 
         result = self._compiled_fn(*args).reshape(out_shape)
         return result.view(torch.bool) if as_bool else result

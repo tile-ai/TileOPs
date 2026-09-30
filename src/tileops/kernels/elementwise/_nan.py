@@ -6,7 +6,7 @@ import tvm.tirx as tirx
 __all__ = ["keep_nan", "nan_max", "nan_min"]
 
 
-def _bound(x, body):
+def bound(x, body):
     """``body(x)`` with *x* evaluated once, however often *body* mentions it.
 
     A select names its operand in the test and in an arm, and a nested call (a
@@ -38,7 +38,7 @@ def _propagate_nan(a, b, plain):
         nan = T.Cast(a.dtype, T.cast(float("nan"), "float32"))
         return tirx.Select(tirx.any(_is_nan(a), _is_nan(b)), nan, plain(a, b))
 
-    return _bound(a, lambda a: _bound(b, lambda b: select(a, b)))
+    return bound(a, lambda a: bound(b, lambda b: select(a, b)))
 
 
 def _nan_intrin(name, a, b):
@@ -82,4 +82,4 @@ def keep_nan(x, fn):
     bound ``fn(x)`` keeps every unrolled element's value live at once, which
     raises the erf body from 29 to 40 registers and slows GeluAndMul by 2%.
     """
-    return _bound(x, lambda x: tirx.Select(_is_nan(x), x, fn(x)))
+    return bound(x, lambda x: tirx.Select(_is_nan(x), x, fn(x)))

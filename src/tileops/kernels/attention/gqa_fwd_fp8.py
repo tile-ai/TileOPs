@@ -8,11 +8,9 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
+    AttentionCall,
     GQADenseFwdInterface,
-    dense_fp8_limit_refusal,
-    dense_fp8_refusal,
 )
-from tileops.kernels.attention.dense_entry import dense_fp8_entry
 from tileops.kernels.attention.gqa_dense import make_dense_qk_rope_preprocessor
 from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
 from tileops.kernels.constants import LOG2E
@@ -20,60 +18,12 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
-TMA_DTYPE_UINT8 = 0
-TMA_INTERLEAVE_NONE = 0
-TMA_SWIZZLE_128B = 3
-TMA_L2_PROMOTION_128B = 2
-TMA_OOB_FILL_NONE = 0
+_TMA_DTYPE_UINT8 = 0
+_TMA_INTERLEAVE_NONE = 0
+_TMA_SWIZZLE_128B = 3
+_TMA_L2_PROMOTION_128B = 2
+_TMA_OOB_FILL_NONE = 0
 _FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
-
-
-def _make_fa3_pv_acc_fragment(dim: int, thread_offset: int) -> tilelang.layout.Fragment:
-    col_phase = dim // 8
-
-    def forward_fn(i, j):
-        rv = j // 4
-        thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
-        index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
-        return thread, index
-
-    if dim != 128:
-        raise ValueError("FA3 PV accumulator fragment annotation requires dim == 128.")
-    return tilelang.layout.Fragment([64, dim], forward_fn=forward_fn)
-
-
-def _make_fa3_qk_acc_fragment(block_n: int, thread_offset: int) -> tilelang.layout.Fragment:
-    col_phase = block_n // 8
-
-    def forward_fn(i, j):
-        rv = j // 4
-        thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
-        index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
-        return thread, index
-
-    if block_n != 224:
-        raise ValueError("FA3 QK accumulator fragment annotation requires block_n == 224.")
-    return tilelang.layout.Fragment([64, block_n], forward_fn=forward_fn)
-
-
-def _qk_acc_column(j):
-    """The key column fragment index *j* of ``_make_fa3_qk_acc_fragment`` holds.
-
-    The fragment orders a row's registers lane first, then 8-column group, then
-    pair, which a row reduction does not see; a column-dependent mask does. The
-    WGMMA accumulator puts lane ``j % 4`` of group ``(j // 4) % 28`` on columns
-    ``8 * group + 2 * lane``, and the pair ``j // 112`` on the next one.
-    """
-    return 8 * ((j // 4) % 28) + 2 * (j % 4) + j // 112
-
-
-def _make_fa3_qk_row_fragment(thread_offset: int) -> tilelang.layout.Fragment:
-    def forward_fn(i, rep):
-        thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + rep
-        index = (i % 16) // 8
-        return thread, index
-
-    return tilelang.layout.Fragment([64], forward_fn=forward_fn, replicate=4)
 
 
 @functools.lru_cache(maxsize=32)
@@ -108,98 +58,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
     causal_offset = seq_len_kv - seq_len_q
 
-    @T.macro
-    def online_softmax_with_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        score_scale_softmax = score_scale * scale
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] *= score_scale
-        for i in T.Parallel(half_m):
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-        # Accumulate lane-local row sums here; the quad reduction is deferred
-        # until finalization instead of running once per K/V tile.
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-    @T.macro
-    def online_softmax_with_causal_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        score_scale_softmax = score_scale * scale
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-    @T.macro
-    def online_softmax_with_softcap_partial_sum(
-        acc_s,
-        scores_max,
-        scores_max_prev,
-        scores_scale,
-        scores_sum,
-        logsum,
-        score_scale,
-    ):
-        # The raw accumulator was capped before masking.  Keeping the tanh
-        # transform in the raw PTX layout avoids a generic fragment loop.
-        T.copy(scores_max, scores_max_prev)
-        T.fill(scores_max, -T.infinity(accum_dtype))
-        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-        for i in T.Parallel(half_m):
-            scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
-            scores_scale[i] = T.exp2(
-                (scores_max_prev[i] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-            )
-        for i, j in T.Parallel(half_m, 224):
-            acc_s[i, j] = T.exp2(
-                (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-            )
-        T.call_extern(
-            "handle",
-            "tl::fp8_partial_row_sum_raw_acc_64x224",
-            acc_s.data,
-            scores_sum.data,
-        )
-        for i in T.Parallel(half_m):
-            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -215,6 +73,142 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         ],
     )
     def func():
+        def _make_fa3_pv_acc_fragment(dim: int, thread_offset: int) -> tilelang.layout.Fragment:
+            col_phase = dim // 8
+
+            def forward_fn(i, j):
+                rv = j // 4
+                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
+                index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
+                return thread, index
+
+            if dim != 128:
+                raise ValueError("FA3 PV accumulator fragment annotation requires dim == 128.")
+            return tilelang.layout.Fragment([64, dim], forward_fn=forward_fn)
+
+        def _make_fa3_qk_acc_fragment(block_n: int, thread_offset: int) -> tilelang.layout.Fragment:
+            col_phase = block_n // 8
+
+            def forward_fn(i, j):
+                rv = j // 4
+                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
+                index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
+                return thread, index
+
+            if block_n != 224:
+                raise ValueError("FA3 QK accumulator fragment annotation requires block_n == 224.")
+            return tilelang.layout.Fragment([64, block_n], forward_fn=forward_fn)
+
+        def _qk_acc_column(j):
+            """The key column fragment index *j* of ``_make_fa3_qk_acc_fragment`` holds.
+
+            The fragment orders a row's registers lane first, then 8-column group, then
+            pair, which a row reduction does not see; a column-dependent mask does. The
+            WGMMA accumulator puts lane ``j % 4`` of group ``(j // 4) % 28`` on columns
+            ``8 * group + 2 * lane``, and the pair ``j // 112`` on the next one.
+            """
+            return 8 * ((j // 4) % 28) + 2 * (j % 4) + j // 112
+
+        def _make_fa3_qk_row_fragment(thread_offset: int) -> tilelang.layout.Fragment:
+            def forward_fn(i, rep):
+                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + rep
+                index = (i % 16) // 8
+                return thread, index
+
+            return tilelang.layout.Fragment([64], forward_fn=forward_fn, replicate=4)
+
+        @T.macro
+        def online_softmax_with_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            score_scale_softmax = score_scale * scale
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] *= score_scale
+            for i in T.Parallel(half_m):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
+            # Accumulate lane-local row sums here; the quad reduction is deferred
+            # until finalization instead of running once per K/V tile.
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+        @T.macro
+        def online_softmax_with_causal_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            score_scale_softmax = score_scale * scale
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+        @T.macro
+        def online_softmax_with_softcap_partial_sum(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            score_scale,
+        ):
+            # The raw accumulator was capped before masking.  Keeping the tanh
+            # transform in the raw PTX layout avoids a generic fragment loop.
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(half_m):
+                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                scores_scale[i] = T.exp2(
+                    (scores_max_prev[i] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
+                )
+            for i, j in T.Parallel(half_m, 224):
+                acc_s[i, j] = T.exp2(
+                    (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
+                )
+            T.call_extern(
+                "handle",
+                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                acc_s.data,
+                scores_sum.data,
+            )
+            for i in T.Parallel(half_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
         q_shape = (batch, seq_len_q, heads, dim)
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         descale_shape = (batch, heads_kv)
@@ -418,7 +412,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if tx == 0:
                                 T.mbarrier_expect_tx(v_raw_full, dim * 224)
                                 v_desc = T.create_tma_descriptor(
-                                    TMA_DTYPE_UINT8,
+                                    _TMA_DTYPE_UINT8,
                                     4,
                                     v.data,
                                     dim,
@@ -437,10 +431,10 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     1,
                                     1,
                                     1,
-                                    TMA_INTERLEAVE_NONE,
-                                    TMA_SWIZZLE_128B,
-                                    TMA_L2_PROMOTION_128B,
-                                    TMA_OOB_FILL_NONE,
+                                    _TMA_INTERLEAVE_NONE,
+                                    _TMA_SWIZZLE_128B,
+                                    _TMA_L2_PROMOTION_128B,
+                                    _TMA_OOB_FILL_NONE,
                                 )
                                 if gi_vp % 2 == 0:
                                     T.call_extern(
@@ -542,7 +536,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.barrier_arrive(q_full_1)
                         T.barrier_wait(q_full_1, gi_q1 % 2)
                         gi_q1 = gi_q1 + 1
-                        T.call_extern("handle", "tl::fp8_zero_raw_acc_64", acc_o_1.data)
+                        T.clear(acc_o_1)
                         T.clear(ls_1)
                         T.fill(sm_1, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
@@ -583,13 +577,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     qk_descale * attention_scale / softcap,
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_mask_columns_raw_acc_64x224",
-                                    acc_s_1.data,
-                                    seq_len_kv - n_idx * 224,
-                                    -T.infinity(accum_dtype),
-                                )
+                                for i, j in T.Parallel(half_m, 224):
+                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                        acc_s_1[i, j] = -T.infinity(accum_dtype)
                             # A tile needs the mask when its last key lies past the first
                             # row this warpgroup owns.
                             if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
@@ -727,7 +717,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.barrier_arrive(q_full_2)
                         T.barrier_wait(q_full_2, gi_q2 % 2)
                         gi_q2 = gi_q2 + 1
-                        T.call_extern("handle", "tl::fp8_zero_raw_acc_64", acc_o_2.data)
+                        T.clear(acc_o_2)
                         T.clear(ls_2)
                         T.fill(sm_2, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
@@ -768,13 +758,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     qk_descale * attention_scale / softcap,
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_mask_columns_raw_acc_64x224",
-                                    acc_s_2.data,
-                                    seq_len_kv - n_idx * 224,
-                                    -T.infinity(accum_dtype),
-                                )
+                                for i, j in T.Parallel(half_m, 224):
+                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                        acc_s_2[i, j] = -T.infinity(accum_dtype)
                             if (
                                 is_causal
                                 and (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1
@@ -887,45 +873,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     return func
 
 
-def _gqa_dense_fwd_fp8_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seq_len_q: int,
-    seq_len_kv: int,
-    dim: int,
-    out_dtype: str,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    q_descale: torch.Tensor,
-    k_descale: torch.Tensor,
-    v_descale: torch.Tensor,
-    sm_count: int,
-) -> torch.Tensor:
-    num_tasks = batch * heads * ((seq_len_q + 127) // 128)
-    num_waves = (num_tasks + sm_count - 1) // sm_count
-    grid_size = (num_tasks + num_waves - 1) // num_waves
-    return _gqa_fwd_fp8_bn224_tma_v_kernel(
-        batch,
-        heads,
-        heads_kv,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        out_dtype,
-        is_causal,
-        sm_scale,
-        softcap,
-        False,
-        grid_size,
-    )()(q, k, v, q_descale, k_descale, v_descale)[0]
-
-
-def _validate_fa3_gqa_descales(
+def validate_fa3_gqa_descales(
     q_descale: torch.Tensor,
     k_descale: torch.Tensor,
     v_descale: torch.Tensor,
@@ -958,20 +906,68 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        if not call.is_fp8:
+            return "does not serve this call"
+        return cls._limit_refusal(
+            dim=call.dim,
+            seq_len_q=call.max_seqlen_q,
+            seq_len_kv=call.seqlen_kv,
+            is_causal=call.is_causal,
+            softcap=call.softcap,
+            window=(call.window_size_left, call.window_size_right),
+            fuse_rope=call.fuse_rope,
+        )
 
     @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        return dense_fp8_refusal(call)
+    def _limit_refusal(
+        *,
+        dim: int,
+        seq_len_q: int,
+        seq_len_kv: int,
+        is_causal: bool,
+        softcap: float,
+        window: tuple[int, int],
+        fuse_rope: bool,
+    ) -> Optional[str]:
+        """Why the program cannot build this shape; read by the region and the constructor,
+        which a caller can reach directly."""
+        if window != (-1, -1):
+            return "does not serve sliding windows"
+        if fuse_rope and seq_len_q == 1:
+            return "does not serve RoPE with one query position"
+        if not is_causal and seq_len_q != seq_len_kv:
+            return "non-causal attention requires equal Q and KV lengths"
+        if not is_causal and softcap != 0.0:
+            return "does not serve a softcap without the causal mask"
+        if dim != 128:
+            return "requires head dimension 128"
+        return None
 
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_fp8_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Compiles exact extents, so both sequence lengths are in the identity."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len_q=call.max_seqlen_q,
+            seq_len_kv=call.seqlen_kv,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            window_size_left=call.window_size_left,
+            window_size_right=call.window_size_right,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
 
     def __init__(
         self,
@@ -1035,7 +1031,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("native-FP8 Dense GQA outputs float16 or bfloat16")
         if self.is_causal and self.seq_len_q > self.seq_len_kv:
             raise ValueError("causal FP8 Dense GQA requires seq_len_q <= seq_len_kv")
-        reason = dense_fp8_limit_refusal(
+        reason = self._limit_refusal(
             dim=self.dim,
             seq_len_q=self.seq_len_q,
             seq_len_kv=self.seq_len_kv,
@@ -1073,7 +1069,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("GQADenseFP8Kernel requires float8_e4m3fn q, k, and v")
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQADenseFP8Kernel requires q_scale, k_scale, and v_scale")
-        _validate_fa3_gqa_descales(
+        validate_fa3_gqa_descales(
             q_scale,
             k_scale,
             v_scale,
@@ -1086,7 +1082,10 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             q, k = self.rope(q, k, rope_cos, rope_sin)
         elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
-        return _gqa_dense_fwd_fp8_run(
+        num_tasks = self.batch * self.heads * ((self.seq_len_q + 127) // 128)
+        num_waves = (num_tasks + self.sm_count - 1) // self.sm_count
+        grid_size = (num_tasks + num_waves - 1) // num_waves
+        return _gqa_fwd_fp8_bn224_tma_v_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1097,11 +1096,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             self.is_causal,
             self.sm_scale,
             self.softcap,
-            q,
-            k,
-            v,
-            q_scale,
-            k_scale,
-            v_scale,
-            self.sm_count,
-        )
+            False,
+            grid_size,
+        )()(q, k, v, q_scale, k_scale, v_scale)[0]

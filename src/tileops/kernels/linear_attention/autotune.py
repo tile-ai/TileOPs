@@ -138,72 +138,6 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
     ]
 
 
-def _tune_sub_kernel(
-    kernel,
-    label: str,
-    jit_kernel: Callable,
-    configs: Sequence[Dict[str, int]],
-    warmup: int,
-    rep: int,
-) -> Tuple[Optional[Dict[str, int]], Optional[float]]:
-    """Sweep one sub-kernel and return its ``(winning config, latency)``.
-
-    Either element is ``None`` when the seeded parameters read as already
-    tuned: the autotuner then skips the search and JIT-compiles the kernel
-    directly, so it is built but never timed. That is not how every candidate
-    failing to compile is reported — that raises — so a caller sweeping
-    variants must catch, not test.
-    """
-    print(f"Autotuning {label} ({len(configs)} configs)...")
-    # supply_prog=None, not the kernel's: a whole-kernel supplier is written
-    # against the forward's inputs, which are not this sub-kernel's. The
-    # candidates are copied because the module-level tuples are shared by every
-    # sweep in the process, and an autotuner that annotates one in place would
-    # otherwise corrupt them for good.
-    candidates = [dict(config) for config in configs]
-    tuned = kernel.tune_jit_kernel(
-        jit_kernel,
-        candidates,
-        warmup=warmup,
-        rep=rep,
-        seed_config=candidates[0],
-        supply_prog=None,
-    )
-    config = getattr(tuned, "config", None)
-    latency = getattr(tuned, "latency", None)
-    if config is not None and latency is None:
-        # A tuned config with no latency is not the skip path; it means the
-        # attribute this comparison rests on has gone, and every width would
-        # silently tie.
-        warnings.warn(
-            f"{label} tuned to {config} but reported no latency, "
-            "so this sweep's result cannot be compared against any other",
-            stacklevel=3,
-        )
-    print(f"  Best: {config}")
-    return config, latency
-
-
-def _summarize(exc: Exception) -> str:
-    """Return a bounded one-line form of *exc*.
-
-    Which width failed is carried by the label beside this, not by the text:
-    tilelang reports every failed sweep with the same sentence. The text is
-    kept for everything else raised here, bounded because it may be a whole
-    compiler log. Collapsed whole and bounded last: every attempt to bound it
-    earlier — to a line, to a prefix — cost the diagnostic on some input, and
-    the text is already in memory by the time this is called.
-    """
-    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
-
-
-def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
-    """Return the tuned value for *key*, or *fallback* if the sweep found none."""
-    if config is None or config.get(key) is None:
-        return fallback
-    return config[key]
-
-
 def tune_delta_rule_fwd(
     kernel,
     fused_builder: Callable[..., Callable],
@@ -244,6 +178,70 @@ def tune_delta_rule_fwd(
         RuntimeError: if no width compiled, listing every failure and chaining
             the last, since the sweep then has no width to name.
     """
+
+    def _tune_sub_kernel(
+        kernel,
+        label: str,
+        jit_kernel: Callable,
+        configs: Sequence[Dict[str, int]],
+        warmup: int,
+        rep: int,
+    ) -> Tuple[Optional[Dict[str, int]], Optional[float]]:
+        """Sweep one sub-kernel and return its ``(winning config, latency)``.
+
+        Either element is ``None`` when the seeded parameters read as already
+        tuned: the autotuner then skips the search and JIT-compiles the kernel
+        directly, so it is built but never timed. That is not how every candidate
+        failing to compile is reported — that raises — so a caller sweeping
+        variants must catch, not test.
+        """
+        print(f"Autotuning {label} ({len(configs)} configs)...")
+        # supply_prog=None, not the kernel's: a whole-kernel supplier is written
+        # against the forward's inputs, which are not this sub-kernel's. The
+        # candidates are copied because the module-level tuples are shared by every
+        # sweep in the process, and an autotuner that annotates one in place would
+        # otherwise corrupt them for good.
+        candidates = [dict(config) for config in configs]
+        tuned = kernel.tune_jit_kernel(
+            jit_kernel,
+            candidates,
+            warmup=warmup,
+            rep=rep,
+            seed_config=candidates[0],
+            supply_prog=None,
+        )
+        config = getattr(tuned, "config", None)
+        latency = getattr(tuned, "latency", None)
+        if config is not None and latency is None:
+            # A tuned config with no latency is not the skip path; it means the
+            # attribute this comparison rests on has gone, and every width would
+            # silently tie.
+            warnings.warn(
+                f"{label} tuned to {config} but reported no latency, "
+                "so this sweep's result cannot be compared against any other",
+                stacklevel=3,
+            )
+        print(f"  Best: {config}")
+        return config, latency
+
+    def _summarize(exc: Exception) -> str:
+        """Return a bounded one-line form of *exc*.
+
+        Which width failed is carried by the label beside this, not by the text:
+        tilelang reports every failed sweep with the same sentence. The text is
+        kept for everything else raised here, bounded because it may be a whole
+        compiler log. Collapsed whole and bounded last: every attempt to bound it
+        earlier — to a line, to a prefix — cost the diagnostic on some input, and
+        the text is already in memory by the time this is called.
+        """
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
+
+    def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
+        """Return the tuned value for *key*, or *fallback* if the sweep found none."""
+        if config is None or config.get(key) is None:
+            return fallback
+        return config[key]
+
     shape = (
         kernel.batch,
         kernel.head,

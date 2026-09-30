@@ -17,8 +17,7 @@ import torch
 
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
-    decode_bs1_region,
-    paged_decode_region,
+    GQAPagedFwdInterface,
 )
 from tileops.kernels.attention.gqa_decode_bs1_common import (
     COMPILE_FLAGS,
@@ -28,8 +27,8 @@ from tileops.kernels.attention.gqa_decode_bs1_common import (
     make_gqa_decode_bs1_split,
 )
 from tileops.kernels.attention.gqa_decode_paged import (
-    _gqa_decode_paged_no_split_run,
-    gqa_decode_paged_block_n,
+    gqa_decode_no_split_paged_kernel,
+    gqa_decode_paged_block_ns,
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -130,46 +129,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     return _func
 
 
-def _gqa_decode_paged_bs1_ctx_run(
-    batch: int,
-    heads: int,
-    groups: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    ctx_splits: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_decode_paged_bs1_ctx_kernel(
-        batch,
-        heads,
-        groups,
-        seqlen_kv,
-        dim,
-        page_size,
-        max_pages_per_req,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_M, block_N, ctx_splits, threads)(
-        Q, K, V, real_seqlen_kv, block_table, glse, Output_partial
-    )
-
-
-class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
+class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterface):
     """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
     ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
@@ -184,8 +144,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         # override answers for its own tiling rather than for the shipped one.
         return (
             call.max_seqlen_q == 1
-            and paged_decode_region(call)
-            and decode_bs1_region(call)
+            and call.paged_decode_refusal is None
+            and call.decode_bs1_region
             and cls.block_n_for_page_size(call.page_size) is not None
         )
 
@@ -193,7 +153,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     def block_n_for_page_size(page_size: int) -> Optional[int]:
         """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
         try:
-            block_n = gqa_decode_paged_block_n(page_size)
+            block_n = gqa_decode_paged_block_ns(page_size)[0]
         except ValueError:
             return None
         if page_size == 64 or block_n == 128:
@@ -216,7 +176,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         )
         extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
         identity = (*args, *extra.values(), index)
-        return identity, lambda: cls(*args, **extra, tune=call.tune, device_index=index)
+        return identity, lambda: cls(*args, **extra, device_index=index)
 
     def __init__(
         self,
@@ -275,7 +235,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         c = self.config
         real_max = int(real_seqlen_kv.max().item())
         if real_max < self._MIN_CTX:
-            return _gqa_decode_paged_no_split_run(
+            kernel = gqa_decode_no_split_paged_kernel(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -288,20 +248,13 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
                 self.sm_scale,
                 self.softcap,
                 self.dtype_str,
-                64,
-                c["block_N"],
-                2,
-                128,
-                Q,
-                K,
-                V,
-                real_seqlen_kv,
-                block_table,
-            )
+            )(64, c["block_N"], 2, 128)
+            q = Q.view(self.batch, 1, self.heads, self.dim)
+            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
         ctx_splits = self._ctx_splits_for(real_max)
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-        return _gqa_decode_paged_bs1_ctx_run(
+        return _gqa_decode_paged_bs1_ctx_kernel(
             self.batch,
             self.heads,
             self.groups,
@@ -312,15 +265,6 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            c["block_M"],
-            c["block_N"],
-            ctx_splits,
-            c["threads"],
-            Q,
-            K,
-            V,
-            real_seqlen_kv,
-            block_table,
-            glse,
-            Output_partial,
+        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(
+            Q, K, V, real_seqlen_kv, block_table, glse, Output_partial
         )

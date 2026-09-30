@@ -5,7 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
+from tileops.kernels.attention.call_spec import (
+    ATTENTION_DTYPES,
+    AttentionCall,
+    GQABwdInterface,
+)
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
@@ -18,19 +22,6 @@ _BLOCK_M = 128
 _BLOCK_N = 64
 # f32 per row of the dQ half tile a consumer warpgroup owns.
 _DQ_ROW = 128
-
-
-def _dq_slot(i, j):
-    """Where element ``(i, j)`` of a warpgroup's ``[_BLOCK_N, dim // 2]`` dQ half sits in
-    its f32 accumulator tile.
-
-    Each warp stores four consecutive f32 of the WGMMA accumulator per thread, 512
-    contiguous bytes per instruction, so the store to shared memory is free of bank
-    conflicts. Returns ``(row, col)`` of a ``[_BLOCK_N * dim // 2 // _DQ_ROW, _DQ_ROW]``
-    tile.
-    """
-    lane = (i % 8) * 4 + (j % 8) // 2
-    return (i // 16) * 8 + j // 8, lane * 4 + ((i % 16) // 8) * 2 + j % 2
 
 
 _SCHED_SRC = r"""
@@ -84,6 +75,18 @@ def _mha_bwd_ws_kernel(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _mha_bwd_ws_func() -> Callable:
+        def _dq_slot(i, j):
+            """Where element ``(i, j)`` of a warpgroup's ``[_BLOCK_N, dim // 2]`` dQ half sits in
+            its f32 accumulator tile.
+
+            Each warp stores four consecutive f32 of the WGMMA accumulator per thread, 512
+            contiguous bytes per instruction, so the store to shared memory is free of bank
+            conflicts. Returns ``(row, col)`` of a ``[_BLOCK_N * dim // 2 // _DQ_ROW, _DQ_ROW]``
+            tile.
+            """
+            lane = (i % 8) * 4 + (j % 8) // 2
+            return (i // 16) * 8 + j // 8, lane * 4 + ((i % 16) // 8) * 2 + j % 2
+
         shape = (batch, seq_len, heads, dim)
 
         @T.macro
@@ -440,14 +443,7 @@ def _mha_bwd_ws_post_kernel(batch: int, heads: int, seq_len: int, dim: int, dtyp
     return _mha_bwd_ws_post_func
 
 
-def _launch_group(batch_heads: int, kv_blocks: int, num_sms: int) -> int:
-    """How many heads launch together: the largest divisor of ``batch * heads`` whose key
-    blocks fit in one wave of ``num_sms`` CTAs."""
-    fit = max(1, num_sms // kv_blocks)
-    return max(g for g in range(1, min(fit, batch_heads) + 1) if batch_heads % g == 0)
-
-
-class MHABwdWsKernel(Kernel):
+class MHABwdWsKernel(Kernel, GQABwdInterface):
     """Warp-specialized causal or full MHA backward for head dim 128 on SM90.
 
     Persistent: one CTA per SM claims key-block tiles in launch order, and the next
@@ -480,14 +476,14 @@ class MHABwdWsKernel(Kernel):
             and not call.is_fp8
             and call.softcap == 0.0
             and call.sm_scale is None
-            and not uses_sliding_window(call)
+            and not call.uses_sliding_window
         )
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.is_causal, call.dtype)
-        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -510,7 +506,10 @@ class MHABwdWsKernel(Kernel):
         self.dtype = dtype
 
         num_sms = get_sm_count(device_index)
-        group = _launch_group(batch * heads, seq_len // _BLOCK_M, num_sms)
+        # Heads launched together: the largest divisor of ``batch * heads`` whose key blocks
+        # fit in one wave of ``num_sms`` CTAs.
+        fit = max(1, num_sms // (seq_len // _BLOCK_M))
+        group = max(g for g in range(1, min(fit, batch * heads) + 1) if batch * heads % g == 0)
         self.kernel = _mha_bwd_ws_kernel(
             batch, heads, seq_len, dim, is_causal, group, num_sms, self.dtype_str
         )

@@ -54,98 +54,6 @@ class GQADecodeBs1KernelMixin:
         return glse, output_partial
 
 
-def make_gqa_decode_bs1_consumer(
-    block_m: int,
-    block_n: int,
-    dim: int,
-    scale: float,
-    kv_group_num: int,
-    ring_depth: int,
-    accum_dtype: str,
-):
-    """Create the paging-independent WGMMA consumer macro."""
-
-    @T.macro
-    def consumer(
-        Q,
-        bid,
-        hid,
-        sid,
-        this_len,
-        loop_range,
-        Qs,
-        Ks,
-        Vs,
-        Ps,
-        ready,
-        free,
-        acc_s,
-        acc_o,
-        sm,
-        smp,
-        alpha,
-        ss,
-        logsum,
-        glse,
-        Output_partial,
-    ):
-        T.fill(acc_o, 0)
-        T.fill(logsum, 0)
-        T.fill(sm, -T.infinity(accum_dtype))
-        T.copy(
-            Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
-            Qs[0:kv_group_num, :],
-        )
-        for k in T.serial(loop_range):
-            T.mbarrier_wait_parity(ready[k % ring_depth], (k // ring_depth) % ring_depth)
-            T.wgmma_gemm(
-                Qs,
-                Ks[k % ring_depth, :, :],
-                acc_s,
-                transpose_B=True,
-                policy=T.GemmWarpPolicy.FullRow,
-                clear_accum=True,
-            )
-            T.wait_wgmma(0)
-            for i, j in T.Parallel(block_m, block_n):
-                acc_s[i, j] = T.if_then_else(
-                    k * block_n + j < this_len,
-                    acc_s[i, j],
-                    -T.infinity(accum_dtype),
-                )
-            T.copy(sm, smp)
-            T.reduce_max(acc_s, sm, dim=1, clear=False)
-            for i in T.Parallel(block_m):
-                alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-            for i, j in T.Parallel(block_m, block_n):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-            T.reduce_sum(acc_s, ss, dim=1)
-            for i in T.Parallel(block_m):
-                logsum[i] = logsum[i] * alpha[i] + ss[i]
-            for i, j in T.Parallel(block_m, dim):
-                acc_o[i, j] *= alpha[i]
-            T.copy(acc_s, Ps)
-            T.wgmma_gemm(
-                Ps,
-                Vs[k % ring_depth, :, :],
-                acc_o,
-                policy=T.GemmWarpPolicy.FullRow,
-                clear_accum=False,
-            )
-            T.wait_wgmma(0)
-            T.mbarrier_arrive(free[k % ring_depth])
-        for i, j in T.Parallel(block_m, dim):
-            acc_o[i, j] /= logsum[i]
-        for i in T.Parallel(block_m):
-            if i < kv_group_num:
-                glse[bid, hid * kv_group_num + i, sid] = T.log2(logsum[i]) + sm[i] * scale
-        for i, j in T.Parallel(block_m, dim):
-            if i < kv_group_num:
-                Output_partial[bid, hid * kv_group_num + i, sid, j] = acc_o[i, j]
-
-    return consumer
-
-
 def make_gqa_decode_bs1_split(
     batch: int,
     groups: int,
@@ -162,6 +70,98 @@ def make_gqa_decode_bs1_split(
     load_kv,
 ):
     """Create the shared context-split schedule around a layout-specific KV loader."""
+
+    def make_gqa_decode_bs1_consumer(
+        block_m: int,
+        block_n: int,
+        dim: int,
+        scale: float,
+        kv_group_num: int,
+        ring_depth: int,
+        accum_dtype: str,
+    ):
+        """Create the paging-independent WGMMA consumer macro."""
+
+        @T.macro
+        def consumer(
+            Q,
+            bid,
+            hid,
+            sid,
+            this_len,
+            loop_range,
+            Qs,
+            Ks,
+            Vs,
+            Ps,
+            ready,
+            free,
+            acc_s,
+            acc_o,
+            sm,
+            smp,
+            alpha,
+            ss,
+            logsum,
+            glse,
+            Output_partial,
+        ):
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(sm, -T.infinity(accum_dtype))
+            T.copy(
+                Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
+                Qs[0:kv_group_num, :],
+            )
+            for k in T.serial(loop_range):
+                T.mbarrier_wait_parity(ready[k % ring_depth], (k // ring_depth) % ring_depth)
+                T.wgmma_gemm(
+                    Qs,
+                    Ks[k % ring_depth, :, :],
+                    acc_s,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=True,
+                )
+                T.wait_wgmma(0)
+                for i, j in T.Parallel(block_m, block_n):
+                    acc_s[i, j] = T.if_then_else(
+                        k * block_n + j < this_len,
+                        acc_s[i, j],
+                        -T.infinity(accum_dtype),
+                    )
+                T.copy(sm, smp)
+                T.reduce_max(acc_s, sm, dim=1, clear=False)
+                for i in T.Parallel(block_m):
+                    alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+                for i, j in T.Parallel(block_m, block_n):
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+                T.reduce_sum(acc_s, ss, dim=1)
+                for i in T.Parallel(block_m):
+                    logsum[i] = logsum[i] * alpha[i] + ss[i]
+                for i, j in T.Parallel(block_m, dim):
+                    acc_o[i, j] *= alpha[i]
+                T.copy(acc_s, Ps)
+                T.wgmma_gemm(
+                    Ps,
+                    Vs[k % ring_depth, :, :],
+                    acc_o,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=False,
+                )
+                T.wait_wgmma(0)
+                T.mbarrier_arrive(free[k % ring_depth])
+            for i, j in T.Parallel(block_m, dim):
+                acc_o[i, j] /= logsum[i]
+            for i in T.Parallel(block_m):
+                if i < kv_group_num:
+                    glse[bid, hid * kv_group_num + i, sid] = T.log2(logsum[i]) + sm[i] * scale
+            for i, j in T.Parallel(block_m, dim):
+                if i < kv_group_num:
+                    Output_partial[bid, hid * kv_group_num + i, sid, j] = acc_o[i, j]
+
+        return consumer
+
     consumer = make_gqa_decode_bs1_consumer(
         block_m,
         block_n,

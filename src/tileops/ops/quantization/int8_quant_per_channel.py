@@ -5,8 +5,12 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import QuantizeCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization import (
+    INT8QuantPerChannelFwdInterface,
+    INT8QuantPerChannelFwdKernel,
+    QuantizeCall,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["INT8QuantPerChannelFwdOp"]
@@ -19,11 +23,21 @@ class INT8QuantPerChannelFwdOp(Op):
     the dequantization multiplier: ``w[n, :] ~= q[n, :] * scale[n]``. ``q`` is the row divided
     by its scale, rounded half to even and clamped to ``[-127, 127]``.
 
-    The op has no in-tree kernel yet: a call raises ``OpNotAvailableError`` unless a
-    target serves it.
+    Both are bit-equal to the torch expression.
+
+    A NaN or an infinity in a row reaches that row's ``scale`` as it does in torch; the
+    row's ``q`` is then unspecified, as it is when the row's amax is so small (below about
+    ``8.8e-44``, reachable only in float32) that its ``scale`` rounds to zero.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "int8_quant_per_channel_fwd": INT8QuantPerChannelFwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "int8_quant_per_channel_fwd": INT8QuantPerChannelFwdInterface
+    }
 
     def __init__(
         self,
@@ -53,13 +67,16 @@ class INT8QuantPerChannelFwdOp(Op):
         Returns:
             ``q`` $[N \\times K]$ in ``int8`` and ``scale`` $[N]$ in ``float32``.
         """
+        return self._call_boundary(w)
+
+    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,
             rows=w.shape[0],
             cols=w.shape[1],
             dtype=w.dtype,
-            tune=self.tune,
         )
         kernel = self.kernel_for("int8_quant_per_channel_fwd", (w,), call)
         return kernel(w)

@@ -10,14 +10,12 @@ from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops.kernels.attention.paged_prefill import PagedPrefillKernel, page_size_refusal
+from tileops.kernels.attention.paged_prefill import PagedPrefillKernel
 from tileops.kernels.constants import FP8_E4M3_MAX, LOG2E
-from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheRopeAppendKernel",
     "GQAPrefillPagedWithKVCacheRopeFwdKernel",
 ]
 
@@ -55,8 +53,8 @@ def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_r
     return apply_softcap
 
 
-# old KV is addressed by block_table. The kernel reads current KV directly from
-# k_new/v_new and appends it into k_pages/v_pages in-place.
+# The cached KV is addressed by block_table. The kernel reads the new KV directly from
+# k_new/v_new and appends it into k_pages/v_pages in place.
 
 
 @functools.lru_cache(maxsize=32)
@@ -79,7 +77,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    reason = page_size_refusal(page_size)
+    reason = PagedPrefillKernel.page_size_refusal(page_size)
     if reason is not None:
         raise ValueError(reason)
     groups = heads // heads_kv
@@ -324,63 +322,18 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_fwd_func
 
 
-def _gqa_prefill_paged_with_kv_cache_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_kv_cache_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q
-    )
-
-
 class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against a cache whose element type matches the attention type."""
 
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def _region_refusal(cls, call) -> Optional[str]:
+    def refusal(cls, call) -> Optional[str]:
         if call.fuse_rope:
             return "does not serve fused RoPE"
         if call.cache_dtype != call.dtype:
             return "requires a cache of the query's dtype"
-        return super()._region_refusal(call)
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -411,7 +364,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_kv_cache_fwd_run(
+        return _gqa_prefill_paged_with_kv_cache_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -424,20 +377,12 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-        )
+        )(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q)
 
 
 @functools.lru_cache(maxsize=32)
@@ -460,7 +405,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    reason = page_size_refusal(page_size)
+    reason = PagedPrefillKernel.page_size_refusal(page_size)
     if reason is not None:
         raise ValueError(reason)
     groups = heads // heads_kv
@@ -744,75 +689,18 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_fp8_kv_cache_fwd_func
 
 
-def _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    k_scale: torch.Tensor,
-    v_scale: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        k_scale,
-        v_scale,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-        max_seqlen_q,
-    )
-
-
 class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against an FP8 cache, dequantized by the stored descales."""
 
     supported_archs: list[int] = [89, 90]
 
     @classmethod
-    def _region_refusal(cls, call) -> Optional[str]:
+    def refusal(cls, call) -> Optional[str]:
         if call.cache_dtype != torch.float8_e4m3fn:
             return "requires an FP8 cache"
         if call.fuse_rope:
             return "does not serve fused RoPE"
-        return super()._region_refusal(call)
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -843,7 +731,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
+        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -856,11 +744,12 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
+        )(
             q,
             k_new,
             v_new,
@@ -871,6 +760,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
+            max_seqlen_q,
         )
 
 
@@ -887,7 +777,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
     rotary_dim: int,
     dtype: str = "float16",
 ) -> Callable:
-    reason = page_size_refusal(page_size)
+    reason = PagedPrefillKernel.page_size_refusal(page_size)
     if reason is not None:
         raise ValueError(reason)
     if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
@@ -1003,83 +893,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
     return _gqa_prefill_paged_with_kv_cache_rope_append_func
 
 
-class GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
-
-    def __init__(
-        self,
-        batch: int,
-        heads_kv: int,
-        max_pages_per_req: int,
-        page_size: int,
-        dim: int,
-        max_position: int,
-        rotary_dim: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        *,
-        device_index: Optional[int] = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        reason = page_size_refusal(page_size)
-        if reason is not None:
-            raise ValueError(reason)
-        if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
-            raise ValueError("rotary_dim must be positive, even, and <= dim")
-        self.batch = batch
-        self.heads_kv = heads_kv
-        self.max_pages_per_req = max_pages_per_req
-        self.page_size = page_size
-        self.dim = dim
-        self.max_position = max_position
-        self.rotary_dim = rotary_dim
-        self.dtype = dtype
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return {"block_m": 64, "threads": 128}
-
-    def forward(
-        self,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-        max_seqlen_q: int,
-        cos_table: torch.Tensor,
-        sin_table: torch.Tensor,
-    ) -> None:
-        kernel = _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
-            self.batch,
-            self.heads_kv,
-            k_new.shape[0],
-            k_pages.shape[0],
-            self.max_pages_per_req,
-            self.page_size,
-            self.dim,
-            self.max_position,
-            self.rotary_dim,
-            self.dtype_str,
-        )
-        kernel(self.config["block_m"], self.config["threads"])(
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-            cos_table,
-            sin_table,
-            max_seqlen_q,
-        )
-
-
 @functools.lru_cache(maxsize=32)
 def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     batch: int,
@@ -1102,7 +915,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    reason = page_size_refusal(page_size)
+    reason = PagedPrefillKernel.page_size_refusal(page_size)
     if reason is not None:
         raise ValueError(reason)
     if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
@@ -1354,67 +1167,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_rope_fwd_func
 
 
-def _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    max_position: int,
-    rotary_dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-    cos_table: torch.Tensor,
-    sin_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        max_position,
-        rotary_dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-        cos_table,
-        sin_table,
-        max_seqlen_q,
-    )
-
-
 class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     """Paged prefill that rotates and appends the new keys before attending.
 
@@ -1424,19 +1176,17 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The append launch's fixed tile height and thread count.
+    _APPEND_BLOCK_M = 64
+    _APPEND_THREADS = 128
 
     @classmethod
-    def _region_refusal(cls, call) -> Optional[str]:
+    def refusal(cls, call) -> Optional[str]:
         if not call.fuse_rope:
             return "does not serve this call"
         if call.cache_dtype != call.dtype:
             return "requires a cache of the query's dtype"
-        return super()._region_refusal(call)
-
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        """Tune both launches: the append pass is part of this implementation."""
-        super().autotune(warmup=warmup, rep=rep)
-        self._append.autotune(warmup=warmup, rep=rep)
+        return super().refusal(call)
 
     def _build_program(self) -> None:
         if self.rotary_dim is None or self.max_position is None:
@@ -1445,17 +1195,6 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             )
         if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
             raise ValueError("rotary_dim must be positive, even, and <= dim")
-        self._append = GQAPrefillPagedWithKVCacheRopeAppendKernel(
-            batch=self.batch,
-            heads_kv=self.heads_kv,
-            max_pages_per_req=self.max_pages_per_req,
-            page_size=self.page_size,
-            dim=self.dim,
-            max_position=self.max_position,
-            rotary_dim=self.rotary_dim,
-            dtype=self.dtype,
-            device_index=self.device_index,
-        )
 
     @property
     def default_config(self) -> dict:
@@ -1488,7 +1227,18 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     ) -> torch.Tensor:
         if cos_table is None or sin_table is None:
             raise ValueError("GQAPrefillPagedWithKVCacheRopeFwdKernel requires the rotary tables")
-        self._append(
+        _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
+            self.batch,
+            self.heads_kv,
+            k_new.shape[0],
+            k_pages.shape[0],
+            self.max_pages_per_req,
+            self.page_size,
+            self.dim,
+            self.max_position,
+            self.rotary_dim,
+            self.dtype_str,
+        )(self._APPEND_BLOCK_M, self._APPEND_THREADS)(
             k_new,
             v_new,
             k_pages,
@@ -1496,11 +1246,11 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
             cos_table,
             sin_table,
+            max_seqlen_q,
         )
-        return _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
+        return _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1515,11 +1265,12 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
+        )(
             q,
             k_new,
             v_new,
@@ -1530,4 +1281,5 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             block_table,
             cos_table,
             sin_table,
+            max_seqlen_q,
         )

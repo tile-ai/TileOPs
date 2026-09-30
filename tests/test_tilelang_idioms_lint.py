@@ -285,7 +285,20 @@ def build(n):
 
     @tilelang.jit(out_idx=[1])
     def _func(threads: int):
-        return rows, _describe
+        return rows
+"""
+
+CAPTURES_A_NESTED_DEF = """
+import tilelang
+
+
+def build(n):
+    def _helper(x):
+        return x * n
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return _helper(threads)
 """
 
 CLOSES_OVER_A_TYPED_PARAMETER = """
@@ -418,6 +431,8 @@ def build(n):
         (CLOSES_OVER_A_SUBSCRIPTED_PARAMETER, "closes over `shape` (Tuple[int, int])"),
         (CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER, "closes over `shape` (tuple[int, int])"),
         (PARAMETER_REBOUND_TO_A_LIST, "closes over `shape` (list)"),
+        # A def in the enclosing scope binds a name that is never scalar.
+        (CAPTURES_A_NESTED_DEF, "closes over `_helper` (function)"),
     ],
 )
 def test_nonscalar_closure_rejected(tmp_path, source, expected):

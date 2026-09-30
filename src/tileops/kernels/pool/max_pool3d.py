@@ -107,56 +107,6 @@ def _max_pool3d_kernel(
     return _max_pool3d_func
 
 
-def _launch_max_pool3d(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-    config: dict,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    kernel = _max_pool3d_kernel(
-        n,
-        c_in,
-        d_in,
-        h_in,
-        w_in,
-        kernel_d,
-        kernel_h,
-        kernel_w,
-        stride_d,
-        stride_h,
-        stride_w,
-        pad_d,
-        pad_h,
-        pad_w,
-        dilation_d,
-        dilation_h,
-        dilation_w,
-        ceil_mode,
-        dtype,
-    )(**config)
-    return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
-
-
 @functools.lru_cache(maxsize=32)
 def _max_pool3d_with_indices_kernel(
     n: int,
@@ -252,57 +202,6 @@ def _max_pool3d_with_indices_kernel(
         return _max_pool3d_with_indices_main
 
     return _max_pool3d_with_indices_func
-
-
-def _launch_max_pool3d_with_indices(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-    config: dict,
-    x: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    values, positions = _max_pool3d_with_indices_kernel(
-        n,
-        c_in,
-        d_in,
-        h_in,
-        w_in,
-        kernel_d,
-        kernel_h,
-        kernel_w,
-        stride_d,
-        stride_h,
-        stride_w,
-        pad_d,
-        pad_h,
-        pad_w,
-        dilation_d,
-        dilation_h,
-        dilation_w,
-        ceil_mode,
-        dtype,
-    )(**config)(x.reshape(n * c_in, d_in, h_in, w_in))
-    shape = (n, c_in, out_d, out_h, out_w)
-    return values.view(shape), positions.view(shape)
 
 
 class _MaxPool3dKernelBase(Kernel):
@@ -438,12 +337,113 @@ class MaxPool3dKernel(_MaxPool3dKernelBase):
     an output is written once and the window never leaves the thread.
     """
 
+    @staticmethod
+    def _launch_max_pool3d(
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_d: int,
+        stride_h: int,
+        stride_w: int,
+        pad_d: int,
+        pad_h: int,
+        pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
+        ceil_mode: bool,
+        dtype: str,
+        config: dict,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
+        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
+        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+        kernel = _max_pool3d_kernel(
+            n,
+            c_in,
+            d_in,
+            h_in,
+            w_in,
+            kernel_d,
+            kernel_h,
+            kernel_w,
+            stride_d,
+            stride_h,
+            stride_w,
+            pad_d,
+            pad_h,
+            pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
+            ceil_mode,
+            dtype,
+        )(**config)
+        return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
+
     _build = staticmethod(_max_pool3d_kernel)
-    _dispatch = staticmethod(_launch_max_pool3d)
+    _dispatch = _launch_max_pool3d
 
 
 class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase):
     """Max pooling forward-with-indices kernel."""
 
+    @staticmethod
+    def _launch_max_pool3d_with_indices(
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_d: int,
+        stride_h: int,
+        stride_w: int,
+        pad_d: int,
+        pad_h: int,
+        pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
+        ceil_mode: bool,
+        dtype: str,
+        config: dict,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
+        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
+        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+        values, positions = _max_pool3d_with_indices_kernel(
+            n,
+            c_in,
+            d_in,
+            h_in,
+            w_in,
+            kernel_d,
+            kernel_h,
+            kernel_w,
+            stride_d,
+            stride_h,
+            stride_w,
+            pad_d,
+            pad_h,
+            pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
+            ceil_mode,
+            dtype,
+        )(**config)(x.reshape(n * c_in, d_in, h_in, w_in))
+        shape = (n, c_in, out_d, out_h, out_w)
+        return values.view(shape), positions.view(shape)
+
     _build = staticmethod(_max_pool3d_with_indices_kernel)
-    _dispatch = staticmethod(_launch_max_pool3d_with_indices)
+    _dispatch = _launch_max_pool3d_with_indices

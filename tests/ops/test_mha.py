@@ -177,7 +177,8 @@ def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
         q = torch.empty(1, seqlen_q, heads, dim, dtype=torch.float16, device=run_device())
         k = torch.empty(seqlen_kv, heads, dim, dtype=torch.float16, device=run_device())
         block_table = torch.zeros(1, seqlen_kv // 256, dtype=torch.int32, device=run_device())
-        return op.select_kernel(op._attention_call(q, k, block_table)).__name__
+        key = op.select_implementation("mha_decode_paged", op._attention_call(q, k, block_table))
+        return op.kernel_map[key].__name__
 
     assert chosen(4, 1024) == "MHADecodePagedWsKernel"
     assert chosen(1, large) == "MHADecodePagedWsKernel"

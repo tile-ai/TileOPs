@@ -258,33 +258,6 @@ __device__ __forceinline__ void fp8_apply_softcap_raw_acc_64x224(
     acc_s[i] = fp8_tanh_approx(acc_s[i] * score_to_cap);
   }
 }
-__device__ __forceinline__ void fp8_mask_columns_raw_acc_64x224(
-    float* acc_s, int valid_cols, float masked_value) {
-  using namespace cute;
-  using Element = cutlass::float_e4m3_t;
-  using ElementAccum = float;
-  using TileShapeQK = Shape<_64, Int<224>, _128>;
-  using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaQK = decltype(
-      GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeQK>());
-  using TiledMmaQK = decltype(make_tiled_mma(MmaQK{}, AtomLayout{}));
-
-  TiledMmaQK tiled_mma_qk;
-  auto thr_mma = tiled_mma_qk.get_slice(static_cast<int>(threadIdx.x) & 127);
-  Tensor tSrS_template =
-      partition_fragment_C(tiled_mma_qk, Shape<_64, Int<224>>{});
-  Tensor tSrS = make_tensor(acc_s, tSrS_template.layout());
-  Tensor cS = make_identity_tensor(Shape<_64, Int<224>>{});
-  Tensor tScS = thr_mma.partition_C(cS);
-
-#pragma unroll
-  for (int i = 0; i < size(tSrS); ++i) {
-    auto coord = tScS(i);
-    if (int(get<1>(coord)) >= valid_cols) {
-      tSrS(i) = masked_value;
-    }
-  }
-}
 __device__ __forceinline__ void fp8_producer_barrier_128() {
   asm volatile("bar.sync 15, 128;\n" ::: "memory");
 }
@@ -508,12 +481,6 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
   }
 
   warpgroup_commit_batch();
-}
-__device__ __forceinline__ void fp8_zero_raw_acc_64(float* acc) {
-#pragma unroll
-  for (int i = 0; i < 64; ++i) {
-    acc[i] = 0.0f;
-  }
 }
 template <typename OutT>
 struct FP8Fa3OutputStore64x128 {

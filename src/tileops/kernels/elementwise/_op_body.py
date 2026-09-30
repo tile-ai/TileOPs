@@ -68,9 +68,9 @@ def _store_bool_as_int8(op_func, arity: int):
     return wrapped
 
 
-def _store_unary_bool_as_int8(op_func):
+def store_unary_bool_as_int8(op_func):
     return _store_bool_as_int8(op_func, arity=1)
 
 
-def _store_binary_bool_as_int8(op_func):
+def store_binary_bool_as_int8(op_func):
     return _store_bool_as_int8(op_func, arity=2)

@@ -21,9 +21,10 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     torch_dtype_nbytes,
 )
+from tileops.kernels.reduction.call_spec import ArgreduceCall, ArgreduceFwdInterface
 from tileops.utils import WARP_LANES
 
-__all__ = ["ArgreduceKernel"]
+__all__ = ["ArgreduceKernel", "ArgreduceSplitKernel", "ArgreduceStridedKernel"]
 
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 _NUM_ACCUMULATORS = 4
@@ -47,21 +48,6 @@ _MIN_CHUNK = 512
 # Output-parallel gives a thread the whole axis to walk, so it pays only while
 # that walk is short; it loses from N=32 up.
 _STRIDED_AXIS_MAX_N = 16
-
-
-def _splits_row(M: int, N: int) -> bool:
-    """Whether a row is worth splitting across blocks.
-
-    Splitting trades one block's serial scan for a second pass over the
-    partials. It wins while the row is long enough for the scan to dominate
-    that pass and the rows alone leave the device underused.
-
-    The surface this approximates is not monotonic — 4 rows of 8192 want the
-    split while 16 do not — so the rule is deliberately the conservative one:
-    it declines a win on a few mid-sized shapes rather than taking a loss on
-    short ones, which is where `dim=None` and small tensors land.
-    """
-    return N >= _SPLIT_MIN_N and M < _ROWS_SATURATED
 
 
 def _lanes_per_row(n: int) -> int:
@@ -553,158 +539,59 @@ def _argreduce_multicta_final_kernel(
     return _func
 
 
-class ArgreduceKernel(Kernel):
-    """Adaptive streaming argmax/argmin over contiguous rows.
-
-    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it. Which of
-    the four layouts runs is decided here, from the row count, the axis length and the
-    axis's stride — so an op hands over the declared tensor and asks for nothing else.
+class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
+    """What the three argmax/argmin programs share: the call they are built from and the
+    shape of their result.
 
     Args:
-        M: Rows the reduction leaves.
-        N: Length of the axis it reduces.
-        op_kind: One of "argmax", "argmin".
-        dtype: Input data type.
-        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
-        keepdim: Whether a reduced axis stays as a length-1 axis.
-        inner_stride: Elements between two neighbours along the reduced axis. Greater than
-            one means the axis is not the contiguous one, which the strided layout reads
-            without transposing.
+        call: The call this implementation serves.
         config: Optional kernel configuration dict.
-        tune: Whether to autotune (default False).
-        device_index: The device the input lives on. None of the four layouts plans against
-            shared memory, so this is here for the architecture check alone.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
 
-    @staticmethod
-    def _plan_row_split(M: int, N: int) -> int:
-        """Chunks per row when untuned; 1 means the row stays whole.
-
-        Only a default — the split is a tuning parameter, and the best value moves
-        with the shape by more than an order of magnitude.
-        """
-        if not _splits_row(M, N):
-            return 1
-        return max(1, min(16, N // _MIN_CHUNK))
-
-    @staticmethod
-    def _row_split_candidates(N: int) -> list[int]:
-        """Splits worth ranking for a row of *N*, coarsest first."""
-        ceiling = max(1, N // _MIN_CHUNK)
-        return sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
-
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        op_kind: str,
-        dtype: torch.dtype,
-        reduce_axes: "tuple[int, ...]",
-        keepdim: bool = False,
-        inner_stride: int = 1,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: "int | None" = None,
-    ):
-        super().__init__(device_index=device_index)
-        if op_kind not in _ARGREDUCE_KINDS:
+    def __init__(self, call: ArgreduceCall, config: Optional[dict] = None):
+        super().__init__(device_index=call.device.index if call.device is not None else None)
+        if call.op_kind not in _ARGREDUCE_KINDS:
             raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_ARGREDUCE_KINDS)}."
+                f"Unsupported op_kind '{call.op_kind}'. Expected one of {sorted(_ARGREDUCE_KINDS)}."
             )
-        if N <= 0:
+        if call.n <= 0:
             raise ValueError(
                 "Reduction dimension is empty (N=0). "
                 "argmax/argmin over an empty dimension is undefined."
             )
+        self.M = call.m
+        self.N = call.n
+        self.op_kind = call.op_kind
+        self.dtype = call.dtype
+        self.reduce_axes = call.axes
+        self.keepdim = call.keepdim
+        self.kernel = self._program(call)
+        self.init_config(config)
 
-        self.M = M
-        self.N = N
-        self.op_kind = op_kind
-        self.dtype = dtype
-        self.reduce_axes = tuple(reduce_axes)
-        self.keepdim = keepdim
-        self.inner_stride = inner_stride
-
-        if inner_stride > 1 and N <= _STRIDED_AXIS_MAX_N:
-            # A short strided axis: a thread takes an output element and walks
-            # the axis, which reads coalesced and skips the transpose.
-            self.strategy = "output"
-            self.kernel = _argreduce_output_kernel(M, N, inner_stride, op_kind, self.dtype_str)
-        elif _splits_row(M, N):
-            self.strategy = "multi_cta"
-            self.kernel = _argreduce_multicta_partial_kernel(M, N, op_kind, self.dtype_str)
-        elif N >= 4096:
-            self.strategy = "cta"
-            self.kernel = _argreduce_cta_kernel(M, N, op_kind, self.dtype_str)
-        else:
-            self.strategy = "warp"
-            self.kernel = _argreduce_warp_kernel(M, N, op_kind, self.dtype_str)
-        self.init_config(config, tune)
+    def _program(self, call: ArgreduceCall) -> object:
+        """The jit factory this implementation launches."""
+        raise NotImplementedError
 
     def _knobs(self, config: dict) -> dict:
-        """Keep only the knobs this strategy's kernel actually takes.
+        """Keep only the knobs this kernel's program actually takes.
 
-        ``block_m`` packs several rows into one block, which only the warp
-        layout does — the other two give a row its own block or its own group of
-        them. Deriving the keys from the built kernel keeps a config space from
-        naming a knob the kernel would reject.
+        Deriving the keys from the built kernel keeps a config space from naming a knob
+        the kernel would reject.
         """
         parameters = self.kernel.signature.parameters
         return {name: value for name, value in config.items() if name in parameters}
 
-    @property
-    def default_config(self) -> dict:
-        lanes = _lanes_per_row(self.N)
-        target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
-        block_m = max(1, target_threads // lanes)
-        if self.strategy == "cta":
-            # Enough threads that the row fits in fragments.
-            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
-            threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
-            block_m = 1
-        elif self.strategy == "multi_cta":
-            block_m, threads = 1, 256
-        elif self.strategy == "output":
-            # Four outputs per thread: the span the staged read wants.
-            block_m, threads = 512, 128
-        else:
-            threads = block_m * lanes
-        return self._knobs(
-            {
-                "block_m": block_m,
-                "threads": threads,
-                "ctas_per_row": ArgreduceKernel._plan_row_split(self.M, self.N),
-            }
-        )
+    def _candidates(self) -> list[dict]:
+        raise NotImplementedError
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self.strategy == "multi_cta":
-            candidates = [
-                {"threads": t, "ctas_per_row": c}
-                for t in (128, 256, 512)
-                for c in ArgreduceKernel._row_split_candidates(self.N)
-            ]
-        elif self.strategy == "cta":
-            candidates = [{"threads": t} for t in (128, 256, 512, 1024)]
-        elif self.strategy == "output":
-            candidates = [
-                {"block_m": threads * per_thread, "threads": threads}
-                for threads in (128, 256, 512)
-                for per_thread in (1, 2, 4)
-            ]
-        else:
-            lanes = _lanes_per_row(self.N)
-            candidates = []
-            for target_threads in (64, 128, 256, 512):
-                block_m = max(1, target_threads // lanes)
-                candidates.append({"block_m": block_m, "threads": block_m * lanes})
         # Tuning may not come back worse than not tuning, so the default is
         # always among the candidates.
         default = self.default_config
-        ranked = [self._knobs(candidate) for candidate in candidates]
+        ranked = [self._knobs(candidate) for candidate in self._candidates()]
         if default not in ranked:
             ranked.append(default)
         return ranked
@@ -726,23 +613,124 @@ class ArgreduceKernel(Kernel):
         if self.M == 0:
             empty = torch.empty((0,), dtype=torch.int64, device=x.device)
             return restore_reduced(empty, in_shape, self.reduce_axes, self.keepdim)
-        # The strided layout walks the original buffer, which is why it skips the
-        # transpose the other three need.
-        buffer = x.reshape(-1) if self.strategy == "output" else rows_for_axes(x, self.reduce_axes)
-        y = self._argreduce_rows(buffer)
+        y = self._argreduce_rows(rows_for_axes(x, self.reduce_axes))
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
     def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the selected layout over an already-laid-out buffer."""
-        block_m = self.config.get("block_m", 1)
-        threads = self.config["threads"]
-        if self.strategy == "output":
-            return self.kernel(block_m, threads)(x)
-        if self.strategy == "cta":
-            return self.kernel(threads)(x)
-        if self.strategy == "multi_cta":
-            ctas_per_row = self.config.get("ctas_per_row", 1)
-            partial_keys, partial_indices = self.kernel(threads, ctas_per_row)(x)
-            final = _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)
-            return final()(partial_keys, partial_indices)
-        return self.kernel(block_m, threads)(x)
+        """Run the program over an already-laid-out buffer."""
+        raise NotImplementedError
+
+
+class ArgreduceKernel(_ArgreduceKernelBase):
+    """Streaming argmax/argmin of contiguous rows, each held by one warp or one block.
+
+    A row of 4096 or more takes a whole block, so it fits in fragments; a shorter one
+    takes a warp's lanes, ``block_m`` rows a block. Rows are the reduced axes moved last.
+    """
+
+    general = True
+
+    def _program(self, call: ArgreduceCall) -> object:
+        self._cta = call.n >= 4096
+        if self._cta:
+            return _argreduce_cta_kernel(call.m, call.n, call.op_kind, self.dtype_str)
+        return _argreduce_warp_kernel(call.m, call.n, call.op_kind, self.dtype_str)
+
+    @property
+    def default_config(self) -> dict:
+        if self._cta:
+            # Enough threads that the row fits in fragments.
+            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
+            threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
+            return self._knobs({"block_m": 1, "threads": threads})
+        lanes = _lanes_per_row(self.N)
+        target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
+        block_m = max(1, target_threads // lanes)
+        return self._knobs({"block_m": block_m, "threads": block_m * lanes})
+
+    def _candidates(self) -> list[dict]:
+        if self._cta:
+            return [{"threads": t} for t in (128, 256, 512, 1024)]
+        lanes = _lanes_per_row(self.N)
+        candidates = []
+        for target_threads in (64, 128, 256, 512):
+            block_m = max(1, target_threads // lanes)
+            candidates.append({"block_m": block_m, "threads": block_m * lanes})
+        return candidates
+
+    def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        if self._cta:
+            return self.kernel(self.config["threads"])(x)
+        return self.kernel(self.config.get("block_m", 1), self.config["threads"])(x)
+
+
+class ArgreduceSplitKernel(_ArgreduceKernelBase):
+    """Argmax/argmin of a few long rows, each split across blocks and merged in a second launch.
+
+    Splitting trades one block's serial scan for a second pass over the partials. It wins
+    while the row is long enough for the scan to dominate that pass and the rows alone
+    leave the device underused. The surface this approximates is not monotonic — 4 rows of
+    8192 want the split while 16 do not — so the region is deliberately the conservative
+    one: it declines a win on a few mid-sized shapes rather than taking a loss on short
+    ones, which is where ``dim=None`` and small tensors land. The blocks per row are tuned.
+    """
+
+    @classmethod
+    def applies(cls, call: ArgreduceCall) -> bool:
+        return call.n >= _SPLIT_MIN_N and call.m < _ROWS_SATURATED
+
+    def _program(self, call: ArgreduceCall) -> object:
+        return _argreduce_multicta_partial_kernel(call.m, call.n, call.op_kind, self.dtype_str)
+
+    @property
+    def default_config(self) -> dict:
+        # Only a default: the best split moves with the shape by more than an order of
+        # magnitude.
+        split = max(1, min(16, self.N // _MIN_CHUNK))
+        return self._knobs({"block_m": 1, "threads": 256, "ctas_per_row": split})
+
+    def _candidates(self) -> list[dict]:
+        ceiling = max(1, self.N // _MIN_CHUNK)
+        splits = sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
+        return [{"threads": t, "ctas_per_row": c} for t in (128, 256, 512) for c in splits]
+
+    def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        ctas_per_row = self.config.get("ctas_per_row", 1)
+        partial_keys, partial_indices = self.kernel(self.config["threads"], ctas_per_row)(x)
+        final = _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)
+        return final()(partial_keys, partial_indices)
+
+
+class ArgreduceStridedKernel(_ArgreduceKernelBase):
+    """Argmax/argmin along a short strided axis, read in place without a transpose.
+
+    A thread takes an output element and walks the axis, which reads the original buffer
+    coalesced. That pays only while the walk is short.
+    """
+
+    @classmethod
+    def applies(cls, call: ArgreduceCall) -> bool:
+        return call.inner_stride > 1 and call.n <= _STRIDED_AXIS_MAX_N
+
+    def _program(self, call: ArgreduceCall) -> object:
+        return _argreduce_output_kernel(
+            call.m, call.n, call.inner_stride, call.op_kind, self.dtype_str
+        )
+
+    @property
+    def default_config(self) -> dict:
+        # Four outputs per thread: the span the staged read wants.
+        return self._knobs({"block_m": 512, "threads": 128})
+
+    def _candidates(self) -> list[dict]:
+        return [
+            {"block_m": threads * per_thread, "threads": threads}
+            for threads in (128, 256, 512)
+            for per_thread in (1, 2, 4)
+        ]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
+        self._require_cuda(x=x)
+        y = self.kernel(self.config["block_m"], self.config["threads"])(x.reshape(-1))
+        return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)

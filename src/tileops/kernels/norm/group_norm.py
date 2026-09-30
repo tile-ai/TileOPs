@@ -35,7 +35,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm._config import (
     NARROW_ROW,
     make_row_reduce,
@@ -45,6 +45,7 @@ from tileops.kernels.norm._config import (
     select_row_configs,
     widths_for_row,
 )
+from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
@@ -139,26 +140,6 @@ class _RowNormKernel(Kernel):
         return select_row_configs(self.D_padded, self.dtype, widths=self._row_widths)
 
 
-def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
-    """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
-
-    Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
-    ``m % G``, and column ``d`` holds that group's local channel
-    ``d // spatial_size``.
-
-    Args:
-        row: Row index into the (M, D) view.
-        col: Column index into the (M, D) view.
-        num_groups: Number of groups G.
-        channels_per_group: C / G.
-        spatial_size: Number of spatial elements per channel.
-
-    Returns:
-        Index into the length-C weight / bias vectors.
-    """
-    return (row % num_groups) * channels_per_group + col // spatial_size
-
-
 @functools.lru_cache(maxsize=32)
 def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct):
     """Build a row-wise normalization kernel with a per-channel affine.
@@ -185,6 +166,25 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
+        def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
+            """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
+
+            Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
+            ``m % G``, and column ``d`` holds that group's local channel
+            ``d // spatial_size``.
+
+            Args:
+                row: Row index into the (M, D) view.
+                col: Column index into the (M, D) view.
+                num_groups: Number of groups G.
+                channels_per_group: C / G.
+                spatial_size: Number of spatial elements per channel.
+
+            Returns:
+                Index into the length-C weight / bias vectors.
+            """
+            return (row % num_groups) * channels_per_group + col // spatial_size
+
         masked = D_padded != D
         # One channel owns the whole row exactly when a group holds one channel.
         row_constant_affine = channels_per_group == 1
@@ -315,7 +315,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
     return _func
 
 
-class GroupNormKernel(_RowNormKernel):
+class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
     """GroupNorm forward kernel with a per-channel affine.
 
     Normalizes each group's (C/G, *spatial) slice independently and applies
@@ -338,6 +338,16 @@ class GroupNormKernel(_RowNormKernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
+
+    @classmethod
+    def applies(cls, call: GroupNormCall) -> bool:
+        return call.passes_affine
+
+    @classmethod
+    def entry_for(cls, call: GroupNormCall) -> Entry:
+        cpg = call.c // call.num_groups
+        identity = (cpg * call.spatial, call.eps, call.dtype, call.num_groups, cpg)
+        return identity, lambda: cls(*identity)
 
     def __init__(
         self,
@@ -514,7 +524,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct):
     return _func
 
 
-class GroupNormNoAffineKernel(_RowNormKernel):
+class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
     """GroupNorm forward kernel without affine scale/shift.
 
     Computes ``y = (x - mean) * rstd`` row-wise for shape $[M \\times D]$ reshaped
@@ -530,6 +540,15 @@ class GroupNormNoAffineKernel(_RowNormKernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
+
+    @classmethod
+    def applies(cls, call: GroupNormCall) -> bool:
+        return not call.passes_affine
+
+    @classmethod
+    def entry_for(cls, call: GroupNormCall) -> Entry:
+        identity = (call.c // call.num_groups * call.spatial, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     def forward(
         self,

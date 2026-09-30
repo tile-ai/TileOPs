@@ -425,7 +425,8 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize(
     "a_shape, b_shape",
     [
-        pytest.param((4096,), (4096,), id="same"),
+        # Wide enough that float32 keeps two vectors a thread.
+        pytest.param((1 << 18,), (1 << 18,), id="same"),
         pytest.param((4, 2048), (1, 2048), id="bias"),
         pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel"),
     ],
@@ -446,6 +447,9 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
     a.view(-1)[: len(pairs)] = pairs[:, 0]
     if a_shape == b_shape:
         b.view(-1)[: len(pairs)] = pairs[:, 1]
+        # Again one block-wide chunk on, where a thread holds its second vector.
+        a.view(-1)[512 : 512 + len(pairs)] = pairs[:, 0]
+        b.view(-1)[512 : 512 + len(pairs)] = pairs[:, 1]
     else:
         b.view(-1)[: len(values)] = grid
     a, b = a.to(dtype), b.to(dtype)
@@ -459,6 +463,43 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
         torch.testing.assert_close(out, ref, atol=0.0, rtol=0.0, equal_nan=True)
         number = ~ref.isnan()
         assert torch.equal(torch.signbit(out[number]), torch.signbit(ref[number]))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize(
+    "dtype, rounding_mode",
+    [
+        pytest.param(torch.bfloat16, None, id="bfloat16"),
+        pytest.param(torch.bfloat16, "trunc", id="bfloat16-trunc"),
+        pytest.param(torch.float16, "trunc", id="float16-trunc"),
+    ],
+)
+@pytest.mark.parametrize(
+    "a_shape, b_shape",
+    [
+        pytest.param((1 << 16,), (1 << 16,), id="same"),
+        pytest.param((64, 1024), (1, 1024), id="bias"),
+    ],
+)
+def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, rounding_mode) -> None:
+    """The fast 16-bit divide gives torch's result bit for bit.
+
+    Random bit patterns put divisors past ``2**126`` and below ``2**-126`` among
+    ordinary ones.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+
+    def bits(shape):
+        raw = torch.randint(-(2**15), 2**15, shape, generator=gen, device=run_device())
+        return raw.to(torch.int16).view(dtype)
+
+    a, b = bits(a_shape), bits(b_shape)
+    out = DivFwdOp(rounding_mode=rounding_mode)(a, b)
+    ref = torch.div(a, b, rounding_mode=rounding_mode)
+    number = ~ref.isnan()
+    assert torch.equal(out.isnan(), ~number)
+    assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
 
 
 # Lerp op (ternary in PyTorch; compile-time weight=0.5)

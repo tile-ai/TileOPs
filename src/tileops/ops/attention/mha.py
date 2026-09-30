@@ -7,8 +7,8 @@ from tileops.kernels.attention import (
     GQADecodePagedKernel,
     MHADecodePagedWsKernel,
 )
-from tileops.kernels.attention.call_spec import AttentionCall
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.attention.call_spec import AttentionCall, MHAPagedDecodeFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -30,6 +30,9 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mha_decode_paged_kernel": GQADecodePagedKernel,
         "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "mha_decode_paged": MHAPagedDecodeFwdInterface
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -89,7 +92,6 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             max_pages_per_req=block_table.shape[1],
             is_causal=self.is_causal,
             cache_dtype=k.dtype,
-            tune=self.tune,
             device=q.device,
         )
 

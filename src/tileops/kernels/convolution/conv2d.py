@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
+from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, conv_autotune_configs, launch
 from tileops.kernels.convolution.call_spec import (
     Conv2dCall,
     conv2d_dense_region,
@@ -858,7 +858,7 @@ class Conv2dSymmetricKernel(Kernel):
             device=weight.device,
             dtype=weight.dtype,
         )
-        return _launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
+        return launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
 
 
 class Conv2dKernel(Kernel):
@@ -1007,7 +1007,7 @@ class Conv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, weight, bias=bias)
+        return launch(self, x, weight, bias=bias)
 
 
 class GroupConv2dKernel(Kernel):
@@ -1203,7 +1203,7 @@ class GroupConv2dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, weight, bias=bias)
+        return launch(self, x, weight, bias=bias)
 
 
 class Conv2d1x1Kernel(Kernel):
@@ -1329,4 +1329,4 @@ class Conv2d1x1Kernel(Kernel):
     ) -> torch.Tensor:
         # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()
-        return _launch(self, x, weight_oc_ci, bias=bias)
+        return launch(self, x, weight_oc_ci, bias=bias)

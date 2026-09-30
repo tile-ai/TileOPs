@@ -2,9 +2,18 @@
 """Reduction kernels, one module per sub-category."""
 
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
-from tileops.kernels.reduction.argreduce import ArgreduceKernel
-from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.kernels.reduction.argreduce import (
+    ArgreduceKernel,
+    ArgreduceSplitKernel,
+    ArgreduceStridedKernel,
+)
+from tileops.kernels.reduction.cumulative import (
+    CumsumParallelScanKernel,
+    CumulativeKernel,
+    CumulativeRowScanKernel,
+)
 from tileops.kernels.reduction.logical_reduce import (
+    CountNonzeroEdgeTwoPassKernel,
     LogicalReduceEdgeFusedKernel,
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
@@ -30,7 +39,12 @@ from tileops.kernels.reduction.vector_norm import VectorNormEdgeKernel, VectorNo
 __all__: list[str] = [
     "DEFAULT_ALIGNMENT",
     "ArgreduceKernel",
+    "ArgreduceSplitKernel",
+    "ArgreduceStridedKernel",
+    "CountNonzeroEdgeTwoPassKernel",
+    "CumsumParallelScanKernel",
     "CumulativeKernel",
+    "CumulativeRowScanKernel",
     "LogSumExpEdgeSplitKernel",
     "LogSumExpKernel",
     "LogSumExpSplitKernel",

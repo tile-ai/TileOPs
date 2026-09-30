@@ -33,7 +33,15 @@ from tileops.kernels.reduction._primitives import (
     torch_dtype_nbytes,
     tune_by_forward,
 )
-from tileops.kernels.reduction.call_spec import FOLD_KINDS, SIMPLE_KINDS, WELFORD_KINDS, ReduceCall
+from tileops.kernels.reduction.call_spec import (
+    WELFORD_KINDS,
+    ProdFwdInterface,
+    ReduceCall,
+    ReduceFwdInterface,
+    VarianceFwdInterface,
+    VarMeanFwdInterface,
+    VectorNormFwdInterface,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
@@ -99,19 +107,9 @@ class ReduceKernelBase(Kernel):
         return lead, kept, trail, planner, planner.default_config()
 
     @classmethod
-    def whole_vector_rows(cls, call: ReduceCall) -> bool:
-        """Whether each reduced row is a whole number of 16-byte vectors: the fold's side."""
-        return call.n * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES == 0
-
-    @classmethod
     def reduces_edge_axes(cls, call: ReduceCall) -> bool:
-        """Whether the axes are a prefix plus a suffix around kept axes, reduced in place.
-
-        The Welford merge folds counts in fp32, whose weights drift past its integer range.
-        """
-        if edge_axis_split(len(call.shape), call.axes) == (0, 0):
-            return False
-        return call.op_kind not in WELFORD_KINDS or call.n <= FP32_EXACT_INT_LIMIT
+        """Whether the axes are a prefix plus a suffix around kept axes, reduced in place."""
+        return edge_axis_split(len(call.shape), call.axes) != (0, 0)
 
     def _check_arch(self) -> None:
         """Reject construction for an architecture the call's device does not report."""
@@ -165,9 +163,9 @@ class RowReduceKernelBase(ReduceKernelBase):
         self._planner = self.row_planner(call)
         self._needs_tiling = self._planner.needs_tiling
         self.kernel = None if self._needs_tiling else self._untiled()
-        self.init_config(config, call.tune)
+        self.init_config(config)
         # A caller-provided config may have block_m without tile_n.
-        if self._needs_tiling and not call.tune:
+        if self._needs_tiling:
             bm = self.config.get("block_m", 1)
             threads = self.config.get("threads", DEFAULT_THREADS)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
@@ -207,20 +205,21 @@ class RowReduceKernelBase(ReduceKernelBase):
         return tuple(results) if self.op_kind == "var_mean" else results
 
 
-class ReduceFoldKernel(ReduceKernelBase):
+class ReduceFoldKernel(
+    ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface, VectorNormFwdInterface
+):
     """Each row of whole 16-byte vectors folded into registers as it is read, one block a row.
 
     Serves sum, mean, amax, amin, prod and the l1, l2 and inf norms. Tunes the block's
     thread count.
     """
 
-    general = True
     # Vector loads each thread keeps in flight; a grid of few rows is bound by it.
     _UNROLL = 16
 
     @classmethod
     def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in FOLD_KINDS and cls.whole_vector_rows(call)
+        return call.n * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES == 0
 
     def __init__(self, call: ReduceCall, config: Optional[dict] = None):
         super().__init__(call)
@@ -228,7 +227,7 @@ class ReduceFoldKernel(ReduceKernelBase):
         self.kernel = fold_rows_kernel(
             self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, self._UNROLL
         )
-        self.init_config(config, call.tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -255,18 +254,14 @@ class ReduceFoldKernel(ReduceKernelBase):
         return self.kernel(self.config["threads"])(x)
 
 
-class ReduceKernel(RowReduceKernelBase):
-    """sum / mean / amax / amin over rows that are not whole vectors, through shared memory.
+class ReduceKernel(RowReduceKernelBase, ReduceFwdInterface):
+    """sum / mean / amax / amin of rows, through shared memory.
 
     Boundary handling for a row that is not a multiple of the 256-element copy alignment is
     a masked load filling the identity element.
     """
 
     general = True
-
-    @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in SIMPLE_KINDS and not cls.whole_vector_rows(call)
 
     def _untiled(self) -> object:
         return _simple_reduce_kernel(
@@ -279,16 +274,12 @@ class ReduceKernel(RowReduceKernelBase):
         )
 
 
-class ReduceProdKernel(ReduceKernelBase):
-    """Product of each row that is not whole vectors, staged through shared memory, one block a row."""
+class ReduceProdKernel(ReduceKernelBase, ProdFwdInterface):
+    """Product of each row, staged through shared memory, one block a row."""
 
     general = True
     # Columns each thread multiplies per staged tile, each into its own fp32 chain.
     _COLS_PER_THREAD = 8
-
-    @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind == "prod" and not cls.whole_vector_rows(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
@@ -305,14 +296,10 @@ class ReduceProdKernel(ReduceKernelBase):
         return self.kernel()(rows_for_axes(x, self.reduce_axes))
 
 
-class WelfordReduceKernel(RowReduceKernelBase):
+class WelfordReduceKernel(RowReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterface):
     """std / var / var_mean of rows, through shared memory; long rows take two tiled passes."""
 
     general = True
-
-    @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in WELFORD_KINDS
 
     def _untiled(self) -> object:
         return _welford_reduce_kernel(self.M, self.N, self.op_kind, self.correction, self.dtype_str)
@@ -323,20 +310,18 @@ class WelfordReduceKernel(RowReduceKernelBase):
         )
 
 
-class ReduceLeadingKernel(ReduceKernelBase):
+class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface):
     """A reduction down the leading axes in the tensor's own ``(N, M)`` layout.
 
     The down-rows pass splits the reduced axis into row slices where one launch would
     leave the grid short, and finishes the fp32 partials in a second launch.
     """
 
+    preferred_over = frozenset({"reduce_fold"})
+
     @classmethod
     def applies(cls, call: ReduceCall) -> bool:
-        return (
-            call.op_kind in SIMPLE_KINDS | {"prod"}
-            and 0 < len(call.axes) < len(call.shape)
-            and call.axes == tuple(range(len(call.axes)))
-        )
+        return 0 < len(call.axes) < len(call.shape) and call.axes == tuple(range(len(call.axes)))
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
@@ -352,7 +337,7 @@ class ReduceLeadingKernel(ReduceKernelBase):
         )
 
 
-class ReduceEdgeKernel(ReduceKernelBase):
+class ReduceEdgeKernel(ReduceKernelBase, ReduceFwdInterface):
     """A prefix and a suffix of the axes reduced without permuting the tensor.
 
     The trailing axes reduce as contiguous rows into fp32 partials, tiled where a row
@@ -361,9 +346,11 @@ class ReduceEdgeKernel(ReduceKernelBase):
     ``sum`` and divides in the second by the full reduced count.
     """
 
+    preferred_over = frozenset({"reduce_fold"})
+
     @classmethod
     def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in SIMPLE_KINDS and cls.reduces_edge_axes(call)
+        return cls.reduces_edge_axes(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
@@ -394,7 +381,7 @@ class ReduceEdgeKernel(ReduceKernelBase):
         )
 
 
-class WelfordEdgeKernel(ReduceKernelBase):
+class WelfordEdgeKernel(ReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterface):
     """Variance over a prefix and a suffix of the axes without permuting the tensor.
 
     The rows pass, tiled where a row exceeds one block pass, leaves fp32 ``(mean, M2)``
@@ -404,7 +391,8 @@ class WelfordEdgeKernel(ReduceKernelBase):
 
     @classmethod
     def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in WELFORD_KINDS and cls.reduces_edge_axes(call)
+        # The merge folds counts in fp32, whose weights drift past its integer range.
+        return cls.reduces_edge_axes(call) and call.n <= FP32_EXACT_INT_LIMIT
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)

@@ -5,8 +5,13 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import QuantizeCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization import (
+    INT4QuantPerGroupFwdInterface,
+    INT4QuantPerGroupFwdKernel,
+    INT4QuantPerGroupRowFwdKernel,
+    QuantizeCall,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["INT4QuantPerGroupFwdOp"]
@@ -25,11 +30,23 @@ class INT4QuantPerGroupFwdOp(Op):
     ``packed_weight`` holds two values per byte in the order ``GemmW4A16FwdOp.repack``
     produces, ``weight_scale`` is ``scale`` and ``weight_zero`` is ``zero``.
 
-    The op has no in-tree kernel yet: a call raises ``OpNotAvailableError`` unless a
-    target serves it.
+    The three outputs are bit-equal to that expression computed in float32 by torch. A NaN
+    or an infinity in a group leaves that group's outputs unspecified.
+
+    The in-tree kernels serve a ``group_size`` that is a power of two from 32 to 1024 or a
+    multiple of 128 up to 65536, and ``N * K`` up to ``2**31 - 1``; any other call raises
+    ``ValueError`` on a CUDA device unless a target serves it.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "int4_quant_per_group_fwd": INT4QuantPerGroupFwdKernel,
+        "int4_quant_per_group_row_fwd": INT4QuantPerGroupRowFwdKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "int4_quant_per_group_fwd": INT4QuantPerGroupFwdInterface
+    }
 
     def __init__(
         self,
@@ -64,6 +81,10 @@ class INT4QuantPerGroupFwdOp(Op):
                 $[N \\times K / group\\_size]$ in ``float16`` and ``weight_zero``
                 $[N \\times K / group\\_size]$ in ``uint8``.
         """
+        return self._call_boundary(w)
+
+    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,
@@ -71,7 +92,6 @@ class INT4QuantPerGroupFwdOp(Op):
             cols=w.shape[1],
             dtype=w.dtype,
             group_size=self.group_size,
-            tune=self.tune,
         )
         kernel = self.kernel_for("int4_quant_per_group_fwd", (w,), call)
         return kernel(w)

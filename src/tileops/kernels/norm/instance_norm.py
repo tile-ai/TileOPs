@@ -50,10 +50,6 @@ class InstanceNormKernel(GroupNormKernel, InstanceNormFwdInterface):
     """
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return call.passes_affine
-
-    @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         identity = (call.spatial, call.eps, call.dtype, call.c)
         return identity, lambda: cls(*identity, channels_per_group=1)
@@ -75,10 +71,6 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterfa
     GroupNorm's no-affine kernel with ``G = C``. The running statistics and the affine
     pair are slots of the op's signature that this kernel does not read.
     """
-
-    @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return not call.passes_affine
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:

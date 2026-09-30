@@ -16,14 +16,14 @@ from tileops.kernels.linear_attention.gla.call_spec import (
 )
 from tileops.kernels.linear_attention.gla.gla_fwd import (
     GLAFwdKernel,
-    _gla_fwd_h_kernel,
-    _gla_precompute_g_kernel,
+    gla_fwd_h_kernel,
+    gla_precompute_g_kernel,
 )
 
 __all__ = ["GLADensePrefillSubchunkKernel"]
 
 
-def _gla_fwd_a_kernel(
+def gla_fwd_a_kernel(
     batch: int,
     seq_len: int,
     heads: int,
@@ -264,10 +264,10 @@ class GLADensePrefillSubchunkKernel(GLAFwdKernel, GLAInferenceFwdInterface):
         thr_par = config.get("threads_par", config.get("threads", 64))
         num_vp = config.get("num_v_partitions", 4)
         num_kp = config.get("num_k_partitions", 2)
-        self._g_fn = _gla_precompute_g_kernel(
+        self._g_fn = gla_precompute_g_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.dtype_name
         )(ns, thr_par)
-        self._h_fn = _gla_fwd_h_kernel(
+        self._h_fn = gla_fwd_h_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -278,7 +278,7 @@ class GLADensePrefillSubchunkKernel(GLAFwdKernel, GLAInferenceFwdInterface):
             num_v_partitions=num_vp,
             num_k_partitions=num_kp,
         )(ns, thr_seq)
-        self._a_fn = _gla_fwd_a_kernel(
+        self._a_fn = gla_fwd_a_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.scale, self.dtype_name
         )(thr_par)
         self._o_fn = _gla_fwd_o_from_a_kernel(

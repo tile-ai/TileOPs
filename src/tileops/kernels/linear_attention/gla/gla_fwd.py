@@ -14,7 +14,7 @@ from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 
 
 @functools.lru_cache(maxsize=32)
-def _gla_precompute_g_kernel(
+def gla_precompute_g_kernel(
     batch: int,
     seq_len: int,
     heads: int,
@@ -79,7 +79,7 @@ def _gla_precompute_g_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gla_fwd_h_kernel(
+def gla_fwd_h_kernel(
     batch: int,
     seq_len: int,
     heads: int,
@@ -449,7 +449,7 @@ class GLAFwdKernel(Kernel):
         thr_par = config.get("threads_par", config.get("threads", 256))
         num_vp = config.get("num_v_partitions", 4)
         num_kp = config.get("num_k_partitions", 1)
-        self._g_fn = _gla_precompute_g_kernel(
+        self._g_fn = gla_precompute_g_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -457,7 +457,7 @@ class GLAFwdKernel(Kernel):
             self.chunk_size,
             self.dtype_name,
         )(ns, thr_par)
-        self._h_fn = _gla_fwd_h_kernel(
+        self._h_fn = gla_fwd_h_kernel(
             self.batch,
             self.seq_len,
             self.heads,

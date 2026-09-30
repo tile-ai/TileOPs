@@ -16,15 +16,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import (
-    GQADenseFwdInterface,
-    decode_bs1_region,
-    dense_decode_refusal,
-)
-from tileops.kernels.attention.dense_entry import dense_decode_entry
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.gqa_decode import (
-    _gqa_decode_no_split_rope_run,
-    _gqa_decode_no_split_run,
+    GQADecodeKernel,
+    gqa_decode_no_split_kernel,
+    gqa_decode_no_split_run,
 )
 from tileops.kernels.attention.gqa_decode_bs1_common import (
     COMPILE_FLAGS,
@@ -36,9 +32,11 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeBs1Kernel"]
 
-CONSUMER_THREADS = 128
-TMA_THREADS = 32
-ROPE_PIPELINE_THREADS = 256
+_CONSUMER_THREADS = 128
+# TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
+# per kernel; this kernel's producer and consumer ranges take 3 and 4.
+_CONSUMER_BARRIER = 5
+_TMA_THREADS = 32
 
 
 def _make_dense_decode_split(
@@ -118,7 +116,7 @@ def _make_dense_decode_split(
                         Qs[i, j] = Q[bid, hid * kv_group_num + i, j]
                 else:
                     Qs[i, j] = 0
-            T.sync_threads(3, CONSUMER_THREADS)
+            T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
         else:
             T.copy(
                 Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
@@ -138,7 +136,7 @@ def _make_dense_decode_split(
                         sin = rope_sin[position, freq]
                         Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
                         Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(3, CONSUMER_THREADS)
+                T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
             T.wgmma_gemm(
                 Qs,
                 Ks[k % ring_depth, :, :],
@@ -225,11 +223,11 @@ def _make_dense_decode_split(
                     ps: tilelang.layout.make_swizzled_layout(ps),
                 }
             )
-            producer_threads = threads - CONSUMER_THREADS
+            producer_threads = threads - _CONSUMER_THREADS
             ready = T.alloc_barrier([producer_threads] * RING_DEPTH)
-            free = T.alloc_barrier([CONSUMER_THREADS] * RING_DEPTH)
+            free = T.alloc_barrier([_CONSUMER_THREADS] * RING_DEPTH)
             if tma_rope_pipeline:
-                loaded = T.alloc_barrier([TMA_THREADS] * RING_DEPTH)
+                loaded = T.alloc_barrier([_TMA_THREADS] * RING_DEPTH)
             load_ready = loaded if tma_rope_pipeline else ready
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
@@ -240,10 +238,8 @@ def _make_dense_decode_split(
             logsum = T.alloc_fragment([block_m], accum_dtype)
 
             seqlen_kv_b = real_seqlen_kv[bid] if real_seqlen_is_buffer else real_seqlen_kv
-            # Partition whole KV tiles as evenly as possible.  The old policy
-            # rounded every non-final split down, then assigned the entire
-            # remainder to the final CTA; non-divisible lengths could therefore
-            # leave one split with several times more work than its peers.
+            # Partition whole KV tiles as evenly as possible: the first
+            # ``extra_tiles`` splits take one tile more than the rest.
             num_tiles = T.ceildiv(seqlen_kv_b, block_n)
             base_tiles = num_tiles // ctx_splits
             extra_tiles = num_tiles % ctx_splits
@@ -257,13 +253,13 @@ def _make_dense_decode_split(
             loop_range = T.ceildiv(this_len, block_n)
             tx = T.get_thread_binding()
 
-            if tx >= CONSUMER_THREADS:
+            if tx >= _CONSUMER_THREADS:
                 for k in T.serial(loop_range):
                     T.mbarrier_wait_parity(
                         free[k % RING_DEPTH],
                         ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
                     )
-                    if tx < CONSUMER_THREADS + TMA_THREADS:
+                    if tx < _CONSUMER_THREADS + _TMA_THREADS:
                         load_kv(
                             K,
                             V,
@@ -347,7 +343,7 @@ def _make_dense_decode_split(
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_bs1_ctx_kernel(
+def gqa_decode_bs1_ctx_kernel(
     batch,
     heads,
     groups,
@@ -466,48 +462,6 @@ def _gqa_decode_bs1_ctx_kernel(
     return _func
 
 
-def _gqa_decode_bs1_ctx_run(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    fuse_rope: bool,
-    max_position: int,
-    rotary_dim: int,
-    rope_layout: str,
-    block_M: int,
-    block_N: int,
-    ctx_splits: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    rope_cos: torch.Tensor,
-    rope_sin: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    kernel = _gqa_decode_bs1_ctx_kernel(
-        batch,
-        heads,
-        groups,
-        dim,
-        sm_scale,
-        softcap,
-        dtype,
-        fuse_rope,
-        max_position,
-        rotary_dim,
-        rope_layout,
-    )(block_M, block_N, ctx_splits, threads)
-    if fuse_rope:
-        return kernel(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
-    return kernel(Q, K, V, glse, Output_partial)
-
-
 class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     """SM90 warp-specialized batch=1 GQA decode kernel with a context-length switch.
 
@@ -516,6 +470,8 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     """
 
     supported_archs: list[int] = [90]
+    # Threads of the full-dimensional RoPE pipeline, whose producer is a warpgroup.
+    _ROPE_PIPELINE_THREADS = 256
     _MIN_CTX = 1024
     _PLAIN_CTX_MIN = 640
     _TARGET_PARTIAL_CTAS = 128
@@ -562,29 +518,21 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         return glse, output_partial
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls._region_refusal(call) is None
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call) -> Optional[str]:
-        # ``decode_bs1_region`` is the shape, shared with the paged sibling; this
-        # class serves it in the contiguous decode region only.
-        if not decode_bs1_region(call):
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """The batch-1 shape, within what the general decode kernel serves."""
+        if not call.decode_bs1_region:
             return "does not serve this call"
-        return dense_decode_refusal(call)
+        return GQADecodeKernel.refusal(call)
 
     @classmethod
-    def split_tier(cls, call) -> tuple:
+    def entry_for(cls, call: AttentionCall) -> Entry:
         """This program takes the cache length at runtime and tiers on nothing."""
-        return ()
-
-    @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_decode_entry(cls, call)
+        args = GQADecodeKernel.construction_args(call)
+        return tuple(v for k, v in args.items() if k != "seq_len_kv"), lambda: cls(**args)
 
     def __init__(
         self,
@@ -654,7 +602,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         )
         if not use_ctx_pipeline:
             if self.fuse_rope:
-                output = _gqa_decode_no_split_rope_run(
+                output = gqa_decode_no_split_kernel(
                     self.batch,
                     self.heads,
                     self.groups,
@@ -662,21 +610,13 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
                     self.sm_scale,
                     self.softcap,
                     self.dtype_str,
+                    True,
                     self.max_position,
                     self.rotary_dim,
                     self.rope_layout,
-                    64,
-                    128,
-                    2,
-                    128,
-                    Q,
-                    K,
-                    V,
-                    rope_cos,
-                    rope_sin,
-                )
+                )(64, 128, 2, 128)(Q, K, V, rope_cos, rope_sin)
                 return output.unsqueeze(1)
-            output = _gqa_decode_no_split_run(
+            output = gqa_decode_no_split_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -700,7 +640,8 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         )
         if self.fuse_rope:
             glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-            output = _gqa_decode_bs1_ctx_run(
+            threads = self._ROPE_PIPELINE_THREADS if self.rotary_dim == self.dim else c["threads"]
+            output = gqa_decode_bs1_ctx_kernel(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -712,22 +653,13 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
                 self.max_position,
                 self.rotary_dim,
                 self.rope_layout,
-                c["block_M"],
-                c["block_N"],
-                ctx_splits,
-                ROPE_PIPELINE_THREADS if self.rotary_dim == self.dim else c["threads"],
-                Q,
-                K,
-                V,
-                rope_cos,
-                rope_sin,
-                glse,
-                Output_partial,
+            )(c["block_M"], c["block_N"], ctx_splits, threads)(
+                Q, K, V, rope_cos, rope_sin, glse, Output_partial
             )
             return output.unsqueeze(1)
 
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-        output = _gqa_decode_bs1_ctx_run(
+        output = gqa_decode_bs1_ctx_kernel(
             self.batch,
             self.heads,
             self.groups,
@@ -739,16 +671,5 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             1,
             0,
             "neox",
-            c["block_M"],
-            c["block_N"],
-            ctx_splits,
-            c["threads"],
-            Q,
-            K,
-            V,
-            Q,
-            Q,
-            glse,
-            Output_partial,
-        )
+        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(Q, K, V, glse, Output_partial)
         return output.unsqueeze(1)

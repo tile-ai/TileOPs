@@ -376,46 +376,10 @@ class TestTunedMode:
 
     def test_tune_is_not_in_an_in_tree_kernel_identity(self):
         """``autotune()`` after a build reuses the entry rather than building a second one."""
-        from tileops.kernels.attention import dense_entry
-        from tileops.kernels.attention.call_spec import AttentionCall
-        from tileops.kernels.attention.gqa_decode_bs1_paged import GQADecodePagedBs1Kernel
-        from tileops.kernels.attention.gqa_decode_paged import GQADecodePagedKernel
-        from tileops.kernels.attention.paged_prefill import PagedPrefillKernel
-        from tileops.kernels.attention.varlen import varlen_entry
         from tileops.kernels.fft import FFTC2CCall, FFTC2CDecomposedKernel, FFTC2COneCTAKernel
 
-        class Tiered:
-            split_tier = staticmethod(lambda call: ())
-
-        entries = [
-            GQADecodePagedKernel.entry_for,
-            GQADecodePagedBs1Kernel.entry_for,
-            PagedPrefillKernel.entry_for,
-            lambda call: varlen_entry(Tiered, call),
-            *(
-                (lambda call, f=f: f(Tiered, call))
-                for f in (
-                    dense_entry.dense_decode_entry,
-                    dense_entry.dense_fp8_decode_entry,
-                    dense_entry.dense_fp8_entry,
-                    dense_entry.dense_sliding_window_entry,
-                    dense_entry.dense_ws_entry,
-                )
-            ),
-        ]
-        call = AttentionCall(
-            dtype=torch.float16,
-            batch=2,
-            heads=8,
-            heads_kv=2,
-            dim=64,
-            max_seqlen_q=1,
-            seqlen_kv=1024,
-            page_size=64,
-            max_pages_per_req=16,
-        )
         fft_call = FFTC2CCall(n=1024)
-        pairs = [(entry_for, call) for entry_for in entries] + [
+        pairs = [
             (FFTC2COneCTAKernel.entry_for, fft_call),
             (FFTC2CDecomposedKernel.entry_for, fft_call),
         ]
@@ -475,7 +439,7 @@ class TestDelegateFor:
 class TestInstanceKeys:
     def test_a_collected_instances_key_is_never_handed_out_again(self):
         """An op reaching a used key inherits that op's compiled shapes."""
-        import gc
+        import weakref
 
         class _Dummy:
             pass
@@ -484,8 +448,9 @@ class TestInstanceKeys:
         for _ in range(50):
             op = _Dummy()
             keys.add(op_base.register_instance(op))
+            ref = weakref.ref(op)
             del op
-            gc.collect()
+            assert ref() is None
 
         assert len(keys) == 50
 

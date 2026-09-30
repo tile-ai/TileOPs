@@ -29,7 +29,7 @@ FP8QuantFwdOp:
 
 INT8QuantPerTensorFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -44,13 +44,16 @@ INT8QuantPerTensorFwdOp:
   - {M: 4096, K: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {M: 32, K: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   - {M: 8192, K: 5120, dtype_cases: [{T: bfloat16}, {T: float32}], label: qwen3-32b-prefill}
+  - {M: 17, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-decode}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: odd-hidden-prefill}
   roofline:
     # Per element: abs, the max, the scaling, round and clamp; once: the scale and its zero guard.
     flops: "5 * M * K + 2"
 
 INT8QuantPerChannelFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {N: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -65,13 +68,16 @@ INT8QuantPerChannelFwdOp:
   - {N: 14336, K: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-mlp-up}
   - {N: 8192, K: 28672, dtype_cases: [{T: bfloat16}], label: llama-70b-mlp-down}
   - {N: 5120, K: 8192, dtype_cases: [{T: bfloat16}, {T: float32}], label: qwen3-32b-o-proj}
+  - {N: 5760, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-mlp-up}
+  - {N: 3000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
+  - {N: 17, K: 4099, dtype_cases: [{T: bfloat16}], label: ragged-k-few-rows}
   roofline:
     # Per element: abs, the max, the scaling, round and clamp; per row: the scale and its zero guard.
     flops: "5 * N * K + 2 * N"
 
 INT8QuantPerBlockFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -84,6 +90,9 @@ INT8QuantPerBlockFwdOp:
   - {M: 4096, K: 7168, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-prefill}
   - {M: 64, K: 7168, dtype_cases: [{T: bfloat16}], label: ds-v3-decode}
   - {M: 4096, K: 4096, dtype_cases: [{T: bfloat16}, {T: float32}], label: qwen3-235b-prefill}
+  - {M: 17, K: 7168, dtype_cases: [{T: bfloat16}], label: ds-v3-decode-few-tokens}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
   roofline:
     # Per element: abs, the max, the scaling, round and clamp; per block: the scale and its zero guard.
     flops: "5 * M * K + 2 * M * ceil_div(K, 128)"
@@ -96,7 +105,7 @@ INT4QuantPerGroupFwdOp:
   # 1.0 for an all-zero group; it is rounded to T, and the values are quantized against the
   # rounded scale: zero = round(-lo / scale), q = clamp(round(w / scale) + zero, 0, 15).
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {N: Dim, K: Dim, T: "DType[float16]"}
     params:
@@ -117,6 +126,8 @@ INT4QuantPerGroupFwdOp:
   - {N: 14336, K: 4096, group_size: 4096, dtype_cases: [{T: float16}], label: llama-8b-mlp-up-chan}
   - {N: 8192, K: 28672, dtype_cases: [{T: float16}], label: llama-70b-mlp-down}
   - {N: 5120, K: 8192, dtype_cases: [{T: float16}], label: qwen3-32b-o-proj}
+  - {N: 18944, K: 3584, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-up}
+  - {N: 3584, K: 18944, group_size: 18944, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-down-chan}
   roofline:
     # Per element: the min, the max, the scaling, round, the zero-point add and clamp; per
     # group: widening the range to 0 (2), the range, its divide, the floor and zero guard, and
@@ -126,7 +137,7 @@ INT4QuantPerGroupFwdOp:
 SmoothQuantFwdOp:
   # q = quantize_per_row(x / smooth): per-channel smoothing, then symmetric INT8 per row.
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -141,6 +152,9 @@ SmoothQuantFwdOp:
   - {M: 4096, K: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {M: 32, K: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   - {M: 4096, K: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-prefill}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
+  - {M: 17, K: 4099, dtype_cases: [{T: bfloat16}], label: ragged-k-decode}
   roofline:
     # Per element: the smoothing divide, abs, the max, the scaling, round and clamp; per row:
     # the scale and its zero guard.
@@ -195,7 +209,7 @@ INT8DequantPerChannelFwdOp:
 
 INT8DequantPerBlockFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -210,6 +224,9 @@ INT8DequantPerBlockFwdOp:
   - {M: 4096, K: 7168, out_dtype: bfloat16, label: ds-v3-prefill}
   - {M: 64, K: 7168, out_dtype: bfloat16, label: ds-v3-decode}
   - {M: 4096, K: 4096, out_dtype: float16, label: qwen3-235b-prefill}
+  - {M: 3000, K: 2880, out_dtype: bfloat16, label: gpt-oss-prefill}
+  - {M: 1000, K: 4099, out_dtype: float32, label: ragged-k}
+  - {M: 17, K: 4099, out_dtype: float16, label: ragged-k-few-rows}
   roofline:
     flops: "M * K"
 
@@ -217,7 +234,7 @@ FP8QuantPerBlockFwdOp:
   # The 128x128 block-scaled FP8 weight format of DeepSeek-V3 checkpoints; scale is the
   # dequantization multiplier stored as weight_scale_inv. Edge tiles may be partial.
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {N: Dim, K: Dim, T: "DType[bfloat16 | float16 | float32]"}
     inputs:
@@ -230,6 +247,8 @@ FP8QuantPerBlockFwdOp:
   - {N: 7168, K: 18432, dtype_cases: [{T: bfloat16}], label: ds-v3-mlp-down}
   - {N: 4096, K: 7168, dtype_cases: [{T: bfloat16}, {T: float32}], label: ds-v3-expert-gate-up}
   - {N: 9216, K: 4096, dtype_cases: [{T: bfloat16}, {T: float16}], label: qwen3-235b-qkv}
+  - {N: 2880, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-expert-down}
+  - {N: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
   roofline:
     # Per element: abs, the max, the scaling and the saturating cast; per tile: the scale and
     # its zero guard.

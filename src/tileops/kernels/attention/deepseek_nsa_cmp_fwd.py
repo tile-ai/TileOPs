@@ -5,8 +5,9 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.attention.call_spec import NSACall, NSACmpFwdInterface
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -149,34 +150,27 @@ def _nsa_cmp_fwd_varlen_kernel(
     return _nsa_cmp_fwd_varlen_func
 
 
-def _nsa_cmp_fwd_varlen_run(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    q: torch.Tensor,
-    k_cmp: torch.Tensor,
-    v_cmp: torch.Tensor,
-    offsets: torch.Tensor,
-    chunk_offsets: torch.Tensor,
-    token_indices: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _nsa_cmp_fwd_varlen_kernel(
-        seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, group, scale, bc, bs, dtype, accum_dtype
-    )(threads)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-
-class NSACmpFwdVarlenKernel(Kernel):
+class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
     supported_archs: list[int] = [90]
+    # Chunks one tile holds.
+    _BC = 32
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        return call, lambda: cls(
+            seq_num=call.batch,
+            c_seq_len=call.c_seq_len,
+            heads=call.heads,
+            dim_k=call.dim,
+            dim_v=call.dim_v,
+            chunk_num=call.chunk_num,
+            group=call.heads // call.heads_kv,
+            scale=call.scale,
+            bc=cls._BC,
+            bs=call.block_size,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
 
     def __init__(
         self,
@@ -231,7 +225,7 @@ class NSACmpFwdVarlenKernel(Kernel):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _nsa_cmp_fwd_varlen_run(
+        return _nsa_cmp_fwd_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
             self.heads,
@@ -244,7 +238,7 @@ class NSACmpFwdVarlenKernel(Kernel):
             self.bs,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["threads"],
+        )(self.config["threads"])(
             q.to(self.dtype),
             k_cmp.to(self.dtype),
             v_cmp.to(self.dtype),

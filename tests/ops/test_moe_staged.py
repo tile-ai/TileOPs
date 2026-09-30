@@ -262,9 +262,9 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
     device = torch.device("cuda", torch.cuda.current_device())
     observed_indices: list[int | None] = []
 
-    def fake_device_facts(index: int | None = None) -> tuple[int, str | None, int]:
+    def fake_device_facts(index: int | None = None) -> tuple[int, str | None, int, int]:
         observed_indices.append(index)
-        return 90, None, 132
+        return 90, None, 132, 232448
 
     class ReadsArch(_ExecutableGroupedCandidate):
         @classmethod

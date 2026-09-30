@@ -19,6 +19,7 @@ import inspect
 import itertools
 import re
 import string
+import threading
 from dataclasses import dataclass
 
 import torch
@@ -649,18 +650,27 @@ class _CallCheck:
     """
 
     def __init__(
-        self, plan: EntryPlan, point: dict, key: tuple, built: _Construction, env, shapes_only: bool
+        self,
+        plan: EntryPlan,
+        point: dict,
+        key: tuple,
+        built: _Construction,
+        env,
+        shapes_only: bool,
+        branch: PlanBranch,
+        rejected: str | None,
     ):
-        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*."""
+        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*;
+        *branch* is ``plan.branch(point)`` and *rejected* is ``rejecting_rule(sig, point)``."""
         self.plan, self.point, self.key, self.built, self.env = plan, point, key, built, env
-        self.shapes_only = shapes_only
+        self.shapes_only, self.branch, self.rejected = shapes_only, branch, rejected
 
     def source(self) -> str:
         plan, point, built, shapes_only = self.plan, self.point, self.built, self.shapes_only
         sig = plan.sig
         e = _Emitter(sig)
         name = "shapes" if shapes_only else "check"
-        b = plan.branch(point)
+        b = self.branch
         present = set(b.shapes)
         buffer = point.get("present(out)", False)
         e.emit("_k = self._construction_ix")
@@ -674,7 +684,7 @@ class _CallCheck:
                     e.require(f"isinstance({t}, torch.Tensor)", f"{t!r} is not a tensor")
             else:
                 e.require(f"{t} is None", f"{t!r} is given where its presence condition is false")
-        rejected = rejecting_rule(sig, point)
+        rejected = self.rejected
         if rejected is not None:
             e.emit(f"raise CheckError({f'{sig.name}: refinement fails: {rejected}'!r})")
             return e.function(name, "self, tensors, dtypes" if shapes_only else "self, tensors")
@@ -827,19 +837,20 @@ def _rejecting(sig: Signature, message: str):
 class _Plan:
     """One entry's discriminant axes and the checks emitted for each of their points.
 
-    Every point is emitted when the class is installed, so a traced call only looks one up.
+    A construction point's checks are emitted when an op is first constructed there, so a
+    traced call only looks one up.
     """
 
     def __init__(self, plan: EntryPlan):
-        """Emit, for every point of *plan*'s signature, a check, a shape-only check, the effect
-        branch and the roofline; and for every construction point, the construction check.
+        """Settle, for every point of *plan*'s signature, its effect branch, and queue its
+        check, shape-only check and roofline under its construction point.
 
         A point is keyed by its axes; the presence of tensors whose condition reads them is
         settled here, once.
         """
         sig = self.sig = plan.sig
         self.entry = plan
-        env, _ = kind_env(sig, {n: parse(e) for n, e in sig.let.items()})
+        self.env, _ = kind_env(sig, {n: parse(e) for n, e in sig.let.items()})
         # An axis nothing in the signature reads cannot change its checks.
         read = _read_names(sig)
         self.axes = {a: v for a, v in discriminant_axes(sig).items() if a in read}
@@ -848,23 +859,23 @@ class _Plan:
         }
         self.keys, self.built_keys = self._keys(self.axes), self._keys(self.built_axes)
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
-        built = {}
+        # Per construction key not yet emitted: its construction and its call points. A key
+        # leaves it only once its tables are filled, under the lock.
+        self._pending = {}
+        self._emitting = threading.Lock()
         for base in self._points(self.built_axes):
             key = self.built_key(base)
             try:
                 point = complete_point(sig, base, strict=False)
-                built[key] = _Construction(plan, point, env)
-                self.constructions[key] = _compiled(
-                    "construct", built[key].source(sig), f"{sig.name} construction"
-                )
+                self._pending[key] = (_Construction(plan, point, self.env), [])
             except SignatureError as exc:
                 self.constructions[key] = _rejecting(sig, str(exc))
         for base in self._points(self.axes):
             key = self.key(base)
-            construction = built.get(self.built_key(base))
+            pending = self._pending.get(self.built_key(base))
             try:
                 point = complete_point(sig, base)
-                if construction is None:
+                if pending is None:
                     raise SignatureError("its construction point is outside the signature")
                 present = {t for t in sig.call_tensors if tensor_passed(sig.call_tensors[t], point)}
                 emitted = frozenset(o for o in sig.outputs if output_emitted(sig.outputs[o], point))
@@ -873,26 +884,47 @@ class _Plan:
                     point.get("present(out)", False),
                     emitted,
                 )
+                pending[1].append((key, point))
+            except SignatureError as exc:
+                self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
+
+    def _emit(self, built_key: tuple) -> None:
+        """Emit the construction check at *built_key* and the checks of its call points, once."""
+        with self._emitting:
+            if built_key in self._pending:
+                self._emit_locked(built_key)
+
+    def _emit_locked(self, built_key: tuple) -> None:
+        construction, calls = self._pending[built_key]
+        sig, plan = self.sig, self.entry
+        try:
+            self.constructions[built_key] = _compiled(
+                "construct", construction.source(sig), f"{sig.name} construction"
+            )
+        except SignatureError as exc:
+            self.constructions[built_key] = _rejecting(sig, str(exc))
+        for key, point in calls:
+            try:
+                b, rejected = plan.branch(point), rejecting_rule(sig, point)
                 for table, shapes_only in ((self.checks, False), (self.shapes, True)):
-                    source = _CallCheck(plan, point, key, construction, env, shapes_only).source()
+                    source = _CallCheck(
+                        plan, point, key, construction, self.env, shapes_only, b, rejected
+                    ).source()
                     table[key] = _compiled(
                         "shapes" if shapes_only else "check",
                         source,
                         f"{sig.name} check",
                         {"_SignatureCall": SignatureCall},
                     )
-                if (
-                    plan.roofline is not None
-                    and "flops" in plan.roofline
-                    and rejecting_rule(sig, point) is None
-                ):
+                if plan.roofline is not None and "flops" in plan.roofline and rejected is None:
                     self.roofs[key] = _compiled(
                         "roofline",
-                        _roofline_source(sig, plan.branch(point)),
+                        _roofline_source(sig, b),
                         f"{sig.name} roofline",
                     )
             except SignatureError as exc:
                 self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
+        del self._pending[built_key]
 
     @staticmethod
     def _keys(axes: dict) -> list:
@@ -946,6 +978,8 @@ class _Plan:
     def construct(self, op) -> None:
         """Check what construction decides and keep what it solved on *op*."""
         key = self.built_key(self.point(op, {}, self.built_axes))
+        if key in self._pending:
+            self._emit(key)
         fn = self.constructions.get(key)
         if fn is None:
             raise CheckError(f"{self.sig.name}: discriminants {key} are outside their types")
@@ -970,6 +1004,8 @@ class _Plan:
 
     def _lookup(self, table: dict, op, tensors: dict):
         point = self.point(op, tensors)
+        if self.built_key(point) in self._pending:
+            self._emit(self.built_key(point))
         fn = table.get(self.key(point))
         if fn is None:
             raise CheckError(f"{self.sig.name}: discriminants {point} are outside their types")

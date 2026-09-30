@@ -148,7 +148,7 @@ def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
         op(torch.randn(rows, 4096, dtype=torch.float16, device="cuda"), weight)
     op(torch.randn(2, 8, 4096, dtype=torch.float16, device="cuda"), weight)
 
-    assert list(op.built_kernels("rms_norm")) == [torch.float16], "one kernel object"
+    assert len(op.built_kernels("rms_norm")) == 1, "one kernel object"
     grew = _rms_norm_kernel.cache_info().currsize - programs_before
     assert grew == 3, "one program per distinct row count, held by the kernel not the op"
 

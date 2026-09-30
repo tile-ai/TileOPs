@@ -9,9 +9,9 @@ import torch
 
 from tileops.kernels.convolution._common import (
     CONV_SWIZZLE_PANEL,
-    _launch,
     conv_autotune_configs,
     conv_num_stages,
+    launch,
 )
 from tileops.kernels.convolution.call_spec import (
     Conv1dCall,
@@ -542,7 +542,7 @@ class Conv1dPointwiseKernel(Kernel):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         weight_2d = weight[:, :, 0].contiguous()
-        return _launch(self, x, weight_2d, bias=bias)
+        return launch(self, x, weight_2d, bias=bias)
 
 
 class Conv1dKernel(Kernel):
@@ -664,7 +664,7 @@ class Conv1dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, self._get_weight_flat(weight), bias=bias)
+        return launch(self, x, self._get_weight_flat(weight), bias=bias)
 
 
 class GroupConv1dKernel(Kernel):
@@ -840,4 +840,4 @@ class GroupConv1dKernel(Kernel):
     ) -> torch.Tensor:
         # ``self.kernel`` already is the direct or the group builder; ``use_direct`` picked
         # it at construction.
-        return _launch(self, x, weight, bias=bias)
+        return launch(self, x, weight, bias=bias)

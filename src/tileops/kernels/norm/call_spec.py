@@ -12,15 +12,22 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "AdaLayerNormFwdInterface",
+    "AdaLayerNormZeroFwdInterface",
     "BatchNormBwdInterface",
     "BatchNormCall",
     "BatchNormFwdInferInterface",
     "BatchNormFwdTrainInterface",
+    "FusedAddLayerNormFwdInterface",
+    "FusedAddRMSNormFwdInterface",
+    "GroupNormCall",
+    "GroupNormFwdInterface",
     "InstanceNormFwdInferInterface",
     "InstanceNormFwdInterface",
     "InstanceNormFwdTrainInterface",
     "LayerNormCall",
     "LayerNormFwdInterface",
+    "RMSNormFwdInterface",
 ]
 
 
@@ -53,9 +60,10 @@ class BatchNormCall(CallSpec):
 
 @dataclasses.dataclass(frozen=True)
 class LayerNormCall(CallSpec):
-    """The facts that select a layer normalization implementation and build it.
+    """The facts that select an implementation normalizing trailing rows and build it.
 
-    ``n`` is the product of ``normalized_shape`` and ``eps`` the op's epsilon.
+    Layer, RMS, fused-add and adaptive layer normalization take it. ``n`` is the row's
+    element count and ``eps`` the op's epsilon.
     """
 
     n: int = 0
@@ -247,6 +255,23 @@ class InstanceNormFwdInferInterface(KernelInterface):
         """
 
 
+@dataclasses.dataclass(frozen=True)
+class GroupNormCall(CallSpec):
+    """The facts that select a group normalization implementation and build it.
+
+    The input is ``(n, c, *spatial)``; ``spatial`` is the product of the trailing axes.
+    ``passes_affine`` says whether ``weight`` and ``bias`` are passed, as
+    ``BatchNormCall.passes_affine`` does.
+    """
+
+    c: int = 0
+    spatial: int = 0
+    num_groups: int = 1
+    eps: float = 1e-5
+    dtype: torch.dtype = torch.float16
+    passes_affine: bool = True
+
+
 class LayerNormFwdInterface(KernelInterface):
     """Layer normalization over the trailing ``call.n`` elements."""
 
@@ -265,4 +290,133 @@ class LayerNormFwdInterface(KernelInterface):
 
         Returns:
             A new output shaped like *x*, in ``call.dtype``.
+        """
+
+
+class RMSNormFwdInterface(KernelInterface):
+    """Root mean square normalization over the trailing ``call.n`` elements."""
+
+    request = LayerNormCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        """Normalize each run of ``call.n`` trailing elements; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``.
+
+        Args:
+            x: Any shape whose trailing axes hold ``call.n`` elements, in ``call.dtype``.
+            weight: ``call.n`` elements of scale in ``call.dtype``, or ``None`` for one.
+
+        Returns:
+            A new output shaped like *x*, in ``call.dtype``.
+        """
+
+
+class FusedAddLayerNormFwdInterface(KernelInterface):
+    """A residual add, then layer normalization of the sum over the last ``call.n`` elements."""
+
+    request = LayerNormCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+    ) -> list[torch.Tensor]:
+        """Normalize ``x + residual``; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``, in ``call.dtype``.
+
+        Args:
+            x: ``(*leading, call.n)``.
+            residual: Shaped like *x*.
+            weight: ``(call.n,)`` scale.
+            bias: ``(call.n,)`` shift.
+
+        Returns:
+            New ``[y, residual_out]`` shaped like *x*, ``residual_out`` being ``x + residual``.
+        """
+
+
+class FusedAddRMSNormFwdInterface(KernelInterface):
+    """A residual add, then RMS normalization of the sum over the last ``call.n`` elements."""
+
+    request = LayerNormCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+    ) -> list[torch.Tensor]:
+        """Normalize ``x + residual``; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``, in ``call.dtype``.
+
+        Args:
+            x: ``(*leading, call.n)``.
+            residual: Shaped like *x*.
+            weight: ``(call.n,)`` scale.
+
+        Returns:
+            New ``[y, residual_out]`` shaped like *x*, ``residual_out`` being ``x + residual``.
+        """
+
+
+class AdaLayerNormFwdInterface(KernelInterface):
+    """Layer normalization over the last ``call.n`` elements, then a per-element scale and shift."""
+
+    request = LayerNormCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
+        """Normalize *x* and modulate it; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``, in ``call.dtype``, shaped
+        ``(*leading, call.n)``.
+
+        Returns:
+            A new ``scale * norm(x) + shift`` shaped like *x*.
+        """
+
+
+class AdaLayerNormZeroFwdInterface(KernelInterface):
+    """Adaptive layer normalization over the last ``call.n`` elements, then a per-element gate."""
+
+    request = LayerNormCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
+    ) -> torch.Tensor:
+        """Normalize *x*, modulate and gate it; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``, in ``call.dtype``, shaped
+        ``(*leading, call.n)``.
+
+        Returns:
+            A new ``gate * (scale * norm(x) + shift)`` shaped like *x*.
+        """
+
+
+class GroupNormFwdInterface(KernelInterface):
+    """Group normalization: each ``call.num_groups``-th of the channels with its spatial extent."""
+
+    request = GroupNormCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Normalize each group of *x* by its own statistics; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``, in ``call.dtype``.
+
+        Args:
+            x: ``(n, call.c, *spatial)`` whose trailing axes hold ``call.spatial`` elements.
+            weight: ``(call.c,)`` scale, passed exactly when ``call.passes_affine``.
+            bias: ``(call.c,)`` shift, passed exactly when ``weight`` is.
+
+        Returns:
+            A new output shaped like *x*.
         """

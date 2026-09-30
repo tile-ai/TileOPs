@@ -26,7 +26,7 @@ from tileops.kernels.reduction._primitives import (
     down_rows_split,
     down_rows_splits,
 )
-from tileops.kernels.reduction.call_spec import NORM_KINDS, ReduceCall
+from tileops.kernels.reduction.call_spec import ReduceCall, VectorNormFwdInterface
 from tileops.kernels.reduction.reduce import (
     ReduceKernelBase,
     RowReduceKernelBase,
@@ -231,18 +231,14 @@ def _inf_merge_kernel(A: int, B: int, out_dtype: str, threads: int):
     return _func
 
 
-class VectorNormKernel(RowReduceKernelBase):
-    """L1 / L2 / Inf norm of rows that are not whole vectors, through shared memory.
+class VectorNormKernel(RowReduceKernelBase, VectorNormFwdInterface):
+    """L1 / L2 / Inf norm of rows, through shared memory.
 
     l1 and l2 accumulate in fp32; ``inf`` reduces int32 bit patterns, which is what carries
     NaN, so a row holding a NaN norms to NaN as in ``torch.linalg.vector_norm``.
     """
 
     general = True
-
-    @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in NORM_KINDS and not cls.whole_vector_rows(call)
 
     def _untiled(self) -> object:
         return _vector_norm_kernel(self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str)
@@ -253,7 +249,7 @@ class VectorNormKernel(RowReduceKernelBase):
         )
 
 
-class VectorNormEdgeKernel(ReduceKernelBase):
+class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
     """Norm a prefix and a suffix of the axes without permuting the tensor.
 
     The trailing axes reduce as contiguous rows into fp32 partials, tiled where a row
@@ -263,9 +259,11 @@ class VectorNormEdgeKernel(ReduceKernelBase):
     one merge launch.
     """
 
+    preferred_over = frozenset({"vector_norm_fold"})
+
     @classmethod
     def applies(cls, call: ReduceCall) -> bool:
-        return call.op_kind in NORM_KINDS and cls.reduces_edge_axes(call)
+        return cls.reduces_edge_axes(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)

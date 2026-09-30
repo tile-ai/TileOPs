@@ -1,4 +1,4 @@
-from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
+from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel, AdaLayerNormZeroKernel
 from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormBwdSplitKernel,
@@ -22,6 +22,7 @@ from tileops.kernels.norm.rms_norm import RMSNormKernel
 
 __all__: list[str] = [
     "AdaLayerNormKernel",
+    "AdaLayerNormZeroKernel",
     "BatchNormBwdKernel",
     "BatchNormBwdSplitKernel",
     "BatchNormBwdWideKernel",

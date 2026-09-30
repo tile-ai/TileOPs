@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 
 from tileops.kernels.elementwise._broadcast import row_tile_leaves_tail
-from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, _torch_dtype_nbytes
+from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, torch_dtype_nbytes
 from tileops.kernels.kernel_base import Kernel
 
 _AUTOTUNE_THREADS = (128, 256, 512)
@@ -30,6 +30,7 @@ def default_launch_config(
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
     default_threads: int | None = None,
+    register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -39,13 +40,32 @@ def default_launch_config(
     *row_broadcast_inner* is the row extent a broadcast block walks, or
     ``None``; see ``_tail_dominated``. *default_threads* replaces the
     strategy's thread count; see ``_ElementwiseKernel.DEFAULT_THREADS``.
+    *register_copy_num_per_thread* is how many elements a ``register_copy``
+    thread carries at least before the shrink; see
+    ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
     """
+
+    def _tail_dominated(
+        inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
+    ) -> bool:
+        """Whether doubling the block width pushes more columns onto the guarded tail path.
+
+        A row-broadcast block covers columns of one row, and the remainder the width
+        does not cover runs the slower per-lane path. A width that leaves no
+        remainder there has nothing to push onto it.
+        """
+        if inner is None or n_total is None:
+            return False
+        if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
+            return False
+        return inner % (threads * npt * 2) > inner % (threads * npt)
+
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
     threads = default_threads or (_DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS)
 
-    elem_bytes = _torch_dtype_nbytes(input_dtype)
+    elem_bytes = torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
@@ -53,11 +73,14 @@ def default_launch_config(
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
-    elif _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
-        row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
-    ):
-        # A narrower result leaves the store short of a vector, so widen to cover it.
-        npt *= 2
+    else:
+        if torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
+            row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
+        ):
+            # A narrower result leaves the store short of a vector, so widen to cover it.
+            npt *= 2
+        if strategy == "register_copy":
+            npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
     while (
         n_total is not None
@@ -69,20 +92,12 @@ def default_launch_config(
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
-def _tail_dominated(
-    inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
-) -> bool:
-    """Whether doubling the block width pushes more columns onto the guarded tail path.
+def _register_copy_floor(requested: int, elem_bytes: int) -> int:
+    """*requested* elements, but no more than two 16-byte vectors of the dtype.
 
-    A row-broadcast block covers columns of one row, and the remainder the width
-    does not cover runs the slower per-lane path. A width that leaves no
-    remainder there has nothing to push onto it.
+    An 8-byte dtype has its two vectors at four elements, and eight run slower.
     """
-    if inner is None or n_total is None:
-        return False
-    if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
-        return False
-    return inner % (threads * npt * 2) > inner % (threads * npt)
+    return min(requested, 2 * _BYTES_PER_THREAD // elem_bytes)
 
 
 def elementwise_autotune_configs(
@@ -90,18 +105,22 @@ def elementwise_autotune_configs(
     strategy: str | None = None,
     bytes_per_thread: int = _BYTES_PER_THREAD,
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
+    register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> list[dict]:
     """Return the launch configs to time for one elementwise specialization.
 
     The swept elements-per-thread brackets the default the same *bytes_per_thread*
-    produces, so a kernel can always land back on its shipped config, and reaches
-    *min_num_per_thread* where a kernel lowers it.
+    and *register_copy_num_per_thread* produce, so a kernel can always land back on
+    its shipped config, and reaches *min_num_per_thread* where a kernel lowers it.
     """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
+    elem_bytes = torch_dtype_nbytes(dtype)
+    default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
+    if strategy == "register_copy":
+        default = max(default, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
     npts = tuple(
         sorted({min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2})
     )
@@ -109,7 +128,7 @@ def elementwise_autotune_configs(
 
 
 @dataclass(frozen=True)
-class ElementwiseOutputPlan:
+class _ElementwiseOutputPlan:
     logical_dtype: torch.dtype
     kernel_output_dtype: str
     bool_via_int8: bool = False
@@ -121,7 +140,7 @@ def elementwise_output_plan(
     *,
     strategy: str | None = None,
     bool_storage: bool = False,
-) -> ElementwiseOutputPlan:
+) -> _ElementwiseOutputPlan:
     """Return the dtype the kernel writes, and the dtype the caller sees."""
     logical_dtype = declared_output_dtype or input_dtype
     # Every strategy but `direct` can store the result through an int8 buffer, and
@@ -130,7 +149,7 @@ def elementwise_output_plan(
     kernel_output_dtype = (
         BOOL_STORAGE_DTYPE if bool_via_int8 else Kernel.dtype_to_str(logical_dtype)
     )
-    return ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
+    return _ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
 
 
 def _bool_output_needs_scalar(

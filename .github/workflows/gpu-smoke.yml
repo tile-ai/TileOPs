@@ -542,7 +542,10 @@ jobs:
           # call) fails as a timeout with a thread dump instead of wedging the job. --no-deps
           # tileops install doesn't bring this; pin via constraints.txt so the install is
           # deterministic (the runner image should bake it and drop this install — follow-up).
-          python3 -m pip install -q -c constraints.txt pytest-timeout
+          python3 -m pip install -q -c constraints.txt pytest-timeout pytest-xdist
+          # Eight workers share the job's one GPU. `loadfile` keeps a file on one worker: some
+          # files assert over what their other cases recorded in the process.
+          XDIST=(-n 8 --dist loadfile)
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
@@ -580,7 +583,7 @@ jobs:
             else
               echo "Running diff-scoped pytest -m \"smoke or full\" on ${#FULL_TARGETS[@]} changed test file(s)"
               diff_status=0
-              python3 -m pytest -q "${FULL_TARGETS[@]}" -m "smoke or full" \
+              python3 -m pytest -q "${FULL_TARGETS[@]}" -m "smoke or full" "${XDIST[@]}" \
                 --timeout=600 --timeout-method=thread \
                 --junit-xml=gpu_smoke_full_results.xml | tee gpu_smoke_full.log \
                 || diff_status=$?
@@ -600,7 +603,7 @@ jobs:
           echo "EXECUTED_MARK_EXPR=${TEST_MARK_EXPR}" >> "$GITHUB_ENV"
 
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \
+          python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" "${XDIST[@]}" \
             --timeout=600 --timeout-method=thread \
             --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 

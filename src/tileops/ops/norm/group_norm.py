@@ -16,8 +16,9 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops.ops.norm.norm_base import affine_or_constant
 from tileops.ops.op_base import Op
 
@@ -46,6 +47,9 @@ class GroupNormFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "group_norm": GroupNormKernel,
         "group_norm_no_affine": GroupNormNoAffineKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "group_norm": GroupNormFwdInterface
     }
 
     def __init__(
@@ -103,24 +107,22 @@ class GroupNormFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         channels = x.shape[1]
-        cpg = channels // self.num_groups
-        d = cpg * math.prod(x.shape[2:])
         affine = weight is not None or bias is not None
         if affine:
             weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
             bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
         x = x.contiguous()
-        kernel = self.kernel_for("group_norm", (x, weight, bias), (d, cpg, x.dtype, affine))
+        call = GroupNormCall(
+            device=x.device,
+            c=channels,
+            spatial=math.prod(x.shape[2:]),
+            num_groups=self.num_groups,
+            eps=self.eps,
+            dtype=x.dtype,
+            passes_affine=affine,
+        )
+        kernel = self.kernel_for("group_norm", (x, weight, bias), call)
         self.kernel = kernel
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """The affine form picks the implementation, so it is in the identity."""
-        d, cpg, dtype, affine = call
-        if affine:
-            cls = self.kernel_map["group_norm"]
-            return call, lambda: cls(d, self.eps, dtype, self.num_groups, cpg, tune=self.tune)
-        cls = self.kernel_map["group_norm_no_affine"]
-        return call, lambda: cls(d, self.eps, dtype, tune=self.tune)

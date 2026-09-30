@@ -5,7 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, _flat
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, flat
 
 __all__ = [
     "PreluFwdKernel",
@@ -75,4 +75,4 @@ class PreluFwdKernel(MultiInputElementwiseKernel):
         than broadcast against ``x``.
         """
         self._require_cuda(x=x, weight=weight)
-        return self._compiled_fn(_flat(x), _flat(weight)).reshape(x.shape)
+        return self._compiled_fn(flat(x), flat(weight)).reshape(x.shape)
