@@ -60,7 +60,6 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
 class WhereFwdKernel(MultiInputElementwiseKernel):
     """Where: out = cond ? x : y."""
 
-    DEFAULT_THREADS = 512
     INPUTS = (("cond", "mask"), ("x", "tile"), ("y", "tile"))
 
     @staticmethod

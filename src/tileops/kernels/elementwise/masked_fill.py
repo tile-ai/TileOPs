@@ -69,7 +69,6 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel):
     rather than part of the op's semantics.
     """
 
-    DEFAULT_THREADS = 512
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"))
 
@@ -136,7 +135,6 @@ class MaskedFillTensorValueFwdKernel(MultiInputElementwiseKernel):
     semantics.
     """
 
-    DEFAULT_THREADS = 512
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"), ("value", "value"))
 
