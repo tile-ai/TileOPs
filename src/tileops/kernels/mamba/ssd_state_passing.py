@@ -56,7 +56,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import SSDStatePassingCall, SSDStatePassingFwdInterface
 
 __all__ = ["SSDStatePassingFwdKernel"]
 
@@ -228,7 +229,7 @@ def _ssd_state_passing_fwd_kernel(
     return kernel_func
 
 
-class SSDStatePassingFwdKernel(Kernel):
+class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
     """Mamba-2 SSD state passing forward kernel.
 
     Performs the inter-chunk recurrent scan:
@@ -256,6 +257,17 @@ class SSDStatePassingFwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: SSDStatePassingCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.num_chunks,
+            call.n_heads,
+            call.d_state,
+            has_initial_states=call.has_initial_states,
+            dtype=call.dtype,
+        )
 
     def __init__(
         self,

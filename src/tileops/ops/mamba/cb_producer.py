@@ -7,7 +7,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba.call_spec import CBProducerCall, CBProducerFwdInterface
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -24,6 +25,9 @@ class CBProducerFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"cb_producer": CBProducerKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "cb_producer": CBProducerFwdInterface
+    }
 
     def __init__(
         self,
@@ -46,19 +50,6 @@ class CBProducerFwdOp(Op):
         self.tune = tune
         self.target = target
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, seq_len, n_groups, d_state, dtype, _device = call
-        return call, lambda: self.kernel_map["cb_producer"](
-            batch,
-            seq_len // self.chunk_len,
-            n_groups,
-            self.chunk_len,
-            d_state,
-            dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -87,11 +78,16 @@ class CBProducerFwdOp(Op):
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         batch, seq_len, n_groups, d_state = C_mat.shape
-        kernel = self.kernel_for(
-            "cb_producer",
-            (C_mat, B_mat),
-            (batch, seq_len, n_groups, d_state, C_mat.dtype, C_mat.device.index),
+        call = CBProducerCall(
+            batch=batch,
+            seq_len=seq_len,
+            n_groups=n_groups,
+            d_state=d_state,
+            chunk_len=self.chunk_len,
+            dtype=C_mat.dtype,
+            device=C_mat.device,
         )
+        kernel = self.kernel_for("cb_producer", (C_mat, B_mat), call)
         return kernel(C_mat, B_mat)
 
     def compute_roof(self) -> str:

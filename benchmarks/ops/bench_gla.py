@@ -51,7 +51,7 @@ def test_gla_bwd_bench(call) -> None:
     # The per-chunk states are the forward's, so the backward reads what it would in training.
     fwd_op = GLAFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
-    (fwd_kernel,) = fwd_op.built_kernels("GLAFwdKernel").values()
+    (fwd_kernel,) = fwd_op.built_kernels("gla_fwd").values()
     h = fwd_kernel._h_out
     dht = torch.zeros_like(_dht)
 

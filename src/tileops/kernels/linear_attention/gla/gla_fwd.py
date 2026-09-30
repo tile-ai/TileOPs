@@ -7,7 +7,8 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import GLAChunkCall, GLAFwdInterface
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
@@ -345,8 +346,8 @@ def _gla_fwd_o_kernel(
     return _o_func
 
 
-class GLAFwdKernel(Kernel):
-    """GLA (Gated Linear Attention) forward kernel — three-pass architecture.
+class GLAChunkedFwdKernel(Kernel):
+    """GLA (Gated Linear Attention) forward program — three-pass architecture.
 
     Pass 0 (parallel, B*H*NC blocks): Pre-compute g_cumsum per chunk.
     Pass 1 (sequential, B*H blocks): Compute per-chunk hidden states h.
@@ -569,3 +570,36 @@ class GLAFwdKernel(Kernel):
 
         final_state = h_out[:, -1] if self.output_final_state else None
         return o, final_state
+
+
+class GLAFwdKernel(GLAChunkedFwdKernel, GLAFwdInterface):
+    """The chunked forward as the training op calls it, with its own recurrent state."""
+
+    @classmethod
+    def applies(cls, call: GLAChunkCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GLAChunkCall) -> Optional[str]:
+        return cls.region_refusal(call.dim_k, call.dim_v, call.chunk_size)
+
+    @classmethod
+    def entry_for(cls, call: GLAChunkCall) -> Entry:
+        """The final state is always produced, and the initial one is a launch argument.
+
+        The device index is in the identity because the constructor compiles for the
+        architecture it is built on.
+        """
+        arguments = (
+            call.batch,
+            call.seq_len,
+            call.heads,
+            call.dim_k,
+            call.dim_v,
+            call.chunk_size,
+            call.scale,
+        )
+        index = call.device.index if call.device is not None else None
+        return (*arguments, call.dtype, index), lambda: cls(
+            *arguments, output_final_state=True, dtype=call.dtype
+        )

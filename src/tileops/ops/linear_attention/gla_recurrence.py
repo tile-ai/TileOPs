@@ -3,8 +3,13 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.linear_attention import (
+    GLADecodeCall,
+    GLADecodeFP32Kernel,
+    GLADecodeFwdInterface,
+    GLADecodeKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["GLADecodeFwdOp"]
@@ -26,8 +31,11 @@ class GLADecodeFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "GLADecodeKernel": GLADecodeKernel,
-        "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
+        "gla_decode": GLADecodeKernel,
+        "gla_decode_fp32": GLADecodeFP32Kernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gla_decode": GLADecodeFwdInterface
     }
 
     def __init__(
@@ -51,20 +59,6 @@ class GLADecodeFwdOp(Op):
         self.tune = tune
         self.target = target
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """The dtype picks the implementation, so it is in the identity."""
-        batch, heads, dim_k, dim_v, dtype, _device = call
-        name = "GLADecodeFP32Kernel" if dtype == torch.float32 else "GLADecodeKernel"
-        return call, lambda: self.kernel_map[name](
-            batch,
-            heads,
-            dim_k,
-            dim_v,
-            scale=self.scale,
-            dtype=Kernel.dtype_to_str(dtype),
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -101,9 +95,13 @@ class GLADecodeFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         batch, heads, dim_k = q.shape
-        kernel = self.kernel_for(
-            "gla_decode",
-            (q, k, v, gk, state),
-            (batch, heads, dim_k, v.shape[2], q.dtype, q.device.index),
+        call = GLADecodeCall(
+            batch=batch,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=v.shape[2],
+            scale=self.scale,
+            dtype=q.dtype,
+            device=q.device,
         )
-        return kernel(q, k, v, gk, state)
+        return self.kernel_for("gla_decode", (q, k, v, gk, state), call)(q, k, v, gk, state)

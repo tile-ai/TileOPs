@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba import SSDStatePassingFwdKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba import (
+    SSDStatePassingCall,
+    SSDStatePassingFwdInterface,
+    SSDStatePassingFwdKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["SSDStatePassingFwdOp"]
@@ -25,6 +29,9 @@ class SSDStatePassingFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_state_passing_fwd": SSDStatePassingFwdKernel
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "ssd_state_passing_fwd": SSDStatePassingFwdInterface
+    }
 
     def __init__(
         self,
@@ -44,19 +51,6 @@ class SSDStatePassingFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, initial-state presence, dtype and device."""
-        batch, num_chunks, n_heads, d_state, has_initial_states, dtype, _device = call
-        return call, lambda: self.kernel_map["ssd_state_passing_fwd"](
-            batch,
-            num_chunks,
-            n_heads,
-            d_state,
-            has_initial_states=has_initial_states,
-            dtype=dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -88,18 +82,17 @@ class SSDStatePassingFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         batch, num_chunks, n_heads, d_state = states.shape
+        call = SSDStatePassingCall(
+            batch=batch,
+            num_chunks=num_chunks,
+            n_heads=n_heads,
+            d_state=d_state,
+            has_initial_states=initial_states is not None,
+            dtype=states.dtype,
+            device=states.device,
+        )
         kernel = self.kernel_for(
-            "ssd_state_passing_fwd",
-            (states, dA_chunk_cumsum, initial_states),
-            (
-                batch,
-                num_chunks,
-                n_heads,
-                d_state,
-                initial_states is not None,
-                states.dtype,
-                states.device.index,
-            ),
+            "ssd_state_passing_fwd", (states, dA_chunk_cumsum, initial_states), call
         )
 
         states = states.contiguous()

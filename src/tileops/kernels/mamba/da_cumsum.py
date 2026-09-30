@@ -40,7 +40,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import DaCumsumCall, DaCumsumFwdInterface
 
 __all__ = ["DaCumsumFwdKernel"]
 
@@ -174,7 +175,7 @@ def _da_cumsum_fwd_kernel(
     return kernel_func
 
 
-class DaCumsumFwdKernel(Kernel):
+class DaCumsumFwdKernel(Kernel, DaCumsumFwdInterface):
     """Mamba-2 dA_cumsum forward kernel.
 
     Applies optional per-head bias, optional softplus activation, and clamping to
@@ -217,6 +218,21 @@ class DaCumsumFwdKernel(Kernel):
     # This backend's own capability, which may be narrower than the manifest
     # union the op enforces.
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+    @classmethod
+    def entry_for(cls, call: DaCumsumCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.seq_len // call.chunk_len,
+            call.chunk_len,
+            call.n_heads,
+            call.seq_len,
+            call.out_dtype,
+            dt_softplus=call.dt_softplus,
+            has_dt_bias=call.has_dt_bias,
+            dt_min=call.dt_min,
+            dt_max=call.dt_max,
+        )
 
     def __init__(
         self,

@@ -4,8 +4,15 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mhc import (
+    MHCPostCall,
+    MHCPostFwdInterface,
+    MHCPostKernel,
+    MHCPreCall,
+    MHCPreFwdInterface,
+    MHCPreKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -23,7 +30,8 @@ class MHCPreFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_pre_kernel": MHCPreKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_pre": MHCPreKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_pre": MHCPreFwdInterface}
 
     def __init__(
         self,
@@ -60,13 +68,6 @@ class MHCPreFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, n_expand, c_x, dtype, _device = call
-        return call, lambda: self.kernel_map["mhc_pre_kernel"](
-            batch, n_expand, c_x, dtype, tune=self.tune
-        )
-
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
@@ -94,8 +95,19 @@ class MHCPreFwdOp(Op):
         n_expand = math.isqrt(phi.shape[1] + 1) - 1
         batch, c_x = x.shape[0], x.shape[1] // n_expand
         phi, x, b = phi.contiguous(), x.contiguous(), b.contiguous()
-        key = (batch, n_expand, c_x, x.dtype, x.device.index)
-        self.kernel = self.kernel_for("mhc_pre_kernel", (phi, x, b), key)
+        call = MHCPreCall(
+            batch=batch,
+            n_expand=n_expand,
+            c_x=c_x,
+            dtype=x.dtype,
+            alpha_pre=self.alpha_pre,
+            alpha_post=self.alpha_post,
+            alpha_res=self.alpha_res,
+            sinkhorn_repeat=self.sinkhorn_repeat,
+            sinkhorn_eps=self.sinkhorn_eps,
+            device=x.device,
+        )
+        self.kernel = self.kernel_for("mhc_pre", (phi, x, b), call)
         return self.kernel(
             phi,
             x,
@@ -122,7 +134,8 @@ class MHCPostFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_post_kernel": MHCPostKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_post": MHCPostKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_post": MHCPostFwdInterface}
 
     def __init__(
         self,
@@ -143,13 +156,6 @@ class MHCPostFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, n_expand, c_x, dtype, _device = call
-        return call, lambda: self.kernel_map["mhc_post_kernel"](
-            batch, n_expand, c_x, dtype, tune=self.tune
-        )
 
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
@@ -174,7 +180,13 @@ class MHCPostFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         (batch, c_x), n_expand = x_layer_out.shape, h_post.shape[1]
-        key = (batch, n_expand, c_x, x_layer_out.dtype, x_layer_out.device.index)
+        call = MHCPostCall(
+            batch=batch,
+            n_expand=n_expand,
+            c_x=c_x,
+            dtype=x_layer_out.dtype,
+            device=x_layer_out.device,
+        )
         inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
-        self.kernel = self.kernel_for("mhc_post_kernel", inputs, key)
+        self.kernel = self.kernel_for("mhc_post", inputs, call)
         return self.kernel(*inputs)

@@ -26,7 +26,8 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.engram.call_spec import EngramGateConvCall, EngramGateConvFwdInterface
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramGateConvFwdKernel"]
@@ -191,7 +192,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     return _func
 
 
-class EngramGateConvFwdKernel(Kernel):
+class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
     """Engram GateConv forward kernel.
 
     Fuses RMSNorm-based scalar gating and depthwise causal Conv1D
@@ -202,6 +203,10 @@ class EngramGateConvFwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: EngramGateConvCall) -> Entry:
+        return call, lambda: cls(call.m, call.seq_len, call.d, call.eps, call.dtype)
 
     def __init__(
         self,

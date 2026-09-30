@@ -7,7 +7,11 @@ from typing import Any, Dict, Optional, Tuple
 import tilelang
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import (
+    GatedDeltaNetCall,
+    GatedDeltaNetFwdInterface,
+)
 from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
     correct_initial_states,
@@ -21,7 +25,7 @@ from tileops.utils import get_sm_count
 __all__ = ["GatedDeltaNetDensePrefillFwdKernel"]
 
 
-class GatedDeltaNetDensePrefillFwdKernel(Kernel):
+class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     """SM90 equal-length BTHD inference prefill.
 
     This is the inference owner of the retained partitioned prefill pipeline.
@@ -30,6 +34,39 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel):
     """
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: GatedDeltaNetCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
+        """Why this kernel does not serve *call*, or ``None`` when it does.
+
+        Equal-length prefill from a zero state, in chunks of 64 tokens.
+        """
+        dense = call.dense_refusal
+        if dense is not None:
+            return dense
+        if call.has_initial_state:
+            return "does not support prefill with initial_state"
+        if call.seq_len < 64 or call.seq_len % 64 != 0:
+            return "requires a prefill T that is a positive multiple of 64"
+        return None
+
+    @classmethod
+    def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.heads, call.seq_len, call.dim_k, call.scale, call.dtype, index)
+        return identity, lambda: cls(
+            batch=call.batch,
+            heads=call.heads,
+            seq_len=call.seq_len,
+            dim=call.dim_k,
+            scale=call.scale,
+            dtype=call.dtype,
+            device_index=index,
+        )
 
     def __init__(
         self,

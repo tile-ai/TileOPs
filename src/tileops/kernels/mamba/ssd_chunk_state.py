@@ -72,7 +72,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import SSDChunkStateCall, SSDChunkStateFwdInterface
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
@@ -256,7 +257,7 @@ def _ssd_chunk_state_fwd_kernel(
     return kernel_func
 
 
-class SSDChunkStateFwdKernel(Kernel):
+class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
     """Mamba-2 SSD chunk state forward kernel.
 
     Computes the chunk-end SSM state for each chunk:
@@ -287,6 +288,21 @@ class SSDChunkStateFwdKernel(Kernel):
     # ``seq_idx`` masks contributions; the trip count comes from the chunk
     # length.
     autotune_accepts_random_int_inputs: bool = True
+
+    @classmethod
+    def entry_for(cls, call: SSDChunkStateCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.num_chunks,
+            call.chunk_len,
+            call.n_heads,
+            call.d_head,
+            call.d_state,
+            call.n_groups,
+            call.dtype,
+            has_seq_idx=call.has_seq_idx,
+            dt_dtype=call.dt_dtype,
+        )
 
     def __init__(
         self,

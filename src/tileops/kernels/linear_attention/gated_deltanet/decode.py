@@ -1,14 +1,18 @@
 """SM90 single-token Gated DeltaNet inference decode."""
 
 import functools
-from typing import Tuple
+from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import (
+    GatedDeltaNetCall,
+    GatedDeltaNetFwdInterface,
+)
 
 __all__ = ["GatedDeltaNetDenseDecodeFwdKernel"]
 
@@ -109,7 +113,7 @@ def _gated_deltanet_dense_decode_sm90_tl(
     return _decode
 
 
-class GatedDeltaNetDenseDecodeFwdKernel(Kernel):
+class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     """SM90 FP16/BF16 decode with FP32 recurrent state.
 
     One warp owns a 16-column state tile. Two lanes reduce the K dimension for
@@ -118,6 +122,38 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel):
     """
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: GatedDeltaNetCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
+        """Why this kernel does not serve *call*, or ``None`` when it does.
+
+        One token continuing a state the caller owns.
+        """
+        dense = call.dense_refusal
+        if dense is not None:
+            return dense
+        if call.seq_len != 1:
+            return "serves one token per call"
+        if not call.has_initial_state:
+            return "does not support decode without initial_state"
+        return None
+
+    @classmethod
+    def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.heads, call.dim_k, call.scale, call.dtype, index)
+        return identity, lambda: cls(
+            batch=call.batch,
+            heads=call.heads,
+            dim=call.dim_k,
+            scale=call.scale,
+            dtype=call.dtype,
+            device_index=index,
+        )
 
     def __init__(
         self,

@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba import SSDChunkStateFwdKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba import (
+    SSDChunkStateCall,
+    SSDChunkStateFwdInterface,
+    SSDChunkStateFwdKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -30,6 +34,9 @@ class SSDChunkStateFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_state_fwd": SSDChunkStateFwdKernel
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "ssd_chunk_state_fwd": SSDChunkStateFwdInterface
+    }
 
     def __init__(
         self,
@@ -49,35 +56,6 @@ class SSDChunkStateFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtypes, seq-idx presence and device."""
-        (
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            dtype,
-            dt_dtype,
-            has_seq_idx,
-            _device,
-        ) = call
-        return call, lambda: self.kernel_map["ssd_chunk_state_fwd"](
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            dtype,
-            has_seq_idx=has_seq_idx,
-            dt_dtype=dt_dtype,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -116,23 +94,20 @@ class SSDChunkStateFwdOp(Op):
         batch, seq_len, n_heads, d_head = x.shape
         num_chunks, chunk_len = dt.shape[2], dt.shape[3]
         n_groups, d_state = Bmat.shape[2], Bmat.shape[3]
-        kernel = self.kernel_for(
-            "ssd_chunk_state_fwd",
-            (x, Bmat, dt, dA_cumsum, seq_idx),
-            (
-                batch,
-                num_chunks,
-                chunk_len,
-                n_heads,
-                d_head,
-                d_state,
-                n_groups,
-                x.dtype,
-                dt.dtype,
-                seq_idx is not None,
-                x.device.index,
-            ),
+        call = SSDChunkStateCall(
+            batch=batch,
+            num_chunks=num_chunks,
+            chunk_len=chunk_len,
+            n_heads=n_heads,
+            d_head=d_head,
+            d_state=d_state,
+            n_groups=n_groups,
+            dtype=x.dtype,
+            dt_dtype=dt.dtype,
+            has_seq_idx=seq_idx is not None,
+            device=x.device,
         )
+        kernel = self.kernel_for("ssd_chunk_state_fwd", (x, Bmat, dt, dA_cumsum, seq_idx), call)
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()

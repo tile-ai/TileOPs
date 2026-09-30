@@ -21,7 +21,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import DeltaNetBwdInterface, DeltaNetChunkCall
 
 __all__ = [
     "DeltaNetBwdKernel",
@@ -314,7 +315,7 @@ def _dh_recurrence_bwd_tl(
     return _func
 
 
-class DeltaNetBwdKernel(Kernel):
+class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
     """DeltaNet backward kernel.
 
     Full backward: do -> (dq, dk, dv, dbeta).
@@ -402,6 +403,22 @@ class DeltaNetBwdKernel(Kernel):
         return dq, dk, dv, dbeta
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetChunkCall) -> Entry:
+        """The device index is in the identity because the kernel compiles for the
+        architecture it is built on."""
+        arguments = (
+            call.batch,
+            call.heads,
+            call.seq_len,
+            call.chunk_size,
+            call.dim_k,
+            call.dim_v,
+            cls.dtype_to_str(call.dtype),
+        )
+        index = call.device.index if call.device is not None else None
+        return (*arguments, index), lambda: cls(*arguments)
 
     def __init__(
         self,

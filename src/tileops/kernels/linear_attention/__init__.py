@@ -6,6 +6,22 @@ per-variant subpackages; the DeltaNet and GLA single-token decode kernels are th
 ``*_recurrence`` modules.
 """
 
+from tileops.kernels.linear_attention.call_spec import (
+    DeltaNetBwdInterface,
+    DeltaNetChunkCall,
+    DeltaNetDecodeCall,
+    DeltaNetDecodeFwdInterface,
+    DeltaNetFwdInterface,
+    DeltaNetInferenceCall,
+    DeltaNetInferenceFwdInterface,
+    GatedDeltaNetCall,
+    GatedDeltaNetFwdInterface,
+    GLABwdInterface,
+    GLAChunkCall,
+    GLADecodeCall,
+    GLADecodeFwdInterface,
+    GLAFwdInterface,
+)
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
     DeltaNetDensePrefillFwdKernel,
@@ -29,18 +45,32 @@ from tileops.kernels.linear_attention.gla import (
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 
 __all__ = [
+    "DeltaNetBwdInterface",
     "DeltaNetBwdKernel",
+    "DeltaNetChunkCall",
+    "DeltaNetDecodeCall",
     "DeltaNetDecodeFP32Kernel",
+    "DeltaNetDecodeFwdInterface",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
     "DeltaNetDensePrefillFwdKernel",
+    "DeltaNetFwdInterface",
     "DeltaNetFwdKernel",
+    "DeltaNetInferenceCall",
+    "DeltaNetInferenceFwdInterface",
+    "GLABwdInterface",
     "GLABwdKernel",
+    "GLAChunkCall",
+    "GLADecodeCall",
     "GLADecodeFP32Kernel",
+    "GLADecodeFwdInterface",
     "GLADecodeKernel",
     "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
+    "GLAFwdInterface",
     "GLAFwdKernel",
+    "GatedDeltaNetCall",
     "GatedDeltaNetDenseDecodeFwdKernel",
     "GatedDeltaNetDensePrefillFwdKernel",
+    "GatedDeltaNetFwdInterface",
 ]

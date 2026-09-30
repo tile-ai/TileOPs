@@ -6,7 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mhc.call_spec import MHCPostCall, MHCPostFwdInterface
 
 __all__ = ["MHCPostKernel"]
 
@@ -71,8 +72,12 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
     return _mhc_func
 
 
-class MHCPostKernel(Kernel):
+class MHCPostKernel(Kernel, MHCPostFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: MHCPostCall) -> Entry:
+        return call, lambda: cls(call.batch, call.n_expand, call.c_x, call.dtype)
 
     def __init__(
         self,

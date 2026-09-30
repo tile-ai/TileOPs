@@ -15,7 +15,7 @@ from tileops.kernels.linear_attention.gla.call_spec import (
     serves_dense,
 )
 from tileops.kernels.linear_attention.gla.gla_fwd import (
-    GLAFwdKernel,
+    GLAChunkedFwdKernel,
     gla_fwd_h_kernel,
     gla_precompute_g_kernel,
 )
@@ -212,7 +212,7 @@ def _gla_fwd_o_from_a_kernel(
     return _o_func
 
 
-class GLADensePrefillSubchunkKernel(GLAFwdKernel, GLAInferenceFwdInterface):
+class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterface):
     """Retain the proven state pass while replacing the costly output pass."""
 
     supported_archs = [90]

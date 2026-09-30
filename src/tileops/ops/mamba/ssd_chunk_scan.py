@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba import SSDChunkScanFwdKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba import (
+    SSDChunkScanCall,
+    SSDChunkScanFwdInterface,
+    SSDChunkScanFwdKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -26,6 +30,9 @@ class SSDChunkScanFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_scan_fwd": SSDChunkScanFwdKernel
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "ssd_chunk_scan_fwd": SSDChunkScanFwdInterface
+    }
 
     def __init__(
         self,
@@ -45,23 +52,6 @@ class SSDChunkScanFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        (
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            dtype,
-            _device,
-        ) = call
-        return call, lambda: self.kernel_map["ssd_chunk_scan_fwd"](
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
-        )
 
     def forward(
         self,
@@ -103,21 +93,18 @@ class SSDChunkScanFwdOp(Op):
         batch, _seq_len, n_heads, d_head = x.shape
         num_chunks, n_groups, chunk_len = cb.shape[1], cb.shape[2], cb.shape[3]
         d_state = C.shape[3]
-        kernel = self.kernel_for(
-            "ssd_chunk_scan_fwd",
-            (x, cb, dA_cumsum, C, prev_states, dt),
-            (
-                batch,
-                num_chunks,
-                chunk_len,
-                n_heads,
-                d_head,
-                d_state,
-                n_groups,
-                x.dtype,
-                x.device.index,
-            ),
+        call = SSDChunkScanCall(
+            batch=batch,
+            num_chunks=num_chunks,
+            chunk_len=chunk_len,
+            n_heads=n_heads,
+            d_head=d_head,
+            d_state=d_state,
+            n_groups=n_groups,
+            dtype=x.dtype,
+            device=x.device,
         )
+        kernel = self.kernel_for("ssd_chunk_scan_fwd", (x, cb, dA_cumsum, C, prev_states, dt), call)
         return kernel(
             x.contiguous(),
             cb.contiguous(),

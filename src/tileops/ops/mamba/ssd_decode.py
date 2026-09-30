@@ -3,8 +3,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba import SSDDecodeKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba import SSDDecodeCall, SSDDecodeFwdInterface, SSDDecodeKernel
 from tileops.ops.op_base import Op
 
 __all__ = ["SSDDecodeFwdOp"]
@@ -29,6 +29,9 @@ class SSDDecodeFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ssd_decode": SSDDecodeKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "ssd_decode": SSDDecodeFwdInterface
+    }
 
     def __init__(
         self,
@@ -48,13 +51,6 @@ class SSDDecodeFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, n_heads, d_head, d_state, n_groups, dtype, _device = call
-        return call, lambda: self.kernel_map["ssd_decode"](
-            batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
-        )
 
     def forward(
         self,
@@ -96,11 +92,16 @@ class SSDDecodeFwdOp(Op):
         batch, n_heads, d_head = x.shape
         d_state = state.shape[3]
         n_groups = B_in.shape[1]
-        kernel = self.kernel_for(
-            "ssd_decode",
-            (A, dt, x, B_in, C_in, state),
-            (batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index),
+        call = SSDDecodeCall(
+            batch=batch,
+            n_heads=n_heads,
+            d_head=d_head,
+            d_state=d_state,
+            n_groups=n_groups,
+            dtype=x.dtype,
+            device=x.device,
         )
+        kernel = self.kernel_for("ssd_decode", (A, dt, x, B_in, C_in, state), call)
         return kernel(
             A.contiguous(),
             dt.contiguous(),

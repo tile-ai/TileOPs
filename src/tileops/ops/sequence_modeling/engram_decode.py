@@ -3,8 +3,8 @@ from typing import ClassVar, Dict, List, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.engram import EngramDecodeKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.engram import EngramDecodeCall, EngramDecodeFwdInterface, EngramDecodeKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["EngramDecodeFwdOp"]
@@ -23,6 +23,9 @@ class EngramDecodeFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "engram_decode": EngramDecodeFwdInterface
+    }
 
     def __init__(
         self,
@@ -63,20 +66,6 @@ class EngramDecodeFwdOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; every extent is the op's."""
-        return call, lambda: self.kernel_map["engram_decode"](
-            self.batch,
-            self.d_mem,
-            self.d,
-            self.max_conv_len,
-            self.conv_kernel_size,
-            self.dilation,
-            self.eps,
-            call,
-            tune=self.tune,
-        )
 
     def forward(
         self,
@@ -126,4 +115,15 @@ class EngramDecodeFwdOp(Op):
         inputs = tuple(
             t.contiguous() for t in (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         )
-        return self.kernel_for("engram_decode", inputs, inputs[0].dtype)(*inputs)
+        call = EngramDecodeCall(
+            batch=self.batch,
+            d_mem=self.d_mem,
+            d=self.d,
+            max_conv_len=self.max_conv_len,
+            conv_kernel_size=self.conv_kernel_size,
+            dilation=self.dilation,
+            eps=self.eps,
+            dtype=inputs[0].dtype,
+            device=inputs[0].device,
+        )
+        return self.kernel_for("engram_decode", inputs, call)(*inputs)
