@@ -9,6 +9,7 @@ from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
+    Conv2dKernel,
     Conv2dSymmetricKernel,
     Conv3dCall,
     Conv3dKernel,
@@ -741,7 +742,7 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
+def test_a_padded_1x1_conv2d_dispatches_the_dense_kernel() -> None:
     # Use c_in not divisible by 32 so the symmetric kernel is not selected and
     # the general kernel handles the padded 1x1 case without the im2col-TMA
     # constraints that affect the symmetric path.
@@ -749,7 +750,7 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     x = torch.randn(1, 16, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 16, 1, 1, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
-    assert not isinstance(op.kernel, Conv2d1x1Kernel)
+    assert isinstance(op.kernel, Conv2dKernel)
 
 
 @pytest.mark.smoke
