@@ -16,7 +16,10 @@ from tileops.kernels.linear_attention.gla.call_spec import (
     serves_dense,
 )
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
-from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel, gla_precompute_g_kernel
+from tileops.kernels.linear_attention.gla.gla_fwd import (
+    GLAChunkedFwdKernel,
+    gla_precompute_g_kernel,
+)
 
 
 @functools.lru_cache(maxsize=32)
@@ -385,7 +388,7 @@ class _PartitionFit(NamedTuple):
 _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
 
 
-class GLADensePrefillPartitionedKernel(GLAFwdKernel, GLAInferenceFwdInterface):
+class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterface):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]

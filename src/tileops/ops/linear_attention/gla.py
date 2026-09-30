@@ -3,8 +3,14 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.linear_attention import (
+    GLABwdInterface,
+    GLABwdKernel,
+    GLAChunkCall,
+    GLAFwdInterface,
+    GLAFwdKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -21,7 +27,8 @@ class GLAFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"GLAFwdKernel": GLAFwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_fwd": GLAFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gla_fwd": GLAFwdInterface}
 
     def __init__(
         self,
@@ -48,22 +55,6 @@ class GLAFwdOp(Op):
         self.target = target
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, seq_len, heads, dim_k, dim_v, dtype, _device = call
-        return call, lambda: self.kernel_map["GLAFwdKernel"](
-            batch,
-            seq_len,
-            heads,
-            dim_k,
-            dim_v,
-            self.chunk_size,
-            scale=self.scale,
-            output_final_state=True,
-            dtype=dtype,
-            tune=self.tune,
-        )
-
     def forward(
         self,
         q: torch.Tensor,
@@ -87,6 +78,22 @@ class GLAFwdOp(Op):
         """
         return self._call_boundary(q, k, v, g, initial_state)
 
+    def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
+        """The facts of one call: the shapes read off the tensors and the op's own params."""
+        batch, seq_len, heads, dim_k = q.shape
+        return GLAChunkCall(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=v.shape[3],
+            chunk_size=self.chunk_size,
+            scale=self.scale,
+            dtype=q.dtype,
+            has_initial_state=has_initial_state,
+            device=q.device,
+        )
+
     def _eager_forward(
         self,
         q: torch.Tensor,
@@ -99,11 +106,8 @@ class GLAFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        kernel = self.kernel_for(
-            "GLAFwdKernel",
-            (q, k, v, g, initial_state),
-            (*q.shape, v.shape[3], q.dtype, q.device.index),
-        )
+        call = self._call(q, v, initial_state is not None)
+        kernel = self.kernel_for("gla_fwd", (q, k, v, g, initial_state), call)
         return kernel(q, k, v, g, initial_state)
 
     def compute_roof(self) -> str:
@@ -123,7 +127,8 @@ class GLABwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"GLABwdKernel": GLABwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_bwd": GLABwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gla_bwd": GLABwdInterface}
 
     def __init__(
         self,
@@ -154,22 +159,6 @@ class GLABwdOp(Op):
         self.target = target
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, dtype and device."""
-        batch, seq_len, heads, dim_k, dim_v, dtype, device_index = call
-        return call, lambda: self.kernel_map["GLABwdKernel"](
-            batch,
-            seq_len,
-            heads,
-            dim_k,
-            dim_v,
-            self.chunk_size,
-            scale=self.scale,
-            dtype=dtype,
-            tune=self.tune,
-            device_index=device_index,
-        )
-
     def forward(
         self,
         q: torch.Tensor,
@@ -196,6 +185,22 @@ class GLABwdOp(Op):
         """
         return self._call_boundary(q, k, v, g, h, do, dht)
 
+    def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
+        """The facts of one call: the shapes read off the tensors and the op's own params."""
+        batch, seq_len, heads, dim_k = q.shape
+        return GLAChunkCall(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=v.shape[3],
+            chunk_size=self.chunk_size,
+            scale=self.scale,
+            dtype=q.dtype,
+            has_initial_state=has_initial_state,
+            device=q.device,
+        )
+
     def _eager_forward(
         self,
         q: torch.Tensor,
@@ -211,9 +216,7 @@ class GLABwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, k, v, g, h, do, dht)
-        kernel = self.kernel_for(
-            "GLABwdKernel", inputs, (*q.shape, v.shape[3], q.dtype, q.device.index)
-        )
+        kernel = self.kernel_for("gla_bwd", inputs, self._call(q, v, self.has_initial_state))
         return kernel(*inputs, self.has_initial_state)
 
     def compute_roof(self) -> str:

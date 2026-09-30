@@ -59,7 +59,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInterface
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
@@ -471,7 +472,7 @@ def _ssd_chunk_scan_fwd_kernel(
     return kernel_func
 
 
-class SSDChunkScanFwdKernel(Kernel):
+class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     """Mamba-2 SSD fused chunk output forward kernel.
 
     Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
@@ -489,6 +490,19 @@ class SSDChunkScanFwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: SSDChunkScanCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.num_chunks,
+            call.chunk_len,
+            call.n_heads,
+            call.d_head,
+            call.d_state,
+            call.n_groups,
+            call.dtype,
+        )
 
     def __init__(
         self,

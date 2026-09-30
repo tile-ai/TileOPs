@@ -47,7 +47,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import SSDDecodeCall, SSDDecodeFwdInterface
 
 __all__ = ["SSDDecodeKernel"]
 
@@ -226,7 +227,7 @@ def _ssd_decode_kernel(
     return kernel_func
 
 
-class SSDDecodeKernel(Kernel):
+class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
     """Mamba-2 SSD recurrent decode (step) kernel.
 
     Performs a single decode step: updates the SSM state in-place and
@@ -247,6 +248,12 @@ class SSDDecodeKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: SSDDecodeCall) -> Entry:
+        return call, lambda: cls(
+            call.batch, call.n_heads, call.d_head, call.d_state, call.n_groups, call.dtype
+        )
 
     def __init__(
         self,

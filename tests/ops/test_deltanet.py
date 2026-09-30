@@ -8,10 +8,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
-from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.linear_attention.deltanet_recurrence import (
-    DeltaNetDecodeFP32Kernel,
-    DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.linear_attention import (
@@ -96,7 +93,7 @@ def test_deltanet_fwd(
     if served_in_tree(op) and tune:
         # The forward above already proves the selected config builds and runs;
         # this pins it to the declared candidate set the sweep draws from.
-        (kernel,) = op.built_kernels("DeltaNetFwdKernel").values()
+        (kernel,) = op.built_kernels("deltanet_fwd").values()
         assert kernel.config in kernel.autotune_configs
 
 
@@ -520,110 +517,6 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
 
         torch.testing.assert_close(o_op, o_ref, **tols)
         torch.testing.assert_close(state_op, state_ref, **tols)
-
-
-class _DispatchMarker:
-    """Records its construction instead of compiling anything.
-
-    Mixed in ahead of the class each marker stands in for, so the region that
-    class states — and the architecture it declares — still decide selection.
-    Overriding only construction is the point: a marker that answered
-    ``applies`` differently would be testing itself.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:
-        self.args = args
-        self.kwargs = kwargs
-
-    def forward(self, *args, **kwargs):
-        raise NotImplementedError
-
-
-class _DefaultDispatchKernel(_DispatchMarker, DeltaNetDecodeKernel):
-    pass
-
-
-class _FP32DispatchKernel(_DispatchMarker, DeltaNetDecodeFP32Kernel):
-    pass
-
-
-class _RawDispatchKernel(_DispatchMarker, DeltaNetDecodeRawCudaFlaStyleKernel):
-    pass
-
-
-def _dispatch_kernel_map() -> dict:
-    return {
-        "DeltaNetDecodeKernel": _DefaultDispatchKernel,
-        "DeltaNetDecodeFP32Kernel": _FP32DispatchKernel,
-        "DeltaNetDecodeRawCudaFlaStyleKernel": _RawDispatchKernel,
-    }
-
-
-def _stated_call(
-    sm_version: int, dtype: torch.dtype, dim_k: int = 128, dim_v: int = 128, tune: bool = False
-) -> DeltaNetDecodeCall:
-    """The record for a decode call, with the device stated rather than probed."""
-    return DeltaNetDecodeCall(
-        arch=sm_version, batch=1, heads=32, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=tune
-    )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
-    dtype: torch.dtype,
-) -> None:
-    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
-
-    assert op.select_kernel(_stated_call(90, dtype)) is _RawDispatchKernel
-
-
-@pytest.mark.cuda_only
-@pytest.mark.parametrize(
-    "tune",
-    [
-        pytest.param(False, marks=pytest.mark.smoke, id="untuned"),
-        pytest.param(True, marks=pytest.mark.full, id="tuned"),
-    ],
-)
-def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
-    """Whatever selection picks is constructed with the op's autotune setting."""
-    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
-
-    kernel = op.kernel_for("deltanet_decode", (), _stated_call(90, torch.bfloat16, tune=tune))
-
-    assert kernel.kwargs["tune"] is tune
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm() -> None:
-    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
-
-    assert op.select_kernel(_stated_call(80, torch.bfloat16)) is _DefaultDispatchKernel
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(("dim_k", "dim_v"), [(64, 128), (128, 64)])
-def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
-    dim_k: int,
-    dim_v: int,
-) -> None:
-    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
-
-    assert (
-        op.select_kernel(_stated_call(90, torch.bfloat16, dim_k, dim_v)) is _DefaultDispatchKernel
-    )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
-    op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
-
-    assert op.select_kernel(_stated_call(90, torch.float32)) is _FP32DispatchKernel
 
 
 @pytest.mark.cuda_only

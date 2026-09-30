@@ -676,14 +676,16 @@ class Op(ABC):
             self._built_entries = roles
         entries = roles.setdefault(interface, {})
         entry = entries.get((cls, identity))
-        if entry is None:
-            on_cuda = call.device is not None and call.device.type == "cuda"
-            with torch.cuda.device(call.device) if on_cuda else contextlib.nullcontext():
+        on_cuda = call.device is not None and call.device.type == "cuda"
+        with torch.cuda.device(call.device) if on_cuda else contextlib.nullcontext():
+            if entry is None:
                 entry = build()
-            entries[(cls, identity)] = entry
-        if self.tune:
-            for kernel in self._entry_kernels(entry):
-                kernel.request_tune()
+                entries[(cls, identity)] = entry
+            if self.tune:
+                # A tuner allocates its candidates' inputs and rebuilds the program, so it
+                # runs on the call's device like the build it acts on.
+                for kernel in self._entry_kernels(entry):
+                    kernel.request_tune()
         return entry
 
     def _refuse_device(self, inputs: "Sequence[torch.Tensor | None]", call: object) -> None:

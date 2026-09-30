@@ -3,8 +3,14 @@ from typing import ClassVar, Dict, List, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.engram import (
+    EngramGateConvBwdInterface,
+    EngramGateConvBwdKernel,
+    EngramGateConvCall,
+    EngramGateConvFwdInterface,
+    EngramGateConvFwdKernel,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
@@ -25,6 +31,9 @@ class EngramGateConvFwdOp(Op):
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_fwd": EngramGateConvFwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "engram_gate_conv_fwd": EngramGateConvFwdInterface
     }
 
     def __init__(
@@ -57,12 +66,6 @@ class EngramGateConvFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; every extent is the op's."""
-        return call, lambda: self.kernel_map["engram_gate_conv_fwd"](
-            self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
-        )
 
     def forward(
         self,
@@ -107,7 +110,15 @@ class EngramGateConvFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
-        return self.kernel_for("engram_gate_conv_fwd", inputs, inputs[0].dtype)(*inputs)
+        call = EngramGateConvCall(
+            m=self.M,
+            seq_len=self.seq_len,
+            d=self.d,
+            eps=self.eps,
+            dtype=inputs[0].dtype,
+            device=inputs[0].device,
+        )
+        return self.kernel_for("engram_gate_conv_fwd", inputs, call)(*inputs)
 
 
 class EngramGateConvBwdOp(Op):
@@ -126,6 +137,9 @@ class EngramGateConvBwdOp(Op):
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_bwd": EngramGateConvBwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "engram_gate_conv_bwd": EngramGateConvBwdInterface
     }
 
     def __init__(
@@ -158,12 +172,6 @@ class EngramGateConvBwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; every extent is the op's."""
-        return call, lambda: self.kernel_map["engram_gate_conv_bwd"](
-            self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
-        )
 
     def forward(
         self,
@@ -231,4 +239,12 @@ class EngramGateConvBwdOp(Op):
             t.contiguous()
             for t in (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v)
         )
-        return self.kernel_for("engram_gate_conv_bwd", inputs, inputs[0].dtype)(*inputs)
+        call = EngramGateConvCall(
+            m=self.M,
+            seq_len=self.seq_len,
+            d=self.d,
+            eps=self.eps,
+            dtype=inputs[0].dtype,
+            device=inputs[0].device,
+        )
+        return self.kernel_for("engram_gate_conv_bwd", inputs, call)(*inputs)

@@ -20,7 +20,8 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import GLABwdInterface, GLAChunkCall
 from tileops.kernels.linear_attention.gla.gla_fwd import gla_precompute_g_kernel
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 from tileops.utils import get_sm_version
@@ -523,7 +524,7 @@ def _gla_bwd_fused_kernel(
     return _fused_func
 
 
-class GLABwdKernel(Kernel):
+class GLABwdKernel(Kernel, GLABwdInterface):
     """GLA backward kernel — two-pass architecture.
 
     Pass 1 (sequential reverse, B*H blocks): Accumulate dh per chunk.
@@ -534,6 +535,31 @@ class GLABwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call: GLAChunkCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GLAChunkCall) -> Optional[str]:
+        return cls.region_refusal(call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch)
+
+    @classmethod
+    def entry_for(cls, call: GLAChunkCall) -> Entry:
+        """``has_initial_state`` is a launch argument, so it is out of the identity."""
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.batch,
+            call.seq_len,
+            call.heads,
+            call.dim_k,
+            call.dim_v,
+            call.chunk_size,
+            call.scale,
+            call.dtype,
+            index,
+        )
+        return identity, lambda: cls(*identity[:-1], device_index=index)
 
     def __init__(
         self,

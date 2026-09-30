@@ -6,7 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mhc.call_spec import MHCPreCall, MHCPreFwdInterface
 
 __all__ = ["MHCPreKernel"]
 
@@ -177,8 +178,16 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
     return _mhc_func
 
 
-class MHCPreKernel(Kernel):
+class MHCPreKernel(Kernel, MHCPreFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: MHCPreCall) -> Entry:
+        """The mixing weights are launch arguments, so they are out of the identity; the
+        device index is in it because the kernel compiles for the device it is built on."""
+        arguments = (call.batch, call.n_expand, call.c_x, call.dtype)
+        index = call.device.index if call.device is not None else None
+        return (*arguments, index), lambda: cls(*arguments)
 
     def __init__(
         self,

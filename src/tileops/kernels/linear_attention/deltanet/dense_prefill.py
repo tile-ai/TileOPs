@@ -6,7 +6,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import (
+    DeltaNetInferenceCall,
+    DeltaNetInferenceFwdInterface,
+)
 from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
     correct_initial_states,
@@ -19,10 +23,54 @@ from tileops.utils import get_sm_count
 __all__ = ["DeltaNetDensePrefillFwdKernel"]
 
 
-class DeltaNetDensePrefillFwdKernel(Kernel):
+class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
     """Ungated delta rule: GDN's block solve and partitioned recurrence with g=0."""
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: DeltaNetInferenceCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: DeltaNetInferenceCall) -> Optional[str]:
+        """Why this kernel does not serve *call*, or ``None`` when it does.
+
+        The partitioned pipeline runs equal-length chunks of 64 tokens over a square
+        16-bit state, and takes Q and K already normalized.
+        """
+        unsupported = [
+            name
+            for name, present in (
+                ("Q/K L2 normalization", call.l2norm),
+                ("packed varlen", call.varlen),
+                ("T not divisible by 64", call.seq_len < 64 or call.seq_len % 64 != 0),
+                (
+                    "K/V dimensions other than matching 64 or 128",
+                    call.dim_k != call.dim_v or call.dim_k not in (64, 128),
+                ),
+                (
+                    "dtype other than float16 or bfloat16",
+                    call.dtype not in (torch.float16, torch.bfloat16),
+                ),
+            )
+            if present
+        ]
+        return "does not support " + ", ".join(unsupported) if unsupported else None
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetInferenceCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.heads, call.seq_len, call.dim_k, call.scale, call.dtype, index)
+        return identity, lambda: cls(
+            batch=call.batch,
+            heads=call.heads,
+            seq_len=call.seq_len,
+            dim=call.dim_k,
+            scale=call.scale,
+            dtype=call.dtype,
+            device_index=index,
+        )
 
     def __init__(
         self,

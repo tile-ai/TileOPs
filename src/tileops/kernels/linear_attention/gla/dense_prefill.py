@@ -4,12 +4,12 @@ from typing import Optional
 
 import torch
 
-from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel
+from tileops.kernels.linear_attention.gla.gla_fwd import GLAChunkedFwdKernel
 
 __all__ = ["GLADensePrefillFwdKernel"]
 
 
-class GLADensePrefillFwdKernel(GLAFwdKernel):
+class GLADensePrefillFwdKernel(GLAChunkedFwdKernel):
     """Run the proven chunkwise GPU programs and always return FP32 state.
 
     Keeping this entry separate from the training forward lets inference

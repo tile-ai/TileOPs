@@ -54,7 +54,7 @@ class GLAInferenceFwdInterface(KernelInterface):
             v: ``(batch, seq_len, heads, dim_v)`` in ``call.dtype``.
             g: ``(batch, seq_len, heads, dim_k)`` log-space gate in ``call.dtype``.
             initial_state: ``float32`` ``(batch, heads, dim_k, dim_v)``, or ``None`` for zero.
-            cu_seqlens: ``int32`` packed sequence offsets, passed exactly when ``call.varlen``.
+            cu_seqlens: ``int64`` packed sequence offsets, passed exactly when ``call.varlen``.
             cu_seqlens_cpu: The same offsets on the CPU, or ``None``.
 
         Returns:

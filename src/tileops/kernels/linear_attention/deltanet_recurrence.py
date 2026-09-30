@@ -23,27 +23,17 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.kernels.linear_attention.call_spec import (
+    DELTANET_DECODE_K_TILE,
+    DeltaNetDecodeCall,
+    DeltaNetDecodeFwdInterface,
+)
 
 __all__ = [
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
 ]
-
-_DEFAULT_K_TILE = 16
-
-
-def _raw_cuda_shape_refusal(dtype: str, dim_k: int, dim_v: int) -> Optional[str]:
-    """Why the raw-CUDA decode kernel cannot serve this shape, or ``None``.
-
-    *dtype* is the TileLang name the builder takes; the region converts the call's dtype.
-    """
-    if dtype not in ("float16", "bfloat16"):
-        return "requires float16 or bfloat16"
-    if dim_k != 128 or dim_v != 128:
-        return "requires dim_k == dim_v == 128"
-    return None
 
 
 @functools.lru_cache(maxsize=32)
@@ -57,7 +47,7 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
     raw_maxrregcount: int = 146,
     dtype: str = "bfloat16",
 ):
-    reason = _raw_cuda_shape_refusal(dtype, dim_k, dim_v)
+    reason = DeltaNetDecodeRawCudaFlaStyleKernel.shape_refusal(dtype, dim_k, dim_v)
     if reason is not None:
         raise ValueError(f"Raw CUDA DeltaNet decode {reason}")
     if dim_v % v_tile != 0:
@@ -150,7 +140,7 @@ def _deltanet_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int = DELTANET_DECODE_K_TILE,
     dtype: str = "float32",
 ):
     accum_dtype = "float32"
@@ -245,16 +235,6 @@ def _deltanet_decode_tl(
     return _decode_func
 
 
-def _k_tile_refusal(call: DeltaNetDecodeCall) -> Optional[str]:
-    """Why the TileLang decode kernels cannot split *call*'s key dim into k tiles, or ``None``.
-
-    Tuning falls back to the default tile when no candidate divides the key dim.
-    """
-    if call.dim_k % _DEFAULT_K_TILE != 0:
-        return f"requires dim_k a multiple of {_DEFAULT_K_TILE}, got dim_k={call.dim_k}"
-    return None
-
-
 def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
     """The entry for a decode kernel: the three take the same construction arguments.
 
@@ -264,12 +244,10 @@ def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
     index = call.device.index if call.device is not None else None
     dtype = Kernel.dtype_to_str(call.dtype)
     identity = (call.batch, call.heads, call.dim_k, call.dim_v, dtype, index)
-    return identity, lambda: cls(
-        call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype, tune=call.tune
-    )
+    return identity, lambda: cls(call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype)
 
 
-class DeltaNetDecodeKernel(Kernel):
+class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     """DeltaNet single-step decode kernel (ungated).
 
     Uses T.Pipelined + T.copy for async state prefetch and full-fp32
@@ -283,11 +261,11 @@ class DeltaNetDecodeKernel(Kernel):
 
     @classmethod
     def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return _k_tile_refusal(call) is None
+        return call.k_tile_refusal is None
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return _k_tile_refusal(call)
+        return call.k_tile_refusal
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -310,22 +288,24 @@ class DeltaNetDecodeKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
 
+        self.init_config(config, tune=False)
+        self._build_program()
         if tune:
-            self._autotune_with_k_tile()
-        else:
-            self.init_config(config, tune=False)
+            self.autotune()
 
+    def _build_program(self) -> None:
+        """Compile the decode program the current config states."""
         self._kernel_fn = _deltanet_decode_tl(
-            batch,
-            head,
-            dim_k,
-            dim_v,
+            self.batch,
+            self.head,
+            self.dim_k,
+            self.dim_v,
             self.config["k_tile"],
             self.dtype_str,
         )(self.config["num_stages"], self.config["threads"])
 
-    def _autotune_with_k_tile(self) -> None:
-        """Autotune across k_tile, num_stages, and threads."""
+    def autotune(self, warmup: int = 10, rep: int = 20) -> None:
+        """Sweep k_tile, num_stages and threads, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -358,7 +338,9 @@ class DeltaNetDecodeKernel(Kernel):
                             k_tile,
                             self.dtype_str,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=10, rep=20)
+                        t = do_bench(
+                            lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep
+                        )
                         if t < best_time:
                             best_time = t
                             best_config = {
@@ -370,14 +352,15 @@ class DeltaNetDecodeKernel(Kernel):
                         continue
 
         self.config = best_config
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        print(f"Best config: {self.config}")
+        self._build_program()
 
     @property
     def default_config(self) -> dict:
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": DELTANET_DECODE_K_TILE,
         }
 
     def forward(
@@ -391,7 +374,7 @@ class DeltaNetDecodeKernel(Kernel):
         return self._kernel_fn(q, k, v, beta, state)
 
 
-class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
+class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
     """SM90 low-precision decode kernel for the DK=DV=128 DeltaNet case.
 
     One warp handles one `(batch, head, V tile)`, two lanes cooperate on each
@@ -403,15 +386,24 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
 
     @classmethod
     def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return cls._region_refusal(call)
+        return cls.shape_refusal(Kernel.dtype_to_str(call.dtype), call.dim_k, call.dim_v)
 
     @staticmethod
-    def _region_refusal(call: DeltaNetDecodeCall) -> Optional[str]:
-        return _raw_cuda_shape_refusal(Kernel.dtype_to_str(call.dtype), call.dim_k, call.dim_v)
+    def shape_refusal(dtype: str, dim_k: int, dim_v: int) -> Optional[str]:
+        """Why this kernel cannot serve this shape, or ``None``.
+
+        *dtype* is the TileLang name the builder takes, which the region converts the
+        call's dtype to; the builder asks the same question of the arguments it is handed.
+        """
+        if dtype not in ("float16", "bfloat16"):
+            return "requires float16 or bfloat16"
+        if dim_k != 128 or dim_v != 128:
+            return "requires dim_k == dim_v == 128"
+        return None
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -433,10 +425,13 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
+        self.init_config(config, tune=False)
+        self._build_program()
         if tune:
-            self._autotune_raw_cuda()
-        else:
-            self.init_config(config, tune=False)
+            self.autotune()
+
+    def _build_program(self) -> None:
+        """Check the warp-lane mapping the current config states, then compile it."""
         if self.config["raw_group_size"] != 2:
             raise ValueError(
                 "raw_group_size must equal 2 because this kernel uses fixed "
@@ -449,10 +444,10 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
                 f"({required_threads}) for the warp-lane mapping used by this kernel."
             )
         self._kernel_fn = _deltanet_decode_raw_cuda_flastyle_tl(
-            batch,
-            head,
-            dim_k,
-            dim_v,
+            self.batch,
+            self.head,
+            self.dim_k,
+            self.dim_v,
             self.config["v_tile"],
             self.config["raw_group_size"],
             self.config["raw_maxrregcount"],
@@ -476,7 +471,8 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
             for raw_maxrregcount in (0, 128, 132, 146, 160)
         ]
 
-    def _autotune_raw_cuda(self) -> None:
+    def autotune(self, warmup: int = 10, rep: int = 20) -> None:
+        """Sweep the register cap, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -504,11 +500,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
                     config["raw_maxrregcount"],
                     self.dtype_str,
                 )(config["threads"])
-                t = do_bench(
-                    lambda _fn=fn: _fn(q, k, v, beta, state),
-                    warmup=10,
-                    rep=20,
-                )
+                t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep)
                 if t < best_time:
                     best_time = t
                     best_config = config
@@ -529,7 +521,8 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
             best_config = self.default_config
 
         self.config = best_config
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        print(f"Best config: {self.config}")
+        self._build_program()
 
     def forward(
         self,
@@ -551,7 +544,7 @@ def _deltanet_decode_fp32_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int = DELTANET_DECODE_K_TILE,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
 
@@ -631,7 +624,7 @@ def _deltanet_decode_fp32_tl(
     return _decode_func
 
 
-class DeltaNetDecodeFP32Kernel(Kernel):
+class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     """FP32-precision DeltaNet decode kernel (no TF32 tensor cores).
 
     Uses element-wise matvec instead of T.gemm to avoid TF32 mantissa
@@ -643,17 +636,13 @@ class DeltaNetDecodeFP32Kernel(Kernel):
 
     @classmethod
     def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls._region_refusal(call) is None
+        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: DeltaNetDecodeCall) -> Optional[str]:
         if call.dtype != torch.float32:
-            return "does not serve this call"
-        return _k_tile_refusal(call)
+            return "requires float32"
+        return call.k_tile_refusal
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -677,20 +666,23 @@ class DeltaNetDecodeFP32Kernel(Kernel):
         self.dim_k = dim_k
         self.dim_v = dim_v
 
+        self.init_config(config, tune=False)
+        self._build_program()
         if tune:
-            self._autotune_with_k_tile()
-        else:
-            self.init_config(config, tune=False)
+            self.autotune()
 
+    def _build_program(self) -> None:
+        """Compile the fp32 decode program the current config states."""
         self._kernel_fn = _deltanet_decode_fp32_tl(
-            batch,
-            head,
-            dim_k,
-            dim_v,
+            self.batch,
+            self.head,
+            self.dim_k,
+            self.dim_v,
             self.config["k_tile"],
         )(self.config["num_stages"], self.config["threads"])
 
-    def _autotune_with_k_tile(self) -> None:
+    def autotune(self, warmup: int = 10, rep: int = 20) -> None:
+        """Sweep k_tile, num_stages and threads, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -717,7 +709,9 @@ class DeltaNetDecodeFP32Kernel(Kernel):
                             DV,
                             k_tile,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=10, rep=20)
+                        t = do_bench(
+                            lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep
+                        )
                         if t < best_time:
                             best_time = t
                             best_config = {
@@ -729,14 +723,15 @@ class DeltaNetDecodeFP32Kernel(Kernel):
                         continue
 
         self.config = best_config
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        print(f"Best config: {self.config}")
+        self._build_program()
 
     @property
     def default_config(self) -> dict:
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": DELTANET_DECODE_K_TILE,
         }
 
     def forward(

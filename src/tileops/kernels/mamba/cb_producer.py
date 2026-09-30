@@ -28,7 +28,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.mamba.call_spec import CBProducerCall, CBProducerFwdInterface
 
 __all__ = ["CBProducerKernel"]
 
@@ -166,7 +167,7 @@ def _cb_producer_kernel(
     return kernel_func
 
 
-class CBProducerKernel(Kernel):
+class CBProducerKernel(Kernel, CBProducerFwdInterface):
     """CB (C@B) matrix producer kernel.
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
@@ -184,6 +185,17 @@ class CBProducerKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: CBProducerCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.seq_len // call.chunk_len,
+            call.n_groups,
+            call.chunk_len,
+            call.d_state,
+            call.dtype,
+        )
 
     def __init__(
         self,

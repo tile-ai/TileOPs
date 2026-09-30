@@ -3,10 +3,11 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.linear_attention.deltanet_recurrence import (
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.linear_attention import (
+    DeltaNetDecodeCall,
     DeltaNetDecodeFP32Kernel,
+    DeltaNetDecodeFwdInterface,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
@@ -32,9 +33,12 @@ class DeltaNetDecodeFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "DeltaNetDecodeKernel": DeltaNetDecodeKernel,
-        "DeltaNetDecodeFP32Kernel": DeltaNetDecodeFP32Kernel,
-        "DeltaNetDecodeRawCudaFlaStyleKernel": DeltaNetDecodeRawCudaFlaStyleKernel,
+        "deltanet_decode": DeltaNetDecodeKernel,
+        "deltanet_decode_fp32": DeltaNetDecodeFP32Kernel,
+        "deltanet_decode_raw_cuda": DeltaNetDecodeRawCudaFlaStyleKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "deltanet_decode": DeltaNetDecodeFwdInterface
     }
 
     def __init__(
@@ -97,7 +101,6 @@ class DeltaNetDecodeFwdOp(Op):
             dim_k=dim_k,
             dim_v=v.shape[2],
             dtype=q.dtype,
-            tune=self.tune,
             device=q.device,
         )
         kernel = self.kernel_for("deltanet_decode", (q, k, v, beta, state), call)

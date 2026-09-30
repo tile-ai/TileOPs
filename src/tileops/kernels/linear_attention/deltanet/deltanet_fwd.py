@@ -20,12 +20,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.autotune import (
     default_h_block_v,
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
+from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall, DeltaNetFwdInterface
 from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
 )
@@ -213,7 +214,7 @@ def _output_o_tl(
     return _func
 
 
-class DeltaNetFwdKernel(Kernel):
+class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
     @staticmethod
     def _deltanet_fwd_run(
         batch: int,
@@ -269,6 +270,22 @@ class DeltaNetFwdKernel(Kernel):
         return o, S_buf, Aw, Au, w, u
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetChunkCall) -> Entry:
+        """The device index is in the identity because the kernel compiles for the
+        architecture it is built on."""
+        arguments = (
+            call.batch,
+            call.heads,
+            call.seq_len,
+            call.chunk_size,
+            call.dim_k,
+            call.dim_v,
+            cls.dtype_to_str(call.dtype),
+        )
+        index = call.device.index if call.device is not None else None
+        return (*arguments, index), lambda: cls(*arguments)
 
     def __init__(
         self,

@@ -1,13 +1,15 @@
 """Inference-facing DeltaNet forward contract and dense-prefill dispatch."""
 
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.deltanet.dense_prefill import (
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.linear_attention import (
     DeltaNetDensePrefillFwdKernel,
+    DeltaNetInferenceCall,
+    DeltaNetInferenceFwdInterface,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -30,6 +32,13 @@ class DeltaNetInferenceFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "deltanet_inference": DeltaNetInferenceFwdInterface
+    }
 
     def __init__(
         self,
@@ -55,51 +64,6 @@ class DeltaNetInferenceFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel}
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        del role
-        (
-            batch,
-            seq_len,
-            heads,
-            dim_k,
-            dim_v,
-            dtype,
-            device_index,
-            scale,
-            l2norm,
-            _has_initial_state,
-            varlen,
-        ) = call
-        unsupported = []
-        if l2norm:
-            unsupported.append("Q/K L2 normalization")
-        if varlen:
-            unsupported.append("packed varlen")
-        if seq_len < 64 or seq_len % 64:
-            unsupported.append("T not divisible by 64")
-        if dim_k != dim_v or dim_k not in (64, 128):
-            unsupported.append("K/V dimensions other than matching 64 or 128")
-        if dtype not in (torch.float16, torch.bfloat16):
-            unsupported.append("dtype other than float16 or bfloat16")
-        if unsupported:
-            raise ValueError(
-                "the in-tree DeltaNet dense-prefill kernel does not yet support "
-                + ", ".join(unsupported)
-            )
-        return call, lambda: self.kernel_map["deltanet_dense_prefill"](
-            batch=batch,
-            heads=heads,
-            seq_len=seq_len,
-            dim=dim_k,
-            scale=scale,
-            dtype=dtype,
-            device_index=device_index,
-        )
 
     def compute_roof(self) -> str:
         """The state contractions are priced on tensor cores."""
@@ -134,18 +98,16 @@ class DeltaNetInferenceFwdOp(Op):
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)
         )
         batch, seq_len, heads, dim_k = q.shape
-        call = (
-            batch,
-            seq_len,
-            heads,
-            dim_k,
-            v.shape[-1],
-            q.dtype,
-            q.device.index,
-            self.scale if self.scale is not None else dim_k**-0.5,
-            self.use_qk_l2norm_in_kernel,
-            initial_state is not None,
-            cu_seqlens is not None,
+        call = DeltaNetInferenceCall(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=v.shape[-1],
+            dtype=q.dtype,
+            scale=self.scale if self.scale is not None else dim_k**-0.5,
+            l2norm=self.use_qk_l2norm_in_kernel,
+            varlen=cu_seqlens is not None,
+            device=q.device,
         )
-        kernel = self.kernel_for("deltanet_dense_prefill", inputs, call)
-        return kernel(*inputs)
+        return self.kernel_for("deltanet_inference", inputs, call)(*inputs)

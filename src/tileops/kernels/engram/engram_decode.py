@@ -43,7 +43,8 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.engram.call_spec import EngramDecodeCall, EngramDecodeFwdInterface
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramDecodeKernel"]
@@ -252,7 +253,7 @@ def _engram_step_kernel(batch, d, d_padded, max_conv_len, conv_kernel_size, dila
     return _func
 
 
-class EngramDecodeKernel(Kernel):
+class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
     """Engram fused decode kernel — full single-token pipeline.
 
     Runs the projections and the cache shift split over ``d``, then the RMSNorm
@@ -280,6 +281,19 @@ class EngramDecodeKernel(Kernel):
         return 16
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: EngramDecodeCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.d_mem,
+            call.d,
+            call.max_conv_len,
+            call.conv_kernel_size,
+            call.dilation,
+            call.eps,
+            call.dtype,
+        )
 
     def __init__(
         self,

@@ -22,7 +22,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import GLADecodeCall, GLADecodeFwdInterface
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
@@ -135,7 +136,21 @@ def _gla_decode_tl(
     return _decode_func
 
 
-class GLADecodeKernel(Kernel):
+def _decode_entry(cls: type, call: GLADecodeCall) -> Entry:
+    """The entry for a GLA decode kernel: both take the same construction arguments.
+
+    The device index is in the identity because the kernel is compiled for the
+    architecture it is built on.
+    """
+    index = call.device.index if call.device is not None else None
+    dtype = Kernel.dtype_to_str(call.dtype)
+    identity = (call.batch, call.heads, call.dim_k, call.dim_v, call.scale, dtype, index)
+    return identity, lambda: cls(
+        call.batch, call.heads, call.dim_k, call.dim_v, scale=call.scale, dtype=dtype
+    )
+
+
+class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     """GLA single-step decode kernel for low-precision inputs.
 
     Uses T.Pipelined + T.copy for async state prefetch and full-fp32
@@ -145,6 +160,11 @@ class GLADecodeKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general = True
+
+    @classmethod
+    def entry_for(cls, call: GLADecodeCall) -> Entry:
+        return _decode_entry(cls, call)
 
     def __init__(
         self,
@@ -165,25 +185,25 @@ class GLADecodeKernel(Kernel):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.dtype = dtype
 
+        self.init_config(config, tune=False)
+        self._build_program()
         if tune:
-            self._autotune_with_k_tile()
-        else:
-            self.init_config(config, tune=False)
+            self.autotune()
 
-        # Cache the JIT-compiled kernel to avoid re-creation overhead
-        # on every forward call.
+    def _build_program(self) -> None:
+        """Compile the decode program the current config states."""
         self._kernel_fn = _gla_decode_tl(
-            batch,
-            head,
-            dim_k,
-            dim_v,
+            self.batch,
+            self.head,
+            self.dim_k,
+            self.dim_v,
             self.config["k_tile"],
             self.dtype_str,
             self.scale,
         )(self.config["num_stages"], self.config["threads"])
 
-    def _autotune_with_k_tile(self) -> None:
-        """Autotune across k_tile, num_stages, and threads."""
+    def autotune(self, warmup: int = 10, rep: int = 20) -> None:
+        """Sweep k_tile, num_stages and threads, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -217,7 +237,7 @@ class GLADecodeKernel(Kernel):
                             self.dtype_str,
                             self.scale,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
                         if t < best_time:
                             best_time = t
                             best_config = {
@@ -229,7 +249,8 @@ class GLADecodeKernel(Kernel):
                         continue
 
         self.config = best_config
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        print(f"Best config: {self.config}")
+        self._build_program()
 
     @property
     def default_config(self) -> dict:
@@ -350,7 +371,7 @@ def _gla_decode_fp32_tl(
     return _decode_func
 
 
-class GLADecodeFP32Kernel(Kernel):
+class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     """FP32-precision GLA decode kernel (no TF32 tensor cores).
 
     Uses element-wise matvec instead of T.gemm to avoid TF32 mantissa
@@ -359,6 +380,14 @@ class GLADecodeFP32Kernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call: GLADecodeCall) -> bool:
+        return call.dtype == torch.float32
+
+    @classmethod
+    def entry_for(cls, call: GLADecodeCall) -> Entry:
+        return _decode_entry(cls, call)
 
     def __init__(
         self,
@@ -380,21 +409,24 @@ class GLADecodeFP32Kernel(Kernel):
         self.dim_v = dim_v
         self.scale = scale if scale > 0 else dim_k**-0.5
 
+        self.init_config(config, tune=False)
+        self._build_program()
         if tune:
-            self._autotune_with_k_tile()
-        else:
-            self.init_config(config, tune=False)
+            self.autotune()
 
+    def _build_program(self) -> None:
+        """Compile the fp32 decode program the current config states."""
         self._kernel_fn = _gla_decode_fp32_tl(
-            batch,
-            head,
-            dim_k,
-            dim_v,
+            self.batch,
+            self.head,
+            self.dim_k,
+            self.dim_v,
             self.config["k_tile"],
             self.scale,
         )(self.config["num_stages"], self.config["threads"])
 
-    def _autotune_with_k_tile(self) -> None:
+    def autotune(self, warmup: int = 10, rep: int = 20) -> None:
+        """Sweep k_tile, num_stages and threads, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -422,7 +454,7 @@ class GLADecodeFP32Kernel(Kernel):
                             k_tile,
                             self.scale,
                         )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=10, rep=20)
+                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
                         if t < best_time:
                             best_time = t
                             best_config = {
@@ -434,7 +466,8 @@ class GLADecodeFP32Kernel(Kernel):
                         continue
 
         self.config = best_config
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        print(f"Best config: {self.config}")
+        self._build_program()
 
     @property
     def default_config(self) -> dict:

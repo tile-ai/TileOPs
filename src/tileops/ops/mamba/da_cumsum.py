@@ -3,8 +3,8 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba import DaCumsumFwdKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.mamba import DaCumsumCall, DaCumsumFwdInterface, DaCumsumFwdKernel
 from tileops.ops.op_base import Op
 
 __all__ = ["DaCumsumFwdOp"]
@@ -22,6 +22,9 @@ class DaCumsumFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"da_cumsum_fwd": DaCumsumFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "da_cumsum_fwd": DaCumsumFwdInterface
+    }
 
     def __init__(
         self,
@@ -57,23 +60,6 @@ class DaCumsumFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, bias presence and device."""
-        batch, seq_len, n_heads, has_dt_bias, _device = call
-        return call, lambda: self.kernel_map["da_cumsum_fwd"](
-            batch,
-            seq_len // self.chunk_len,
-            self.chunk_len,
-            n_heads,
-            seq_len,
-            self.out_dtype,
-            dt_softplus=self.dt_softplus,
-            has_dt_bias=has_dt_bias,
-            dt_min=self.dt_min,
-            dt_max=self.dt_max,
-            tune=self.tune,
-        )
-
     def forward(
         self,
         dt: torch.Tensor,
@@ -107,9 +93,17 @@ class DaCumsumFwdOp(Op):
         batch, seq_len, n_heads = dt.shape
         dt = dt.contiguous()
         A = A.contiguous()
-        kernel = self.kernel_for(
-            "da_cumsum_fwd",
-            (dt, A, dt_bias),
-            (batch, seq_len, n_heads, dt_bias is not None, dt.device.index),
+        call = DaCumsumCall(
+            batch=batch,
+            seq_len=seq_len,
+            n_heads=n_heads,
+            chunk_len=self.chunk_len,
+            has_dt_bias=dt_bias is not None,
+            dt_softplus=self.dt_softplus,
+            dt_min=self.dt_min,
+            dt_max=self.dt_max,
+            out_dtype=self.out_dtype,
+            device=dt.device,
         )
+        kernel = self.kernel_for("da_cumsum_fwd", (dt, A, dt_bias), call)
         return kernel(dt, A, dt_bias)
