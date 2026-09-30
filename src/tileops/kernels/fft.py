@@ -201,14 +201,6 @@ def _root(e: int, size: int) -> tuple:
     return tuple(out)
 
 
-def _bit_reverse(position, bits: int):
-    """*position* with its *bits* low bits reversed, as a straight-line expression."""
-    total = ((position // 1) % 2) * (1 << (bits - 1))
-    for bit in range(1, bits):
-        total = total + ((position // (1 << bit)) % 2) * (1 << (bits - 1 - bit))
-    return total
-
-
 def _factor_passes(nf: int) -> int:
     """In-CTA passes one four-step factor runs: one exchange up to 256, two above."""
     return 2 if nf <= 256 else 3
@@ -248,18 +240,6 @@ def _four_step_smem(nf: int, tw: int, row: int, grp: int) -> int:
 def _four_pass_rows(n: int) -> tuple:
     """The (row1, row2) strides of a four-pass kernel, by the ``_smem_pad`` row rule."""
     return n // 16 + (n // 256 - n // 16) % 32, n // 256 + (n // 4096 - n // 256) % 32
-
-
-def _smem_pad(n: int, radix: tuple) -> tuple:
-    """The conflict-free (row, grp) strides of a three-pass plan; (0, 0) for the others.
-
-    Pass 2 spreads over the banks when row % 32 == r3; pass 3 when grp is odd.
-    """
-    if n < 1024 or len(radix) == 4:
-        return 0, 0
-    threads = n // 16
-    r3 = radix[2]
-    return threads + (r3 - threads) % 32, r3 + 1 - r3 % 2
 
 
 @T.macro
@@ -456,42 +436,6 @@ def _dft_group(reg, r: int, g: int):
         _dft_group(reg, r, g + 1)
 
 
-@T.macro
-def _pass4_gathers(vals, reg, tx, m3, r: int, k: int, j: int):
-    """Lane j onward of the r values a k2-group needs, each out of its own lane."""
-    if j < r:
-        vals[j, 0] = T.tvm_warp_shuffle(
-            T.uint32(0xFFFFFFFF), reg[_perm(k, 16), 0], tx - m3 + j, r, 32
-        )
-        vals[j, 1] = T.tvm_warp_shuffle(
-            T.uint32(0xFFFFFFFF), reg[_perm(k, 16), 1], tx - m3 + j, r, 32
-        )
-        _pass4_gathers(vals, reg, tx, m3, r, k, j + 1)
-
-
-@T.macro
-def _pass4_pick(st, vals, m3, r: int, j: int):
-    """Slot j onward of the runtime pick; m3 is a scalar, so this is an if chain."""
-    if j < r:
-        if m3 == j:
-            st[0] = vals[j, 0]
-            st[1] = vals[j, 1]
-        _pass4_pick(st, vals, m3, r, j + 1)
-
-
-@T.macro
-def _pass4_shuffle_one(y_pair, reg, vals, st, bb, tx, k2, m3, r: int, k: int):
-    """Gather and combine one final-pass output without a dynamic register index."""
-    _pass4_gathers(vals, reg, tx, m3, r, k, 0)
-    _dft(vals, 0, r)
-    st[0] = vals[0, 0]
-    st[1] = vals[0, 1]
-    _pass4_pick(st, vals, m3, r, 1)
-    idx = k2 + 256 * k + 4096 * m3
-    for v in T.vectorized(2):
-        y_pair[bb, idx, v] = st[v]
-
-
 def _fs_group(pw: int, qw: int, r: int) -> int:
     """Which shared-memory group the u = p + 4q'th output of a radix-r pass sits in."""
     return (pw + 4 * qw) % (16 // r)
@@ -508,131 +452,12 @@ def _fs_slot(pw: int, qw: int, r: int) -> int:
 
 
 @T.macro
-def _fs_power(dst, src, tmp, s_tw, col, base: int, e: int):
-    """dst = src times the e'th tabulated power of one half of u; e = 0 is a copy."""
-    if e == 0:
-        dst[0] = src[0]
-        dst[1] = src[1]
-    else:
-        for v in T.vectorized(2):
-            tmp[v] = s_tw[base + e - 1, col, v]
-        dst[0] = src[0] * tmp[0] - src[1] * tmp[1]
-        dst[1] = src[0] * tmp[1] + src[1] * tmp[0]
-
-
-@T.macro
 def _fs_store(out_pair, st, bb, out0, ogstep, okstep, r: int, pw: int, qw: int):
     """The corner-turned store both last passes share: out0 + g*ogstep + k*okstep."""
     for v in T.vectorized(2):
         out_pair[bb, out0 + _fs_group(pw, qw, r) * ogstep + _fs_digit(pw, qw, r) * okstep, v] = st[
             v
         ]
-
-
-@T.macro
-def _four_step_a_out(
-    out_pair,
-    s_tw,
-    col,
-    reg,
-    st,
-    tmp,
-    twb,
-    twg,
-    twk,
-    bb,
-    out0,
-    ogstep,
-    okstep,
-    r: int,
-    pbase: int,
-    i: int,
-):
-    """Output u = p + 4q of kernel A's last pass, twiddled by ``twb * P_p * Q_q``; p = i // 4."""
-    pw = i // 4
-    qw = i % 4
-    if qw == 0:
-        _fs_power(twg, twb, tmp, s_tw, col, pbase, pw)
-    _fs_power(twk, twg, tmp, s_tw, col, pbase + 3, qw)
-    st[0] = reg[_fs_slot(pw, qw, r), 0] * twk[0] - reg[_fs_slot(pw, qw, r), 1] * twk[1]
-    st[1] = reg[_fs_slot(pw, qw, r), 0] * twk[1] + reg[_fs_slot(pw, qw, r), 1] * twk[0]
-    _fs_store(out_pair, st, bb, out0, ogstep, okstep, r, pw, qw)
-
-
-@T.macro
-def _four_step_b_out(out_pair, reg, st, bb, out0, ogstep, okstep, r: int, i: int):
-    """Output u = p + 4q of kernel B's last pass, p = i // 4 and q = i % 4; no twiddle."""
-    st[0] = reg[_fs_slot(i // 4, i % 4, r), 0]
-    st[1] = reg[_fs_slot(i // 4, i % 4, r), 1]
-    _fs_store(out_pair, st, bb, out0, ogstep, okstep, r, i // 4, i % 4)
-
-
-@T.macro
-def _tiny_twiddle(w, index, size: int, e: int):
-    """Select a stage twiddle into a buffer that survives the macro boundary."""
-    if e < size // 2:
-        if index % (size // 2) == e:
-            w[0] = _root(e, size)[0]
-            w[1] = _root(e, size)[1]
-        _tiny_twiddle(w, index, size, e + 1)
-
-
-@T.macro
-def _tiny_butterfly(reg, tmp, pair, diff, lane, size: int, lanes: int, q: int):
-    """One DIF butterfly of slot q against its partner *size* / 2 away, by shuffle or register.
-
-    ``pair`` is dead once ``diff`` is formed, so it then carries the twiddle.
-    """
-    if size // 2 < lanes:
-        pair[0] = T.shfl_xor(tmp[q, 0], size // 2, width=lanes)
-        pair[1] = T.shfl_xor(tmp[q, 1], size // 2, width=lanes)
-    else:
-        pair[0] = tmp[q ^ (size // 2 // lanes), 0]
-        pair[1] = tmp[q ^ (size // 2 // lanes), 1]
-    if (q * lanes + lane) % size < size // 2:
-        reg[q, 0] = tmp[q, 0] + pair[0]
-        reg[q, 1] = tmp[q, 1] + pair[1]
-    else:
-        diff[0] = pair[0] - tmp[q, 0]
-        diff[1] = pair[1] - tmp[q, 1]
-        pair[0] = 1.0
-        pair[1] = 0.0
-        _tiny_twiddle(pair, q * lanes + lane, size, 1)
-        reg[q, 0] = diff[0] * pair[0] - diff[1] * pair[1]
-        reg[q, 1] = diff[0] * pair[1] + diff[1] * pair[0]
-
-
-@T.macro
-def _tiny_network(reg, tmp, pair, diff, lane, n: int, lanes: int, ept: int):
-    """Apply the DIF stages recursively, each over a copy of the register file."""
-    if n >= 2:
-        for k in T.unroll(ept):
-            tmp[k, 0] = reg[k, 0]
-            tmp[k, 1] = reg[k, 1]
-        _each(_tiny_butterfly, (reg, tmp, pair, diff, lane, n, lanes), 0, ept)
-        _tiny_network(reg, tmp, pair, diff, lane, n // 2, lanes, ept)
-
-
-@T.macro
-def _tiny_reverse_one(reg, tmp, io, pair, lane, lanes: int, ept: int, bits: int, q: int):
-    """Gather slot q's bit-reversed output; both halves are shuffled and picked by an ``if``."""
-    for j in T.unroll(2 * ept):
-        io[j] = T.tvm_warp_shuffle(
-            T.uint32(0xFFFFFFFF),
-            tmp[j // 2, j % 2],
-            _bit_reverse(q * lanes + lane, bits) % lanes,
-            lanes,
-            32,
-        )
-    pair[0] = io[0]
-    pair[1] = io[1]
-    # Nested: `and` would build a runtime T.And instead of folding the ept test.
-    if ept == 2:  # noqa: SIM102
-        if _bit_reverse(q * lanes + lane, bits) // lanes == 1:
-            pair[0] = io[2]
-            pair[1] = io[3]
-    reg[q, 0] = pair[0]
-    reg[q, 1] = pair[1]
 
 
 def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
@@ -644,6 +469,77 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
         compile_flags=["-O3"],
     )
     def _func(row: int, grp: int):
+        def _bit_reverse(position, bits: int):
+            """*position* with its *bits* low bits reversed, as a straight-line expression."""
+            total = ((position // 1) % 2) * (1 << (bits - 1))
+            for bit in range(1, bits):
+                total = total + ((position // (1 << bit)) % 2) * (1 << (bits - 1 - bit))
+            return total
+
+        @T.macro
+        def _tiny_twiddle(w, index, size: int, e: int):
+            """Select a stage twiddle into a buffer that survives the macro boundary."""
+            if e < size // 2:
+                if index % (size // 2) == e:
+                    w[0] = _root(e, size)[0]
+                    w[1] = _root(e, size)[1]
+                _tiny_twiddle(w, index, size, e + 1)
+
+        @T.macro
+        def _tiny_butterfly(reg, tmp, pair, diff, lane, size: int, lanes: int, q: int):
+            """One DIF butterfly of slot q against its partner *size* / 2 away, by shuffle or register.
+
+            ``pair`` is dead once ``diff`` is formed, so it then carries the twiddle.
+            """
+            if size // 2 < lanes:
+                pair[0] = T.shfl_xor(tmp[q, 0], size // 2, width=lanes)
+                pair[1] = T.shfl_xor(tmp[q, 1], size // 2, width=lanes)
+            else:
+                pair[0] = tmp[q ^ (size // 2 // lanes), 0]
+                pair[1] = tmp[q ^ (size // 2 // lanes), 1]
+            if (q * lanes + lane) % size < size // 2:
+                reg[q, 0] = tmp[q, 0] + pair[0]
+                reg[q, 1] = tmp[q, 1] + pair[1]
+            else:
+                diff[0] = pair[0] - tmp[q, 0]
+                diff[1] = pair[1] - tmp[q, 1]
+                pair[0] = 1.0
+                pair[1] = 0.0
+                _tiny_twiddle(pair, q * lanes + lane, size, 1)
+                reg[q, 0] = diff[0] * pair[0] - diff[1] * pair[1]
+                reg[q, 1] = diff[0] * pair[1] + diff[1] * pair[0]
+
+        @T.macro
+        def _tiny_network(reg, tmp, pair, diff, lane, n: int, lanes: int, ept: int):
+            """Apply the DIF stages recursively, each over a copy of the register file."""
+            if n >= 2:
+                for k in T.unroll(ept):
+                    tmp[k, 0] = reg[k, 0]
+                    tmp[k, 1] = reg[k, 1]
+                _each(_tiny_butterfly, (reg, tmp, pair, diff, lane, n, lanes), 0, ept)
+                _tiny_network(reg, tmp, pair, diff, lane, n // 2, lanes, ept)
+
+        @T.macro
+        def _tiny_reverse_one(reg, tmp, io, pair, lane, lanes: int, ept: int, bits: int, q: int):
+            """Gather slot q's bit-reversed output; both halves are shuffled and picked by an ``if``."""
+            for j in T.unroll(2 * ept):
+                io[j] = T.tvm_warp_shuffle(
+                    T.uint32(0xFFFFFFFF),
+                    tmp[j // 2, j % 2],
+                    _bit_reverse(q * lanes + lane, bits) % lanes,
+                    lanes,
+                    32,
+                )
+            pair[0] = io[0]
+            pair[1] = io[1]
+            # Nested: `and` would build a runtime T.And instead of folding the ept test.
+            if ept == 2:  # noqa: SIM102
+                if _bit_reverse(q * lanes + lane, bits) // lanes == 1:
+                    pair[0] = io[2]
+                    pair[1] = io[3]
+            reg[q, 0] = pair[0]
+            reg[q, 1] = pair[1]
+
         batch = T.dynamic("batch")
 
         @T.prim_func
@@ -691,37 +587,6 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
     return _func
 
 
-@T.macro
-def _warp8_last_128(y_pair, reg, pair, bb, k1, half, real_dtype: str, q: int):
-    """One output pair of n = 128's final radix-2 combine, by warp shuffle."""
-    pair[0] = T.shfl_xor(reg[_perm(q, 8), 0], 1)
-    pair[1] = T.shfl_xor(reg[_perm(q, 8), 1], 1)
-    er = T.alloc_var(real_dtype)
-    ei = T.alloc_var(real_dtype)
-    orr = T.alloc_var(real_dtype)
-    oi = T.alloc_var(real_dtype)
-    if half == 0:
-        er = reg[_perm(q, 8), 0]
-        ei = reg[_perm(q, 8), 1]
-        orr = pair[0]
-        oi = pair[1]
-    else:
-        er = pair[0]
-        ei = pair[1]
-        orr = reg[_perm(q, 8), 0]
-        oi = reg[_perm(q, 8), 1]
-    tr = orr * _root(q, 16)[0] - oi * _root(q, 16)[1]
-    ti = orr * _root(q, 16)[1] + oi * _root(q, 16)[0]
-    if half == 0:
-        pair[0] = er + tr
-        pair[1] = ei + ti
-    else:
-        pair[0] = er - tr
-        pair[1] = ei - ti
-    for v in T.vectorized(2):
-        y_pair[bb, k1 + 8 * q + half * 64, v] = pair[v]
-
-
 def _build_warp8(n: int, real_dtype: str) -> Any:
     """The register-DFT8 kernel for n = 64 or 128; a transform's lanes stay in one warp."""
     lanes = n // 8
@@ -734,6 +599,36 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
         compile_flags=["-O3"],
     )
     def _func(row: int, grp: int):
+        @T.macro
+        def _warp8_last_128(y_pair, reg, pair, bb, k1, half, real_dtype: str, q: int):
+            """One output pair of n = 128's final radix-2 combine, by warp shuffle."""
+            pair[0] = T.shfl_xor(reg[_perm(q, 8), 0], 1)
+            pair[1] = T.shfl_xor(reg[_perm(q, 8), 1], 1)
+            er = T.alloc_var(real_dtype)
+            ei = T.alloc_var(real_dtype)
+            orr = T.alloc_var(real_dtype)
+            oi = T.alloc_var(real_dtype)
+            if half == 0:
+                er = reg[_perm(q, 8), 0]
+                ei = reg[_perm(q, 8), 1]
+                orr = pair[0]
+                oi = pair[1]
+            else:
+                er = pair[0]
+                ei = pair[1]
+                orr = reg[_perm(q, 8), 0]
+                oi = reg[_perm(q, 8), 1]
+            tr = orr * _root(q, 16)[0] - oi * _root(q, 16)[1]
+            ti = orr * _root(q, 16)[1] + oi * _root(q, 16)[0]
+            if half == 0:
+                pair[0] = er + tr
+                pair[1] = ei + ti
+            else:
+                pair[0] = er - tr
+                pair[1] = ei - ti
+            for v in T.vectorized(2):
+                y_pair[bb, k1 + 8 * q + half * 64, v] = pair[v]
+
         batch = T.dynamic("batch")
 
         @T.prim_func
@@ -1010,6 +905,39 @@ def _build_four_pass(n: int, real_dtype: str) -> Any:
         compile_flags=["-O3"],
     )
     def _func(row: int, grp: int):
+        @T.macro
+        def _pass4_gathers(vals, reg, tx, m3, r: int, k: int, j: int):
+            """Lane j onward of the r values a k2-group needs, each out of its own lane."""
+            if j < r:
+                vals[j, 0] = T.tvm_warp_shuffle(
+                    T.uint32(0xFFFFFFFF), reg[_perm(k, 16), 0], tx - m3 + j, r, 32
+                )
+                vals[j, 1] = T.tvm_warp_shuffle(
+                    T.uint32(0xFFFFFFFF), reg[_perm(k, 16), 1], tx - m3 + j, r, 32
+                )
+                _pass4_gathers(vals, reg, tx, m3, r, k, j + 1)
+
+        @T.macro
+        def _pass4_pick(st, vals, m3, r: int, j: int):
+            """Slot j onward of the runtime pick; m3 is a scalar, so this is an if chain."""
+            if j < r:
+                if m3 == j:
+                    st[0] = vals[j, 0]
+                    st[1] = vals[j, 1]
+                _pass4_pick(st, vals, m3, r, j + 1)
+
+        @T.macro
+        def _pass4_shuffle_one(y_pair, reg, vals, st, bb, tx, k2, m3, r: int, k: int):
+            """Gather and combine one final-pass output without a dynamic register index."""
+            _pass4_gathers(vals, reg, tx, m3, r, k, 0)
+            _dft(vals, 0, r)
+            st[0] = vals[0, 0]
+            st[1] = vals[0, 1]
+            _pass4_pick(st, vals, m3, r, 1)
+            idx = k2 + 256 * k + 4096 * m3
+            for v in T.vectorized(2):
+                y_pair[bb, idx, v] = st[v]
+
         batch = T.dynamic("batch")
 
         @T.prim_func
@@ -1090,195 +1018,6 @@ def _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw: int, row: int, g
     T.sync_threads()
 
 
-@T.macro
-def _four_step_a_body(
-    x_pair,
-    w1lut,
-    w2lut,
-    twlut,
-    t_pair,
-    bx,
-    by,
-    bb,
-    tw: int,
-    row: int,
-    grp: int,
-    rowlen: int,
-    n1: int,
-    n2: int,
-    real_dtype: str,
-):
-    """Kernel A: the column pass, the four-step twiddle, and the store to T.
-
-    A CTA runs ``tw`` columns; with ``col = t % tw`` fastest, both global accesses coalesce.
-    """
-    t = T.get_thread_binding()
-    col = t % tw
-    lane = t // tw
-    ja = bx * tw + col
-    reg = T.alloc_local((16, 2), real_dtype)
-    st = T.alloc_local((2,), real_dtype)
-    tmp = T.alloc_local((2,), real_dtype)
-    # twb: per-lane four-step base; twg = twb * P_p; twk = twg * Q_q.
-    cw = T.alloc_local((2,), real_dtype)
-    twb = T.alloc_local((2,), real_dtype)
-    twg = T.alloc_local((2,), real_dtype)
-    twk = T.alloc_local((2,), real_dtype)
-    pq = T.alloc_local((2,), real_dtype)
-    s_re = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
-    s_im = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
-    s_w1 = T.alloc_shared((n1 // 16, 2), real_dtype)
-    if _factor_passes(n1) == 3:
-        s_w2 = T.alloc_shared((_factor_radix(n1), 2), real_dtype)
-    s_tw = T.alloc_shared((len(_twiddle_exps(n1)), tw, 2), real_dtype)
-    if t < n1 // 16:
-        for v in T.vectorized(2):
-            s_w1[t, v] = w1lut[t, v]
-    if _factor_passes(n1) == 3:  # noqa: SIM102
-        if t < _factor_radix(n1):
-            for v in T.vectorized(2):
-                s_w2[t, v] = w2lut[t, v]
-    # A factor below 256 has fewer lanes than table rows and needs a second pass.
-    if t < len(_twiddle_exps(n1)) * tw:
-        for v in T.vectorized(2):
-            s_tw[lane, col, v] = twlut[lane, bx * tw + col, v]
-    if len(_twiddle_exps(n1)) > n1 // 16:  # noqa: SIM102
-        if lane + n1 // 16 < len(_twiddle_exps(n1)):
-            for v in T.vectorized(2):
-                s_tw[lane + n1 // 16, col, v] = twlut[lane + n1 // 16, bx * tw + col, v]
-    T.sync_threads()
-
-    # pass 1: read x[(j*lanes + lane)*n2 + j_a], DFT16, twiddle W_n1^(lane*k1)
-    _read_pairs(x_pair, reg, bb, by * rowlen + lane * n2 + ja, (n1 // 16) * n2, 16)
-    _dft(reg, 0, 16)
-    for v in T.vectorized(2):
-        st[v] = s_w1[lane, v]
-    _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
-    _write_perm16(s_re, s_im, reg, lane * tw + col, row * tw)
-    T.sync_threads()
-
-    if _factor_passes(n1) == 3:
-        _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, n1)
-
-    # twb = W_rowlen^(j_a*lane) = W^(j_a*l) * W^(s*j_a*h), lane = l + s*h.
-    for v in T.vectorized(2):
-        pq[v] = s_tw[lane % _lane_split(n1), col, v]
-    for v in T.vectorized(2):
-        st[v] = s_tw[_lane_split(n1) + lane // _lane_split(n1), col, v]
-    twb[0] = pq[0] * st[0] - pq[1] * st[1]
-    twb[1] = pq[0] * st[1] + pq[1] * st[0]
-
-    # Last pass, twiddle, and the store to T[k_b][j_a]; a three-pass factor reads S2.
-    if _factor_passes(n1) == 2:
-        base = lane * row * tw + col
-        gstep = (n1 // 16) * row * tw
-    else:
-        base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
-        gstep = _factor_radix(n1) * 16 * grp * tw
-    _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(n1))
-    _dft_group(reg, _factor_radix(n1), 0)
-    _each(
-        _four_step_a_out,
-        (
-            t_pair,
-            s_tw,
-            col,
-            reg,
-            st,
-            tmp,
-            twb,
-            twg,
-            twk,
-            bb,
-            by * rowlen + lane * n2 + ja,
-            (n1 // 16) * n2,
-            (n1 // 16) * 16 // _factor_radix(n1) * n2,
-            _factor_radix(n1),
-            _lane_split(n1) + (n1 // 16) // _lane_split(n1),
-        ),
-        0,
-        16,
-    )
-
-
-@T.macro
-def _four_step_b_body(
-    t_pair,
-    w1lut,
-    w2lut,
-    y_pair,
-    bx,
-    by,
-    bb,
-    tw: int,
-    row: int,
-    grp: int,
-    nf: int,
-    tiled: int,
-    row_stride: int,
-    out_stride: int,
-    real_dtype: str,
-):
-    """Kernel B: the row pass over T[k_b][:] and the store to natural order; no twiddle."""
-    t = T.get_thread_binding()
-    col = t % tw
-    lane = t // tw
-    kb = bx * tw + col
-    reg = T.alloc_local((16, 2), real_dtype)
-    st = T.alloc_local((2,), real_dtype)
-    cw = T.alloc_local((2,), real_dtype)
-    s_re = T.alloc_shared((_four_step_smem(nf, tw, row, grp),), real_dtype)
-    s_im = T.alloc_shared((_four_step_smem(nf, tw, row, grp),), real_dtype)
-    s_w1 = T.alloc_shared((nf // 16, 2), real_dtype)
-    if _factor_passes(nf) == 3:
-        s_w2 = T.alloc_shared((_factor_radix(nf), 2), real_dtype)
-    if t < nf // 16:
-        for v in T.vectorized(2):
-            s_w1[t, v] = w1lut[t, v]
-    if _factor_passes(nf) == 3:  # noqa: SIM102
-        if t < _factor_radix(nf):
-            for v in T.vectorized(2):
-                s_w2[t, v] = w2lut[t, v]
-    T.sync_threads()
-
-    # pass 1: read T[k_b][j*lanes + lane], DFT16, twiddle W_nf^(lane*k1)
-    _read_pairs(t_pair, reg, bb, kb * row_stride + by * nf + lane, nf // 16, 16)
-    _dft(reg, 0, 16)
-    for v in T.vectorized(2):
-        st[v] = s_w1[lane, v]
-    _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
-    _write_perm16(s_re, s_im, reg, lane * tw + col, row * tw)
-    T.sync_threads()
-
-    if _factor_passes(nf) == 3:
-        _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, nf)
-
-    # Last pass and the store to X[k_a*out_stride + k_b].
-    if _factor_passes(nf) == 2:
-        base = lane * row * tw + col
-        gstep = (nf // 16) * row * tw
-    else:
-        base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
-        gstep = _factor_radix(nf) * 16 * grp * tw
-    _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(nf))
-    _dft_group(reg, _factor_radix(nf), 0)
-    _each(
-        _four_step_b_out,
-        (
-            y_pair,
-            reg,
-            st,
-            bb,
-            lane * out_stride + by * tiled + kb,
-            (nf // 16) * out_stride,
-            (nf // 16) * 16 // _factor_radix(nf) * out_stride,
-            _factor_radix(nf),
-        ),
-        0,
-        16,
-    )
-
-
 def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
     """Column kernel *level* of a four-step plan: length-n1 transforms, twiddle, T[k_b][j_a]."""
     total = math.prod(factors)
@@ -1302,6 +1041,158 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
     )
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* columns per CTA and strides *row*, *grp*; two passes ignore grp."""
+
+        @T.macro
+        def _fs_power(dst, src, tmp, s_tw, col, base: int, e: int):
+            """dst = src times the e'th tabulated power of one half of u; e = 0 is a copy."""
+            if e == 0:
+                dst[0] = src[0]
+                dst[1] = src[1]
+            else:
+                for v in T.vectorized(2):
+                    tmp[v] = s_tw[base + e - 1, col, v]
+                dst[0] = src[0] * tmp[0] - src[1] * tmp[1]
+                dst[1] = src[0] * tmp[1] + src[1] * tmp[0]
+
+        @T.macro
+        def _four_step_a_out(
+            out_pair,
+            s_tw,
+            col,
+            reg,
+            st,
+            tmp,
+            twb,
+            twg,
+            twk,
+            bb,
+            out0,
+            ogstep,
+            okstep,
+            r: int,
+            pbase: int,
+            i: int,
+        ):
+            """Output u = p + 4q of kernel A's last pass, twiddled by ``twb * P_p * Q_q``; p = i // 4."""
+            pw = i // 4
+            qw = i % 4
+            if qw == 0:
+                _fs_power(twg, twb, tmp, s_tw, col, pbase, pw)
+            _fs_power(twk, twg, tmp, s_tw, col, pbase + 3, qw)
+            st[0] = reg[_fs_slot(pw, qw, r), 0] * twk[0] - reg[_fs_slot(pw, qw, r), 1] * twk[1]
+            st[1] = reg[_fs_slot(pw, qw, r), 0] * twk[1] + reg[_fs_slot(pw, qw, r), 1] * twk[0]
+            _fs_store(out_pair, st, bb, out0, ogstep, okstep, r, pw, qw)
+
+        @T.macro
+        def _four_step_a_body(
+            x_pair,
+            w1lut,
+            w2lut,
+            twlut,
+            t_pair,
+            bx,
+            by,
+            bb,
+            tw: int,
+            row: int,
+            grp: int,
+            rowlen: int,
+            n1: int,
+            n2: int,
+            real_dtype: str,
+        ):
+            """Kernel A: the column pass, the four-step twiddle, and the store to T.
+
+            A CTA runs ``tw`` columns; with ``col = t % tw`` fastest, both global accesses coalesce.
+            """
+            t = T.get_thread_binding()
+            col = t % tw
+            lane = t // tw
+            ja = bx * tw + col
+            reg = T.alloc_local((16, 2), real_dtype)
+            st = T.alloc_local((2,), real_dtype)
+            tmp = T.alloc_local((2,), real_dtype)
+            # twb: per-lane four-step base; twg = twb * P_p; twk = twg * Q_q.
+            cw = T.alloc_local((2,), real_dtype)
+            twb = T.alloc_local((2,), real_dtype)
+            twg = T.alloc_local((2,), real_dtype)
+            twk = T.alloc_local((2,), real_dtype)
+            pq = T.alloc_local((2,), real_dtype)
+            s_re = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
+            s_im = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
+            s_w1 = T.alloc_shared((n1 // 16, 2), real_dtype)
+            if _factor_passes(n1) == 3:
+                s_w2 = T.alloc_shared((_factor_radix(n1), 2), real_dtype)
+            s_tw = T.alloc_shared((len(_twiddle_exps(n1)), tw, 2), real_dtype)
+            if t < n1 // 16:
+                for v in T.vectorized(2):
+                    s_w1[t, v] = w1lut[t, v]
+            if _factor_passes(n1) == 3:  # noqa: SIM102
+                if t < _factor_radix(n1):
+                    for v in T.vectorized(2):
+                        s_w2[t, v] = w2lut[t, v]
+            # A factor below 256 has fewer lanes than table rows and needs a second pass.
+            if t < len(_twiddle_exps(n1)) * tw:
+                for v in T.vectorized(2):
+                    s_tw[lane, col, v] = twlut[lane, bx * tw + col, v]
+            if len(_twiddle_exps(n1)) > n1 // 16:  # noqa: SIM102
+                if lane + n1 // 16 < len(_twiddle_exps(n1)):
+                    for v in T.vectorized(2):
+                        s_tw[lane + n1 // 16, col, v] = twlut[lane + n1 // 16, bx * tw + col, v]
+            T.sync_threads()
+
+            # pass 1: read x[(j*lanes + lane)*n2 + j_a], DFT16, twiddle W_n1^(lane*k1)
+            _read_pairs(x_pair, reg, bb, by * rowlen + lane * n2 + ja, (n1 // 16) * n2, 16)
+            _dft(reg, 0, 16)
+            for v in T.vectorized(2):
+                st[v] = s_w1[lane, v]
+            _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
+            _write_perm16(s_re, s_im, reg, lane * tw + col, row * tw)
+            T.sync_threads()
+
+            if _factor_passes(n1) == 3:
+                _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, n1)
+
+            # twb = W_rowlen^(j_a*lane) = W^(j_a*l) * W^(s*j_a*h), lane = l + s*h.
+            for v in T.vectorized(2):
+                pq[v] = s_tw[lane % _lane_split(n1), col, v]
+            for v in T.vectorized(2):
+                st[v] = s_tw[_lane_split(n1) + lane // _lane_split(n1), col, v]
+            twb[0] = pq[0] * st[0] - pq[1] * st[1]
+            twb[1] = pq[0] * st[1] + pq[1] * st[0]
+
+            # Last pass, twiddle, and the store to T[k_b][j_a]; a three-pass factor reads S2.
+            if _factor_passes(n1) == 2:
+                base = lane * row * tw + col
+                gstep = (n1 // 16) * row * tw
+            else:
+                base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
+                gstep = _factor_radix(n1) * 16 * grp * tw
+            _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(n1))
+            _dft_group(reg, _factor_radix(n1), 0)
+            _each(
+                _four_step_a_out,
+                (
+                    t_pair,
+                    s_tw,
+                    col,
+                    reg,
+                    st,
+                    tmp,
+                    twb,
+                    twg,
+                    twk,
+                    bb,
+                    by * rowlen + lane * n2 + ja,
+                    (n1 // 16) * n2,
+                    (n1 // 16) * 16 // _factor_radix(n1) * n2,
+                    _factor_radix(n1),
+                    _lane_split(n1) + (n1 // 16) // _lane_split(n1),
+                ),
+                0,
+                16,
+            )
+
         batch = T.dynamic("batch")
         geom = (tw, row, grp, rowlen, n1, n2, real_dtype)
 
@@ -1361,6 +1252,91 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
     )
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* transforms per CTA and strides *row*, *grp*; two passes ignore grp."""
+
+        @T.macro
+        def _four_step_b_out(out_pair, reg, st, bb, out0, ogstep, okstep, r: int, i: int):
+            """Output u = p + 4q of kernel B's last pass, p = i // 4 and q = i % 4; no twiddle."""
+            st[0] = reg[_fs_slot(i // 4, i % 4, r), 0]
+            st[1] = reg[_fs_slot(i // 4, i % 4, r), 1]
+            _fs_store(out_pair, st, bb, out0, ogstep, okstep, r, i // 4, i % 4)
+
+        @T.macro
+        def _four_step_b_body(
+            t_pair,
+            w1lut,
+            w2lut,
+            y_pair,
+            bx,
+            by,
+            bb,
+            tw: int,
+            row: int,
+            grp: int,
+            nf: int,
+            tiled: int,
+            row_stride: int,
+            out_stride: int,
+            real_dtype: str,
+        ):
+            """Kernel B: the row pass over T[k_b][:] and the store to natural order; no twiddle."""
+            t = T.get_thread_binding()
+            col = t % tw
+            lane = t // tw
+            kb = bx * tw + col
+            reg = T.alloc_local((16, 2), real_dtype)
+            st = T.alloc_local((2,), real_dtype)
+            cw = T.alloc_local((2,), real_dtype)
+            s_re = T.alloc_shared((_four_step_smem(nf, tw, row, grp),), real_dtype)
+            s_im = T.alloc_shared((_four_step_smem(nf, tw, row, grp),), real_dtype)
+            s_w1 = T.alloc_shared((nf // 16, 2), real_dtype)
+            if _factor_passes(nf) == 3:
+                s_w2 = T.alloc_shared((_factor_radix(nf), 2), real_dtype)
+            if t < nf // 16:
+                for v in T.vectorized(2):
+                    s_w1[t, v] = w1lut[t, v]
+            if _factor_passes(nf) == 3:  # noqa: SIM102
+                if t < _factor_radix(nf):
+                    for v in T.vectorized(2):
+                        s_w2[t, v] = w2lut[t, v]
+            T.sync_threads()
+
+            # pass 1: read T[k_b][j*lanes + lane], DFT16, twiddle W_nf^(lane*k1)
+            _read_pairs(t_pair, reg, bb, kb * row_stride + by * nf + lane, nf // 16, 16)
+            _dft(reg, 0, 16)
+            for v in T.vectorized(2):
+                st[v] = s_w1[lane, v]
+            _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
+            _write_perm16(s_re, s_im, reg, lane * tw + col, row * tw)
+            T.sync_threads()
+
+            if _factor_passes(nf) == 3:
+                _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, nf)
+
+            # Last pass and the store to X[k_a*out_stride + k_b].
+            if _factor_passes(nf) == 2:
+                base = lane * row * tw + col
+                gstep = (nf // 16) * row * tw
+            else:
+                base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
+                gstep = _factor_radix(nf) * 16 * grp * tw
+            _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(nf))
+            _dft_group(reg, _factor_radix(nf), 0)
+            _each(
+                _four_step_b_out,
+                (
+                    y_pair,
+                    reg,
+                    st,
+                    bb,
+                    lane * out_stride + by * tiled + kb,
+                    (nf // 16) * out_stride,
+                    (nf // 16) * 16 // _factor_radix(nf) * out_stride,
+                    _factor_radix(nf),
+                ),
+                0,
+                16,
+            )
+
         batch = T.dynamic("batch")
         geom = (tw, row, grp, nf, tiled, row_stride, out_stride, real_dtype)
 
@@ -1402,6 +1378,18 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
 
 def _plan_table() -> Dict[tuple, FFTPlan]:
     """One record per served (length, dtype); every one-CTA builder takes (row, grp)."""
+
+    def _smem_pad(n: int, radix: tuple) -> tuple:
+        """The conflict-free (row, grp) strides of a three-pass plan; (0, 0) for the others.
+
+        Pass 2 spreads over the banks when row % 32 == r3; pass 3 when grp is odd.
+        """
+        if n < 1024 or len(radix) == 4:
+            return 0, 0
+        threads = n // 16
+        r3 = radix[2]
+        return threads + (r3 - threads) % 32, r3 + 1 - r3 % 2
+
     records = {}
     for n, radix in _RADIX_PLAN.items():
         for dtype in ("complex64", "complex128"):
