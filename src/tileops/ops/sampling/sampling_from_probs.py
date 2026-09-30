@@ -5,8 +5,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import SamplingCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.sampling import (
+    SamplingCall,
+    SamplingFromProbsFwdInterface,
+    SamplingFromProbsFwdKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["SamplingFromProbsFwdOp"]
@@ -21,11 +25,20 @@ class SamplingFromProbsFwdOp(Op):
     and inputs give the same samples. Which stream a pair selects belongs to the
     implementation, so two implementations need not draw the same samples from one pair.
 
-    No in-tree kernel implements this op yet, so a call raises ``OpNotAvailableError``
-    unless a target serves it.
+    The in-tree kernel takes the stream ``workloads/sampling.py`` states: the row's uniform
+    is the first output word of Philox4x32-10 keyed by ``(seed, offset)`` and counted by the
+    row index. The counter names no launch fact, so the same pair and inputs give the same
+    samples whatever the batch and whatever grid the call takes.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "sampling_from_probs": SamplingFromProbsFwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "sampling_from_probs": SamplingFromProbsFwdInterface
+    }
 
     def __init__(
         self,
@@ -59,12 +72,16 @@ class SamplingFromProbsFwdOp(Op):
         Returns:
             ``[B]`` int32 drawn indices.
         """
+        return self._call_boundary(probs, seed, offset)
+
+    def _eager_forward(
+        self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
+    ) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         probs = probs.contiguous()
         seed = seed.contiguous()
         offset = offset.contiguous()
         batch, vocab = probs.shape
-        call = SamplingCall(
-            device=probs.device, batch=batch, vocab=vocab, dtype=probs.dtype, tune=self.tune
-        )
+        call = SamplingCall(device=probs.device, batch=batch, vocab=vocab, dtype=probs.dtype)
         kernel = self.kernel_for("sampling_from_probs", (probs, seed, offset), call)
         return kernel(probs, seed, offset)

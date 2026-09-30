@@ -13,6 +13,7 @@ from tileops.kernels.kernel_base import KernelInterface
 __all__ = [
     "MinPMaskFwdInterface",
     "SamplingCall",
+    "SamplingFromProbsFwdInterface",
     "TopKMaskFwdInterface",
     "TopKTopPMaskFwdInterface",
     "TopPMaskFwdInterface",
@@ -104,4 +105,26 @@ class TopPMaskFwdInterface(KernelInterface):
 
         Returns:
             A new tensor shaped like *logits*, ``-inf`` where masked.
+        """
+
+
+class SamplingFromProbsFwdInterface(KernelInterface):
+    """Categorical draw: one token index per row, with probability proportional to the row."""
+
+    request = SamplingCall
+
+    @abstractmethod
+    def forward(
+        self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
+    ) -> torch.Tensor:
+        """Draw one index from each of the ``call.batch`` rows of *probs*.
+
+        Args:
+            probs: ``[call.batch, call.vocab]``, contiguous, ``float32`` on ``call.device``,
+                each row finite, non-negative and with a positive total.
+            seed: ``[1]`` ``int64`` Philox seed, on ``call.device``.
+            offset: ``[1]`` ``int64`` Philox offset, on ``call.device``.
+
+        Returns:
+            A new ``[call.batch]`` ``int32`` tensor of drawn indices.
         """

@@ -23,6 +23,7 @@ from tileops.kernels.sampling.row_tiles import (
     block_extremes,
     fold_extremes,
     load_vector,
+    row_split,
     store_masked,
     vector_width,
 )
@@ -394,9 +395,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         while threads > self._MIN_THREADS and call.batch * -(-vectors // threads) < call.sm_count:
             threads //= 2
         row_tiles = max(1, -(-vectors // threads))
-        # Split a row only while the batch leaves blocks idle, and never past its tiles.
-        # The grid barriers a split takes need the grid resident, which this keeps it.
-        self._parts = max(1, min(row_tiles, call.sm_count // max(call.batch, 1)))
+        self._parts = row_split(row_tiles, call.batch, call.sm_count)
 
         self._passes = -(-self._KEY_BITS[call.dtype] // (SEARCH_BINS - 1).bit_length())
         # The per-lane bins and their scan, plus at most one alignment each for the ten

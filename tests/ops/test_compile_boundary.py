@@ -74,6 +74,7 @@ from tileops.ops.rope import (
     RopeYarnFwdOp,
 )
 from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
+from tileops.ops.sampling.sampling_from_probs import SamplingFromProbsFwdOp
 from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
 from tileops.ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
 from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
@@ -563,7 +564,7 @@ def _other_cases():
 
 
 def _sampling_cases():
-    """The logit filters, each with the inputs it is built for."""
+    """The logit filters and the token draw, each with the inputs it is built for."""
 
     def min_p_mask():
         logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
@@ -580,7 +581,17 @@ def _sampling_cases():
         p = torch.full((4,), 0.9, device=run_device())
         return TopPMaskFwdOp(), (logits, p)
 
-    return (("min-p-mask", min_p_mask), ("top-k-mask", top_k_mask), ("top-p-mask", top_p_mask))
+    def sampling_from_probs():
+        probs = torch.rand(4, 256, device=run_device()).softmax(-1)
+        state = torch.tensor([7], dtype=torch.int64, device=run_device())
+        return SamplingFromProbsFwdOp(), (probs, state, state)
+
+    return (
+        ("min-p-mask", min_p_mask),
+        ("top-k-mask", top_k_mask),
+        ("top-p-mask", top_p_mask),
+        ("sampling-from-probs", sampling_from_probs),
+    )
 
 
 def _sequence_modeling_cases():
@@ -775,6 +786,7 @@ for _op_cls in (
     SmoothQuantFwdOp,
     MeanPoolingFwdOp,
     MinPMaskFwdOp,
+    SamplingFromProbsFwdOp,
     TopPMaskFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,

@@ -22,6 +22,7 @@ from tileops.kernels.sampling.row_tiles import (
     block_extremes,
     fold_extremes,
     load_vector,
+    row_split,
     store_masked,
     vector_width,
 )
@@ -236,9 +237,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
         while threads > self._MIN_THREADS and call.batch * -(-vectors // threads) < call.sm_count:
             threads //= 2
         row_tiles = max(1, -(-vectors // threads))
-        # Split a row only while the batch leaves blocks idle, and never past its tiles.
-        # The grid barrier a split takes needs the grid resident, which this keeps it.
-        self._parts = max(1, min(row_tiles, call.sm_count // max(call.batch, 1)))
+        self._parts = row_split(row_tiles, call.batch, call.sm_count)
         # The two reduction scratch buffers take one alignment of the budget each.
         smem_bytes = BLOCK_SHARED_BYTES_OPT_IN[call.arch] - 2 * SHARED_BUFFER_ALIGN_BYTES
         self._smem_tiles = smem_bytes // (threads * VECTOR_ACCESS_BYTES)
