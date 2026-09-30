@@ -231,7 +231,7 @@ FP8QuantPerBlockFwdOp:
   # The 128x128 block-scaled FP8 weight format of DeepSeek-V3 checkpoints; scale is the
   # dequantization multiplier stored as weight_scale_inv. Edge tiles may be partial.
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {N: Dim, K: Dim, T: "DType[bfloat16 | float16 | float32]"}
     inputs:
@@ -244,6 +244,8 @@ FP8QuantPerBlockFwdOp:
   - {N: 7168, K: 18432, dtype_cases: [{T: bfloat16}], label: ds-v3-mlp-down}
   - {N: 4096, K: 7168, dtype_cases: [{T: bfloat16}, {T: float32}], label: ds-v3-expert-gate-up}
   - {N: 9216, K: 4096, dtype_cases: [{T: bfloat16}, {T: float16}], label: qwen3-235b-qkv}
+  - {N: 2880, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-expert-down}
+  - {N: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
   roofline:
     # Per element: abs, the max, the scaling and the saturating cast; per tile: the scale and
     # its zero guard.

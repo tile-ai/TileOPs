@@ -8,7 +8,11 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import SM_RESIDENT_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import (
+    QUANT_SCALE_BLOCK,
+    SM_RESIDENT_BLOCKS,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.quantization.call_spec import (
     INT8DequantPerBlockFwdInterface,
@@ -397,20 +401,19 @@ def _int8_dequant_per_block_kernel(
         chunk = threads * vec
         block = chunk * steps
         full_blocks = n // block
-        # One scale per block_k codes of a row, the last one covering the k % block_k left;
-        # the scales of all rows form one flat run in the order of the codes they cover.
-        block_k = 128
-        per_row = -(-k // block_k)
+        # One scale per block of a row, the last one covering the codes left over; the
+        # scales of all rows form one flat run in the order of the codes they cover.
+        per_row = -(-k // QUANT_SCALE_BLOCK)
         scales = m * per_row
         # A vector crosses a scale boundary only when k is not a multiple of vec, and two
         # only when the short last group of a row fits inside it with a code on either side.
         straddles = k % vec != 0
-        three_scales = straddles and 0 < k % block_k <= vec - 2
+        three_scales = straddles and 0 < k % QUANT_SCALE_BLOCK <= vec - 2
         # Scales one vector may need.
         spans = 3 if three_scales else 2 if straddles else 1
-        # Scales one block's codes may need: a group starts at every 128th code of a row and
-        # at every row start.
-        block_scales = block // block_k + block // k + 3
+        # Scales one block's codes may need: a group starts at every block boundary of a row
+        # and at every row start.
+        block_scales = block // QUANT_SCALE_BLOCK + block // k + 3
 
         def code_to_float(code):
             return T.reinterpret(T.Cast(T.int32, code) + _CODE_BIAS_BITS, T.float32) - _CODE_BIAS
@@ -436,16 +439,20 @@ def _int8_dequant_per_block_kernel(
             # Step r's scales from src, which holds scale[first:] up to index last.
             row = base // k
             col = base - row * k
-            g = row * per_row + col // block_k - first
+            g = row * per_row + col // QUANT_SCALE_BLOCK - first
             for i in T.unroll(spans):
                 # Past the scales a vector needs, the index is clamped and the value unused.
                 s_local[r * spans + i] = src[T.min(g + i, last)]
             if straddles:
                 # The first scale boundary after base.
-                cross[r * 2] = row * k + T.min(k, (col // block_k + 1) * block_k) - base
+                cross[r * 2] = (
+                    row * k + T.min(k, (col // QUANT_SCALE_BLOCK + 1) * QUANT_SCALE_BLOCK) - base
+                )
             if three_scales:
                 # The group starting there is the next row's first, or this row's short last.
-                cross[r * 2 + 1] = cross[r * 2] + T.min(block_k, k - (base + cross[r * 2]) % k)
+                cross[r * 2 + 1] = cross[r * 2] + T.min(
+                    QUANT_SCALE_BLOCK, k - (base + cross[r * 2]) % k
+                )
 
         @T.macro
         def load_block_scales(scale, s_shared, s_local, cross, bx, tx):
@@ -453,7 +460,7 @@ def _int8_dequant_per_block_kernel(
                 # The block's scales go to shared memory once; each vector then reads its
                 # one to three scales there.
                 row = bx * block // k
-                first = row * per_row + (bx * block - row * k) // block_k
+                first = row * per_row + (bx * block - row * k) // QUANT_SCALE_BLOCK
                 for i in T.unroll(T.ceildiv(block_scales, threads)):
                     if i * threads + tx < block_scales:
                         s_shared[i * threads + tx] = scale[
@@ -502,7 +509,7 @@ def _int8_dequant_per_block_kernel(
                                 x[idx] = T.Cast(
                                     out_dtype,
                                     code_to_float(q[idx])
-                                    * scale[idx // k * per_row + idx % k // block_k],
+                                    * scale[idx // k * per_row + idx % k // QUANT_SCALE_BLOCK],
                                 )
                 elif bx < full_blocks:
                     # Every load of the block issues before the first conversion.

@@ -5,8 +5,13 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import QuantizeCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization import (
+    FP8QuantPerBlockFwdInterface,
+    FP8QuantPerBlockFwdKernel,
+    FP8QuantPerBlockUnalignedFwdKernel,
+    QuantizeCall,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["FP8QuantPerBlockFwdOp"]
@@ -21,11 +26,19 @@ class FP8QuantPerBlockFwdOp(Op):
     all-zero tile, and is the dequantization multiplier. ``q`` is each element divided by its
     tile's scale, clamped to ``[-448, 448]`` and rounded to the nearest ``float8_e4m3fn``.
 
-    The op has no in-tree kernel yet: a call raises ``OpNotAvailableError`` unless a
-    target serves it.
+    Both are bit-equal to the torch expression for every input, a tile holding an infinity
+    or a NaN and a tile whose scale is subnormal or rounds to zero included.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "fp8_quant_per_block_fwd": FP8QuantPerBlockFwdKernel,
+        "fp8_quant_per_block_unaligned_fwd": FP8QuantPerBlockUnalignedFwdKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "fp8_quant_per_block_fwd": FP8QuantPerBlockFwdInterface
+    }
 
     def __init__(
         self,
@@ -56,13 +69,16 @@ class FP8QuantPerBlockFwdOp(Op):
             ``q`` $[N \\times K]$ in ``float8_e4m3fn`` and ``scale``
                 $[\\lceil N / 128 \\rceil \\times \\lceil K / 128 \\rceil]$ in ``float32``.
         """
+        return self._call_boundary(w)
+
+    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,
             rows=w.shape[0],
             cols=w.shape[1],
             dtype=w.dtype,
-            tune=self.tune,
         )
         kernel = self.kernel_for("fp8_quant_per_block_fwd", (w,), call)
         return kernel(w)
