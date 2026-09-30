@@ -12,9 +12,9 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.call_spec import GemmW4A16Call, GemmW4A16FwdInterface
 from tileops.kernels.gemm.dense import splitk_reduce_kernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
 GROUP_SIZE = 128
@@ -830,7 +830,7 @@ def _gemm_w4a16_kernel(
     return build
 
 
-class GemmW4A16Kernel(Kernel):
+class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     """W4A16 NT GEMM reading a prepacked weight, dequantized into the A fragment.
 
     The weight must have been through `W4A16RepackKernel`. The row-major nibble
@@ -860,7 +860,7 @@ class GemmW4A16Kernel(Kernel):
     autotune_configs = None
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
+    def applies(cls, call: GemmW4A16Call) -> bool:
         """Every call with 128-wide groups that some whole-K tile covers.
 
         `GemmW4A16FwdOp` declares the repacked weight order, so a call that
@@ -870,11 +870,11 @@ class GemmW4A16Kernel(Kernel):
         return cls._region_refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: GemmCall) -> Optional[str]:
+    def refusal(cls, call: GemmW4A16Call) -> Optional[str]:
         return cls._region_refusal(call)
 
     @staticmethod
-    def _region_refusal(call: GemmCall) -> Optional[str]:
+    def _region_refusal(call: GemmW4A16Call) -> Optional[str]:
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if not _has_whole_k_tile(call.m, call.n, call.k, call.group_size):
@@ -882,7 +882,7 @@ class GemmW4A16Kernel(Kernel):
         return None
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> tuple:
+    def entry_for(cls, call: GemmW4A16Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
         return identity, lambda: cls(
@@ -890,7 +890,6 @@ class GemmW4A16Kernel(Kernel):
             call.n,
             call.k,
             call.dtype,
-            tune=call.tune,
             group_size=call.group_size,
             device_index=index,
         )

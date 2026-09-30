@@ -8,13 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, conv_autotune_configs, launch
-from tileops.kernels.convolution.call_spec import (
-    Conv2dCall,
-    conv2d_dense_region,
-    conv2d_group_region,
-    conv2d_pointwise_region,
-    conv2d_symmetric_region,
-)
+from tileops.kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
@@ -22,6 +16,7 @@ __all__ = [
     "Conv2d1x1Kernel",
     "Conv2dKernel",
     "Conv2dSymmetricKernel",
+    "DepthwiseConv2dKernel",
     "GroupConv2dKernel",
 ]
 
@@ -707,7 +702,14 @@ def _conv2d_symmetric_kernel(
     return _conv2d_symmetric_func
 
 
-class Conv2dSymmetricKernel(Kernel):
+class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
+    """Dense Conv2d staged through an NHWC implicit GEMM.
+
+    Serves the calls whose window, stride, padding and dilation are equal on both axes
+    and whose channel count is whole 32-element steps, which is what makes the
+    activation gather channel-contiguous.
+    """
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     # The m tiles this kernel builds. One tuple serves the region, the default
@@ -719,8 +721,15 @@ class Conv2dSymmetricKernel(Kernel):
     def applies(cls, call: Conv2dCall) -> bool:
         # The tile question is asked of this class, so a kernel_map override answers
         # for its own tiling rather than for the shipped one.
-        return conv2d_symmetric_region(call) and cls.tile_stays_in_one_image(
-            call.n, call.out_h * call.out_w, min(cls.block_m_candidates)
+        return (
+            call.groups == 1
+            and call.kernel_h == call.kernel_w
+            and call.stride[0] == call.stride[1]
+            and call.padding[0] == call.padding[1]
+            and call.padding_end in (None, call.padding)
+            and call.dilation[0] == call.dilation[1]
+            and call.c_in % 32 == 0
+            and cls.tile_stays_in_one_image(call.n, call.out_hw, min(cls.block_m_candidates))
         )
 
     @classmethod
@@ -743,7 +752,7 @@ class Conv2dSymmetricKernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
+            *args, has_bias=call.has_bias, device_index=index
         )
 
     def __init__(
@@ -861,13 +870,15 @@ class Conv2dSymmetricKernel(Kernel):
         return launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
 
 
-class Conv2dKernel(Kernel):
+class Conv2dKernel(Kernel, Conv2dFwdInterface):
+    """Dense Conv2d over the full kernel window; serves every ungrouped call."""
+
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
-        return conv2d_dense_region(call)
+        return call.groups == 1
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
@@ -892,7 +903,6 @@ class Conv2dKernel(Kernel):
             *args,
             pad_end=call.padding_end,
             has_bias=call.has_bias,
-            tune=call.tune,
             device_index=index,
         )
 
@@ -1010,12 +1020,14 @@ class Conv2dKernel(Kernel):
         return launch(self, x, weight, bias=bias)
 
 
-class GroupConv2dKernel(Kernel):
+class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
+    """Grouped Conv2d: one implicit GEMM per group over that group's channels."""
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
-        return conv2d_group_region(call)
+        return call.groups > 1
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
@@ -1036,7 +1048,7 @@ class GroupConv2dKernel(Kernel):
             call.dilation[1],
             call.dtype,
         )
-        group = (call.groups, call.c_in_g, call.c_out // call.groups)
+        group = (call.groups, call.c_in_g, call.c_out_g)
         return (*args, call.has_bias, *group, call.padding_end, index), lambda: cls(
             *args,
             pad_end=call.padding_end,
@@ -1044,7 +1056,6 @@ class GroupConv2dKernel(Kernel):
             groups=group[0],
             c_in_g=group[1],
             c_out_g=group[2],
-            tune=call.tune,
             device_index=index,
         )
 
@@ -1098,78 +1109,44 @@ class GroupConv2dKernel(Kernel):
         self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.groups * self.out_h * self.out_w
         self.k_total = self.c_in_g * kernel_h * kernel_w
-        self.use_direct = self.c_in_g == 1 and self.c_out_g == 1
-        self._validate_group_shape()
-
-        if self.use_direct:
-            self.kernel = _conv2d_depthwise_kernel(
-                n,
-                c_in,
-                h,
-                w,
-                c_out,
-                kernel_h,
-                kernel_w,
-                stride_h,
-                stride_w,
-                pad_h,
-                pad_w,
-                dilation_h,
-                dilation_w,
-                has_bias,
-                self.dtype_str,
-                pad_h_end=self.pad_h_end,
-                pad_w_end=self.pad_w_end,
-            )
-        else:
-            self.kernel = _conv2d_group_kernel(
-                n,
-                c_in,
-                h,
-                w,
-                c_out,
-                kernel_h,
-                kernel_w,
-                stride_h,
-                stride_w,
-                pad_h,
-                pad_w,
-                dilation_h,
-                dilation_w,
-                has_bias,
-                self.dtype_str,
-                groups,
-                self.c_in_g,
-                self.c_out_g,
-                pad_h_end=self.pad_h_end,
-                pad_w_end=self.pad_w_end,
-            )
-        self.init_config(config, tune)
-
-    def _validate_group_shape(self) -> None:
         if self.groups <= 1:
-            raise ValueError("GroupConv2dKernel requires groups > 1")
-        if self.c_in % self.groups != 0 or self.c_out % self.groups != 0:
+            raise ValueError(f"{type(self).__name__} requires groups > 1")
+        if self.c_in % self.groups or self.c_out % self.groups:
             raise ValueError(
-                f"GroupConv2dKernel requires c_in and c_out divisible by groups; "
+                f"{type(self).__name__} requires c_in and c_out divisible by groups; "
                 f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
             )
+        self._build_program()
+        self.init_config(config, tune)
+
+    def _build_program(self) -> None:
+        """Compile the grouped implicit GEMM over this call's group shape."""
+        self.kernel = _conv2d_group_kernel(
+            self.n,
+            self.c_in,
+            self.h,
+            self.w,
+            self.c_out,
+            self.kernel_h,
+            self.kernel_w,
+            self.stride_h,
+            self.stride_w,
+            self.pad_h,
+            self.pad_w,
+            self.dilation_h,
+            self.dilation_w,
+            self.has_bias,
+            self.dtype_str,
+            self.groups,
+            self.c_in_g,
+            self.c_out_g,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
+        )
 
     @property
     def default_config(self) -> dict:
-        if self.use_direct:
-            # No GEMM here, so block_k and num_stages carry nothing: one channel per block
-            # row, a strip of outputs per block column.
-            return {
-                "block_m": 1,
-                "block_n": 128,
-                "block_k": 1,
-                "num_stages": 1,
-                "threads": 128,
-                "enable_rasterization": True,
-            }
-        sm_version = get_sm_version(self.device_index)
-        if sm_version in {90}:
+        if get_sm_version(self.device_index) == 90:
             return {
                 "block_m": 64,
                 "block_n": 64,
@@ -1189,12 +1166,6 @@ class GroupConv2dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self.use_direct:
-            # One tile shape, since there is no GEMM to tile. The swizzle is still a
-            # choice, so both ways are searched.
-            return [
-                {**self.default_config, "enable_rasterization": value} for value in (False, True)
-            ]
         return conv_autotune_configs(self.dtype, self.device_index, threads=[128])
 
     def forward(
@@ -1206,12 +1177,83 @@ class GroupConv2dKernel(Kernel):
         return launch(self, x, weight, bias=bias)
 
 
-class Conv2d1x1Kernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+class DepthwiseConv2dKernel(GroupConv2dKernel):
+    """Depthwise Conv2d: one input channel per group, one output channel per group.
+
+    A different program from :class:`GroupConv2dKernel`: with a single channel per group
+    there is no contraction to tile, so each thread accumulates a strip of output
+    positions over the kernel window instead of running an implicit GEMM.
+    """
+
+    preferred_over = frozenset({"group_conv2d"})
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
-        return conv2d_pointwise_region(call)
+        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+
+    def _build_program(self) -> None:
+        self.kernel = _conv2d_depthwise_kernel(
+            self.n,
+            self.c_in,
+            self.h,
+            self.w,
+            self.c_out,
+            self.kernel_h,
+            self.kernel_w,
+            self.stride_h,
+            self.stride_w,
+            self.pad_h,
+            self.pad_w,
+            self.dilation_h,
+            self.dilation_w,
+            self.has_bias,
+            self.dtype_str,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
+        )
+
+    @property
+    def default_config(self) -> dict:
+        # No GEMM here, so block_k and num_stages carry nothing: one channel per block
+        # row, a strip of outputs per block column.
+        return {
+            "block_m": 1,
+            "block_n": 128,
+            "block_k": 1,
+            "num_stages": 1,
+            "threads": 128,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # One tile shape, since there is no GEMM to tile. The swizzle is still a
+        # choice, so both ways are searched.
+        return [{**self.default_config, "enable_rasterization": value} for value in (False, True)]
+
+
+class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
+    """Dense 1x1 Conv2d, which lowers to a pointwise GEMM over the channel axis.
+
+    A 1x1 window is symmetric, so this region nests inside
+    :class:`Conv2dSymmetricKernel`'s wherever the channel count admits it; the
+    pointwise program has no window to gather and wins there.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    preferred_over = frozenset({"conv2d_symmetric"})
+
+    @classmethod
+    def applies(cls, call: Conv2dCall) -> bool:
+        return (
+            call.groups == 1
+            and call.kernel_h == 1
+            and call.kernel_w == 1
+            and call.stride == (1, 1)
+            and call.padding == (0, 0)
+            and call.padding_end in (None, (0, 0))
+            and call.dilation == (1, 1)
+        )
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
@@ -1229,7 +1271,7 @@ class Conv2d1x1Kernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
+            *args, has_bias=call.has_bias, device_index=index
         )
 
     def __init__(

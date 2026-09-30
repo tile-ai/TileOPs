@@ -29,6 +29,13 @@ def _make_incompatible_arch_list() -> list[int]:
     return incompatible
 
 
+def _gemm_call():
+    """A dense GEMM call every in-tree implementation would otherwise serve."""
+    from tileops.kernels.gemm import GemmCall
+
+    return GemmCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
+
+
 @pytest.mark.smoke
 def test_construction_succeeds_where_the_device_cannot_be_queried(
     monkeypatch: pytest.MonkeyPatch,
@@ -75,34 +82,41 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     class IncompatibleGemm(GemmTmaKernel):
         supported_archs = incompatible_archs
 
-    op = GemmFwdOp(kernel_map={"gemm_tma_kernel": IncompatibleGemm})
+    op = GemmFwdOp(kernel_map={"gemm_tma": IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
+        op.kernel_for("gemm", (), _gemm_call())
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
-    """The auto-discovery path is refused at the same point, the same way."""
-    from tileops.kernels.gemm import GemmTmaKernel
+    """The auto-discovery path is refused at the same point, the same way.
+
+    Every implementation of the interface is made incompatible: one that is still
+    available serves the call, which is what makes the interface's general
+    implementation a fallback rather than a sibling of the one that went away.
+    """
     from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleGemm(GemmTmaKernel):
-        supported_archs = incompatible_archs
-
     class AutoDiscoveredIncompatibleOp(GemmFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
-            defaults = super().default_kernel_map
-            return {**defaults, "gemm_tma_kernel": IncompatibleGemm}
+            return {
+                key: type(
+                    f"Incompatible{cls.__name__}",
+                    (cls,),
+                    {} | {"supported_archs": incompatible_archs},
+                )
+                for key, cls in super().default_kernel_map.items()
+            }
 
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
+        op.kernel_for("gemm", (), _gemm_call())
 
 
 @pytest.mark.cuda_only

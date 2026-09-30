@@ -10,7 +10,7 @@ from tileops.kernels.gemm import (
     GemvKernel,
     W4A16RepackKernel,
 )
-from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.call_spec import GemmCall, GemmFp8Call
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
     _b_eviction,
@@ -33,6 +33,15 @@ from workloads.gemm import (
     quantize_weight_int4,
     repack_w4a16_weight,
 )
+
+
+def _gemm_call(m: int, n: int, k: int, *, dtype=torch.float16, trans_b: bool = True) -> GemmCall:
+    """One dense GEMM call on the SM90 board the regions were fitted on."""
+    return GemmCall(arch=90, sm_count=132, m=m, n=n, k=k, dtype=dtype, trans_b=trans_b)
+
+
+def _selects(op: GemmFwdOp, call: GemmCall) -> type:
+    return op.kernel_map[op.select_implementation("gemm", call)]
 
 
 class GemmTest(GemmWorkload, TestBase):
@@ -736,18 +745,18 @@ def test_gemm_fp8_block_scale_selection(
 ) -> None:
     """The 1D2D kernel serves its region; the general block kernel serves the rest."""
     n, k = 256, 512
-    call = GemmCall(
+    call = GemmFp8Call(
         m=m,
         n=n,
         k=k,
         dtype=torch.float8_e4m3fn,
-        trans_b=True,
         scale_a_shape=(m, k // 128),
         scale_b_shape=(-(-n // scale_b_rows), k // 128),
         out_dtype=out_dtype,
         has_bias=bias,
     )
-    assert GemmFp8FwdOp(out_dtype=out_dtype).select_kernel(call).__name__ == expected
+    op = GemmFp8FwdOp(out_dtype=out_dtype)
+    assert op.kernel_map[op.select_implementation("gemm_fp8", call)].__name__ == expected
 
 
 @pytest.mark.in_tree_kernels
@@ -756,20 +765,19 @@ def test_gemm_fp8_refuses_sm89() -> None:
     """SM89 has FP8 tensor cores but not the TMA and WGMMA the FP8 kernels are built on."""
     m, n, k = 128, 256, 512
     for scale_a_shape, scale_b_shape in (((1, 1), (1, 1)), ((m, k // 128), (n, k // 128))):
-        call = GemmCall(
+        call = GemmFp8Call(
             arch=89,
             sm_count=1,
             m=m,
             n=n,
             k=k,
             dtype=torch.float8_e4m3fn,
-            trans_b=True,
             scale_a_shape=scale_a_shape,
             scale_b_shape=scale_b_shape,
             out_dtype=torch.bfloat16,
         )
         with pytest.raises(ValueError, match="no implementation serves this call"):
-            GemmFp8FwdOp().select_kernel(call)
+            GemmFp8FwdOp().select_implementation("gemm_fp8", call)
 
 
 @pytest.mark.sm90
@@ -834,18 +842,16 @@ def test_lhs_rows_band_dispatch() -> None:
     enough for the operand-swapped grid. Selection only — no kernel is built, so this
     stays smoke-fast.
     """
-    nt = GemmFwdOp(trans_a=False, trans_b=True)
-    fp = torch.float16
-    two_rows = nt._call_spec(2, 2112, 7168, fp)
-    assert nt.select_kernel(two_rows) is GemvKernel
+    nt, nn = GemmFwdOp(trans_a=False, trans_b=True), GemmFwdOp(trans_a=False, trans_b=False)
+    two_rows = _gemm_call(2, 2112, 7168)
+    assert _selects(nt, two_rows) is GemvKernel
     assert GemvKernel.band_for(two_rows) == "lhs_rows"
-    assert nt.select_kernel(nt._call_spec(2, 7168, 2048, fp)) is GemmTmaKernel
-    assert nt.select_kernel(nt._call_spec(3, 2112, 7168, fp)) is GemmTmaKernel
-    one_row = nt._call_spec(1, 2112, 7168, fp)
-    assert nt.select_kernel(one_row) is GemvKernel
+    assert _selects(nt, _gemm_call(2, 7168, 2048)) is GemmTmaKernel
+    assert _selects(nt, _gemm_call(3, 2112, 7168)) is GemmTmaKernel
+    one_row = _gemm_call(1, 2112, 7168)
+    assert _selects(nt, one_row) is GemvKernel
     assert GemvKernel.band_for(one_row) == "lhs_row"
-    nn = GemmFwdOp(trans_a=False, trans_b=False)
-    assert nn.select_kernel(nn._call_spec(2, 2112, 7168, fp)) is GemmTmaKernel
+    assert _selects(nn, _gemm_call(2, 2112, 7168, trans_b=False)) is GemmTmaKernel
 
 
 @pytest.mark.sm90
@@ -861,12 +867,10 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
     from tileops.utils import get_sm_count
 
     fp = torch.float16
-    nt = GemmFwdOp(trans_a=False, trans_b=True)
-    nn = GemmFwdOp(trans_a=False, trans_b=False)
 
-    rows_identity, _ = GemvKernel.entry_for(nt._call_spec(2, 2112, 7168, fp))
-    row_identity, _ = GemvKernel.entry_for(nt._call_spec(1, 2112, 7168, fp))
-    col_identity, _ = GemvKernel.entry_for(nn._call_spec(2112, 1, 7168, fp))
+    rows_identity, _ = GemvKernel.entry_for(_gemm_call(2, 2112, 7168))
+    row_identity, _ = GemvKernel.entry_for(_gemm_call(1, 2112, 7168))
+    col_identity, _ = GemvKernel.entry_for(_gemm_call(2112, 1, 7168, trans_b=False))
     assert rows_identity[0] == "lhs_rows"
     assert row_identity[0] == "lhs_row"
     assert col_identity[0] == "rhs_col"
@@ -926,23 +930,22 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
     Routing only — the aligned shapes already run end to end in ``GemmFixture``.
     """
     nt, nn = GemmFwdOp(trans_a=False, trans_b=True), GemmFwdOp(trans_a=False, trans_b=False)
-    fp = torch.bfloat16
+    bf = torch.bfloat16
 
-    misaligned_k = nt._call_spec(256, 512, 1001, fp)
-    assert nt.select_kernel(misaligned_k) is GemmCpAsyncKernel
+    misaligned_k = _gemm_call(256, 512, 1001, dtype=bf)
+    assert _selects(nt, misaligned_k) is GemmCpAsyncKernel
     assert "multiple of 8 elements" in GemmTmaKernel.refusal(misaligned_k)
     assert "k=1001" in GemmTmaKernel.refusal(misaligned_k)
 
-    misaligned_n = nn._call_spec(256, 511, 1024, fp)
-    assert nn.select_kernel(misaligned_n) is GemmCpAsyncKernel
+    misaligned_n = _gemm_call(256, 511, 1024, dtype=bf, trans_b=False)
+    assert _selects(nn, misaligned_n) is GemmCpAsyncKernel
     assert "n=511" in GemmTmaKernel.refusal(misaligned_n)
 
-    assert nt.select_kernel(nt._call_spec(256, 511, 1024, fp)) is GemmTmaKernel
-    assert nt.select_kernel(nt._call_spec(1, 512, 1001, fp)) is GemvKernel
-    assert nt._call_spec(1, 512, 1001, fp).gemv_mode == "lhs_row"
+    assert _selects(nt, _gemm_call(256, 511, 1024, dtype=bf)) is GemmTmaKernel
+    assert _selects(nt, _gemm_call(1, 512, 1001, dtype=bf)) is GemvKernel
 
     with pytest.raises(ValueError, match=r"cannot serve 256x512x1001"):
-        GemmTmaKernel(256, 512, 1001, fp, trans_a=False, trans_b=True)
+        GemmTmaKernel(256, 512, 1001, bf, trans_a=False, trans_b=True)
 
 
 @pytest.mark.cuda_only
@@ -1016,8 +1019,8 @@ def test_structure_routing_matches_test_ids() -> None:
 
     for test_id, m, n, k, dtype, trans_b, want in expected:
         op = GemmFwdOp(trans_a=False, trans_b=trans_b)
-        call = op._call_spec(m, n, k, dtype)
-        cls = op.select_kernel(call)
+        call = _gemm_call(m, n, k, dtype=dtype, trans_b=trans_b)
+        cls = _selects(op, call)
         assert cls is GemmTmaKernel, f"{test_id}: expected the generic kernel, got {cls.__name__}"
         _identity, build = cls.entry_for(call)
         config = build().config
@@ -1333,7 +1336,7 @@ def test_gemm_w4a16_repack_feeds_forward() -> None:
     activation, _, scale, zero = test.gen_inputs()
     packed = test.row_major_weight
 
-    prepacked = GemmW4A16FwdOp.repack(packed)
+    prepacked = GemmW4A16FwdOp().repack(packed)
     actual = GemmW4A16FwdOp()(activation, prepacked, scale, zero)
 
     torch.testing.assert_close(
@@ -1344,4 +1347,4 @@ def test_gemm_w4a16_repack_feeds_forward() -> None:
 @pytest.mark.smoke
 def test_gemm_w4a16_repack_refuses_a_partial_k_step() -> None:
     with pytest.raises(ValueError, match="multiple of 64"):
-        GemmW4A16FwdOp.repack(torch.zeros((8, 96), dtype=torch.uint8, device=run_device()))
+        GemmW4A16FwdOp().repack(torch.zeros((8, 96), dtype=torch.uint8, device=run_device()))

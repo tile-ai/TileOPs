@@ -5,10 +5,11 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.grouped_gemm import (
     GroupedGemmCall,
+    GroupedGemmFwdInterface,
     GroupedGemmKernel,
     GroupedGemmPersistentKernel,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -38,8 +39,11 @@ class GroupedGemmFwdOp(Op):
     # The SM90 template serves every layout whose extents TMA can address; the
     # general kernel takes what it refuses.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "grouped_gemm_kernel": GroupedGemmKernel,
+        "grouped_gemm": GroupedGemmKernel,
         "grouped_gemm_persistent": GroupedGemmPersistentKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "grouped_gemm": GroupedGemmFwdInterface
     }
 
     def __init__(
@@ -125,7 +129,6 @@ class GroupedGemmFwdOp(Op):
             dtype=a.dtype,
             transpose_a=self.transpose_a,
             transpose_b=self.transpose_b,
-            tune=self.tune,
             device=a.device,
         )
         return self.kernel_for("grouped_gemm", inputs, call)(*inputs)

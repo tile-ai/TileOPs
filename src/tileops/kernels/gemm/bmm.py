@@ -11,7 +11,14 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops.kernels.gemm.call_spec import BmmCall
+from tileops.kernels.gemm.call_spec import (
+    BmmCall,
+    BmmFp8Call,
+    BmmFp8FwdInterface,
+    BmmFp8TransposeCall,
+    BmmFp8TransposeInterface,
+    BmmFwdInterface,
+)
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -19,7 +26,9 @@ from tileops.utils import device_calibration, get_sm_count, get_sm_version
 
 __all__ = [
     "BmmFp8Kernel",
+    "BmmFp8PersistentKernel",
     "BmmFp8TransposeKernel",
+    "BmmFp8WsKernel",
     "BmmKernel",
     "BmmPersistentKernel",
 ]
@@ -635,7 +644,7 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
     return _bmm_fp8_transpose_func
 
 
-class BmmKernel(Kernel):
+class BmmKernel(Kernel, BmmFwdInterface):
     """Batched dense GEMM kernel (SM90).
 
     Computes ``C[b] = A[b] @ B[b]`` for ``b in [0, batch)`` where
@@ -675,7 +684,6 @@ class BmmKernel(Kernel):
             call.n,
             call.k,
             call.dtype,
-            tune=call.tune,
             device_index=index,
         )
 
@@ -751,7 +759,7 @@ class _PersistentBand(NamedTuple):
 _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
 
 
-class BmmPersistentKernel(Kernel):
+class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
@@ -846,8 +854,37 @@ class BmmPersistentKernel(Kernel):
         return out
 
 
-class BmmFp8Kernel(Kernel):
+class _BmmFp8Kernel(Kernel, BmmFp8FwdInterface):
+    """What the three batched FP8 programs share: the shape, the scales and the epilogue.
+
+    Each subclass compiles one program in :meth:`_build_program` and states the config
+    band that program runs at.
+    """
+
     supported_archs: list[int] = [89, 90]
+
+    @staticmethod
+    def _k_refusal(k: int) -> Optional[str]:
+        """The FP8 WGMMA K-step is 32 elements wide."""
+        if k % 32 == 0:
+            return None
+        return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
+
+    @classmethod
+    def applies(cls, call: BmmFp8Call) -> bool:
+        return cls._k_refusal(call.k) is None
+
+    @classmethod
+    def refusal(cls, call: BmmFp8Call) -> Optional[str]:
+        """The K-step reason where that is what refuses, else what the region says."""
+        return cls._k_refusal(call.k) or (None if cls.applies(call) else "does not serve this call")
+
+    @classmethod
+    def entry_for(cls, call: BmmFp8Call) -> Entry:
+        """The device index is in the identity: the grid is sized from its SM count."""
+        index = call.device.index if call.device is not None else None
+        arguments = (call.batch, call.m, call.n, call.k, call.dtype, call.out_dtype)
+        return (*arguments, index), lambda: cls(*arguments, device_index=index)
 
     def __init__(
         self,
@@ -857,105 +894,238 @@ class BmmFp8Kernel(Kernel):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        device: Optional[torch.device] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
-        index = device.index if device is not None else None
-        arch = get_sm_version(index)
-        if arch < 89:
-            # Fail fast with a clear message instead of a downstream
-            # nvcc / PTX error at JIT time.
-            raise NotImplementedError(
-                f"BmmFp8Kernel requires FP8 tensor cores (sm89+); "
-                f"got sm{arch} on the current device"
-            )
-        if k % 32 != 0:
-            raise ValueError(
-                f"BmmFp8Kernel requires contraction dim k to be a "
-                f"multiple of 32 (FP8 WGMMA K-step), got k={k}"
-            )
+        super().__init__(device_index=device_index)
+        reason = self._k_refusal(k)
+        if reason is not None:
+            raise ValueError(f"{type(self).__name__} {reason}")
         self.batch = batch
         self.m = m
         self.n = n
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        # Dispatch policy (in order of preference):
-        #   1) 3-WG WS persistent (best throughput on aligned shapes;
-        #      SM90 only — TMA + WGMMA);
-        #   2) plain persistent (removes wave quantisation; SM90 only —
-        #      the plain T.gemm body could run on pre-SM90 archs but is
-        #      unvalidated there);
-        #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
-        #      runs on any FP8 tensor-core target, sm89+).
-        self._sm_count = get_sm_count(index)
-        self._arch = arch
-        self._is_sm90 = arch // 10 == 9
-        self._use_ws = self._is_sm90 and self._ws_eligible(batch, m, n, k, self._sm_count)
-        self._use_persistent = self._is_sm90 and (
-            self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)
-        )
-        if self._use_ws:
-            self.kernel = _bmm_fp8_persistent_ws_kernel(
-                batch, m, n, k, self.dtype_str, self.out_dtype_str, self._sm_count
-            )
-        elif self._use_persistent:
-            self.kernel = _bmm_fp8_persistent_kernel(
-                batch, m, n, k, self.dtype_str, self.out_dtype_str, self._sm_count
-            )
-        else:
-            self.kernel = _bmm_fp8_kernel(batch, m, n, k, self.dtype_str, self.out_dtype_str)
+        self.sm_count = get_sm_count(self.device_index)
+        self._build_program()
         self.init_config(config, tune)
 
-    # ---- Dispatch predicates ------------------------------------------
-    @staticmethod
-    def _ws_eligible(batch: int, m: int, n: int, k: int, sm_count: int) -> bool:
-        min_total_tiles = (sm_count * 3 + 1) // 2  # ceil(1.5 * sm_count)
-        for bm in (128, 256):
-            if m % bm != 0 or (bm // 2) < 64:
-                continue
-            for bn in (128, 256):
-                if n % bn != 0:
-                    continue
-                for bk in (64, 128):
-                    if bk > k or k % bk != 0:
-                        continue
-                    if k // bk < 2:
-                        continue
-                    total_tiles = batch * (m // bm) * (n // bn)
-                    if total_tiles < min_total_tiles:
-                        continue
-                    return True
-        return False
+    def _build_program(self) -> None:
+        """Compile this class's program into ``self.kernel``."""
+        raise NotImplementedError
 
-    @staticmethod
-    def _persistent_eligible(m: int, n: int, k: int, use_ws: bool) -> bool:
-        if use_ws:
-            bn_ok = (n % 128 == 0) or (n % 256 == 0)
-            bk_ok = (k % 64 == 0 and k // 64 >= 2) or (k % 128 == 0 and k // 128 >= 2)
-            return m % 128 == 0 and bn_ok and bk_ok
-        return m % 128 == 0 and n % 128 == 0 and k % 128 == 0
+    @classmethod
+    def _sm90_tile_grid(cls, m: int, n: int, k: int, *, whole_tiles: bool) -> list[dict]:
+        """The SM90 tile candidates under the shared-memory budget.
+
+        Read by the persistent and the classic program, which tile the same body the
+        same way and differ only in whether a tile may leave a tail.
+
+        Args:
+            m: Rows of one batch item's product.
+            n: Columns of one batch item's product.
+            k: Contraction dim.
+            whole_tiles: Whether a tile must divide every extent, which the persistent
+                grid needs because its body carries no epilogue guard.
+        """
+        budget = 200 * 1024
+        configs = []
+        for block_m in (64, 128, 256):
+            if whole_tiles and m % block_m:
+                continue
+            for block_n in (64, 128, 256):
+                if whole_tiles and n % block_n:
+                    continue
+                for block_k in (32, 64, 128):
+                    if block_k > k or (whole_tiles and k % block_k):
+                        continue
+                    for num_stages in (2, 3, 4):
+                        smem = (block_m * block_k + block_k * block_n) * num_stages
+                        if smem + block_m * block_n * 2 > budget:
+                            continue
+                        configs.append(
+                            {
+                                "block_m": block_m,
+                                "block_n": block_n,
+                                "block_k": block_k,
+                                "num_stages": num_stages,
+                                "threads": 128 if block_m == 64 else 256,
+                            }
+                        )
+        return configs
 
     @property
     def out_dtype_str(self) -> str:
         return self.dtype_to_str(self.out_dtype)
 
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.dtype != torch.float8_e4m3fn:
+            raise NotImplementedError(
+                f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
+            )
+        if not hasattr(self, "_compiled_kernel"):
+            self._compiled_kernel = self.kernel(**self.config)
+        return self._compiled_kernel(a, b, scale_a, scale_b)
+
+
+class BmmFp8WsKernel(_BmmFp8Kernel):
+    """Three-warpgroup warp-specialized persistent FP8 BMM.
+
+    One producer warpgroup issues the TMA loads two consumer warpgroups run WGMMA over,
+    so it claims the shapes whose whole tiles fill at least one and a half persistent
+    waves; below that the specialization has nothing to hide behind.
+    """
+
+    supported_archs: list[int] = [90]
+    preferred_over = frozenset({"bmm_fp8_persistent"})
+
+    # The tiles this kernel builds. The region, the default configuration and the
+    # autotune filter read the same tuples, so widening one cannot leave them
+    # disagreeing about what a tile can be. The region also admits ``block_m`` 256,
+    # which no config picks: a shape that only fills a wave at that width is still
+    # this kernel's, and its config falls back to 128.
+    block_m_candidates: tuple[int, ...] = (128,)
+    block_n_candidates: tuple[int, ...] = (128, 256)
+    block_k_candidates: tuple[int, ...] = (64, 128)
+
+    @classmethod
+    def _k_tile_fits(cls, k: int, block_k: int) -> bool:
+        """Whether *block_k* divides *k* into the two steps the mainloop pipelines over."""
+        return block_k <= k and k % block_k == 0 and k // block_k >= 2
+
+    @classmethod
+    def applies(cls, call: BmmFp8Call) -> bool:
+        if cls._k_refusal(call.k) is not None:
+            return False
+        if not any(cls._k_tile_fits(call.k, tile) for tile in cls.block_k_candidates):
+            return False
+        # ceil(1.5 * sm_count): below one and a half persistent waves of whole tiles the
+        # producer warpgroup has nothing left to hide behind.
+        min_total_tiles = (call.sm_count * 3 + 1) // 2
+        return any(
+            call.m % block_m == 0
+            and call.n % block_n == 0
+            and call.batch * (call.m // block_m) * (call.n // block_n) >= min_total_tiles
+            for block_m in (*cls.block_m_candidates, 256)
+            for block_n in cls.block_n_candidates
+        )
+
+    def _build_program(self) -> None:
+        self.kernel = _bmm_fp8_persistent_ws_kernel(
+            self.batch, self.m, self.n, self.k, self.dtype_str, self.out_dtype_str, self.sm_count
+        )
+
     @property
     def default_config(self) -> dict:
-        if self._use_ws:
-            bn = 256 if (self.n % 256 == 0) else 128
-            bk = 128 if (self.k % 128 == 0 and self.k // 128 >= 2) else 64
-            return {
-                "block_m": 128,
-                "block_n": bn,
-                "block_k": bk,
-                "num_stages": 3,
-                "threads": 384,
-                "group_size_m": 8,
-            }
-        if not self._is_sm90:
+        return {
+            "block_m": self.block_m_candidates[0],
+            "block_n": 256 if self.n % 256 == 0 else 128,
+            "block_k": 128 if self._k_tile_fits(self.k, 128) else 64,
+            "num_stages": 3,
+            "threads": 384,
+            "group_size_m": 8,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        block_m = self.block_m_candidates[0]
+        half_m = block_m // 2
+        configs = []
+        for block_n in self.block_n_candidates:
+            if self.n % block_n:
+                continue
+            for block_k in self.block_k_candidates:
+                if not self._k_tile_fits(self.k, block_k):
+                    continue
+                for num_stages in (2, 3, 4):
+                    # fp8 operands are one byte; the two output tiles are bf16 / fp16.
+                    mainloop = 2 * num_stages * half_m * block_k + num_stages * block_n * block_k
+                    if mainloop + 2 * half_m * block_n * 2 > BLOCK_SHARED_BYTES_OPT_IN[90]:
+                        continue
+                    configs.extend(
+                        {
+                            "block_m": block_m,
+                            "block_n": block_n,
+                            "block_k": block_k,
+                            "num_stages": num_stages,
+                            "threads": 384,
+                            "group_size_m": group_size_m,
+                        }
+                        for group_size_m in (1, 4, 8)
+                    )
+        return configs
+
+
+class BmmFp8PersistentKernel(_BmmFp8Kernel):
+    """Persistent FP8 BMM over a 128-aligned tile grid.
+
+    A grid of one block per SM walking the output tiles, which removes the wave
+    quantization the classic 3D grid pays; every extent must divide the tile, since the
+    body carries no epilogue guard.
+    """
+
+    supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call: BmmFp8Call) -> bool:
+        return (
+            cls._k_refusal(call.k) is None
+            and call.m % 128 == 0
+            and call.n % 128 == 0
+            and call.k % 128 == 0
+        )
+
+    def _build_program(self) -> None:
+        self.kernel = _bmm_fp8_persistent_kernel(
+            self.batch, self.m, self.n, self.k, self.dtype_str, self.out_dtype_str, self.sm_count
+        )
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 128,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 3,
+            "threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return self._sm90_tile_grid(self.m, self.n, self.k, whole_tiles=True)
+
+
+class BmmFp8Kernel(_BmmFp8Kernel):
+    """Classic 3D-grid FP8 BMM: one block per output tile, the batch on ``blockIdx.z``.
+
+    Its epilogue guards the M and N tails, so it takes any shape an FP8 WGMMA K-step
+    covers, on every FP8 tensor-core target.
+    """
+
+    general = True
+
+    def _build_program(self) -> None:
+        self.kernel = _bmm_fp8_kernel(
+            self.batch, self.m, self.n, self.k, self.dtype_str, self.out_dtype_str
+        )
+
+    @property
+    def _arch(self) -> int:
+        """The architecture this instance compiled for, which sizes its shared memory."""
+        return get_sm_version(self.device_index)
+
+    @property
+    def default_config(self) -> dict:
+        if self._arch != 90:
             # Sized for the sm89 per-block shared-memory limit; K tails are
             # zero-padded by the classic copy path.
             return {
@@ -975,107 +1145,29 @@ class BmmFp8Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self._use_ws:
-            SMEM_BUDGET_BYTES = BLOCK_SHARED_BYTES_OPT_IN[90]
-            configs = []
-            for bm in (128,):
-                half_m = bm // 2
-                for bn in (128, 256):
-                    if self.n % bn != 0:
-                        continue
-                    for bk in (64, 128):
-                        if bk > self.k or self.k % bk != 0:
-                            continue
-                        if self.k // bk < 2:
-                            continue
-                        for ns in (2, 3, 4):
-                            smem_main = 2 * ns * half_m * bk + ns * bn * bk  # fp8 = 1B
-                            out_bytes = 2  # bf16/fp16 output
-                            smem_c = 2 * half_m * bn * out_bytes
-                            if smem_main + smem_c > SMEM_BUDGET_BYTES:
-                                continue
-                            for gsm in (1, 4, 8):
-                                configs.append(
-                                    {
-                                        "block_m": bm,
-                                        "block_n": bn,
-                                        "block_k": bk,
-                                        "num_stages": ns,
-                                        "threads": 384,
-                                        "group_size_m": gsm,
-                                    }
-                                )
-            return configs
-
-        if not self._is_sm90:
-            # Classic 3D-grid sweep under the device's per-block shared-memory limit.
-            SMEM_BUDGET_BYTES = BLOCK_SHARED_BYTES_OPT_IN[self._arch]
-            configs = []
-            for bm in (64, 128):
-                for bn in (64, 128):
-                    for bk in (64, 128):
-                        for ns in (2, 3):
-                            smem = (bm * bk + bk * bn) * ns + bm * bn * 2
-                            if smem > SMEM_BUDGET_BYTES:
-                                continue
-                            configs.append(
-                                {
-                                    "block_m": bm,
-                                    "block_n": bn,
-                                    "block_k": bk,
-                                    "num_stages": ns,
-                                    "threads": 128,
-                                }
-                            )
-            return configs
-
-        SMEM_BUDGET_BYTES = 200 * 1024
-        raw_configs = []
-        for bm in (64, 128, 256):
-            if self._use_persistent and self.m % bm != 0:
-                continue
-            for bn in (64, 128, 256):
-                if self._use_persistent and self.n % bn != 0:
-                    continue
-                for bk in (32, 64, 128):
-                    if bk > self.k:
-                        continue
-                    if self._use_persistent and self.k % bk != 0:
-                        continue
-                    threads = 128 if bm == 64 else 256
-                    for ns in (2, 3, 4):
-                        # Include c_shared (bm * bn * 2 bytes) in the budget
-                        smem = (bm * bk + bk * bn) * ns + bm * bn * 2
-                        if smem > SMEM_BUDGET_BYTES:
-                            continue
-                        raw_configs.append(
-                            {
-                                "block_m": bm,
-                                "block_n": bn,
-                                "block_k": bk,
-                                "num_stages": ns,
-                                "threads": threads,
-                            }
-                        )
-        return raw_configs
-
-    def forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.dtype != torch.float8_e4m3fn:
-            raise NotImplementedError(
-                f"BmmFp8Kernel only supports torch.float8_e4m3fn, got {self.dtype}"
-            )
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(a, b, scale_a, scale_b)
+        if self._arch == 90:
+            return self._sm90_tile_grid(self.m, self.n, self.k, whole_tiles=False)
+        # A narrower sweep under the pre-SM90 per-block shared-memory limit; the copy
+        # path zero-pads the K tail, so no candidate is filtered on k.
+        budget = BLOCK_SHARED_BYTES_OPT_IN[self._arch]
+        return [
+            {
+                "block_m": block_m,
+                "block_n": block_n,
+                "block_k": block_k,
+                "num_stages": num_stages,
+                "threads": 128,
+            }
+            for block_m in (64, 128)
+            for block_n in (64, 128)
+            for block_k in (64, 128)
+            for num_stages in (2, 3)
+            if (block_m * block_k + block_k * block_n) * num_stages + block_m * block_n * 2
+            <= budget
+        ]
 
 
-class BmmFp8TransposeKernel(Kernel):
+class BmmFp8TransposeKernel(Kernel, BmmFp8TransposeInterface):
     """Swap the last two axes of a contiguous FP8 ``[batch, rows, cols]`` tensor.
 
     Staged through shared memory so both the load and the store stay coalesced,
@@ -1095,15 +1187,22 @@ class BmmFp8TransposeKernel(Kernel):
     TILE_CANDIDATES: tuple[int, ...] = (32, 64, 128)
     THREAD_CANDIDATES: tuple[int, ...] = (128,)
 
+    @classmethod
+    def entry_for(cls, call: BmmFp8TransposeCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        arguments = (call.batch, call.rows, call.cols, call.dtype)
+        return (*arguments, index), lambda: cls(*arguments, device_index=index)
+
     def __init__(
         self,
         batch: int,
         rows: int,
         cols: int,
         dtype: torch.dtype,
-        device: Optional[torch.device] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
         """Build the transpose for one shape and dtype.
 
@@ -1112,11 +1211,11 @@ class BmmFp8TransposeKernel(Kernel):
             rows: Extent of the source's second axis.
             cols: Extent of the source's third axis.
             dtype: Element dtype; ``torch.float8_e4m3fn`` is what the FP8 BMM passes.
-            device: Device the kernel is built for.
             config: Optional tile override.
             tune: Whether to autotune the tile.
+            device_index: CUDA device the kernel is built for.
         """
-        super().__init__(device_index=(device.index if isinstance(device, torch.device) else None))
+        super().__init__(device_index=device_index)
         self.dtype = dtype
         self.kernel = _bmm_fp8_transpose_kernel(batch, rows, cols, self.dtype_str)
         self.init_config(config, tune)

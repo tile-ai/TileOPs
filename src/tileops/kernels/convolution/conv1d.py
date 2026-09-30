@@ -13,17 +13,13 @@ from tileops.kernels.convolution._common import (
     conv_num_stages,
     launch,
 )
-from tileops.kernels.convolution.call_spec import (
-    Conv1dCall,
-    conv1d_dense_region,
-    conv1d_group_region,
-    conv1d_pointwise_region,
-)
+from tileops.kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
+    "DepthwiseConv1dKernel",
     "GroupConv1dKernel",
 ]
 
@@ -472,21 +468,28 @@ def _conv1d_pointwise_kernel(
     return _conv1d_pointwise_func
 
 
-class Conv1dPointwiseKernel(Kernel):
+class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
+    """Dense 1x1 Conv1d, which lowers to a pointwise GEMM over the channel axis."""
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
-        return conv1d_pointwise_region(call)
+        return (
+            call.groups == 1
+            and call.kernel_l == 1
+            and call.stride_l == 1
+            and call.pad_left == 0
+            and call.pad_right == 0
+            and call.dilation_l == 1
+        )
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,
@@ -545,13 +548,15 @@ class Conv1dPointwiseKernel(Kernel):
         return launch(self, x, weight_2d, bias=bias)
 
 
-class Conv1dKernel(Kernel):
+class Conv1dKernel(Kernel, Conv1dFwdInterface):
+    """Dense Conv1d over the full kernel window; serves every ungrouped call."""
+
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
-        return conv1d_dense_region(call)
+        return call.groups == 1
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -568,9 +573,7 @@ class Conv1dKernel(Kernel):
             dilation_l=call.dilation_l,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,
@@ -667,17 +670,18 @@ class Conv1dKernel(Kernel):
         return launch(self, x, self._get_weight_flat(weight), bias=bias)
 
 
-class GroupConv1dKernel(Kernel):
+class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
+    """Grouped Conv1d: one implicit GEMM per group over that group's channels."""
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    @staticmethod
-    def _group_conv1d_block_m_choices(c_out_g: int) -> list[int]:
-        del c_out_g
-        return [16, 32, 64, 128]
+    # The m tiles this kernel builds. The default configuration and the autotune filter
+    # read the same tuple, so widening it cannot leave the two disagreeing.
+    block_m_candidates: tuple[int, ...] = (16, 32, 64, 128)
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
-        return conv1d_group_region(call)
+        return call.groups > 1
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -694,12 +698,10 @@ class GroupConv1dKernel(Kernel):
             dilation_l=call.dilation_l,
             groups=call.groups,
             c_in_g=call.c_in_g,
-            c_out_g=call.c_out // call.groups,
+            c_out_g=call.c_out_g,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,
@@ -736,82 +738,50 @@ class GroupConv1dKernel(Kernel):
         self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
         self.dtype = dtype
         self.has_bias = has_bias
-        self.use_direct = self.c_in_g == 1 and self.c_out_g == 1
-        self._validate_group_shape()
-        if self.use_direct:
-            self.kernel = _conv1d_direct_kernel(
-                n,
-                c_in,
-                l_in,
-                c_out,
-                kernel_l,
-                stride_l,
-                self.pad_left,
-                self.pad_right,
-                dilation_l,
-                has_bias,
-                self.dtype_str,
-            )
-        else:
-            self.kernel = _conv1d_group_kernel(
-                n,
-                c_in,
-                l_in,
-                c_out,
-                kernel_l,
-                stride_l,
-                self.pad_left,
-                self.pad_right,
-                dilation_l,
-                has_bias,
-                self.dtype_str,
-                groups,
-                self.c_in_g,
-                self.c_out_g,
-            )
-        self.init_config(config, tune)
-        if not self.use_direct and self.config["block_m"] % 16 != 0:
-            raise ValueError(
-                f"GroupConv1dKernel requires block_m to be a multiple of 16; "
-                f"got block_m={self.config['block_m']}"
-            )
-        if not self.use_direct and self.config["block_k"] % 16 != 0:
-            raise ValueError(
-                f"GroupConv1dKernel requires block_k to be a multiple of 16; "
-                f"got block_k={self.config['block_k']}"
-            )
-
-    def _validate_group_shape(self) -> None:
         if self.groups <= 1:
-            raise ValueError("GroupConv1dKernel requires groups > 1")
-        if self.use_direct:
-            return
-        if self.c_in % self.groups != 0 or self.c_out % self.groups != 0:
+            raise ValueError(f"{type(self).__name__} requires groups > 1")
+        self._build_program()
+        self.init_config(config, tune)
+        self._check_config()
+
+    def _build_program(self) -> None:
+        """Compile the grouped implicit GEMM over this call's group shape."""
+        if self.c_in % self.groups or self.c_out % self.groups:
             raise ValueError(
-                f"GroupConv1dKernel requires c_in and c_out divisible by groups; "
+                f"{type(self).__name__} requires c_in and c_out divisible by groups; "
                 f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
             )
+        self.kernel = _conv1d_group_kernel(
+            self.n,
+            self.c_in,
+            self.l_in,
+            self.c_out,
+            self.kernel_l,
+            self.stride_l,
+            self.pad_left,
+            self.pad_right,
+            self.dilation_l,
+            self.has_bias,
+            self.dtype_str,
+            self.groups,
+            self.c_in_g,
+            self.c_out_g,
+        )
 
-    @property
-    def _block_m_choices(self) -> list[int]:
-        if self.use_direct:
-            return [1]
-        return GroupConv1dKernel._group_conv1d_block_m_choices(self.c_out_g)
+    def _check_config(self) -> None:
+        """Reject a tile the implicit GEMM's MMA step cannot take."""
+        for key in ("block_m", "block_k"):
+            if self.config[key] % 16:
+                raise ValueError(
+                    f"{type(self).__name__} requires {key} to be a multiple of 16; "
+                    f"got {key}={self.config[key]}"
+                )
 
     @property
     def default_config(self) -> dict:
-        if self.use_direct:
-            return {
-                "block_m": 1,
-                "block_n": 128,
-                "block_k": 1,
-                "num_stages": 1,
-                "threads": 128,
-                "enable_rasterization": True,
-            }
         block_m = next(
-            (choice for choice in self._block_m_choices if choice >= self.c_out_g),
-            max(self._block_m_choices),
+            (choice for choice in self.block_m_candidates if choice >= self.c_out_g),
+            max(self.block_m_candidates),
         )
         return {
             "block_m": block_m,
@@ -824,12 +794,10 @@ class GroupConv1dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self.use_direct:
-            return [self.default_config]
         return conv_autotune_configs(
             self.dtype,
             self.device_index,
-            block_m=self._block_m_choices,
+            block_m=list(self.block_m_candidates),
         )
 
     def forward(
@@ -838,6 +806,52 @@ class GroupConv1dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # ``self.kernel`` already is the direct or the group builder; ``use_direct`` picked
-        # it at construction.
         return launch(self, x, weight, bias=bias)
+
+
+class DepthwiseConv1dKernel(GroupConv1dKernel):
+    """Depthwise Conv1d: one input channel per group, one output channel per group.
+
+    A different program from :class:`GroupConv1dKernel`: with a single channel per group
+    there is no contraction to tile, so each thread accumulates one output position over
+    the kernel window instead of running an implicit GEMM.
+    """
+
+    preferred_over = frozenset({"group_conv1d"})
+
+    @classmethod
+    def applies(cls, call: Conv1dCall) -> bool:
+        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+
+    def _build_program(self) -> None:
+        self.kernel = _conv1d_direct_kernel(
+            self.n,
+            self.c_in,
+            self.l_in,
+            self.c_out,
+            self.kernel_l,
+            self.stride_l,
+            self.pad_left,
+            self.pad_right,
+            self.dilation_l,
+            self.has_bias,
+            self.dtype_str,
+        )
+
+    def _check_config(self) -> None:
+        """One output position per thread takes any tile."""
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 1,
+            "block_n": 128,
+            "block_k": 1,
+            "num_stages": 1,
+            "threads": 128,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [self.default_config]

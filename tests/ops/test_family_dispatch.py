@@ -6,13 +6,11 @@ Selection is asserted through ``select_implementation`` / ``select_kernel``, whi
 resolve the implementation without compiling anything.
 """
 
-import itertools
-
 import pytest
 import torch
 
 from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTmaKernel
-from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.call_spec import BmmFp8Call, GemmCall
 from tileops.kernels.linear_attention import (
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,
@@ -20,6 +18,7 @@ from tileops.kernels.linear_attention import (
     GLAChunkCall,
     GLADecodeCall,
 )
+from tileops.ops.gemm.bmm import BmmFp8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
@@ -34,6 +33,11 @@ pytestmark = pytest.mark.skipif(
 
 _SM90 = 90
 _SM80 = 80
+
+
+def _serves(op, call: GemmCall) -> type:
+    """The implementation of *op*'s dense GEMM interface that serves *call*."""
+    return op.kernel_map[op.select_implementation("gemm", call)]
 
 
 # --- GEMM: a vector operand picks the GEMV kernel, but only in the two layouts
@@ -59,7 +63,7 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: s
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel(call).__name__ == expected
+    assert op.kernel_map[op.select_implementation("gemm", call)].__name__ == expected
 
 
 @pytest.mark.cuda_only
@@ -85,7 +89,7 @@ def test_gemm_vector_on_a_transposed_operand_takes_the_pipelined_mainloop(
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel(call) is GemmCpAsyncKernel
+    assert _serves(op, call) is GemmCpAsyncKernel
     assert f"and {dim}" in GemmTmaKernel.refusal(call)
 
 
@@ -94,16 +98,15 @@ def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
     """A TMA-misaligned NT shape on SM90 reaches ``GemmCpAsyncKernel``.
 
     ``GemmTmaKernel`` refuses it because every structure it builds loads through TMA.
-    ``GemmCpAsyncKernel`` excludes only the SM90 shapes TMA can address, so it takes
-    this one — with ``GemmTmaKernel``'s whole architecture excluded instead, the call
-    reached no implementation at all.
+    ``GemmCpAsyncKernel`` is the general implementation and takes what no other one
+    claims, on SM90 as anywhere else.
     """
     op = GemmFwdOp()
     call = GemmCall(
         arch=_SM90, sm_count=132, m=1024, n=4096, k=100, dtype=torch.float16, trans_b=True
     )
 
-    assert op.select_kernel(call) is GemmCpAsyncKernel
+    assert _serves(op, call) is GemmCpAsyncKernel
 
 
 @pytest.mark.cuda_only
@@ -118,7 +121,7 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     call = GemmCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
 
     with pytest.raises(ValueError, match="k must span at least one"):
-        op.select_kernel(call)
+        op.select_implementation("gemm", call)
 
     with pytest.raises(ValueError, match="cannot serve k=1"):
         GemmCpAsyncKernel(64, 64, 1, torch.float16, trans_b=True)
@@ -130,7 +133,7 @@ def test_gemm_uses_basic_mainloop_off_sm90() -> None:
     op = GemmFwdOp()
     call = GemmCall(arch=_SM80, m=1, n=8, k=64, dtype=torch.float16, trans_b=True)
 
-    assert op.select_kernel(call) is GemmCpAsyncKernel
+    assert _serves(op, call) is GemmCpAsyncKernel
 
 
 # --- DeltaNet decode: fp32 has its own kernel; the raw-CUDA one serves 16-bit
@@ -345,21 +348,6 @@ def test_every_family_call_record_reads_the_device_when_unstated() -> None:
     assert DeltaNetDecodeCall(arch=_SM80).arch == _SM80
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_gemv_kernel_claims_the_layouts_it_was_written_for() -> None:
-    """The predicate the op used to carry, over every (m, n, layout) combination."""
-    from tileops.kernels.gemm import GemvKernel
-
-    for m, n, trans_a, trans_b in itertools.product([1, 8], [1, 8], [False, True], [False, True]):
-        expected = (m == 1 and not trans_a and trans_b) or (n == 1 and not trans_a and not trans_b)
-        call = GemmCall(
-            arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
-        )
-        assert GemvKernel.applies(call) is expected, (m, n, trans_a, trans_b)
-        assert (GemvKernel.band_for(call) is not None) is expected
-
-
 @pytest.mark.smoke
 def test_gemv_kernel_takes_its_two_row_band_only_where_the_grid_underfills() -> None:
     """The ``lhs_rows`` band: m == 2 NT, and only while a 64-wide n-tiling underfills."""
@@ -382,6 +370,36 @@ def test_gemv_kernel_takes_its_two_row_band_only_where_the_grid_underfills() -> 
     assert GemvKernel.band_for(call(2, 3200)) is None
     assert GemvKernel.band_for(call(3, 2112)) is None
     assert GemvKernel.band_for(call(2, 2112, trans_b=False)) is None
+
+
+# --- Batched FP8 GEMM: three programs, claimed by how much of a persistent wave the
+# call's whole tiles fill.
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("batch", "m", "n", "k", "expected"),
+    [
+        pytest.param(8, 2048, 2048, 2048, "BmmFp8WsKernel", id="fills-a-warp-specialized-wave"),
+        pytest.param(32, 128, 128, 2048, "BmmFp8PersistentKernel", id="whole-128-tiles-only"),
+        pytest.param(1, 64, 64, 64, "BmmFp8Kernel", id="tails-on-both-axes"),
+    ],
+)
+def test_bmm_fp8_dispatch(batch: int, m: int, n: int, k: int, expected: str) -> None:
+    """The warp-specialized program wins wherever it applies; the classic one takes tails."""
+    call = BmmFp8Call(
+        arch=_SM90,
+        sm_count=132,
+        batch=batch,
+        m=m,
+        n=n,
+        k=k,
+        dtype=torch.float8_e4m3fn,
+        out_dtype=torch.bfloat16,
+    )
+
+    op = BmmFp8FwdOp()
+    assert op.kernel_map[op.select_implementation("bmm_fp8", call)].__name__ == expected
 
 
 # --- Dense GQA: one row per region, plus each boundary between two of them.

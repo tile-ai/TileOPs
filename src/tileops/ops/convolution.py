@@ -12,24 +12,26 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.convolution import (
+    Conv1dCall,
+    Conv1dFwdInterface,
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
+    Conv2dCall,
+    Conv2dFwdInterface,
     Conv2dKernel,
     Conv2dSymmetricKernel,
+    Conv3dCall,
+    Conv3dFwdInterface,
     Conv3dKernel,
     Conv3dNdhwcKernel,
+    DepthwiseConv1dKernel,
+    DepthwiseConv2dKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
 )
-from tileops.kernels.convolution.call_spec import (
-    Conv1dCall,
-    Conv2dCall,
-    Conv3dCall,
-    conv3d_ndhwc_region,
-)
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -75,10 +77,12 @@ class Conv1dFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
-        "conv1d_kernel": Conv1dKernel,
-        "group_conv1d_kernel": GroupConv1dKernel,
+        "conv1d_pointwise": Conv1dPointwiseKernel,
+        "conv1d": Conv1dKernel,
+        "depthwise_conv1d": DepthwiseConv1dKernel,
+        "group_conv1d": GroupConv1dKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv1d": Conv1dFwdInterface}
 
     def __init__(
         self,
@@ -172,7 +176,6 @@ class Conv1dFwdOp(Op):
             out_l=out_l,
             dtype=input.dtype,
             has_bias=bias is not None,
-            tune=self.tune,
             device=input.device,
         )
         self.kernel = self.kernel_for("conv1d", (input, weight, bias), call)
@@ -192,11 +195,13 @@ class Conv2dFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "conv2d_1x1_kernel": Conv2d1x1Kernel,
-        "conv2d_symmetric_kernel": Conv2dSymmetricKernel,
-        "conv2d_kernel": Conv2dKernel,
-        "group_conv2d_kernel": GroupConv2dKernel,
+        "conv2d_1x1": Conv2d1x1Kernel,
+        "conv2d_symmetric": Conv2dSymmetricKernel,
+        "conv2d": Conv2dKernel,
+        "depthwise_conv2d": DepthwiseConv2dKernel,
+        "group_conv2d": GroupConv2dKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv2d": Conv2dFwdInterface}
 
     def __init__(
         self,
@@ -285,7 +290,6 @@ class Conv2dFwdOp(Op):
             out_w=_out_dim(w, kernel_w, stride[1], padding[1], padding_end[1], dilation[1]),
             dtype=input.dtype,
             has_bias=bias is not None,
-            tune=self.tune,
             device=input.device,
         )
         self.kernel = self.kernel_for("conv2d", (input, weight, bias), call)
@@ -294,55 +298,6 @@ class Conv2dFwdOp(Op):
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.ix["T"])
-
-
-def _can_use_conv3d_ndhwc(
-    *,
-    groups: int,
-    c_in: int,
-    c_out: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    out_d: int,
-    out_h: int,
-    out_w: int,
-    n: int,
-    dtype: torch.dtype,
-) -> bool:
-    """Return whether the NDHWC Conv3d fast path should serve this call.
-
-    This is a performance eligibility guard, not the full Conv3d validity check.
-    The op layer has already validated the convolution shape and computes
-    ``out_d``, ``out_h``, and ``out_w`` as::
-
-        out_axis = floor((in_axis + 2 * pad_axis
-                          - dilation_axis * (kernel_axis - 1) - 1)
-                         / stride_axis) + 1
-
-    The NDHWC fast path materializes input, weight, and output staging layouts
-    so the activation gather reads channel-contiguous runs. Keep it limited to
-    dense, 16-bit, non-pointwise calls large enough to amortize that fixed
-    layout-transform cost.
-    """
-    # The region reads shape facts only, so the record states device facts instead of probing.
-    return conv3d_ndhwc_region(
-        Conv3dCall(
-            arch=0,
-            sm_count=1,
-            n=n,
-            c_in=c_in,
-            c_out=c_out,
-            kernel_d=kernel_d,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            out_d=out_d,
-            out_h=out_h,
-            out_w=out_w,
-            groups=groups,
-            dtype=dtype,
-        )
-    )
 
 
 class Conv3dFwdOp(Op):
@@ -354,10 +309,11 @@ class Conv3dFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "conv3d_kernel": Conv3dKernel,
-        "conv3d_ndhwc_kernel": Conv3dNdhwcKernel,
-        "group_conv3d_kernel": GroupConv3dKernel,
+        "conv3d": Conv3dKernel,
+        "conv3d_ndhwc": Conv3dNdhwcKernel,
+        "group_conv3d": GroupConv3dKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv3d": Conv3dFwdInterface}
 
     def __init__(
         self,
@@ -456,7 +412,6 @@ class Conv3dFwdOp(Op):
             out_w=out_w,
             dtype=input.dtype,
             has_bias=bias is not None,
-            tune=self.tune,
             device=input.device,
         )
         self.kernel = self.kernel_for("conv3d", (input, weight, bias), call)

@@ -10,14 +10,21 @@ from typing import ClassVar, Dict, Mapping, Optional, Set, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.gemm.bmm import (
+from tileops.kernels.gemm import (
+    BmmCall,
+    BmmFp8Call,
+    BmmFp8FwdInterface,
     BmmFp8Kernel,
+    BmmFp8PersistentKernel,
+    BmmFp8TransposeCall,
+    BmmFp8TransposeInterface,
     BmmFp8TransposeKernel,
+    BmmFp8WsKernel,
+    BmmFwdInterface,
     BmmKernel,
     BmmPersistentKernel,
 )
-from tileops.kernels.gemm.call_spec import BmmCall
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -36,9 +43,10 @@ class BmmFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "bmm_persistent_kernel": BmmPersistentKernel,
-        "bmm_kernel": BmmKernel,
+        "bmm_persistent": BmmPersistentKernel,
+        "bmm": BmmKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"bmm": BmmFwdInterface}
 
     def __init__(
         self,
@@ -85,9 +93,7 @@ class BmmFwdOp(Op):
         """
         a, b = a.contiguous(), b.contiguous()
         batch, m, k = a.shape
-        call = BmmCall(
-            batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device, tune=self.tune
-        )
+        call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
         # Expose the active kernel so autotune()/introspection can find it.
         self.kernel = self.kernel_for("bmm", (a, b), call)
         return self.kernel(a, b)
@@ -114,8 +120,14 @@ class BmmFp8FwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "bmm_fp8_kernel": BmmFp8Kernel,
-        "bmm_fp8_transpose_kernel": BmmFp8TransposeKernel,
+        "bmm_fp8_ws": BmmFp8WsKernel,
+        "bmm_fp8_persistent": BmmFp8PersistentKernel,
+        "bmm_fp8": BmmFp8Kernel,
+        "bmm_fp8_transpose": BmmFp8TransposeKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "bmm_fp8": BmmFp8FwdInterface,
+        "bmm_fp8_transpose": BmmFp8TransposeInterface,
     }
 
     def __init__(
@@ -146,31 +158,6 @@ class BmmFp8FwdOp(Op):
         self.dispatch_kernel(kernel_map)
         # ``b`` shapes already warned about, so one op warns once per shape.
         self._kn_warned: Set[Tuple[int, int, int]] = set()
-
-    def _get_transpose_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        rows: int,
-        cols: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> Kernel:
-        return self.kernel_for(
-            "bmm_fp8_transpose_kernel", inputs, (batch, rows, cols, dtype, device)
-        )
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation per role, built per shape, dtype and device."""
-        if role == "bmm_fp8_transpose_kernel":
-            batch, rows, cols, dtype, device = call
-            return call, lambda: self.kernel_map["bmm_fp8_transpose_kernel"](
-                batch, rows, cols, dtype, device=device, tune=self.tune
-            )
-        batch, m, n, k, dtype, out_dtype, device = call
-        return call, lambda: self.kernel_map["bmm_fp8_kernel"](
-            batch, m, n, k, dtype, out_dtype, device=device, tune=self.tune
-        )
 
     def forward(
         self,
@@ -215,8 +202,16 @@ class BmmFp8FwdOp(Op):
         b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
         batch, m, k = a.shape
-        call = (batch, m, b.shape[1], k, a.dtype, self.out_dtype, a.device)
-        self.kernel = self.kernel_for("bmm_fp8_kernel", (a, b, scale_a, scale_b), call)
+        call = BmmFp8Call(
+            batch=batch,
+            m=m,
+            n=b.shape[1],
+            k=k,
+            dtype=a.dtype,
+            out_dtype=self.out_dtype,
+            device=a.device,
+        )
+        self.kernel = self.kernel_for("bmm_fp8", (a, b, scale_a, scale_b), call)
         return self.kernel(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
@@ -252,7 +247,8 @@ class BmmFp8FwdOp(Op):
                     f"b K-innermost skips the copy and is the faster call.",
                     stacklevel=2,
                 )
-            kernel = self._get_transpose_kernel((b,), batch, k, n, dtype, device)
+            transpose = BmmFp8TransposeCall(batch=batch, rows=k, cols=n, dtype=dtype, device=device)
+            kernel = self.kernel_for("bmm_fp8_transpose", (b,), transpose)
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()
 

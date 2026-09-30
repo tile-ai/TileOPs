@@ -7,8 +7,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.gemm.call_spec import W4A16RepackCall, W4A16RepackInterface
 from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["W4A16RepackKernel"]
 
@@ -58,7 +59,7 @@ def _w4a16_repack_kernel(n: int, packed_k: int) -> Callable:
     return build
 
 
-class W4A16RepackKernel(Kernel):
+class W4A16RepackKernel(Kernel, W4A16RepackInterface):
     """Move each K step's nibbles into the order the prepacked GEMM decodes.
 
     Args:
@@ -73,6 +74,15 @@ class W4A16RepackKernel(Kernel):
     autotune_accepts_random_int_inputs: bool = True
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: W4A16RepackCall) -> Entry:
+        """The device index is in the identity: the tile is narrowed to divide ``n`` on
+        the device the program compiles for."""
+        index = call.device.index if call.device is not None else None
+        return (call.n, call.packed_k, index), lambda: cls(
+            call.n, call.packed_k, device_index=index
+        )
 
     def __init__(
         self,
