@@ -1,0 +1,65 @@
+"""Benchmark for the per-row top-k then top-p logit mask op.
+
+Workload shapes and dtypes come from the ops manifest; roofline FLOP and
+byte counts come from the op's ``eval_roofline()`` via
+:class:`ManifestBenchmark`.
+"""
+
+import pytest
+import torch
+
+from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from tileops.sampling import TopKTopPMaskFwdOp
+from workloads.sampling import TopKTopPMaskWorkload, top_k_mask
+
+# Rows vLLM's Triton path takes: it reads float32 logits only, and it is the path
+# ``apply_top_k_top_p`` chooses at this many rows or more. Below it the sort path runs,
+# which takes the logits' own dtype.
+_VLLM_TRITON_ROWS = 8
+# vLLM cuts at a sorted position instead of keeping or dropping the run of tokens tied at
+# the boundary together, so the two disagree inside that run, and a token they disagree on
+# sits this close to the row's smallest kept probability, relative to it. A 16-bit row ties
+# thousands of tokens there, which is what makes the run wide; the measured worst case over
+# the rows vLLM serves is 3.2e-2.
+_MARGIN = 5e-2
+
+
+@pytest.mark.parametrize("call", manifest_calls(TopKTopPMaskFwdOp))
+def test_top_k_top_p_mask_bench(call) -> None:
+    workload = TopKTopPMaskWorkload(call)
+    logits, k, p = workload.gen_inputs()
+    reference = workload.ref_program(logits, k, p)
+
+    op = TopKTopPMaskFwdOp(**call.arguments({}))
+    bm = ManifestBenchmark(op, workload)
+
+    functors = {
+        "tileops": op,
+        "torch-ref": workload.ref_program,
+        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+    }
+
+    # FlashInfer 0.6.16 exposes no mask-only top-k-top-p entry point, only
+    # ``top_k_top_p_sampling_from_logits``, which draws a token, so no row carries a
+    # FlashInfer tag. A row vLLM cannot take in the manifest's dtype carries no vLLM tag.
+    if logits.shape[0] < _VLLM_TRITON_ROWS or logits.dtype is torch.float32:
+        # vLLM masks its argument in place and is not idempotent: a second pass renormalizes
+        # over the tokens the first left and cuts further, so it gets a copy per call. A k
+        # above V has no meaning to it and is clamped.
+        apply_top_k_top_p = vllm_op("apply_top_k_top_p", "v1.sample.ops.topk_topp_sampler")
+        vllm_k = k.clamp(max=call.ix["V"])
+
+        def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+            return apply_top_k_top_p(logits.clone(), vllm_k, p)
+
+        got = vllm_mask(logits, k, p)
+        kept = reference != -float("inf")
+        taken = got != -float("inf")
+        probs = top_k_mask(logits, k).float().softmax(-1)
+        lowest = probs.masked_fill(~kept, float("inf")).amin(-1, keepdim=True)
+        assert ((probs / lowest - 1).abs()[taken ^ kept] <= _MARGIN).all()
+        assert torch.equal(got[taken & kept], reference[taken & kept])
+        functors[VLLM_TAG] = vllm_mask
+
+    bm.compare(functors, logits, k, p)

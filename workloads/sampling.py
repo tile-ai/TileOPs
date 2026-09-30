@@ -104,7 +104,9 @@ def probability_above(probs: torch.Tensor) -> torch.Tensor:
     ordered, order = probs.sort(-1, descending=True)
     exclusive = ordered.cumsum(-1) - ordered
     # The first position of each run of equal values, where the exclusive sum excludes the run.
-    first = torch.searchsorted(-ordered, -ordered, side="left")
+    # A row of NaN probabilities, which a row whose largest logit is not finite gives, has no
+    # position a search settles on; it is clamped into the row, and its total stays NaN.
+    first = torch.searchsorted(-ordered, -ordered, side="left").clamp(max=probs.shape[-1] - 1)
     return torch.empty_like(probs).scatter_(-1, order, exclusive.gather(-1, first))
 
 

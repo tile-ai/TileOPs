@@ -30,6 +30,7 @@ from workloads.sampling import (
     probability_above,
     sampling_call,
     top_k_mask,
+    top_p_mask,
 )
 
 pytestmark = pytest.mark.smoke
@@ -228,6 +229,51 @@ def test_top_k_top_p_mask(dtype):
     out = _run(TopKTopPMaskFwdOp(), logits, k, p)
     above = probability_above(top_k.float().softmax(-1))
     _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= _MARGIN)
+
+
+@pytest.mark.parametrize(
+    "dtype, vocab",
+    [
+        # 16-bit keys with the row on the vector, 16-bit and 32-bit keys with it off.
+        (torch.bfloat16, 4096),
+        (torch.float16, 999),
+        (torch.float32, 999),
+    ],
+)
+def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, vocab):
+    """Row 1's top-k bound lands on a zero and the other zero is kept with it; rows 2 and 3
+    have no finite largest logit once ``k`` leaves them whole, so the reference's
+    probabilities are NaN, top-p removes nothing and the kept sets have to agree exactly.
+    The NaN row is cut both ways: at a ``k`` that drops its NaNs and at one that keeps them."""
+    logits = _special_rows(vocab, dtype)
+    device = logits.device
+    p = torch.tensor([0.9, 0.95, 0.8, 0.95, 0.6, 0.5], dtype=torch.float32, device=device)
+    bits = torch.int16 if logits.element_size() == 2 else torch.int32
+    for nan_k in (2, vocab):
+        k = torch.tensor(
+            [1, vocab // 2, vocab, nan_k, vocab // 4, vocab // 3], dtype=torch.int32, device=device
+        )
+        ref = top_p_mask(top_k_mask(logits, k), p)
+        out = _run(TopKTopPMaskFwdOp(), logits, k, p)
+        above = probability_above(top_k_mask(logits, k).float().softmax(-1))
+        kept = out != -_INF
+        # A row of NaN probabilities is near no boundary, so its kept set agrees exactly.
+        assert not (((ref != -_INF) ^ kept) & ~((above - p[:, None]).abs() <= _MARGIN)).any()
+        # Bit patterns, so that -0.0 kept where the reference keeps 0.0 is a failure. A NaN
+        # a row keeps comes back as a quiet NaN, not its own payload.
+        passed = kept & ~logits.isnan()
+        assert torch.equal(out[passed].view(bits), logits[passed].view(bits))
+        assert out[kept & logits.isnan()].isnan().all()
+
+
+@pytest.mark.in_tree_kernels
+def test_top_k_top_p_mask_selects_its_one_implementation():
+    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
+    op = TopKTopPMaskFwdOp()
+    assert op.select_implementation("top_k_top_p_mask_fwd", call) == "top_k_top_p_mask_fwd"
+    wide = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="B \\* V"):
+        op.select_implementation("top_k_top_p_mask_fwd", wide)
 
 
 def test_sampling_from_probs():

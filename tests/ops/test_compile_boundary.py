@@ -75,6 +75,7 @@ from tileops.ops.rope import (
 )
 from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
 from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
+from tileops.ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
@@ -537,6 +538,12 @@ def _other_cases():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
 
+    def top_k_top_p_mask():
+        logits = torch.randn(2, 256, dtype=torch.bfloat16, device=run_device())
+        k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
+        p = torch.tensor([0.9, 0.7], dtype=torch.float32, device=run_device())
+        return TopKTopPMaskFwdOp(), (logits, k, p)
+
     return (
         ("fft-c2c", fft_c2c),
         ("fp8-quant", fp8_quant),
@@ -550,6 +557,7 @@ def _other_cases():
         ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
         ("smooth-quant", smooth_quant),
+        ("top-k-top-p-mask", top_k_top_p_mask),
     )
 
 
@@ -773,6 +781,7 @@ for _op_cls in (
     RopeLongRopeFwdOp,
     RopeNeoxPositionIdsFwdOp,
     TopKMaskFwdOp,
+    TopKTopPMaskFwdOp,
 ):
     register_compile_contract(_op_cls)
 
