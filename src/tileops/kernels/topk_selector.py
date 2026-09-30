@@ -40,16 +40,20 @@ class TopkSelectorFwdInterface(KernelInterface):
         Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``. The
         positions come back in no particular order along the ``topk`` axis, and a window
         holding fewer than ``call.topk`` positions fills the rest with ``call.seq_len_kv``.
+        Nothing is written in place, and the output aliases no input.
 
         Args:
-            index_score: ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)`` in
-                ``call.dtype`` on ``call.device``, contiguous.
-            starts: ``int32`` ``(call.batch, call.seq_len)``, the first key of each window.
-            ends: ``int32`` ``(call.batch, call.seq_len)``, one past the last key.
+            index_score: The scores,
+                ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order.
+            starts: The first key of each window, ``int32``
+                ``(call.batch, call.seq_len)`` on ``call.device``, contiguous.
+            ends: One past the last key of each window, in the same shape, dtype, device
+                and layout.
 
         Returns:
-            A new ``(call.batch, call.seq_len, call.kv_group, call.topk)`` tensor in
-            ``call.out_dtype``.
+            A new contiguous ``(call.batch, call.seq_len, call.kv_group, call.topk)`` tensor
+            in ``call.out_dtype`` on ``call.device``.
         """
 
 

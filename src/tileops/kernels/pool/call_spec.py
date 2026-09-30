@@ -108,15 +108,21 @@ class AvgPool1dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Average each window of ``x``'s length axis; nothing is written in place.
 
+        Padding is not read: a window overlapping it sums the input elements it covers.
+        Nothing is written in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call, so an implementation may read it as one flat run.
 
         Returns:
-            A new ``(call.n, call.c_in, out_l)`` tensor in ``call.dtype``, where ``out_l``
-            follows ``call.window``, ``call.stride``, ``call.pad`` and ``call.ceil_mode`` as
-            ``torch.nn.functional.avg_pool1d`` defines it. A window's divisor is its element
-            count, padding included exactly when ``call.count_include_pad``.
+            A new contiguous ``(call.n, call.c_in, out_l)`` tensor in ``call.dtype`` on
+            ``call.device``, where ``out_l`` follows ``call.window``, ``call.stride``,
+            ``call.pad`` and ``call.ceil_mode`` as ``torch.nn.functional.avg_pool1d``
+            defines it. A window's divisor is the count of positions it covers, the padded
+            ones included exactly when ``call.count_include_pad``. Sums accumulate in
+            ``float32`` and are cast back at the store.
         """
 
 
@@ -129,16 +135,22 @@ class AvgPool2dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Average each window of ``x``'s spatial axes; nothing is written in place.
 
+        Padding is not read: a window overlapping it sums the input elements it covers.
+        Nothing is written in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call, so an implementation may read each plane as one flat run.
 
         Returns:
-            A new ``(call.n, call.c_in, out_h, out_w)`` tensor in ``call.dtype``, with the
-            output extents ``torch.nn.functional.avg_pool2d`` gives for ``call.window``,
-            ``call.stride``, ``call.pad`` and ``call.ceil_mode``. A window's divisor is
-            ``call.divisor_override`` where it is set, else the window's element count with
-            padding counted exactly when ``call.count_include_pad``.
+            A new contiguous ``(call.n, call.c_in, out_h, out_w)`` tensor in ``call.dtype``
+            on ``call.device``, with the output extents
+            ``torch.nn.functional.avg_pool2d`` gives for ``call.window``, ``call.stride``,
+            ``call.pad`` and ``call.ceil_mode``. A window's divisor is
+            ``call.divisor_override`` where it is set, else the count of positions the
+            window covers with the padded ones included exactly when
+            ``call.count_include_pad``. Sums accumulate in ``float32``.
         """
 
 
@@ -151,16 +163,22 @@ class AvgPool3dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Average each window of ``x``'s spatial axes; nothing is written in place.
 
+        Padding is not read: a window overlapping it sums the input elements it covers.
+        Nothing is written in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call, so an implementation may read each volume as one flat run.
 
         Returns:
-            A new ``(call.n, call.c_in, out_d, out_h, out_w)`` tensor in ``call.dtype``, with
-            the output extents ``torch.nn.functional.avg_pool3d`` gives for ``call.window``,
-            ``call.stride``, ``call.pad`` and ``call.ceil_mode``. A window's divisor is
-            ``call.divisor_override`` where it is set, else the window's element count with
-            padding counted exactly when ``call.count_include_pad``.
+            A new contiguous ``(call.n, call.c_in, out_d, out_h, out_w)`` tensor in
+            ``call.dtype`` on ``call.device``, with the output extents
+            ``torch.nn.functional.avg_pool3d`` gives for ``call.window``, ``call.stride``,
+            ``call.pad`` and ``call.ceil_mode``. A window's divisor is
+            ``call.divisor_override`` where it is set, else the count of positions the
+            window covers with the padded ones included exactly when
+            ``call.count_include_pad``. Sums accumulate in ``float32``.
         """
 
 
@@ -173,15 +191,20 @@ class MaxPool1dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Take each window's maximum; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity, so a window covering only padding yields it. Nothing is written
+        in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            A new ``(call.n, call.c_in, out_l)`` tensor in ``call.dtype``, where ``out_l``
-            follows ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation`` and
-            ``call.ceil_mode`` as ``torch.nn.functional.max_pool1d`` defines it. Padding is
-            negative infinity, so a window holding only padding yields it.
+            A new contiguous ``(call.n, call.c_in, out_l)`` tensor in ``call.dtype`` on
+            ``call.device``, with the output extents ``torch.nn.functional.max_pool1d``
+            gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
+            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
         """
 
 
@@ -194,15 +217,20 @@ class MaxPool2dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Take each window's maximum; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity, so a window covering only padding yields it. Nothing is written
+        in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            A new ``(call.n, call.c_in, out_h, out_w)`` tensor in ``call.dtype``, with the
-            output extents ``torch.nn.functional.max_pool2d`` gives for ``call.window``,
-            ``call.stride``, ``call.pad``, ``call.dilation`` and ``call.ceil_mode``. Padding
-            is negative infinity.
+            A new contiguous ``(call.n, call.c_in, out_h, out_w)`` tensor in ``call.dtype`` on
+            ``call.device``, with the output extents ``torch.nn.functional.max_pool2d``
+            gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
+            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
         """
 
 
@@ -215,15 +243,20 @@ class MaxPool3dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Take each window's maximum; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity, so a window covering only padding yields it. Nothing is written
+        in place, and the output aliases no input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            A new ``(call.n, call.c_in, out_d, out_h, out_w)`` tensor in ``call.dtype``, with
-            the output extents ``torch.nn.functional.max_pool3d`` gives for ``call.window``,
-            ``call.stride``, ``call.pad``, ``call.dilation`` and ``call.ceil_mode``. Padding
-            is negative infinity.
+            A new contiguous ``(call.n, call.c_in, out_d, out_h, out_w)`` tensor in ``call.dtype`` on
+            ``call.device``, with the output extents ``torch.nn.functional.max_pool3d``
+            gives for ``call.window``, ``call.stride``, ``call.pad``, ``call.dilation``
+            and ``call.ceil_mode``. The comparison runs in ``call.dtype``.
         """
 
 
@@ -236,16 +269,20 @@ class MaxPool1dIndicesFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity. Nothing is written in place, and neither output aliases an input.
+
         Args:
-            x: ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, call.size[0])`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            New ``(values, indices)``, both ``(call.n, call.c_in, out_l)`` with the extents
+            New contiguous ``(values, indices)`` on ``call.device``, both
+            ``(call.n, call.c_in, out_l)`` with the extents
             ``torch.nn.functional.max_pool1d`` gives: ``values`` in ``call.dtype``, and
             ``indices`` in ``int64``, each the flat position of its maximum within the
-            input's length axis. A tie takes the lowest position. Padding is negative
-            infinity.
+            input's length axis. A tie takes the lowest position.
         """
 
 
@@ -258,16 +295,20 @@ class MaxPool2dIndicesFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity. Nothing is written in place, and neither output aliases an input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            New ``(values, indices)``, both ``(call.n, call.c_in, out_h, out_w)`` with the
-            extents ``torch.nn.functional.max_pool2d`` gives: ``values`` in ``call.dtype``,
-            and ``indices`` in ``int64``, each the flat position of its maximum within the
-            input's ``(h, w)`` plane. A tie takes the lowest position. Padding is negative
-            infinity.
+            New contiguous ``(values, indices)`` on ``call.device``, both
+            ``(call.n, call.c_in, out_h, out_w)`` with the extents
+            ``torch.nn.functional.max_pool2d`` gives: ``values`` in ``call.dtype``, and
+            ``indices`` in ``int64``, each the flat position of its maximum within the
+            input's ``(h, w)`` plane. A tie takes the lowest position.
         """
 
 
@@ -280,16 +321,20 @@ class MaxPool3dIndicesFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
+        A window's positions step by ``call.dilation``. The padded positions read as
+        negative infinity. Nothing is written in place, and neither output aliases an input.
+
         Args:
-            x: ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on ``call.device``,
-               contiguous.
+            x: The input, ``(call.n, call.c_in, *call.size)`` in ``call.dtype``, on
+                ``call.device``, contiguous in that axis order. The op makes it contiguous
+                before the call.
 
         Returns:
-            New ``(values, indices)``, both ``(call.n, call.c_in, out_d, out_h, out_w)`` with
-            the extents ``torch.nn.functional.max_pool3d`` gives: ``values`` in
-            ``call.dtype``, and ``indices`` in ``int64``, each the flat position of its
-            maximum within the input's ``(d, h, w)`` volume. A tie takes the lowest position.
-            Padding is negative infinity.
+            New contiguous ``(values, indices)`` on ``call.device``, both
+            ``(call.n, call.c_in, out_d, out_h, out_w)`` with the extents
+            ``torch.nn.functional.max_pool3d`` gives: ``values`` in ``call.dtype``, and
+            ``indices`` in ``int64``, each the flat position of its maximum within the
+            input's ``(d, h, w)`` volume. A tie takes the lowest position.
         """
 
 
@@ -304,16 +349,19 @@ class AdaptiveAvgPool2dFwdInterface(KernelInterface):
 
         Output cell ``(i, j)`` averages the input rows ``floor(i * h_in / out_h)`` up to
         ``ceil((i + 1) * h_in / out_h)`` and the columns given the same way, as
-        ``torch.nn.functional.adaptive_avg_pool2d`` defines it.
+        ``torch.nn.functional.adaptive_avg_pool2d`` defines it. Windows may overlap, the
+        divisor is the count of positions the window covers, and sums accumulate in
+        ``float32``. Nothing is written in place, and the output aliases no input.
 
         Args:
-            x: ``(call.n, call.c_in, call.h_in, call.w_in)``, or ``(call.c_in, call.h_in,
-               call.w_in)`` when ``call.n`` is 1 and the caller passed an unbatched input, in
-               ``call.dtype`` on ``call.device``, contiguous.
+            x: The input, ``(call.n, call.c_in, call.h_in, call.w_in)``, or
+                ``(call.c_in, call.h_in, call.w_in)`` when ``call.n`` is 1 and the caller
+                passed an unbatched input, in ``call.dtype`` on ``call.device``, contiguous
+                in that axis order.
 
         Returns:
-            A new tensor in ``call.dtype`` of ``x``'s rank, with the trailing axes replaced
-            by ``(call.out_h, call.out_w)``.
+            A new contiguous tensor in ``call.dtype`` on ``call.device``, of ``x``'s rank,
+            with the trailing two axes replaced by ``(call.out_h, call.out_w)``.
         """
 
 
@@ -326,16 +374,21 @@ class AdaptiveMaxPool2dFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Take each output cell's window maximum; nothing is written in place.
 
-        The windows are the ones ``torch.nn.functional.adaptive_max_pool2d`` uses.
+        Output cell ``(i, j)`` takes the maximum over the input rows
+        ``floor(i * h_in / out_h)`` up to ``ceil((i + 1) * h_in / out_h)`` and the columns
+        given the same way, which is what ``torch.nn.functional.adaptive_max_pool2d`` uses.
+        Every window holds at least one position, so no fill value is read. Nothing is
+        written in place, and the output aliases no input.
 
         Args:
-            x: ``(call.n, call.c_in, call.h_in, call.w_in)``, or ``(call.c_in, call.h_in,
-               call.w_in)`` when ``call.n`` is 1 and the caller passed an unbatched input, in
-               ``call.dtype`` on ``call.device``, contiguous.
+            x: The input, ``(call.n, call.c_in, call.h_in, call.w_in)``, or
+                ``(call.c_in, call.h_in, call.w_in)`` when ``call.n`` is 1 and the caller
+                passed an unbatched input, in ``call.dtype`` on ``call.device``, contiguous
+                in that axis order.
 
         Returns:
-            A new tensor in ``call.dtype`` of ``x``'s rank, with the trailing axes replaced
-            by ``(call.out_h, call.out_w)``.
+            A new contiguous tensor in ``call.dtype`` on ``call.device``, of ``x``'s rank,
+            with the trailing two axes replaced by ``(call.out_h, call.out_w)``.
         """
 
 
@@ -348,18 +401,24 @@ class AdaptiveMaxPool2dIndicesFwdInterface(KernelInterface):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Take each output cell's window maximum and where it sat; nothing is written in place.
 
-        The windows are the ones ``torch.nn.functional.adaptive_max_pool2d`` uses.
+        The windows are the ones ``torch.nn.functional.adaptive_max_pool2d`` uses: cell
+        ``(i, j)`` covers the rows ``floor(i * h_in / out_h)`` up to
+        ``ceil((i + 1) * h_in / out_h)`` and the columns given the same way. Every window
+        holds at least one position. Nothing is written in place, and neither output
+        aliases an input.
 
         Args:
-            x: ``(call.n, call.c_in, call.h_in, call.w_in)``, or ``(call.c_in, call.h_in,
-               call.w_in)`` when ``call.n`` is 1 and the caller passed an unbatched input, in
-               ``call.dtype`` on ``call.device``, contiguous.
+            x: The input, ``(call.n, call.c_in, call.h_in, call.w_in)``, or
+                ``(call.c_in, call.h_in, call.w_in)`` when ``call.n`` is 1 and the caller
+                passed an unbatched input, in ``call.dtype`` on ``call.device``, contiguous
+                in that axis order.
 
         Returns:
-            New ``(values, indices)`` of ``x``'s rank, with the trailing axes replaced by
-            ``(call.out_h, call.out_w)``: ``values`` in ``call.dtype``, and ``indices`` in
-            ``int64``, each the flat position of its maximum within the input's
-            ``(h_in, w_in)`` plane. A tie takes the lowest position.
+            New contiguous ``(values, indices)`` on ``call.device``, of ``x``'s rank, with
+            the trailing two axes replaced by ``(call.out_h, call.out_w)``: ``values`` in
+            ``call.dtype``, and ``indices`` in ``int64``, each the flat position of its
+            maximum within the input's ``(h_in, w_in)`` plane. A tie takes the lowest
+            position.
         """
 
 

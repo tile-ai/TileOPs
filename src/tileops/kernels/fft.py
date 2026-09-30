@@ -128,13 +128,17 @@ class FFTC2CFwdInterface(KernelInterface):
 
         The transform is the unnormalized forward one ``torch.fft.fft`` computes: output
         element ``k`` sums ``x[j] * exp(-2j * pi * j * k / call.n)`` over ``j``. Leading
-        axes are batched and keep their order.
+        axes are batched and keep their order, so a rank-1 input returns one transformed
+        row. Nothing is written in place, and the output aliases no input.
 
         Args:
-            x: ``(..., call.n)`` in ``call.dtype`` on ``call.device``, contiguous.
+            x: The input, ``(..., call.n)`` in ``call.dtype`` on ``call.device``, with the
+                transformed axis last. The op passes the caller's tensor as it is, so it
+                may be non-contiguous or hold a lazy conjugate; an implementation that
+                needs a dense layout makes one.
 
         Returns:
-            A new tensor shaped and typed as *x*.
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
         """
 
 

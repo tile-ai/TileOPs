@@ -246,7 +246,7 @@ class MeanPoolingFwdOp(Op):
             accum_dtype=self.accum_dtype,
             device=x.device,
         )
-        kernel = self.kernel_for("mean_pooling", (x, offsets, indices), call)
+        kernel = self.kernel_for("mean_pooling", (x, offsets_arg, indices_arg), call)
         return kernel(x, offsets_arg, indices=indices_arg)
 
     def _validate_ragged(

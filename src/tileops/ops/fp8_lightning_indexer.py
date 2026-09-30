@@ -62,45 +62,6 @@ class FP8LightningIndexerFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    def _bind_kernel(self, index_q: torch.Tensor, index_k: torch.Tensor, inputs: tuple) -> None:
-        batch, seq_len, heads, index_dim = index_q.shape
-        _, seq_len_kv, kv_group, _ = index_k.shape
-        call = FP8LightningIndexerCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            index_dim=index_dim,
-            seq_len_kv=seq_len_kv,
-            kv_group=kv_group,
-            clean_logits=self.clean_logits,
-            device=index_q.device,
-        )
-        self.kernel = self.kernel_for("fp8_lightning_indexer", inputs, call)
-
-    def torch_quant_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-    ) -> torch.Tensor:
-        index_q = index_q.to(torch.float8_e4m3fn)
-        index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
-
-        return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
-
-    def tl_quant_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        index_k_scale: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
-
     def forward(
         self,
         index_q: torch.Tensor,
@@ -140,16 +101,25 @@ class FP8LightningIndexerFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._bind_kernel(
-            index_q,
-            index_k,
-            (index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale),
-        )
         if index_k_scale is None:
-            return self.torch_quant_forward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
-        return self.tl_quant_forward(
-            index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke
+            # A bf16 call is quantized here; the kernel indexes FP8 keys and their scales.
+            index_q = index_q.to(torch.float8_e4m3fn)
+            index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
+        batch, seq_len, heads, index_dim = index_q.shape
+        _, seq_len_kv, kv_group, _ = index_k.shape
+        call = FP8LightningIndexerCall(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            index_dim=index_dim,
+            seq_len_kv=seq_len_kv,
+            kv_group=kv_group,
+            clean_logits=self.clean_logits,
+            device=index_q.device,
         )
+        inputs = (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
+        self.kernel = self.kernel_for("fp8_lightning_indexer", inputs, call)
+        return self.kernel(*inputs)
 
     def per_custom_dims_cast_to_fp8(
         self, x: torch.Tensor, dims: Tuple[int], use_ue8m0: bool

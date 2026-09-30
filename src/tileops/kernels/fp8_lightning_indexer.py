@@ -52,23 +52,25 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
         ``relu(IndexQ[s, h] . IndexK[t, g] * IndexKScale[t, g])`` over the heads of group
         ``g``. Where ``call.clean_logits``, a key outside ``[CuSeqLenKS[s], CuSeqLenKE[s])``
         is set to negative infinity; otherwise its slot holds whatever the scan left.
+        Nothing is written in place, and the output aliases no input.
 
-        Every tensor is contiguous on ``call.device``.
+        Every tensor is on ``call.device``, row-major in the axis order given. The op
+        passes the caller's tensors as they are on the externally scaled path, so an
+        implementation that needs a dense layout makes one.
 
         Args:
-            IndexQ: ``float8_e4m3fn`` ``(call.batch, call.seq_len, call.heads,
-                call.index_dim)``.
-            IndexK: ``float8_e4m3fn`` ``(call.batch, call.seq_len_kv, call.kv_group,
-                call.index_dim)``.
-            IndexKScale: ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)``, one
-                scale per key row.
+            IndexQ: ``float8_e4m3fn``
+                ``(call.batch, call.seq_len, call.heads, call.index_dim)``.
+            IndexK: ``float8_e4m3fn``
+                ``(call.batch, call.seq_len_kv, call.kv_group, call.index_dim)``.
+            IndexKScale: ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)``.
             Weights: ``float32`` ``(call.seq_len, call.heads)``.
             CuSeqLenKS: ``int32`` ``(call.seq_len,)``, the first key of each window.
             CuSeqLenKE: ``int32`` ``(call.seq_len,)``, one past the last key.
 
         Returns:
-            A new ``float32`` ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)``
-            logit tensor.
+            A new contiguous ``float32``
+            ``(call.batch, call.seq_len, call.seq_len_kv, call.kv_group)`` logit tensor.
         """
 
 

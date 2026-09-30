@@ -83,19 +83,21 @@ class RopeNeoxFwdInterface(KernelInterface):
         """Rotate each head by the half-split convention; nothing is written in place.
 
         Splitting a head at its midpoint into ``x1`` and ``x2``, the output is
-        ``x * cos_row + concat(-x2, x1) * sin_row``, where ``cos_row`` and ``sin_row`` are
-        each half broadcast over both halves and the row is the token's position along the
-        sequence axis.
+        ``x * cos_row + concat(-x2, x1) * sin_row``, where each table half is broadcast
+        over both halves of the head and the row is the token's position along the
+        sequence axis. Nothing is written in place, and the output aliases no input.
 
         Args:
-            x: ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
-                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under ``"2d"``,
-                in ``call.dtype`` on ``call.device``, contiguous.
-            cos: ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype`` on ``call.device``.
-            sin: The same, for the sine.
+            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
+                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
+                order. The op makes it contiguous before the call.
+            cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
+                on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
 
         Returns:
-            A new tensor shaped and typed as *x*.
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
         """
 
 
@@ -110,17 +112,20 @@ class RopeNonNeoxFwdInterface(KernelInterface):
 
         Pair ``k`` of a head, ``(x[2k], x[2k + 1])``, becomes
         ``(x[2k] * cos[k] - x[2k + 1] * sin[k], x[2k + 1] * cos[k] + x[2k] * sin[k])``, the
-        table row being the token's position along the sequence axis.
+        table row being the token's position along the sequence axis. Nothing is written in
+        place, and the output aliases no input.
 
         Args:
-            x: ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
-                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under ``"2d"``,
-                in ``call.dtype`` on ``call.device``, contiguous.
-            cos: ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype`` on ``call.device``.
-            sin: The same, for the sine.
+            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
+                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
+                order. The op makes it contiguous before the call.
+            cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
+                on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
 
         Returns:
-            A new tensor shaped and typed as *x*.
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
         """
 
 
@@ -139,18 +144,19 @@ class RopeNeoxPositionIdsFwdInterface(KernelInterface):
         ``call.rotary_dim`` columns of each of its heads by the half-split convention; the
         remaining columns are copied. A position outside ``[0, call.max_position)`` is
         clamped to the table rather than read out of bounds, and counted, which
-        ``take_out_of_range`` reports.
+        ``take_out_of_range`` reports. Nothing is written in place except that counter, and
+        the output aliases no input.
 
         Args:
-            x: ``(call.num_tokens, call.num_heads, call.head_dim)`` in ``call.dtype`` on
-                ``call.device``, contiguous.
-            cos: ``(call.max_position, call.rotary_dim // 2)`` in ``call.dtype`` on
-                ``call.device``.
-            sin: The same, for the sine.
-            position_ids: ``int32`` ``(call.num_tokens,)``, contiguous.
+            x: The input, ``(call.num_tokens, call.num_heads, call.head_dim)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order.
+            cos: The cosine table, ``(call.max_position, call.rotary_dim // 2)`` in
+                ``call.dtype`` on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
+            position_ids: ``int32`` ``(call.num_tokens,)`` on ``call.device``, contiguous.
 
         Returns:
-            A new tensor shaped and typed as *x*.
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
         """
 
 

@@ -34,18 +34,22 @@ class FP8QuantFwdInterface(KernelInterface):
     def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Scale each row by its own maximum; nothing is written in place.
 
-        A row's scale is its absolute maximum over the finite elements, floored at ``1e-4``,
-        divided by 448. A row holding an infinity or a NaN is quantized against its finite
-        maximum, and neither output propagates the non-finite value.
+        A row is the trailing ``call.index_dim`` axis. Its scale is the absolute maximum
+        over the finite elements, floored at ``1e-4``, divided by 448. A row holding an
+        infinity or a NaN is quantized against its finite maximum, so neither output
+        propagates the non-finite value. Nothing is written in place, and neither output
+        aliases the input.
 
         Args:
-            input_tensor: ``(call.batch, call.seq_len_kv, call.kv_group, call.index_dim)`` in
-                ``call.dtype`` on ``call.device``, contiguous.
+            input_tensor: The input,
+                ``(call.batch, call.seq_len_kv, call.kv_group, call.index_dim)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order. The op
+                makes it contiguous before the call.
 
         Returns:
-            New ``(scale_tensor, output_tensor)``: ``float32``
-            ``(call.batch, call.seq_len_kv, call.kv_group)`` scales, and the rows divided by
-            them in ``float8_e4m3fn``, shaped as the input.
+            New contiguous ``(scale_tensor, output_tensor)`` on ``call.device``:
+            ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)`` scales, and the
+            rows divided by them in ``float8_e4m3fn``, shaped as the input.
         """
 
 

@@ -45,14 +45,16 @@ class DropoutFwdInterface(KernelInterface):
         Element ``i`` becomes ``x[i] / (1 - call.p)`` where its draw keeps it and zero where
         it does not. The draws come from ``call.seed`` through the thread layout the built
         program fixes, so two calls on one built kernel with the same ``call.seed`` produce
-        the same mask.
+        the same mask. Nothing is written in place, and the output aliases no input.
 
         Args:
-            x: ``(call.count,)`` in ``call.dtype`` on ``call.device``, contiguous. The op
-                passes a flat view; the caller's shape is restored outside the kernel.
+            x: The input, ``(call.count,)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The op passes a flat contiguous view of the caller's tensor and
+                restores its shape outside the kernel, so an implementation sees one run of
+                elements and no stride.
 
         Returns:
-            A new ``(call.count,)`` tensor in ``call.dtype``.
+            A new contiguous ``(call.count,)`` tensor in ``call.dtype`` on ``call.device``.
         """
 
 

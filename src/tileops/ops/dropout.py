@@ -77,7 +77,7 @@ class DropoutFwdOp(Op):
         call = DropoutCall(
             count=flat.numel(), p=self.p, seed=self.seed, dtype=flat.dtype, device=flat.device
         )
-        kernel = self.kernel_for("dropout", (input,), call)
+        kernel = self.kernel_for("dropout", (flat,), call)
         return kernel(flat).reshape(input.shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:

@@ -184,9 +184,10 @@ class _RopeOpBase(Op):
             dtype=x.dtype,
             device=x.device,
         )
-        self.kernel = self.kernel_for("rope", (x,), call)
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
-        return self.kernel(x.contiguous(), cos, sin)
+        x = x.contiguous()
+        self.kernel = self.kernel_for("rope", (x, cos, sin), call)
+        return self.kernel(x, cos, sin)
 
 
 # Concrete Op classes (5 variants)
@@ -291,9 +292,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
             dtype=x.dtype,
             device=x.device,
         )
-        self.kernel = self.kernel_for("rope_neox_position_ids", (x, position_ids), call)
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
-        output = self.kernel(x.contiguous(), cos, sin, position_ids.to(torch.int32).contiguous())
+        x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
+        self.kernel = self.kernel_for("rope_neox_position_ids", (x, cos, sin, position_ids), call)
+        output = self.kernel(x, cos, sin, position_ids)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in
         # front of every call cost more device time than the rotation they guard.
