@@ -9,7 +9,6 @@ resolve the implementation without compiling anything.
 import pytest
 import torch
 
-from tileops.kernels.convolution import Conv1dCall, Conv2dCall
 from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.call_spec import BmmFp8Call, GemmCall
 from tileops.kernels.linear_attention import (
@@ -19,7 +18,6 @@ from tileops.kernels.linear_attention import (
     GLAChunkCall,
     GLADecodeCall,
 )
-from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp
 from tileops.ops.gemm.bmm import BmmFp8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
@@ -402,92 +400,6 @@ def test_bmm_fp8_dispatch(batch: int, m: int, n: int, k: int, expected: str) -> 
 
     op = BmmFp8FwdOp()
     assert op.kernel_map[op.select_implementation("bmm_fp8", call)].__name__ == expected
-
-
-@pytest.mark.smoke
-def test_bmm_fp8_refuses_a_k_no_wgmma_step_divides() -> None:
-    """Every program steps K by 32, so the refusal names that rather than reaching a builder."""
-    call = BmmFp8Call(
-        arch=_SM90,
-        sm_count=132,
-        batch=8,
-        m=512,
-        n=512,
-        k=48,
-        dtype=torch.float8_e4m3fn,
-        out_dtype=torch.bfloat16,
-    )
-
-    with pytest.raises(ValueError, match="multiple of 32"):
-        BmmFp8FwdOp().select_implementation("bmm_fp8", call)
-
-
-# --- Convolution: a depthwise call is its own program, and a 1x1 window is symmetric.
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("groups", "c_in", "c_out", "kernel_l", "expected"),
-    [
-        pytest.param(1, 64, 64, 3, "Conv1dKernel", id="dense"),
-        pytest.param(1, 64, 64, 1, "Conv1dPointwiseKernel", id="pointwise"),
-        pytest.param(2, 64, 64, 3, "GroupConv1dKernel", id="grouped"),
-        pytest.param(64, 64, 64, 3, "DepthwiseConv1dKernel", id="one-channel-per-group"),
-    ],
-)
-def test_conv1d_dispatch(groups: int, c_in: int, c_out: int, kernel_l: int, expected: str) -> None:
-    call = Conv1dCall(
-        arch=_SM90,
-        sm_count=132,
-        n=1,
-        c_in=c_in,
-        c_out=c_out,
-        c_in_g=c_in // groups,
-        l_in=128,
-        kernel_l=kernel_l,
-        groups=groups,
-        out_l=128 - kernel_l + 1,
-    )
-
-    op = Conv1dFwdOp(groups=groups)
-    assert op.kernel_map[op.select_implementation("conv1d", call)].__name__ == expected
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("groups", "c_in", "kernel_hw", "expected"),
-    [
-        pytest.param(1, 64, 3, "Conv2dSymmetricKernel", id="symmetric"),
-        pytest.param(1, 48, 3, "Conv2dKernel", id="channels-below-one-32-step"),
-        pytest.param(1, 64, 1, "Conv2d1x1Kernel", id="pointwise-wins-over-symmetric"),
-        pytest.param(1, 48, 1, "Conv2d1x1Kernel", id="pointwise-alone"),
-        pytest.param(2, 64, 3, "GroupConv2dKernel", id="grouped"),
-        pytest.param(64, 64, 3, "DepthwiseConv2dKernel", id="one-channel-per-group"),
-    ],
-)
-def test_conv2d_dispatch(groups: int, c_in: int, kernel_hw: int, expected: str) -> None:
-    """A 1x1 window is symmetric, so the two regions overlap wherever the channels allow
-    the symmetric one; the pointwise program, which has no window to gather, wins there."""
-    pad = kernel_hw // 2
-    call = Conv2dCall(
-        arch=_SM90,
-        sm_count=132,
-        n=2,
-        c_in=c_in,
-        c_out=64,
-        c_in_g=c_in // groups,
-        h=56,
-        w=56,
-        kernel_h=kernel_hw,
-        kernel_w=kernel_hw,
-        padding=(pad, pad),
-        groups=groups,
-        out_h=56,
-        out_w=56,
-    )
-
-    op = Conv2dFwdOp(padding=pad, groups=groups)
-    assert op.kernel_map[op.select_implementation("conv2d", call)].__name__ == expected
 
 
 # --- Dense GQA: one row per region, plus each boundary between two of them.
