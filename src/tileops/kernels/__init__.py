@@ -95,12 +95,9 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MeanPoolingFwdKernel,
     )
     from tileops.kernels.rope import (
-        RopeLlama31Kernel,
-        RopeLongRopeKernel,
         RopeNeoxKernel,
         RopeNeoxPositionIdsKernel,
         RopeNonNeoxKernel,
-        RopeYarnKernel,
     )
     from tileops.kernels.topk_selector import TopkSelectorKernel
 
@@ -187,12 +184,9 @@ _LAZY = {
     "NSAFwdVarlenKernel": ".attention",
     "NSATopkVarlenKernel": ".attention",
     "RMSNormKernel": ".norm",
-    "RopeLlama31Kernel": ".rope",
-    "RopeLongRopeKernel": ".rope",
     "RopeNeoxKernel": ".rope",
     "RopeNeoxPositionIdsKernel": ".rope",
     "RopeNonNeoxKernel": ".rope",
-    "RopeYarnKernel": ".rope",
     "SparseMlaBasicKernel": ".attention",
     "SparseMlaKernel": ".attention",
     "TopkSelectorKernel": ".topk_selector",

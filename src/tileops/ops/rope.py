@@ -25,14 +25,16 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.rope import (
-    RopeLlama31Kernel,
-    RopeLongRopeKernel,
+    RopeCall,
+    RopeNeoxFwdInterface,
     RopeNeoxKernel,
+    RopeNeoxPositionIdsCall,
+    RopeNeoxPositionIdsFwdInterface,
     RopeNeoxPositionIdsKernel,
+    RopeNonNeoxFwdInterface,
     RopeNonNeoxKernel,
-    RopeYarnKernel,
 )
 from tileops.ops.op_base import Op
 
@@ -102,14 +104,13 @@ def _yarn_find_correction_range(
 class _RopeOpBase(Op):
     """Base class for the five 1d/2d RoPE variants.
 
-    Subclass sets ``_op_name`` and ``kernel_types`` and implements
-    ``_compute_cos_sin`` to generate its variant-specific frequency tables.
+    Subclass sets ``kernel_types`` and ``interfaces`` and implements ``_compute_cos_sin``
+    to generate its variant-specific frequency tables.
 
     Cos/sin tables are computed lazily at forward time on the same device as
     the input tensor, avoiding device-mismatch issues in multi-GPU settings.
     """
 
-    _op_name: str
     compile_boundary = True
 
     def __init__(
@@ -155,19 +156,6 @@ class _RopeOpBase(Op):
         """Variant-specific (cos, sin) tables, each of shape ``(seq_len, head_dim // 2)``."""
         raise NotImplementedError("Subclass must implement _compute_cos_sin")
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, layout, dtype and device."""
-        seq_len, head_dim, dtype, layout, batch, num_heads, _device = call
-        return call, lambda: self.kernel_map[self._op_name](
-            seq_len=seq_len,
-            head_dim=head_dim,
-            dtype=dtype,
-            layout=layout,
-            batch=batch,
-            num_heads=num_heads,
-            tune=self.tune,
-        )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation using internally computed cos/sin tables.
 
@@ -187,8 +175,16 @@ class _RopeOpBase(Op):
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
             batch, seq_len, num_heads, head_dim = x.shape
-        key = (seq_len, head_dim, x.dtype, self.layout, batch, num_heads, x.device.index)
-        self.kernel = self.kernel_for(self._op_name, (x,), key)
+        call = RopeCall(
+            seq_len=seq_len,
+            head_dim=head_dim,
+            layout=self.layout,
+            batch=batch,
+            num_heads=num_heads,
+            dtype=x.dtype,
+            device=x.device,
+        )
+        self.kernel = self.kernel_for("rope", (x,), call)
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         return self.kernel(x.contiguous(), cos, sin)
 
@@ -205,8 +201,8 @@ class RopeNeoxFwdOp(_RopeOpBase):
 
     """
 
-    _op_name = "rope_neox"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_neox": RopeNeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -221,10 +217,12 @@ class RopeNeoxPositionIdsFwdOp(Op):
     ``rotary_dim`` is None) and the rest are copied.
     """
 
-    _op_name = "rope_neox_position_ids"
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "rope_neox_position_ids": RopeNeoxPositionIdsKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "rope_neox_position_ids": RopeNeoxPositionIdsFwdInterface
     }
 
     def __init__(
@@ -267,19 +265,6 @@ class RopeNeoxPositionIdsFwdOp(Op):
             )
         return self._freq_cache[key]
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, rotary extent, dtype and device."""
-        num_tokens, num_heads, head_dim, rotary_dim, max_position, dtype, _device = call
-        return call, lambda: self.kernel_map[self._op_name](
-            num_tokens=num_tokens,
-            num_heads=num_heads,
-            head_dim=head_dim,
-            rotary_dim=rotary_dim,
-            max_position=max_position,
-            dtype=dtype,
-            tune=self.tune,
-        )
-
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
@@ -297,16 +282,16 @@ class RopeNeoxPositionIdsFwdOp(Op):
         """Resolve the kernel and launch, inside the operator."""
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
-        key = (
-            num_tokens,
-            num_heads,
-            head_dim,
-            rotary_dim,
-            self.max_position,
-            x.dtype,
-            x.device.index,
+        call = RopeNeoxPositionIdsCall(
+            num_tokens=num_tokens,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            rotary_dim=rotary_dim,
+            max_position=self.max_position,
+            dtype=x.dtype,
+            device=x.device,
         )
-        self.kernel = self.kernel_for(self._op_name, (x, position_ids), key)
+        self.kernel = self.kernel_for("rope_neox_position_ids", (x, position_ids), call)
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
         output = self.kernel(x.contiguous(), cos, sin, position_ids.to(torch.int32).contiguous())
         # The kernel counts the positions it found outside the table rather than the
@@ -327,8 +312,8 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
 
     """
 
-    _op_name = "rope_non_neox"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_non_neox": RopeNonNeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNonNeoxFwdInterface}
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -346,8 +331,8 @@ class RopeLlama31FwdOp(_RopeOpBase):
 
     """
 
-    _op_name = "rope_llama31"
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RopeLlama31Kernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RopeNeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
 
     @staticmethod
     def _llama31_freqs(
@@ -460,8 +445,8 @@ class RopeYarnFwdOp(_RopeOpBase):
 
     """
 
-    _op_name = "rope_yarn"
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_yarn": RopeYarnKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_yarn": RopeNeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
 
     @staticmethod
     def _yarn_freqs(
@@ -607,8 +592,8 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     """
 
-    _op_name = "rope_longrope"
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RopeLongRopeKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RopeNeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
 
     @staticmethod
     def _longrope_freqs(
