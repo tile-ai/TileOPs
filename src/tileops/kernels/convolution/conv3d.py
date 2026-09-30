@@ -13,12 +13,7 @@ from tileops.kernels.convolution._common import (
     conv_num_stages,
     launch,
 )
-from tileops.kernels.convolution.call_spec import (
-    Conv3dCall,
-    conv3d_dense_region,
-    conv3d_group_region,
-    conv3d_ndhwc_region,
-)
+from tileops.kernels.convolution.call_spec import Conv3dCall, Conv3dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
@@ -643,13 +638,15 @@ def _conv3d_ndhwc_kernel(
     return _conv3d_ndhwc_func
 
 
-class Conv3dKernel(Kernel):
+class Conv3dKernel(Kernel, Conv3dFwdInterface):
+    """Dense Conv3d over the full kernel volume; serves every ungrouped call."""
+
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
-        return conv3d_dense_region(call)
+        return call.groups == 1
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:
@@ -677,9 +674,7 @@ class Conv3dKernel(Kernel):
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,
@@ -801,12 +796,14 @@ class Conv3dKernel(Kernel):
         return launch(self, x, weight, bias=bias)
 
 
-class GroupConv3dKernel(Kernel):
+class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
+    """Grouped Conv3d: one implicit GEMM per group over that group's channels."""
+
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
-        return conv3d_group_region(call)
+        return call.groups > 1
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:
@@ -837,9 +834,7 @@ class GroupConv3dKernel(Kernel):
             c_out_g=call.c_out // call.groups,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,
@@ -980,7 +975,7 @@ class GroupConv3dKernel(Kernel):
         return launch(self, x, weight, bias=bias)
 
 
-class Conv3dNdhwcKernel(Kernel):
+class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
     """Dense Conv3d forward through an NDHWC-staged implicit GEMM.
 
     Inputs use the public NCDHW/OIDHW layout and the result is NCDHW. Internally
@@ -1009,7 +1004,19 @@ class Conv3dNdhwcKernel(Kernel):
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
-        return conv3d_ndhwc_region(call)
+        """Dense 16-bit calls whose output amortizes the three layout transforms.
+
+        The staging is a fixed cost paid before any math, so pointwise and small-output
+        calls stay on the dense implementation even though this one computes them.
+        """
+        return (
+            call.groups == 1
+            and call.dtype in {torch.float16, torch.bfloat16}
+            and call.c_in % 32 == 0
+            and call.c_out >= 64
+            and call.output_spatial >= 1024
+            and call.kernel_volume > 1
+        )
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:
@@ -1037,9 +1044,7 @@ class Conv3dNdhwcKernel(Kernel):
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(
-            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
-        )
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
 
     def __init__(
         self,

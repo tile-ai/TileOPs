@@ -1,34 +1,30 @@
-"""Call records and implementation regions for convolution kernels."""
+"""The facts of one convolution call its in-tree kernels select and build on, and the kernel
+interfaces their implementations inherit."""
 
 from __future__ import annotations
 
 import dataclasses
+from abc import abstractmethod
 from typing import Optional
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
     "Conv1dCall",
+    "Conv1dFwdInterface",
     "Conv2dCall",
+    "Conv2dFwdInterface",
     "Conv3dCall",
-    "conv1d_dense_region",
-    "conv1d_group_region",
-    "conv1d_pointwise_region",
-    "conv2d_dense_region",
-    "conv2d_group_region",
-    "conv2d_pointwise_region",
-    "conv2d_symmetric_region",
-    "conv3d_dense_region",
-    "conv3d_group_region",
-    "conv3d_ndhwc_region",
+    "Conv3dFwdInterface",
 ]
 
 
 @dataclasses.dataclass(frozen=True)
 class Conv1dCall(CallSpec):
-    """Semantic and shape facts used to select a Conv1d implementation.
+    """One Conv1d call, as the op knows it after inferring the output length.
 
     The operator has already validated that the public input is NCL, the weight
     is OIL, and the output length is positive. The output length is::
@@ -36,9 +32,6 @@ class Conv1dCall(CallSpec):
         out_l = floor((l_in + pad_left + pad_right
                        - dilation_l * (kernel_l - 1) - 1)
                       / stride_l) + 1
-
-    Implementations state positive regions over these fields, and the general
-    dense implementation serves only ``groups == 1``.
     """
 
     n: int = 1
@@ -56,22 +49,23 @@ class Conv1dCall(CallSpec):
     dtype: torch.dtype = torch.float16
     has_bias: bool = False
 
+    @property
+    def c_out_g(self) -> int:
+        """Output channels one group produces."""
+        return self.c_out // self.groups
+
 
 @dataclasses.dataclass(frozen=True)
 class Conv2dCall(CallSpec):
-    """Semantic and shape facts used to select a Conv2d implementation.
+    """One Conv2d call, as the op knows it after inferring the output extents.
 
     The operator has already validated that the public input is NCHW, the weight
-    is OIHW, and the output dimensions are positive. For each spatial axis the
+    is OIHW, and the output extents are positive. For each spatial axis the
     output size is::
 
         out_axis = floor((in_axis + pad_axis + pad_end_axis
                           - dilation_axis * (kernel_axis - 1) - 1)
                          / stride_axis) + 1
-
-    Implementations state positive regions over these fields. Specialized
-    regions are deliberately disjoint; for example the symmetric implicit-GEMM
-    path excludes 1x1 pointwise calls.
     """
 
     n: int = 1
@@ -94,22 +88,28 @@ class Conv2dCall(CallSpec):
     dtype: torch.dtype = torch.float16
     has_bias: bool = False
 
+    @property
+    def c_out_g(self) -> int:
+        """Output channels one group produces."""
+        return self.c_out // self.groups
+
+    @property
+    def out_hw(self) -> int:
+        """Output elements of one image, which an m tile is laid over."""
+        return self.out_h * self.out_w
+
 
 @dataclasses.dataclass(frozen=True)
 class Conv3dCall(CallSpec):
-    """Semantic and shape facts used to select a Conv3d implementation.
+    """One Conv3d call, as the op knows it after inferring the output extents.
 
     The operator has already validated that the public input is NCDHW, the
-    weight is OIDHW, and the output dimensions are positive. For each spatial
+    weight is OIDHW, and the output extents are positive. For each spatial
     axis the output size is::
 
         out_axis = floor((in_axis + pad_axis + pad_end_axis
                           - dilation_axis * (kernel_axis - 1) - 1)
                          / stride_axis) + 1
-
-    Implementations state positive regions over these fields. Architecture is
-    inherited from :class:`tileops.kernels.call_spec.CallSpec` and checked by
-    ``Kernel.unavailable()`` before an implementation's region is evaluated.
     """
 
     n: int = 1
@@ -136,106 +136,100 @@ class Conv3dCall(CallSpec):
     has_bias: bool = False
 
     @property
+    def c_out_g(self) -> int:
+        """Output channels one group produces."""
+        return self.c_out // self.groups
+
+    @property
     def kernel_volume(self) -> int:
+        """Weight elements one input channel contributes to one output element."""
         return self.kernel_d * self.kernel_h * self.kernel_w
 
     @property
     def output_spatial(self) -> int:
+        """Output elements per channel across the batch."""
         return self.n * self.out_d * self.out_h * self.out_w
 
 
-def conv1d_dense_region(call: Conv1dCall) -> bool:
-    """The dense Conv1d fallback region."""
+class Conv1dFwdInterface(KernelInterface):
+    """1D cross-correlation over an NCL input, as ``torch.nn.functional.conv1d``."""
 
-    return call.groups == 1
+    request = Conv1dCall
 
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Convolve *x* with *weight*; nothing is written in place.
 
-def conv1d_group_region(call: Conv1dCall) -> bool:
-    """The grouped Conv1d region."""
+        Every tensor is contiguous on ``call.device`` and in ``call.dtype``, the bias
+        included. The program is compiled for one side of ``call.has_bias``, so a call
+        passes a bias exactly where the call spec said it would.
 
-    return call.groups > 1
+        Args:
+            x: ``(call.n, call.c_in, call.l_in)``.
+            weight: ``(call.c_out, call.c_in_g, call.kernel_l)``.
+            bias: ``(call.c_out,)``, or ``None`` where ``call.has_bias`` is false.
 
-
-def conv1d_pointwise_region(call: Conv1dCall) -> bool:
-    """The dense 1x1 Conv1d region that lowers to a pointwise GEMM."""
-
-    return (
-        conv1d_dense_region(call)
-        and call.kernel_l == 1
-        and call.stride_l == 1
-        and call.pad_left == 0
-        and call.pad_right == 0
-        and call.dilation_l == 1
-    )
-
-
-def conv2d_dense_region(call: Conv2dCall) -> bool:
-    """The dense Conv2d fallback region."""
-
-    return call.groups == 1
+        Returns:
+            A new ``(call.n, call.c_out, call.out_l)`` tensor in ``call.dtype``.
+            Out-of-bounds input positions read as zero; ``float32`` operands
+            multiply in TF32, as cuDNN does by default.
+        """
 
 
-def conv2d_group_region(call: Conv2dCall) -> bool:
-    """The grouped Conv2d region."""
+class Conv2dFwdInterface(KernelInterface):
+    """2D cross-correlation over an NCHW input, as ``torch.nn.functional.conv2d``."""
 
-    return call.groups > 1
+    request = Conv2dCall
 
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Convolve *x* with *weight*; nothing is written in place.
 
-def conv2d_pointwise_region(call: Conv2dCall) -> bool:
-    """The dense 1x1 Conv2d region that lowers to a pointwise GEMM."""
+        Every tensor is contiguous on ``call.device`` and in ``call.dtype``, the bias
+        included. The program is compiled for one side of ``call.has_bias``, so a call
+        passes a bias exactly where the call spec said it would. An implementation that
+        stages another layout allocates it itself.
 
-    return (
-        conv2d_dense_region(call)
-        and call.kernel_h == 1
-        and call.kernel_w == 1
-        and call.stride == (1, 1)
-        and call.padding == (0, 0)
-        and call.padding_end in (None, (0, 0))
-        and call.dilation == (1, 1)
-    )
+        Args:
+            x: ``(call.n, call.c_in, call.h, call.w)``.
+            weight: ``(call.c_out, call.c_in_g, call.kernel_h, call.kernel_w)``.
+            bias: ``(call.c_out,)``, or ``None`` where ``call.has_bias`` is false.
 
-
-def conv2d_symmetric_region(call: Conv2dCall) -> bool:
-    """The dense symmetric Conv2d region staged through NHWC implicit GEMM."""
-
-    return (
-        conv2d_dense_region(call)
-        and not conv2d_pointwise_region(call)
-        and call.kernel_h == call.kernel_w
-        and call.stride[0] == call.stride[1]
-        and call.padding[0] == call.padding[1]
-        and call.padding_end in (None, call.padding)
-        and call.dilation[0] == call.dilation[1]
-        and call.c_in % 32 == 0
-    )
+        Returns:
+            A new ``(call.n, call.c_out, call.out_h, call.out_w)`` tensor in
+            ``call.dtype``. Out-of-bounds input positions read as zero;
+            ``float32`` operands multiply in TF32, as cuDNN does by default.
+        """
 
 
-def conv3d_dense_region(call: Conv3dCall) -> bool:
-    """The dense Conv3d fallback region."""
+class Conv3dFwdInterface(KernelInterface):
+    """3D cross-correlation over an NCDHW input, as ``torch.nn.functional.conv3d``."""
 
-    return call.groups == 1
+    request = Conv3dCall
 
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Convolve *x* with *weight*; nothing is written in place.
 
-def conv3d_group_region(call: Conv3dCall) -> bool:
-    """The grouped Conv3d region."""
+        Every tensor is contiguous on ``call.device`` and in ``call.dtype``, the bias
+        included. The program is compiled for one side of ``call.has_bias``, so a call
+        passes a bias exactly where the call spec said it would. An implementation that
+        stages another layout allocates it itself.
 
-    return call.groups > 1
+        Args:
+            x: ``(call.n, call.c_in, call.d, call.h, call.w)``.
+            weight: ``(call.c_out, call.c_in_g, call.kernel_d, call.kernel_h,
+                call.kernel_w)``.
+            bias: ``(call.c_out,)``, or ``None`` where ``call.has_bias`` is false.
 
-
-def conv3d_ndhwc_region(call: Conv3dCall) -> bool:
-    """The conservative NDHWC-staged dense Conv3d fast-path region.
-
-    This region is a performance heuristic layered on top of dense Conv3d
-    correctness. The implementation pays input, weight, and output layout
-    transforms to make the activation gather channel-contiguous, so pointwise
-    and small-output calls remain on the dense fallback.
-    """
-
-    return (
-        conv3d_dense_region(call)
-        and call.dtype in {torch.float16, torch.bfloat16}
-        and call.c_in % 32 == 0
-        and call.c_out >= 64
-        and call.output_spatial >= 1024
-        and call.kernel_volume > 1
-    )
+        Returns:
+            A new ``(call.n, call.c_out, call.out_d, call.out_h, call.out_w)`` tensor in
+            ``call.dtype``. Out-of-bounds input positions read as zero;
+            ``float32`` operands multiply in TF32, as cuDNN does by default.
+        """

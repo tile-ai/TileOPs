@@ -10,8 +10,11 @@ from tileops.kernels.convolution import (
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
     Conv2dSymmetricKernel,
+    Conv3dCall,
     Conv3dKernel,
     Conv3dNdhwcKernel,
+    DepthwiseConv1dKernel,
+    DepthwiseConv2dKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -21,7 +24,6 @@ from tileops.ops import (
     Conv2dFwdOp,
     Conv3dFwdOp,
 )
-from tileops.ops.convolution import _can_use_conv3d_ndhwc
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
 from workloads.device import run_device
 
@@ -265,8 +267,8 @@ def test_conv1d(
         atol, rtol = (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     if served_in_tree(op) and groups > 1:
-        assert isinstance(op.kernel, GroupConv1dKernel)
-        assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
+        depthwise = c_in // groups == 1 and c_out // groups == 1
+        assert isinstance(op.kernel, DepthwiseConv1dKernel if depthwise else GroupConv1dKernel)
 
 
 @pytest.mark.smoke
@@ -663,7 +665,8 @@ def test_conv2d(
         atol = 6e-2
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     if served_in_tree(op) and groups > 1:
-        assert isinstance(op.kernel, GroupConv2dKernel)
+        depthwise = c_in // groups == 1 and c_out // groups == 1
+        assert isinstance(op.kernel, DepthwiseConv2dKernel if depthwise else GroupConv2dKernel)
 
 
 @pytest.mark.smoke
@@ -719,7 +722,7 @@ def test_conv2d_depthwise_dispatches_the_direct_kernel(use_bias: bool) -> None:
     out = op(x, weight, bias)
 
     if served_in_tree(op):
-        assert isinstance(op.kernel, GroupConv2dKernel) and op.kernel.use_direct
+        assert isinstance(op.kernel, DepthwiseConv2dKernel)
     ref = F.conv2d(x, weight, bias=bias, padding=1, groups=channels).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
@@ -1018,18 +1021,22 @@ def test_conv3d(
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     if served_in_tree(op):
         out_d, out_h, out_w = op.last_call.tensors["output"][0][2:]
-        if _can_use_conv3d_ndhwc(
-            groups=groups,
-            c_in=c_in,
-            c_out=c_out,
-            kernel_d=kernel_size[0],
-            kernel_h=kernel_size[1],
-            kernel_w=kernel_size[2],
-            out_d=out_d,
-            out_h=out_h,
-            out_w=out_w,
-            n=n,
-            dtype=dtype,
+        if Conv3dNdhwcKernel.applies(
+            Conv3dCall(
+                arch=0,
+                sm_count=1,
+                groups=groups,
+                c_in=c_in,
+                c_out=c_out,
+                kernel_d=kernel_size[0],
+                kernel_h=kernel_size[1],
+                kernel_w=kernel_size[2],
+                out_d=out_d,
+                out_h=out_h,
+                out_w=out_w,
+                n=n,
+                dtype=dtype,
+            )
         ):
             assert isinstance(op.kernel, Conv3dNdhwcKernel)
         if groups > 1:
@@ -1186,18 +1193,22 @@ def test_conv3d_does_not_dispatch_ndhwc_for_small_output() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_ndhwc_guard_rejects_float32() -> None:
-    assert not _can_use_conv3d_ndhwc(
-        groups=1,
-        c_in=32,
-        c_out=64,
-        kernel_d=3,
-        kernel_h=3,
-        kernel_w=3,
-        out_d=8,
-        out_h=16,
-        out_w=16,
-        n=1,
-        dtype=torch.float32,
+    assert not Conv3dNdhwcKernel.applies(
+        Conv3dCall(
+            arch=0,
+            sm_count=1,
+            groups=1,
+            c_in=32,
+            c_out=64,
+            kernel_d=3,
+            kernel_h=3,
+            kernel_w=3,
+            out_d=8,
+            out_h=16,
+            out_w=16,
+            n=1,
+            dtype=torch.float32,
+        )
     )
 
 
@@ -1236,7 +1247,7 @@ def test_conv1d_depthwise_no_bias_matches_torch() -> None:
     out = op(x, weight)
 
     if served_in_tree(op):
-        assert isinstance(op.kernel, GroupConv1dKernel) and op.kernel.use_direct
+        assert isinstance(op.kernel, DepthwiseConv1dKernel)
     ref = F.conv1d(x, weight, bias=None, padding=1, groups=groups).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
