@@ -106,9 +106,9 @@ def test_every_power_of_two_through_2_28_has_a_kernel(dtype: torch.dtype) -> Non
         call = FFTC2CCall(n=1 << exponent, dtype=dtype, arch=90, sm_count=1)
         if exponent == 29:
             with pytest.raises(ValueError, match="no implementation serves"):
-                op.select_kernel(call)
+                op.select_implementation("fft_c2c", call)
         else:
-            op.select_kernel(call)
+            op.select_implementation("fft_c2c", call)
 
 
 @pytest.mark.smoke

@@ -1,14 +1,58 @@
+import dataclasses
 import functools
+from abc import abstractmethod
 from typing import ClassVar, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import FP8_E4M3_MAX, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["FP8QuantKernel"]
+__all__ = ["FP8QuantCall", "FP8QuantFwdInterface", "FP8QuantKernel"]
+
+
+@dataclasses.dataclass(frozen=True)
+class FP8QuantCall(CallSpec):
+    """One per-row FP8 quantization of a $[B \\times S \\times G \\times D]$ index tensor."""
+
+    batch: int = 0
+    seq_len_kv: int = 0
+    kv_group: int = 0
+    index_dim: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+class FP8QuantFwdInterface(KernelInterface):
+    """Row-wise quantization of an index tensor to ``float8_e4m3fn``."""
+
+    request = FP8QuantCall
+
+    @abstractmethod
+    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Scale each row by its own maximum; nothing is written in place.
+
+        A row is the trailing ``call.index_dim`` axis. Its scale is the absolute maximum
+        over the row, floored at ``1e-4``, divided by 448; each element is multiplied by
+        the reciprocal of that scale and clamped to the ``float8_e4m3fn`` range. A row
+        holding an infinity or a NaN has no defined result: whether the maximum and the
+        clamp carry the non-finite value is left to the implementation. Nothing is written
+        in place, and neither output aliases the input.
+
+        Args:
+            input_tensor: The input,
+                ``(call.batch, call.seq_len_kv, call.kv_group, call.index_dim)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order. The op
+                makes it contiguous before the call.
+
+        Returns:
+            New contiguous ``(scale_tensor, output_tensor)`` on ``call.device``:
+            ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)`` scales, and the
+            rows divided by them in ``float8_e4m3fn``, shaped as the input.
+        """
+
 
 # workloads/fp8_quant.py clamps a row's absolute maximum to this before dividing.
 _AMAX_FLOOR = 1e-4
@@ -66,7 +110,7 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     return _fp8_quant_fwd_func
 
 
-class FP8QuantKernel(Kernel):
+class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
     """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
     A block owns whole rows, taken along the flattened $[B \\times S\\_kv \\times G]$ row
@@ -122,6 +166,12 @@ class FP8QuantKernel(Kernel):
         while p * 2 <= n:
             p *= 2
         return p
+
+    @classmethod
+    def entry_for(cls, call: FP8QuantCall) -> Entry:
+        return call, lambda: cls(
+            call.batch, call.seq_len_kv, call.kv_group, call.index_dim, call.dtype
+        )
 
     def __init__(
         self,

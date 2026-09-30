@@ -6,7 +6,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import (
     ACCUM_DTYPE,
     AvgPoolWindow,
@@ -15,7 +16,7 @@ from tileops.kernels.pool.common import (
     window_span,
 )
 
-__all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
+__all__ = ["AvgPool1dKernel"]
 
 
 class _WindowStaging:
@@ -214,8 +215,8 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool1d_func
 
 
-class _AvgPool1dKernelBase(Kernel):
-    """Shape, launch planning and dispatch shared by the two avg_pool1d kernels.
+class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
+    """Average pooling over an NCL row, with every PyTorch flag combination.
 
     Raises:
         ValueError: When one pooling window does not fit the shared memory a block
@@ -223,6 +224,20 @@ class _AvgPool1dKernelBase(Kernel):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: AvgPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            call.size[0],
+            call.window[0],
+            call.stride[0],
+            call.pad[0],
+            call.ceil_mode,
+            call.count_include_pad,
+            call.dtype,
+        )
 
     def __init__(
         self,
@@ -271,25 +286,3 @@ class _AvgPool1dKernelBase(Kernel):
         kernel = self.kernel(self.config["block_ol"], self.config["threads"])
         rows = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return rows.view(self.n, self.c_in, *self.window.out)
-
-
-class AvgPool1dSpatialKernel(_AvgPool1dKernelBase):
-    """Fast path for common NCL avg_pool1d workloads: zero-padded, floor-mode."""
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__(n, c_in, l_in, kernel_l, stride_l, pad_l, False, True, dtype, config, tune)
-
-
-class AvgPool1dKernel(_AvgPool1dKernelBase):
-    """Average pooling over an NCL row, with every PyTorch flag combination."""

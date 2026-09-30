@@ -12,11 +12,7 @@ from tileops.kernels.pool import (
     AdaptiveAvgPool2dKernel,
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dWithIndicesKernel,
-    AvgPool1dKernel,
-    AvgPool1dSpatialKernel,
-    AvgPool2dSpatialKernel,
-    AvgPool3dKernel,
-    AvgPool3dSpatialKernel,
+    AvgPool2dFwdInterface,
 )
 from tileops.kernels.pool.avg_pool1d import _WindowStaging
 from tileops.kernels.pool.common import AvgPoolWindow, pool_output_dim, window_span
@@ -435,27 +431,6 @@ class AvgPoolTest(AvgPoolWorkload, TestBase):
     """Dim-generic avg-pool reference test (divisor_override is 2d/3d-only)."""
 
 
-def _avg_pool_expected_kernel(
-    ndim: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    divisor_override: Optional[int],
-) -> Optional[type[Kernel]]:
-    """Per-dim kernel-dispatch expectation for the main correctness test.
-
-    2d dispatch is covered by test_avg_pool2d_dispatches_kernel instead.
-    """
-    if ndim == 1:
-        return AvgPool1dSpatialKernel if not ceil_mode and count_include_pad else AvgPool1dKernel
-    if ndim == 3:
-        return (
-            AvgPool3dSpatialKernel
-            if not ceil_mode and count_include_pad and divisor_override is None
-            else AvgPool3dKernel
-        )
-    return None
-
-
 def _run_avg_pool_case(
     ndim: int,
     shape: tuple[int, ...],
@@ -491,11 +466,6 @@ def _run_avg_pool_case(
     op = _AVG_POOL_OPS[ndim](**op_kwargs)
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(*shape), atol=atol, rtol=rtol)
-    expected_kernel = _avg_pool_expected_kernel(
-        ndim, ceil_mode, count_include_pad, divisor_override
-    )
-    if served_in_tree(op) and expected_kernel is not None:
-        assert isinstance(op.kernel, expected_kernel)
 
 
 @AvgPool1dFixture
@@ -648,20 +618,6 @@ def test_max_pool1d_row_reduce_takes_no_tap_past_the_row(l_in: int, kernel_l: in
     assert plan.out_l == 1
     assert not plan.always_in_bounds
     assert plan.body != "rowreduce"
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_avg_pool2d_dispatches_kernel() -> None:
-    op = AvgPool2dFwdOp(
-        kernel_size=(3, 3),
-        stride=(2, 2),
-        padding=(1, 1),
-        target=BUILTIN,
-    )
-    x = torch.randn(1, 32, 28, 28, device="cuda", dtype=torch.float16).contiguous()
-    op(x)
-    assert isinstance(op.kernel, AvgPool2dSpatialKernel)
 
 
 @pytest.mark.smoke
@@ -1648,64 +1604,27 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     assert_op_owns_graph_nodes(op, x)
 
 
-class _PassthroughGenericKernel(Kernel):
+class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
     supported_archs = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Every other element per spatial axis: the shape a 2-wide, 2-stride window gives.
         # clone(): custom-op outputs must not alias custom-op inputs.
-        return x[(slice(None), slice(None)) + (slice(None, None, 2),) * (x.dim() - 2)].clone()
-
-
-class _PassthroughSpatialKernel(Kernel):
-    supported_archs = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Every other element per spatial axis: the shape a 2-wide, 2-stride window gives.
-        # clone(): custom-op outputs must not alias custom-op inputs.
-        return x[(slice(None), slice(None)) + (slice(None, None, 2),) * (x.dim() - 2)].clone()
+        return x[:, :, ::2, ::2].clone()
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize("ndim", [1, 3], ids=["1d", "3d"])
-def test_avg_pool_explicit_generic_kernel_map_disables_fast_path(ndim: int) -> None:
-    """1d/3d policy: an explicit generic override alone opts out of the fast path."""
-    generic_slot = f"avg_pool{ndim}d_kernel"
-    spatial_slot = f"avg_pool{ndim}d_spatial_kernel"
-    shape = (1, 2) + (8,) * ndim
-    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
-
-    op = _AVG_POOL_OPS[ndim](
-        kernel_size=2, kernel_map={generic_slot: _PassthroughGenericKernel}, target=BUILTIN
-    )
-    op(x)
-    assert isinstance(op.kernel, _PassthroughGenericKernel)
-
-    op_both = _AVG_POOL_OPS[ndim](
-        kernel_size=2,
-        kernel_map={
-            generic_slot: _PassthroughGenericKernel,
-            spatial_slot: _PassthroughSpatialKernel,
-        },
-        target=BUILTIN,
-    )
-    op_both(x)
-    assert isinstance(op_both.kernel, _PassthroughSpatialKernel)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_avg_pool2d_explicit_generic_kernel_map_keeps_fast_path() -> None:
-    """2d policy asymmetry: an explicit generic override does NOT opt out."""
+def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
+    """A replacement inheriting the key's interface runs in its place."""
     op = AvgPool2dFwdOp(
         kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel}, target=BUILTIN
     )
-    x = torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16)
-    op(x)
-    assert isinstance(op.kernel, AvgPool2dSpatialKernel)
+
+    op(torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16))
+
+    assert isinstance(op.kernel, _PassthroughGenericKernel)
 
 
 @pytest.mark.smoke

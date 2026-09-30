@@ -18,24 +18,154 @@ Layouts:
 - 2D: (batch, seq_len, num_heads, head_dim) — multi-head batched
 """
 
+import dataclasses
 import functools
+from abc import abstractmethod
+from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
-    "RopeLlama31Kernel",
-    "RopeLongRopeKernel",
+    "RopeCall",
+    "RopeNeoxFwdInterface",
     "RopeNeoxKernel",
+    "RopeNeoxPositionIdsCall",
+    "RopeNeoxPositionIdsFwdInterface",
     "RopeNeoxPositionIdsKernel",
+    "RopeNonNeoxFwdInterface",
     "RopeNonNeoxKernel",
-    "RopeYarnKernel",
 ]
+
+
+@dataclasses.dataclass(frozen=True)
+class RopeCall(CallSpec):
+    """One rotation over a tensor the caller also supplies the frequency tables for."""
+
+    seq_len: int = 0
+    head_dim: int = 0
+    layout: str = "1d"
+    batch: int = 1
+    num_heads: int = 1
+    dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class RopeNeoxPositionIdsCall(CallSpec):
+    """One rotation over packed tokens, each reading the table row its position names."""
+
+    num_tokens: int = 0
+    num_heads: int = 0
+    head_dim: int = 0
+    rotary_dim: int = 0
+    max_position: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+class RopeNeoxFwdInterface(KernelInterface):
+    """The GPT-NeoX rotation of a tensor by caller-supplied cos/sin tables.
+
+    The variants that differ only in how those tables are computed -- standard theta,
+    Llama 3.1, YaRN, LongRoPE -- share this contract: the table is an input, so what the
+    kernel computes from it is the same rotation.
+    """
+
+    request = RopeCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        """Rotate each head by the half-split convention; nothing is written in place.
+
+        Splitting a head at its midpoint into ``x1`` and ``x2``, the output is
+        ``x * cos_row + concat(-x2, x1) * sin_row``, where each table half is broadcast
+        over both halves of the head and the row is the token's position along the
+        sequence axis. Nothing is written in place, and the output aliases no input.
+
+        Args:
+            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
+                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
+                order. The op makes it contiguous before the call.
+            cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
+                on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
+
+        Returns:
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
+        """
+
+
+class RopeNonNeoxFwdInterface(KernelInterface):
+    """The RoFormer adjacent-pair rotation of a tensor by caller-supplied cos/sin tables."""
+
+    request = RopeCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        """Rotate each adjacent pair of a head; nothing is written in place.
+
+        Pair ``k`` of a head, ``(x[2k], x[2k + 1])``, becomes
+        ``(x[2k] * cos[k] - x[2k + 1] * sin[k], x[2k + 1] * cos[k] + x[2k] * sin[k])``, the
+        table row being the token's position along the sequence axis. Nothing is written in
+        place, and the output aliases no input.
+
+        Args:
+            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
+                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
+                order. The op makes it contiguous before the call.
+            cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
+                on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
+
+        Returns:
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
+        """
+
+
+class RopeNeoxPositionIdsFwdInterface(KernelInterface):
+    """The GPT-NeoX rotation of packed tokens, each at the position it names."""
+
+    request = RopeNeoxPositionIdsCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Rotate each token's leading rotary columns; nothing is written in place.
+
+        Token ``t`` reads table row ``position_ids[t]`` and rotates the first
+        ``call.rotary_dim`` columns of each of its heads by the half-split convention; the
+        remaining columns are copied. A position outside ``[0, call.max_position)`` is
+        clamped to the table rather than read out of bounds, and counted, which
+        ``take_out_of_range`` reports. Nothing is written in place except that counter, and
+        the output aliases no input.
+
+        Args:
+            x: The input, ``(call.num_tokens, call.num_heads, call.head_dim)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order.
+            cos: The cosine table, ``(call.max_position, call.rotary_dim // 2)`` in
+                ``call.dtype`` on ``call.device``, contiguous, row-major.
+            sin: The sine table, in the same shape, dtype, device and layout.
+            position_ids: ``int32`` ``(call.num_tokens,)`` on ``call.device``, contiguous.
+
+        Returns:
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
+        """
+
+    @abstractmethod
+    def take_out_of_range(self) -> bool:
+        """Whether a call since the previous ask saw a position outside the table.
+
+        The op asks after every call and raises when the answer is true, so an
+        implementation that clamps silently still reports here.
+        """
 
 
 # Kernel factories for 1D and 2D layouts
@@ -388,6 +518,17 @@ class _RopeKernelBase(Kernel):
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
+    @classmethod
+    def entry_for(cls, call: RopeCall) -> Entry:
+        return call, lambda: cls(
+            call.seq_len,
+            call.head_dim,
+            call.dtype,
+            layout=call.layout,
+            batch=call.batch,
+            num_heads=call.num_heads,
+        )
+
     def __init__(
         self,
         seq_len: int,
@@ -507,21 +648,34 @@ class _RopeKernelBase(Kernel):
 # Concrete kernel classes (5 variants)
 
 
-class RopeNeoxKernel(_RopeKernelBase):
-    """GPT-NeoX style RoPE kernel.
+class RopeNeoxKernel(_RopeKernelBase, RopeNeoxFwdInterface):
+    """GPT-NeoX style RoPE kernel, for every variant whose tables the op computes.
 
-    Rotation: split dimension at midpoint, rotate_half = concat(-x2, x1).
+    Rotation: split dimension at midpoint, rotate_half = concat(-x2, x1). The standard,
+    Llama 3.1, YaRN and LongRoPE variants differ only in those tables, so this one program
+    serves all four.
     Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
     """
 
     ROTATION_STYLE = "neox"
 
 
-class RopeNeoxPositionIdsKernel(Kernel):
+class RopeNeoxPositionIdsKernel(Kernel, RopeNeoxPositionIdsFwdInterface):
     """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @classmethod
+    def entry_for(cls, call: RopeNeoxPositionIdsCall) -> Entry:
+        return call, lambda: cls(
+            num_tokens=call.num_tokens,
+            num_heads=call.num_heads,
+            head_dim=call.head_dim,
+            rotary_dim=call.rotary_dim,
+            max_position=call.max_position,
+            dtype=call.dtype,
+        )
 
     def __init__(
         self,
@@ -609,7 +763,7 @@ class RopeNeoxPositionIdsKernel(Kernel):
         return result.reshape(orig_shape)
 
 
-class RopeNonNeoxKernel(_RopeKernelBase):
+class RopeNonNeoxKernel(_RopeKernelBase, RopeNonNeoxFwdInterface):
     """Original RoFormer RoPE kernel with adjacent-pair rotation.
 
     Rotation: pairs (x_even, x_odd) -> (-x_odd, x_even).
@@ -617,36 +771,3 @@ class RopeNonNeoxKernel(_RopeKernelBase):
     """
 
     ROTATION_STYLE = "non_neox"
-
-
-class RopeLlama31Kernel(_RopeKernelBase):
-    """Llama 3.1 RoPE kernel.
-
-    Same neox rotation as standard RoPE; differs in frequency computation
-    (handled by Op layer with piecewise scaling).
-    Reference: Meta Llama 3.1 model implementation.
-    """
-
-    ROTATION_STYLE = "neox"
-
-
-class RopeYarnKernel(_RopeKernelBase):
-    """YaRN RoPE kernel.
-
-    Same neox rotation; differs in frequency computation (YaRN linear ramp
-    interpolation, handled by Op layer).
-    Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
-    """
-
-    ROTATION_STYLE = "neox"
-
-
-class RopeLongRopeKernel(_RopeKernelBase):
-    """LongRoPE kernel.
-
-    Same neox rotation; differs in frequency computation (per-dimension
-    rescale factors, handled by Op layer).
-    Reference: Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
-    """
-
-    ROTATION_STYLE = "neox"

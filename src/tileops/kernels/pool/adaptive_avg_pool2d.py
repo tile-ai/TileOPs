@@ -4,6 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.pool.call_spec import AdaptiveAvgPool2dFwdInterface
 from tileops.kernels.pool.common import (
     AdaptivePool2dKernelBase,
     adaptive_bin,
@@ -72,7 +73,7 @@ def _adaptive_avg_pool2d_kernel(
     return _adaptive_avg_pool2d_func
 
 
-class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase):
+class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFwdInterface):
     """Adaptive average pooling forward kernel for NCHW inputs."""
 
     @staticmethod

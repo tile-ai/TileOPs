@@ -7,6 +7,7 @@ Code that needs a distinct Python constant per register slot is macro recursion
 import dataclasses
 import functools
 import math
+from abc import abstractmethod
 from typing import Any, Callable, Dict, Optional
 
 import tilelang
@@ -15,9 +16,14 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["FFTC2CCall", "FFTC2CDecomposedKernel", "FFTC2COneCTAKernel"]
+__all__ = [
+    "FFTC2CCall",
+    "FFTC2CDecomposedKernel",
+    "FFTC2CFwdInterface",
+    "FFTC2COneCTAKernel",
+]
 
 
 # n -> the radices of the one-CTA plan's passes.
@@ -109,6 +115,31 @@ class FFTC2CCall(CallSpec):
 
     n: int = 0
     dtype: torch.dtype = torch.complex64
+
+
+class FFTC2CFwdInterface(KernelInterface):
+    """The 1D complex-to-complex transform of a tensor's last axis."""
+
+    request = FFTC2CCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform each row of length ``call.n``; nothing is written in place.
+
+        The transform is the unnormalized forward one ``torch.fft.fft`` computes: output
+        element ``k`` sums ``x[j] * exp(-2j * pi * j * k / call.n)`` over ``j``. Leading
+        axes are batched and keep their order, so a rank-1 input returns one transformed
+        row. Nothing is written in place, and the output aliases no input.
+
+        Args:
+            x: The input, ``(..., call.n)`` in ``call.dtype`` on ``call.device``, with the
+                transformed axis last. The op passes the caller's tensor as it is, so it
+                may be non-contiguous or hold a lazy conjugate; an implementation that
+                needs a dense layout makes one.
+
+        Returns:
+            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
+        """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1481,7 +1512,7 @@ def _on_interleaved(transform, x: torch.Tensor, n: int) -> torch.Tensor:
     return torch.view_as_complex(transform(x_pair).reshape(*x.shape, 2))
 
 
-class FFTC2COneCTAKernel(Kernel):
+class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
     """One-launch C2C FFT for the plans of a single factor.
 
     Args:
@@ -1502,11 +1533,11 @@ class FFTC2COneCTAKernel(Kernel):
         return plan is not None and not plan.decomposed and call.arch in plan.archs
 
     @classmethod
-    def entry_for(cls, call: FFTC2CCall):
+    def entry_for(cls, call: FFTC2CCall) -> Entry:
         """Identity without the batch extent, which every kernel takes symbolically."""
         index = call.device.index if call.device is not None else None
         identity = (call.n, call.dtype, index)
-        return identity, lambda: cls(call.n, call.dtype, tune=call.tune, device_index=index)
+        return identity, lambda: cls(call.n, call.dtype, device_index=index)
 
     def __init__(
         self,
@@ -1608,7 +1639,7 @@ class FFTC2COneCTAKernel(Kernel):
         return y_pair
 
 
-class FFTC2CDecomposedKernel(Kernel):
+class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
     """Four-step C2C FFT for the plans of two or three factors, one launch per factor.
 
     Args:
@@ -1629,11 +1660,11 @@ class FFTC2CDecomposedKernel(Kernel):
         return plan is not None and plan.decomposed and call.arch in plan.archs
 
     @classmethod
-    def entry_for(cls, call: FFTC2CCall):
+    def entry_for(cls, call: FFTC2CCall) -> Entry:
         """Identity without the batch extent, which every kernel takes symbolically."""
         index = call.device.index if call.device is not None else None
         identity = (call.n, call.dtype, index)
-        return identity, lambda: cls(call.n, call.dtype, tune=call.tune, device_index=index)
+        return identity, lambda: cls(call.n, call.dtype, device_index=index)
 
     def __init__(
         self,

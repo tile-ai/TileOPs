@@ -6,7 +6,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.pool.call_spec import (
+    MaxPool1dFwdInterface,
+    MaxPool1dIndicesFwdInterface,
+    MaxPoolCall,
+)
 from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim, window_span
 
 __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
@@ -544,6 +549,20 @@ class _MaxPool1dKernelBase(Kernel):
     # SM on a device of a few hundred SMs, a wider block is the better trade.
     _MIN_LAUNCH_THREADS: ClassVar[int] = 1 << 16
 
+    @classmethod
+    def entry_for(cls, call: MaxPoolCall) -> Entry:
+        return call, lambda: cls(
+            call.n,
+            call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            *call.dilation,
+            call.ceil_mode,
+            call.dtype,
+        )
+
     def __init__(
         self,
         n: int,
@@ -640,7 +659,7 @@ class _MaxPool1dKernelBase(Kernel):
         return type(self)._shaped(rows, (self.n, self.c_in, self.out_l))
 
 
-class MaxPool1dKernel(_MaxPool1dKernelBase):
+class MaxPool1dKernel(_MaxPool1dKernelBase, MaxPool1dFwdInterface):
     """Max pooling forward kernel (return_indices=False)."""
 
     _build = staticmethod(_max_pool1d_kernel)
@@ -651,7 +670,7 @@ class MaxPool1dKernel(_MaxPool1dKernelBase):
         return result.view(shape)
 
 
-class MaxPool1dWithIndicesKernel(_MaxPool1dKernelBase):
+class MaxPool1dWithIndicesKernel(_MaxPool1dKernelBase, MaxPool1dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
 
     _build = staticmethod(_max_pool1d_with_indices_kernel)

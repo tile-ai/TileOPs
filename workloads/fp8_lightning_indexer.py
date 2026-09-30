@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 
 from workloads.device import run_device
@@ -16,7 +14,6 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         seq_len_kv: int,
         kv_group: int,
         clean_logits: bool = True,
-        config: Optional[dict] = None,
     ):
         self.batch = batch
         self.seq_len = seq_len
@@ -25,7 +22,6 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.clean_logits = clean_logits
-        self.config = config
         self.dtype = torch.float8_e4m3fn
         self.accum_dtype = torch.float32
         self.index_dtype = torch.int32

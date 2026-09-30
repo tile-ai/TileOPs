@@ -5,6 +5,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.pool.call_spec import (
+    AdaptiveMaxPool2dFwdInterface,
+    AdaptiveMaxPool2dIndicesFwdInterface,
+)
 from tileops.kernels.pool.common import (
     AdaptivePool2dKernelBase,
     adaptive_bin,
@@ -281,7 +285,7 @@ class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
         return self._staging().tuned()
 
 
-class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase):
+class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dFwdInterface):
     """Adaptive max pooling forward kernel for NCHW inputs."""
 
     @staticmethod
@@ -303,7 +307,9 @@ class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase):
     _dispatch = _launch_adaptive_max_pool2d
 
 
-class AdaptiveMaxPool2dWithIndicesKernel(_AdaptiveMaxPool2dKernelBase):
+class AdaptiveMaxPool2dWithIndicesKernel(
+    _AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dIndicesFwdInterface
+):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
     @staticmethod
