@@ -15,6 +15,7 @@ from tileops.kernels.convolution._common import (
 )
 from tileops.kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
 __all__ = [
     "Conv1dKernel",
@@ -525,14 +526,33 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        block_m, block_n, block_k = 64, 128, 128
+        # Fewer stages where shared memory cannot hold them, down to one.
+        num_stages = conv_num_stages(self.device_index)
+        cap = get_shared_memory_optin(self.device_index)
+        while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
+            num_stages -= 1
         return {
-            "block_m": 64,
-            "block_n": 128,
-            "block_k": 128,
-            "num_stages": conv_num_stages(self.device_index),
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": num_stages,
             "threads": 128,
             "enable_rasterization": True,
         }
+
+    def _shared_bytes(self, block_m: int, block_n: int, block_k: int, num_stages: int) -> int:
+        """Upper bound on the program's shared memory. The pipeline buffers each weight
+        tile per stage, and each x tile too where the tiles divide ``c_in`` and ``l_in``,
+        since the x load is then a plain copy; otherwise the masked gather holds one. The
+        output tile is counted once."""
+        per_stage = block_m * block_k
+        once = block_m * block_n
+        if self.c_in % block_k == 0 and self.l_in % block_n == 0:
+            per_stage += block_k * block_n
+        else:
+            once += block_k * block_n
+        return (num_stages * per_stage + once) * self.dtype.itemsize
 
     @property
     def autotune_configs(self) -> list[dict]:

@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, conv_autotune_configs, launch
 from tileops.kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_shared_memory_optin, get_sm_version
 
 __all__ = [
     "Conv2d1x1Kernel",
@@ -824,11 +824,16 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        block_m, block_n, block_k = min(self.block_m_candidates), 256, 32
+        # The output tile reuses the pipeline's shared memory, so the stages are all of
+        # it: two where three do not fit (float32 on SM89's 99 KB).
+        stage_bytes = (block_m + block_n) * block_k * self.dtype.itemsize
+        fits = 3 * stage_bytes <= get_shared_memory_optin(self.device_index)
         return {
-            "block_m": min(self.block_m_candidates),
-            "block_n": 256,
-            "block_k": 32,
-            "num_stages": 3,
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": 3 if fits else 2,
             "threads": 256,
             "enable_rasterization": True,
         }
