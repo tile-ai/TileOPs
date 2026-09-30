@@ -8,6 +8,7 @@ from abc import abstractmethod
 import torch
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
@@ -15,7 +16,18 @@ __all__ = [
     "SamplingCall",
     "TopKMaskFwdInterface",
     "TopKTopPMaskFwdInterface",
+    "TopPMaskFwdInterface",
+    "vector_width",
 ]
+
+
+def vector_width(vocab: int, itemsize: int) -> int:
+    """Elements of a 16-byte vector, or 1 where a row's bytes are not a whole number of them.
+
+    Every row starts on a vector only when the row's bytes are; a row that does not is read
+    and written element by element.
+    """
+    return VECTOR_ACCESS_BYTES // itemsize if vocab * itemsize % VECTOR_ACCESS_BYTES == 0 else 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -82,6 +94,24 @@ class TopKTopPMaskFwdInterface(KernelInterface):
             logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
             k: ``[call.batch]`` ``int32``, each at least 1, on ``call.device``.
             p: ``[call.batch]`` ``float32`` in ``(0, 1)``, on ``call.device``.
+
+        Returns:
+            A new tensor shaped like *logits*, ``-inf`` where masked.
+        """
+
+
+class TopPMaskFwdInterface(KernelInterface):
+    """Top-p logit mask: keep each row's nucleus, the tokens the mass ``p[b]`` reaches."""
+
+    request = SamplingCall
+
+    @abstractmethod
+    def forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        """Mask each of the ``call.batch`` rows of *logits*; nothing is written in place.
+
+        Args:
+            logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
+            p: ``[call.batch]`` ``float32`` in ``[0, 1]``, on ``call.device``.
 
         Returns:
             A new tensor shaped like *logits*, ``-inf`` where masked.

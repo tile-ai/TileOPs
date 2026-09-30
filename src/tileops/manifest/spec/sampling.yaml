@@ -57,11 +57,14 @@ MinPMaskFwdOp:
     flops: "2 * B * V + 2 * B"
 
 TopPMaskFwdOp:
-  # Keeps the smallest set of highest-probability tokens whose cumulative probability
-  # reaches p[b]: a token survives while the exclusive cumulative sum before it is below
-  # p[b]. 0 < p < 1 is the caller's obligation.
+  # Keeps the nucleus of row b: a token survives while the probability of the tokens
+  # strictly more probable than it is below p[b], so tokens of equal probability are kept
+  # or masked together and the kept set can be larger than the smallest set reaching p[b]
+  # (workloads/sampling.py::top_p_mask, FlashInfer top_p_renorm_probs). 0 <= p <= 1 is the
+  # caller's obligation: p = 0 masks the row whole, and p = 1 keeps every token whose
+  # probability survives the row's float32 sum.
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -77,6 +80,8 @@ TopPMaskFwdOp:
   - {B: 256, V: 128256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
   - {B: 128, V: 151936, dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
   - {B: 64, V: 201088, dtype_cases: [{T: bfloat16}], label: gpt-oss-120b-b64}
+  - {B: 17, V: 129280, dtype_cases: [{T: bfloat16}], label: deepseek-v3-b17}
+  - {B: 100, V: 32000, dtype_cases: [{T: float16}], label: llama2-7b-b100}
   roofline:
     # Per element: the softmax numerator (max, subtract, exp, sum), a weighted selection of
     # the threshold (compare, accumulate) and the mask; per row: p times the sum.
@@ -84,7 +89,7 @@ TopPMaskFwdOp:
 
 TopKTopPMaskFwdOp:
   # TopPMaskFwdOp(TopKMaskFwdOp(logits, k), p): top-p's probabilities are renormalized
-  # over the tokens top-k keeps. 0 < p < 1 is the caller's obligation.
+  # over the tokens top-k keeps. 0 <= p <= 1 is the caller's obligation, as for TopPMaskFwdOp.
   family: sampling
   status: implemented
   signature:

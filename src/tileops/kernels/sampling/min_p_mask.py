@@ -14,19 +14,14 @@ from tileops.kernels.constants import (
     VECTOR_ACCESS_BYTES,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import MinPMaskFwdInterface, SamplingCall
+from tileops.kernels.sampling.call_spec import (
+    MinPMaskFwdInterface,
+    SamplingCall,
+    vector_width,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["MinPMaskFwdKernel"]
-
-
-def _vector_width(vocab: int, itemsize: int) -> int:
-    """Elements of a 16-byte vector, or 1 where a row's bytes are not a whole number of them.
-
-    Every row starts on a vector only when the row's bytes are; a row that does not is read
-    and written element by element.
-    """
-    return VECTOR_ACCESS_BYTES // itemsize if vocab * itemsize % VECTOR_ACCESS_BYTES == 0 else 1
 
 
 @functools.lru_cache(maxsize=32)
@@ -40,7 +35,7 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
     ``parts == 1`` leaves a row's maximum in the block that read it and takes no barrier.
     """
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
-    vec = _vector_width(vocab, itemsize)
+    vec = vector_width(vocab, itemsize)
     # Vectors of a row; a row divides into whole ones, since ``vec`` falls back to 1.
     full = vocab // vec
     row_tiles = -(-full // threads)
@@ -271,7 +266,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
-        vectors = call.vocab // _vector_width(call.vocab, call.dtype.itemsize)
+        vectors = call.vocab // vector_width(call.vocab, call.dtype.itemsize)
         threads = self._THREADS
         while threads > self._MIN_THREADS and call.batch * -(-vectors // threads) < call.sm_count:
             threads //= 2

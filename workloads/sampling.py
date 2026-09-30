@@ -186,11 +186,19 @@ class MinPMaskWorkload(CallWorkload):
 
 
 class TopPMaskWorkload(CallWorkload):
-    """Logits of one ``TopPMaskFwdOp`` call, with ``p`` uniform in ``[0.5, 0.95)``."""
+    """Logits of one ``TopPMaskFwdOp`` call, with ``p`` uniform in ``[0.5, 0.95)``.
+
+    The first row takes 1 instead, the contract's upper endpoint, which keeps every token
+    the float32 softmax gives a probability to. The lower endpoint 0 masks a row whole, a
+    row no comparator agrees on, so ``tests/ops/test_sampling.py`` covers it rather than a
+    workload every benchmark reads.
+    """
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         logits, p = CallWorkload.gen_inputs(self)
-        return logits, torch.rand_like(p) * 0.45 + 0.5
+        p = torch.rand_like(p) * 0.45 + 0.5
+        p[0] = 1.0
+        return logits, p
 
     def ref_program(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         return top_p_mask(logits, p)

@@ -5,8 +5,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.sampling.call_spec import SamplingCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.sampling import SamplingCall, TopPMaskFwdInterface, TopPMaskFwdKernel
 from tileops.ops.op_base import Op
 
 __all__ = ["TopPMaskFwdOp"]
@@ -18,14 +18,21 @@ class TopPMaskFwdOp(Op):
     With ``prob = softmax(logits[b])``, a token survives while the total probability of the
     tokens strictly more probable than it is below ``p[b]``, so tokens tied at the boundary
     are kept together, as FlashInfer's ``top_p_renorm_probs`` keeps them. Masked logits
-    become ``-inf``; the rest pass unchanged. ``0 < p < 1`` is the caller's obligation. The
-    output has the shape and dtype of ``logits``.
+    become ``-inf``; the rest pass through bit for bit. ``0 <= p <= 1`` is the caller's
+    obligation. The output has the shape and dtype of ``logits``.
 
-    No in-tree kernel implements this op yet, so a call raises ``OpNotAvailableError``
-    unless a target serves it.
+    ``p = 0`` masks the row whole. ``p = 1`` keeps every token whose probability survives
+    the row's float32 sum, and masks the ones the sum rounds away with the zero-probability
+    ones. A row whose maximum is not finite, a NaN or an infinity among its logits, has an
+    all-NaN softmax, so nothing in it is masked and it passes through whole.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_p_mask_fwd": TopPMaskFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "top_p_mask_fwd": TopPMaskFwdInterface
+    }
 
     def __init__(
         self,
@@ -56,11 +63,13 @@ class TopPMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
+        return self._call_boundary(logits, p)
+
+    def _eager_forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         p = p.contiguous()
         batch, vocab = logits.shape
-        call = SamplingCall(
-            device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype, tune=self.tune
-        )
-        kernel = self.kernel_for("top_p_mask", (logits, p), call)
+        call = SamplingCall(device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype)
+        kernel = self.kernel_for("top_p_mask_fwd", (logits, p), call)
         return kernel(logits, p)
