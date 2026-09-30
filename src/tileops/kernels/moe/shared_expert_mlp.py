@@ -131,6 +131,9 @@ class SharedExpertMLPKernel(Kernel):
             )
             for n, k in ((ffn_size * 2, hidden_size), (hidden_size, ffn_size))
         )
+        # The defaults above are the SM90 template's tiles: a dense kernel picks its own
+        # unless the caller set one.
+        gemm_config = self.config if config is not None else None
         if (
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
@@ -158,7 +161,6 @@ class SharedExpertMLPKernel(Kernel):
                 device_index=device_index,
             )
         elif sm_version == 90:
-            gemm_config = self.config if config is not None else None
             self._gemm_gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
             small_m_config = (
                 small_m_splitk_config(
@@ -206,7 +208,7 @@ class SharedExpertMLPKernel(Kernel):
                 k=hidden_size,
                 dtype=dtype,
                 trans_b=True,
-                config=self.config,
+                config=gemm_config,
                 device_index=device_index,
             )
             self._gemm_down = GemmCpAsyncKernel(
@@ -215,7 +217,7 @@ class SharedExpertMLPKernel(Kernel):
                 k=ffn_size,
                 dtype=dtype,
                 trans_b=True,
-                config=self.config,
+                config=gemm_config,
                 device_index=device_index,
             )
 

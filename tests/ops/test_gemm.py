@@ -1033,6 +1033,7 @@ def test_structure_routing_matches_test_ids() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+@pytest.mark.sm90
 def test_gemm_tma_kernel_tune_falls_back_to_default() -> None:
     """``GemmTmaKernel`` defines no ``autotune_configs``: ``tune=True`` must warn
     and fall back to ``default_config``.
