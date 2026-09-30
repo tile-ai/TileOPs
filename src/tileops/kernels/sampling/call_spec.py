@@ -15,6 +15,7 @@ __all__ = [
     "SamplingCall",
     "TopKMaskFwdInterface",
     "TopKTopPMaskFwdInterface",
+    "TopPMaskFwdInterface",
 ]
 
 
@@ -82,6 +83,24 @@ class TopKTopPMaskFwdInterface(KernelInterface):
             logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
             k: ``[call.batch]`` ``int32``, each at least 1, on ``call.device``.
             p: ``[call.batch]`` ``float32`` in ``(0, 1)``, on ``call.device``.
+
+        Returns:
+            A new tensor shaped like *logits*, ``-inf`` where masked.
+        """
+
+
+class TopPMaskFwdInterface(KernelInterface):
+    """Top-p logit mask: keep each row's nucleus, the tokens the mass ``p[b]`` reaches."""
+
+    request = SamplingCall
+
+    @abstractmethod
+    def forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        """Mask each of the ``call.batch`` rows of *logits*; nothing is written in place.
+
+        Args:
+            logits: ``[call.batch, call.vocab]``, contiguous, in ``call.dtype`` on ``call.device``.
+            p: ``[call.batch]`` ``float32`` in ``[0, 1]``, on ``call.device``.
 
         Returns:
             A new tensor shaped like *logits*, ``-inf`` where masked.

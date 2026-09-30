@@ -76,6 +76,7 @@ from tileops.ops.rope import (
 from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
 from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
 from tileops.ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
+from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
@@ -574,7 +575,12 @@ def _sampling_cases():
         k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
         return TopKMaskFwdOp(), (logits, k)
 
-    return (("min-p-mask", min_p_mask), ("top-k-mask", top_k_mask))
+    def top_p_mask():
+        logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
+        p = torch.full((4,), 0.9, device=run_device())
+        return TopPMaskFwdOp(), (logits, p)
+
+    return (("min-p-mask", min_p_mask), ("top-k-mask", top_k_mask), ("top-p-mask", top_p_mask))
 
 
 def _sequence_modeling_cases():
@@ -769,6 +775,7 @@ for _op_cls in (
     SmoothQuantFwdOp,
     MeanPoolingFwdOp,
     MinPMaskFwdOp,
+    TopPMaskFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,

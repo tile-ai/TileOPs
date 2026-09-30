@@ -216,6 +216,37 @@ def test_top_p_mask(dtype):
     _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= _MARGIN)
 
 
+def test_top_p_mask_selects_its_one_implementation():
+    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
+    assert TopPMaskFwdOp().select_implementation("top_p_mask_fwd", call) == "top_p_mask_fwd"
+
+
+def test_top_p_mask_rows_at_the_contract_endpoints():
+    """``p = 0`` masks a row whole, ``p = 1`` keeps every token the softmax gives mass to,
+    and a row with no finite maximum passes through, at each shape the kernel plans for.
+
+    ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
+    row one block holds, which takes no barrier; and a row whose bytes are not a whole number
+    of 16-byte vectors, which is read and written element by element. The endpoints are held
+    to the contract rather than to the reference, which rounds its own cumulative sum past 1
+    at ``p = 1``; the rows with no finite maximum are held to the reference, which leaves
+    them whole because a NaN never reaches ``p``.
+    """
+    device = run_device()
+    p = torch.tensor([0.0, 1.0, 0.5], device=device)
+    for vocab in (_V, 512, 4099):
+        logits = torch.randn(3, vocab, device=device)
+        out = _run(TopPMaskFwdOp(), logits, p)
+        assert (out[0] == -_INF).all(), vocab
+        assert torch.equal(out[1] != -_INF, logits.float().softmax(-1)[1] > 0), vocab
+        logits[0, vocab // 2] = float("nan")
+        logits[1, 0] = _INF
+        logits[2] = -_INF
+        out = _run(TopPMaskFwdOp(), logits, p)
+        ref = top_p_mask(logits, p)
+        assert ((out == ref) | (out.isnan() & ref.isnan())).all(), vocab
+
+
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_top_p_mask(dtype):
     call = sampling_call("TopKTopPMaskFwdOp", {"T": dtype}, V=_V, k_list=_K)
