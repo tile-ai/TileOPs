@@ -1,38 +1,33 @@
 #pragma once
 
-#include <tl_templates/cuda/cuda_fp8.h>
-#include <tl_templates/cuda/common.h>
-#include <tl_templates/cuda/instruction/wgmma.h>
-
 #include <cuda.h>
 #include <cutlass/float8.h>
-#include <cutlass/gemm/collective/builders/sm90_common.inl>
+#include <tl_templates/cuda/common.h>
+#include <tl_templates/cuda/cuda_fp8.h>
+#include <tl_templates/cuda/instruction/wgmma.h>
 
-#include <cute/tensor.hpp>
 #include <cute/algorithm/gemm.hpp>
-#include <cute/atom/mma_atom.hpp>
-#include <cute/arch/mma_sm90.hpp>
 #include <cute/arch/copy_sm75.hpp>
 #include <cute/arch/copy_sm90.hpp>
-
+#include <cute/arch/mma_sm90.hpp>
+#include <cute/atom/mma_atom.hpp>
+#include <cute/tensor.hpp>
+#include <cutlass/gemm/collective/builders/sm90_common.inl>
 #include <type_traits>
 
 namespace tl {
 template <typename BarrierType = uint64_t>
-TL_DEVICE void fp8_tma_load_4d_ptx(
-    const CUtensorMap &descriptor,
-    BarrierType &smem_mbar,
-    void const *const smem_ptr,
-    int32_t const &crd0,
-    int32_t const &crd1,
-    int32_t const &crd2,
-    int32_t const &crd3) {
+TL_DEVICE void fp8_tma_load_4d_ptx(const CUtensorMap& descriptor,
+                                   BarrierType& smem_mbar,
+                                   void const* const smem_ptr,
+                                   int32_t const& crd0, int32_t const& crd1,
+                                   int32_t const& crd2, int32_t const& crd3) {
   uint64_t gmem_int_desc = reinterpret_cast<uint64_t>(&descriptor);
   uint32_t smem_int_mbar;
   if constexpr (std::is_pointer_v<BarrierType>) {
-    smem_int_mbar = smem_ptr_to_uint(reinterpret_cast<uint64_t *>(smem_mbar));
+    smem_int_mbar = smem_ptr_to_uint(reinterpret_cast<uint64_t*>(smem_mbar));
   } else {
-    smem_int_mbar = smem_ptr_to_uint(reinterpret_cast<uint64_t *>(&smem_mbar));
+    smem_int_mbar = smem_ptr_to_uint(reinterpret_cast<uint64_t*>(&smem_mbar));
   }
   uint32_t smem_int_ptr = smem_ptr_to_uint(smem_ptr);
   uint64_t const evict_normal = 0x1000000000000000ULL;
@@ -41,8 +36,8 @@ TL_DEVICE void fp8_tma_load_4d_ptx(
       "complete_tx::bytes.L2::cache_hint"
       " [%0], [%1, {%3, %4, %5, %6}], [%2], %7;"
       :
-      : "r"(smem_int_ptr), "l"(gmem_int_desc), "r"(smem_int_mbar),
-        "r"(crd0), "r"(crd1), "r"(crd2), "r"(crd3), "l"(evict_normal)
+      : "r"(smem_int_ptr), "l"(gmem_int_desc), "r"(smem_int_mbar), "r"(crd0),
+        "r"(crd1), "r"(crd2), "r"(crd3), "l"(evict_normal)
       : "memory");
 }
 namespace fp8_gqa_detail {
@@ -58,13 +53,13 @@ struct VTranspose128x224 {
   static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
   static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
 
-  using SmemLayoutVt = Layout<
-      Shape<Int<kHeadDimV>, Int<kBlockN224>, Int<kStages>>,
-      Stride<_1, Int<kHeadDimV>, _0>>;
+  using SmemLayoutVt =
+      Layout<Shape<Int<kHeadDimV>, Int<kBlockN224>, Int<kStages>>,
+             Stride<_1, Int<kHeadDimV>, _0>>;
 
-  using SmemLayoutAtomVtMma = decltype(
-      cutlass::gemm::collective::detail::ss_smem_selector<
-          MmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
+  using SmemLayoutAtomVtMma =
+      decltype(cutlass::gemm::collective::detail::ss_smem_selector<
+               MmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
   using SmemLayoutVtMma = decltype(tile_to_shape(
       SmemLayoutAtomVtMma{},
       make_shape(Int<kHeadDimV>{}, Int<kBlockN224>{}, Int<kStages>{}),
@@ -76,10 +71,10 @@ struct VTranspose128x224 {
   using LDSMValueStride = Stride<_1, _2, _16, _4>;
   using LDSMDivideShape = Shape<_64, _8>;
 
-  using S2RTiledCopyVt = decltype(make_tiled_copy(
-      Copy_Atom<SM75_U16x8_LDSM_T, Element>{},
-      Layout<LDSMThreadShape, LDSMThreadStride>{},
-      Layout<LDSMValueShape, LDSMValueStride>{}));
+  using S2RTiledCopyVt =
+      decltype(make_tiled_copy(Copy_Atom<SM75_U16x8_LDSM_T, Element>{},
+                               Layout<LDSMThreadShape, LDSMThreadStride>{},
+                               Layout<LDSMValueShape, LDSMValueStride>{}));
 
   using STSMThreadShape = Shape<_8, _4, _4, _1>;
   using STSMThreadStride = Stride<_4, _1, _32, _0>;
@@ -87,27 +82,27 @@ struct VTranspose128x224 {
   using STSMValueStride = Stride<_0, _1, _4, _8>;
   using STSMDivideShape = Shape<_8, _16>;
 
-  using R2STiledCopyV = decltype(make_tiled_copy(
-      Copy_Atom<SM90_U32x4_STSM_N, Element>{},
-      Layout<STSMThreadShape, STSMThreadStride>{},
-      Layout<STSMValueShape, STSMValueStride>{}));
+  using R2STiledCopyV =
+      decltype(make_tiled_copy(Copy_Atom<SM90_U32x4_STSM_N, Element>{},
+                               Layout<STSMThreadShape, STSMThreadStride>{},
+                               Layout<STSMValueShape, STSMValueStride>{}));
 };
 template <typename Element>
 struct VTranspose128x224Fa3Src {
   static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
   static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
 
-  using SmemLayoutAtomVt = decltype(
-      cutlass::gemm::collective::detail::ss_smem_selector<
-          TmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
+  using SmemLayoutAtomVt =
+      decltype(cutlass::gemm::collective::detail::ss_smem_selector<
+               TmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
   using SmemLayoutVt = decltype(tile_to_shape(
       SmemLayoutAtomVt{},
       make_shape(Int<kHeadDimV>{}, Int<kBlockN224>{}, Int<kStages>{}),
       Step<_2, _1, _3>{}));
 
-  using SmemLayoutAtomVtMma = decltype(
-      cutlass::gemm::collective::detail::ss_smem_selector<
-          MmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
+  using SmemLayoutAtomVtMma =
+      decltype(cutlass::gemm::collective::detail::ss_smem_selector<
+               MmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
   using SmemLayoutVtMma = decltype(tile_to_shape(
       SmemLayoutAtomVtMma{},
       make_shape(Int<kHeadDimV>{}, Int<kBlockN224>{}, Int<kStages>{}),
@@ -119,10 +114,10 @@ struct VTranspose128x224Fa3Src {
   using LDSMValueStride = Stride<_1, _2, _16, _4>;
   using LDSMDivideShape = Shape<_64, _8>;
 
-  using S2RTiledCopyVt = decltype(make_tiled_copy(
-      Copy_Atom<SM75_U16x8_LDSM_T, Element>{},
-      Layout<LDSMThreadShape, LDSMThreadStride>{},
-      Layout<LDSMValueShape, LDSMValueStride>{}));
+  using S2RTiledCopyVt =
+      decltype(make_tiled_copy(Copy_Atom<SM75_U16x8_LDSM_T, Element>{},
+                               Layout<LDSMThreadShape, LDSMThreadStride>{},
+                               Layout<LDSMValueShape, LDSMValueStride>{}));
 
   using STSMThreadShape = Shape<_8, _4, _4, _1>;
   using STSMThreadStride = Stride<_4, _1, _32, _0>;
@@ -130,10 +125,10 @@ struct VTranspose128x224Fa3Src {
   using STSMValueStride = Stride<_0, _1, _4, _8>;
   using STSMDivideShape = Shape<_8, _16>;
 
-  using R2STiledCopyV = decltype(make_tiled_copy(
-      Copy_Atom<SM90_U32x4_STSM_N, Element>{},
-      Layout<STSMThreadShape, STSMThreadStride>{},
-      Layout<STSMValueShape, STSMValueStride>{}));
+  using R2STiledCopyV =
+      decltype(make_tiled_copy(Copy_Atom<SM90_U32x4_STSM_N, Element>{},
+                               Layout<STSMThreadShape, STSMThreadStride>{},
+                               Layout<STSMValueShape, STSMValueStride>{}));
 };
 template <bool Transposed = false, typename Layout0>
 CUTLASS_DEVICE auto convert_layout_acc_rowcol(Layout0 acc_layout) {
@@ -185,8 +180,8 @@ CUTLASS_DEVICE void permute_output_fp8_Vcolmajor(Fragment& frag) {
   int const quad_idx = static_cast<int>(threadIdx.x) & 3;
   bool const lane_03 = quad_idx == 0 || quad_idx == 3;
   static constexpr int upper_map[4] = {0, 2, 3, 1};
-  using type2 = std::conditional_t<
-      sizeof(typename Fragment::value_type) == 2, uint32_t, uint64_t>;
+  using type2 = std::conditional_t<sizeof(typename Fragment::value_type) == 2,
+                                   uint32_t, uint64_t>;
   Tensor frag_2 = group_modes<1, 3>(recast<type2>(frag));
 #pragma unroll
   for (int mi = 0; mi < size<1>(frag_2); ++mi) {
@@ -211,7 +206,8 @@ CUTLASS_DEVICE void permute_output_fp8_Vcolmajor(Fragment& frag) {
 __device__ __forceinline__ int fp8_fa3_p_src_index(int i) {
   int const base = i & ~7;
   int const w = i & 7;
-  int const mapped = (w < 2) ? w : ((w < 4) ? (w + 2) : ((w < 6) ? (w - 2) : w));
+  int const mapped =
+      (w < 2) ? w : ((w < 4) ? (w + 2) : ((w < 6) ? (w - 2) : w));
   return base + mapped;
 }
 
@@ -269,8 +265,8 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
 
   Tensor sVt = cute::as_position_independent_swizzle_tensor(
       make_tensor(make_smem_ptr(v_vt_smem), typename Config::SmemLayoutVt{}));
-  Tensor sV = cute::as_position_independent_swizzle_tensor(
-      make_tensor(make_smem_ptr(v_tc_smem), typename Config::SmemLayoutVtMma{}));
+  Tensor sV = cute::as_position_independent_swizzle_tensor(make_tensor(
+      make_smem_ptr(v_tc_smem), typename Config::SmemLayoutVtMma{}));
 
   int const thread_idx = static_cast<int>(threadIdx.x) & 127;
   typename Config::S2RTiledCopyVt s2r_tiled_copy_vt;
@@ -278,25 +274,27 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
   auto s2r_thr_copy_vt = s2r_tiled_copy_vt.get_thread_slice(thread_idx);
   auto r2s_thr_copy_v = r2s_tiled_copy_v.get_thread_slice(thread_idx);
 
-  Tensor tTranssVt_ =
-      s2r_thr_copy_vt.partition_S(flat_divide(sVt, typename Config::LDSMDivideShape{}));
-  Tensor tTranssV_ =
-      r2s_thr_copy_v.partition_D(flat_divide(sV, typename Config::STSMDivideShape{}));
+  Tensor tTranssVt_ = s2r_thr_copy_vt.partition_S(
+      flat_divide(sVt, typename Config::LDSMDivideShape{}));
+  Tensor tTranssV_ = r2s_thr_copy_v.partition_D(
+      flat_divide(sV, typename Config::STSMDivideShape{}));
 
   static constexpr int TransposeILP =
       (size<2>(tTranssVt_) * size<3>(tTranssVt_)) % 2 == 0 ? 2 : 1;
-  Tensor tTranssVt = logical_divide(
-      group_modes<1, rank(tTranssVt_) - 1>(tTranssVt_),
-      Shape<Underscore, Int<TransposeILP>>{});
-  Tensor tTranssV = logical_divide(
-      group_modes<1, rank(tTranssV_) - 1>(tTranssV_),
-      Shape<Underscore, Int<TransposeILP>>{});
+  Tensor tTranssVt =
+      logical_divide(group_modes<1, rank(tTranssVt_) - 1>(tTranssVt_),
+                     Shape<Underscore, Int<TransposeILP>>{});
+  Tensor tTranssV =
+      logical_divide(group_modes<1, rank(tTranssV_) - 1>(tTranssV_),
+                     Shape<Underscore, Int<TransposeILP>>{});
 
 #pragma unroll
   for (int i = 0; i < size<1, 1>(tTranssVt); ++i) {
-    Tensor tTransrV = make_fragment_like(tTranssV(_, make_coord(_, _0{}), _0{}));
+    Tensor tTransrV =
+        make_fragment_like(tTranssV(_, make_coord(_, _0{}), _0{}));
     Tensor tTransrV64 = recast<uint2>(tTransrV);
-    cute::copy(s2r_tiled_copy_vt, tTranssVt(_, make_coord(_, i), _0{}), tTransrV);
+    cute::copy(s2r_tiled_copy_vt, tTranssVt(_, make_coord(_, i), _0{}),
+               tTransrV);
     if constexpr (InPlace) {
       fp8_producer_barrier_128();
     }
@@ -314,26 +312,30 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
   }
 }
 template <typename FP8T>
-__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter(
-    FP8T* v_vt_smem, FP8T* v_tc_smem) {
+__device__ __forceinline__ void
+fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter(FP8T* v_vt_smem,
+                                                            FP8T* v_tc_smem) {
   fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<true>(v_vt_smem, v_tc_smem);
 }
 template <typename FP8T>
-__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place(
-    FP8T* v_vt_smem, FP8T* v_tc_smem) {
+__device__ __forceinline__ void
+fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place(FP8T* v_vt_smem,
+                                                       FP8T* v_tc_smem) {
   fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<false>(v_vt_smem, v_tc_smem);
 }
 template <typename FP8T>
-__device__ __forceinline__ void fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(
-    float* acc_s, FP8T* v_tc_smem, float* acc_o) {
+__device__ __forceinline__ void
+fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
+                                                    FP8T* v_tc_smem,
+                                                    float* acc_o) {
   using namespace cute;
   using Element = cutlass::float_e4m3_t;
   using ElementAccum = float;
   using TileShapePV = Shape<_64, _128, Int<224>>;
   using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
-                                              TileShapePV, GMMA::Major::K,
-                                              GMMA::Major::K>());
+  using MmaPV =
+      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
+                                    GMMA::Major::K, GMMA::Major::K>());
   using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
   using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
 
@@ -341,7 +343,8 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x
   uint32_t p_regs[28];
   TiledMmaPV tiled_mma_pv;
   auto thr_mma = tiled_mma_pv.get_slice(tid);
-  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem), typename VConfig::SmemLayoutVtMma{});
+  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem),
+                          typename VConfig::SmemLayoutVtMma{});
   Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
 
   fp8_acc_to_fa3_p_regs_64x224_no_cute(acc_s, p_regs);
@@ -351,11 +354,9 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x
   for (int ki = 0; ki < 7; ++ki) {
     cute::GmmaDescriptor desc_b = tOrV(_, _, ki)(0);
     wgmma_rs<DataType::kFloat8_e4m3, DataType::kFloat8_e4m3, DataType::kFloat32,
-             64, 128, 32, false, false>(
-        p_regs + ki * 4,
-        uint64_t(desc_b),
-        reinterpret_cast<uint32_t*>(acc_o),
-        true);
+             64, 128, 32, false, false>(p_regs + ki * 4, uint64_t(desc_b),
+                                        reinterpret_cast<uint32_t*>(acc_o),
+                                        true);
   }
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 }
@@ -366,9 +367,9 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
   using ElementAccum = float;
   using TileShapePV = Shape<_64, _128, _128>;
   using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
-                                              TileShapePV, GMMA::Major::K,
-                                              GMMA::Major::K>());
+  using MmaPV =
+      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
+                                    GMMA::Major::K, GMMA::Major::K>());
   using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
 
   int const tid = static_cast<int>(threadIdx.x) & 127;
@@ -384,37 +385,37 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
 #pragma unroll
   for (int mi = 0; mi < size<1>(frag); ++mi) {
 #pragma unroll
-  for (int x0 = 0; x0 < size<0, 0>(frag); ++x0) {
+    for (int x0 = 0; x0 < size<0, 0>(frag); ++x0) {
 #pragma unroll
-  for (int j = 0; j < size<0, 1>(frag); ++j) {
+      for (int j = 0; j < size<0, 1>(frag); ++j) {
 #pragma unroll
-  for (int x2 = 0; x2 < size<0, 2>(frag); ++x2) {
-    bool const swapped =
-        (x0 == 1 && ((x2 & 1) == 0)) || (x0 == 0 && ((x2 & 1) == 1));
-    if (!swapped) {
-      auto coord = frag_coord(make_coord(x0, j, x2), mi);
-      int const row = int(get<0>(coord));
-      frag(make_coord(x0, j, x2), mi) *= ss[row];
+        for (int x2 = 0; x2 < size<0, 2>(frag); ++x2) {
+          bool const swapped =
+              (x0 == 1 && ((x2 & 1) == 0)) || (x0 == 0 && ((x2 & 1) == 1));
+          if (!swapped) {
+            auto coord = frag_coord(make_coord(x0, j, x2), mi);
+            int const row = int(get<0>(coord));
+            frag(make_coord(x0, j, x2), mi) *= ss[row];
+          }
+        }
+      }
     }
-  }
-  }
-  }
   }
 
 #pragma unroll
   for (int mi = 0; mi < size<1>(frag); ++mi) {
 #pragma unroll
-  for (int j = 0; j < size<0, 1>(frag); ++j) {
+    for (int j = 0; j < size<0, 1>(frag); ++j) {
 #pragma unroll
-  for (int i = 0; i < size<0, 2>(frag) / 2; ++i) {
-    auto coord_a = frag_coord(make_coord(_1{}, j, 2 * i), mi);
-    auto coord_b = frag_coord(make_coord(_0{}, j, 2 * i + 1), mi);
-    int const row_a = int(get<0>(coord_a));
-    int const row_b = int(get<0>(coord_b));
-    frag(make_coord(_1{}, j, 2 * i), mi) *= ss[row_b];
-    frag(make_coord(_0{}, j, 2 * i + 1), mi) *= ss[row_a];
-  }
-  }
+      for (int i = 0; i < size<0, 2>(frag) / 2; ++i) {
+        auto coord_a = frag_coord(make_coord(_1{}, j, 2 * i), mi);
+        auto coord_b = frag_coord(make_coord(_0{}, j, 2 * i + 1), mi);
+        int const row_a = int(get<0>(coord_a));
+        int const row_b = int(get<0>(coord_b));
+        frag(make_coord(_1{}, j, 2 * i), mi) *= ss[row_b];
+        frag(make_coord(_0{}, j, 2 * i + 1), mi) *= ss[row_a];
+      }
+    }
   }
 }
 __device__ __forceinline__ void fp8_fa3_raw_acc_permute_to_canonical_64x128(
@@ -424,9 +425,9 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_permute_to_canonical_64x128(
   using ElementAccum = float;
   using TileShapePV = Shape<_64, _128, _128>;
   using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
-                                              TileShapePV, GMMA::Major::K,
-                                              GMMA::Major::K>());
+  using MmaPV =
+      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
+                                    GMMA::Major::K, GMMA::Major::K>());
   using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
 
   TiledMmaPV tiled_mma_pv;
@@ -434,8 +435,8 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_permute_to_canonical_64x128(
   Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
   fp8_gqa_detail::permute_output_fp8(tAccO);
 }
-__device__ __forceinline__ void fp8_fa3_raw_acc_scale_64x128(
-    float* acc_o, float scale) {
+__device__ __forceinline__ void fp8_fa3_raw_acc_scale_64x128(float* acc_o,
+                                                             float scale) {
 #pragma unroll
   for (int i = 0; i < 64; ++i) {
     acc_o[i] *= scale;
@@ -449,17 +450,19 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
   using ElementAccum = float;
   using TileShapeQK = Shape<_64, Int<224>, _128>;
   using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaQK = decltype(GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeQK>());
+  using MmaQK = decltype(GMMA::ss_op_selector<Element, Element, ElementAccum,
+                                              TileShapeQK>());
   using TiledMmaQK = decltype(make_tiled_mma(MmaQK{}, AtomLayout{}));
   using SmemLayoutAtomQ =
       decltype(cutlass::gemm::collective::detail::ss_smem_selector<
                GMMA::Major::K, Element, _64, _128>());
-  using SmemLayoutQ = decltype(tile_to_shape(SmemLayoutAtomQ{}, Shape<_64, _128>{}));
+  using SmemLayoutQ =
+      decltype(tile_to_shape(SmemLayoutAtomQ{}, Shape<_64, _128>{}));
   using SmemLayoutAtomK =
       decltype(cutlass::gemm::collective::detail::ss_smem_selector<
                GMMA::Major::K, Element, Int<224>, _128>());
-  using SmemLayoutK = decltype(tile_to_shape(
-      SmemLayoutAtomK{}, Shape<Int<224>, _128, _1>{}));
+  using SmemLayoutK =
+      decltype(tile_to_shape(SmemLayoutAtomK{}, Shape<Int<224>, _128, _1>{}));
 
   TiledMmaQK tiled_mma_qk;
   auto thr_mma = tiled_mma_qk.get_slice(static_cast<int>(threadIdx.x) & 127);
@@ -467,7 +470,8 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
   Tensor sK = make_tensor(make_smem_ptr(k_tc_smem), SmemLayoutK{});
   Tensor tSrQ = thr_mma.partition_fragment_A(sQ);
   Tensor tSrK = thr_mma.partition_fragment_B(sK)(_, _, _, _0{});
-  Tensor tSrS_template = partition_fragment_C(tiled_mma_qk, Shape<_64, Int<224>>{});
+  Tensor tSrS_template =
+      partition_fragment_C(tiled_mma_qk, Shape<_64, Int<224>>{});
   Tensor tSrS = make_tensor(acc_s, tSrS_template.layout());
 
   warpgroup_fence_operand(tSrS);
@@ -484,15 +488,15 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
 }
 template <typename OutT>
 struct FP8Fa3OutputStore64x128 {
-  static_assert(sizeof(OutT) == 2, "FA3-style output store expects fp16/bf16 output.");
+  static_assert(sizeof(OutT) == 2,
+                "FA3-style output store expects fp16/bf16 output.");
 
   using SmemLayoutAtomO = decltype(cute::composition(
       cute::Swizzle<3, 3, 3>{},
       cute::Layout<cute::Shape<cute::_8, cute::_64>,
                    cute::Stride<cute::_64, cute::_1>>{}));
   using SmemLayoutO = decltype(cute::tile_to_shape(
-      SmemLayoutAtomO{},
-      cute::Shape<cute::_64, cute::_128>{}));
+      SmemLayoutAtomO{}, cute::Shape<cute::_64, cute::_128>{}));
 };
 
 template <typename OutT>
@@ -503,9 +507,9 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
   using ElementAccum = float;
   using TileShapePV = Shape<_64, _128, _128>;
   using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
-                                              TileShapePV, GMMA::Major::K,
-                                              GMMA::Major::K>());
+  using MmaPV =
+      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
+                                    GMMA::Major::K, GMMA::Major::K>());
   using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
   using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
   using SmemCopyAtomO = Copy_Atom<SM90_U32x4_STSM_N, OutT>;
@@ -529,18 +533,19 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
 #pragma unroll
   for (int m = 0; m < size<0>(tAccO_rowcol); ++m) {
 #pragma unroll
-  for (int n = 0; n < size<1>(tAccO_rowcol); ++n) {
-    auto coord = tOcO_rowcol(m, n);
-    int const row = int(get<0>(coord));
-    tOut_rowcol(m, n) = static_cast<OutT>(tAccO_rowcol(m, n) / ls[row]);
-  }
+    for (int n = 0; n < size<1>(tAccO_rowcol); ++n) {
+      auto coord = tOcO_rowcol(m, n);
+      int const row = int(get<0>(coord));
+      tOut_rowcol(m, n) = static_cast<OutT>(tAccO_rowcol(m, n) / ls[row]);
+    }
   }
 
   if ((flags & 4) != 0 && (flags & 2) == 0) {
     fp8_gqa_detail::permute_output_fp8_Vcolmajor(tOut);
   }
 
-  Tensor sO = make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
+  Tensor sO =
+      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
   auto smem_tiled_copy_O = make_tiled_copy_C(SmemCopyAtomO{}, tiled_mma_pv);
   auto smem_thr_copy_O = smem_tiled_copy_O.get_thread_slice(tid);
   Tensor taccOrO = smem_thr_copy_O.retile_S(tOut);
@@ -565,8 +570,8 @@ __device__ __forceinline__ void fp8_fa3_o_smem_store_global_cute_64x128(
       GmemLayoutAtom{}, Layout<Shape<_1, _8>>{}));
 
   int const tid = static_cast<int>(threadIdx.x) & 127;
-  Tensor sO = make_tensor(
-      make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
+  Tensor sO =
+      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
   Tensor gO = make_tensor(
       make_gmem_ptr(output),
       make_layout(Shape<_64, _128>{}, make_stride(output_row_stride, _1{})));
@@ -584,8 +589,8 @@ __device__ __forceinline__ void fp8_fa3_o_smem_store_global_cute_64x128_tail(
   using namespace cute;
   using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
 
-  Tensor sO = make_tensor(
-      make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
+  Tensor sO =
+      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
   int const tid = static_cast<int>(threadIdx.x) & 127;
 #pragma unroll
   for (int linear = tid; linear < 64 * 128; linear += 128) {
