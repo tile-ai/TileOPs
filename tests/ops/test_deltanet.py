@@ -521,6 +521,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+@pytest.mark.sm90
 def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
     with pytest.raises(ValueError, match="threads .* must equal raw_group_size \\* v_tile"):
         DeltaNetDecodeRawCudaFlaStyleKernel(
@@ -540,6 +541,7 @@ def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+@pytest.mark.sm90
 def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
     with pytest.raises(ValueError, match="raw_group_size must equal 2"):
         DeltaNetDecodeRawCudaFlaStyleKernel(
