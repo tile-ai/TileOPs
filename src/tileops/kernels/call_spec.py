@@ -82,10 +82,13 @@ class CallSpec:
         """Fill the device facts the caller left unstated from ``device``.
 
         A device other than a CUDA one has none: no architecture, board, SM or shared memory.
+        A record that named no device has none either where the process has no CUDA device.
         """
         from tileops.utils import device_facts
 
-        if self.device is not None and self.device.type != "cuda":
+        if (self.device is not None and self.device.type != "cuda") or (
+            self.device is None and not torch.cuda.is_available()
+        ):
             arch, calibration, sm_count, smem_budget = -1, None, 0, 0
         else:
             arch, calibration, sm_count, smem_budget = device_facts(

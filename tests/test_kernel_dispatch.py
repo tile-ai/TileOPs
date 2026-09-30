@@ -282,6 +282,15 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
             op.kernel_for("scale", (), call)
 
 
+def test_a_record_reads_no_device_fact_where_the_process_has_no_cuda_device() -> None:
+    """A record resolves no CUDA fact, and copying it — which reads every field — still works."""
+    call = _Call(n=8)
+    if torch.cuda.is_available():
+        pytest.skip("needs a host with no CUDA device")
+    assert (call.arch, call.sm_count, call.smem_budget) == (-1, 0, 0)
+    assert dataclasses.replace(call, n=9) == _Call(n=9)
+
+
 def test_an_installed_implementation_set_cannot_change() -> None:
     op = _ScaleOp()
     op.entry(5)
