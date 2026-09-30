@@ -34,7 +34,7 @@ __all__ = ["CumsumParallelScanKernel", "CumulativeKernel", "CumulativeRowScanKer
 
 
 @dataclass(frozen=True)
-class CumulativeScanPolicy:
+class _CumulativeScanPolicy:
     """Shape and shared-memory heuristics for cumulative scan kernels."""
 
     # Multiple of DEFAULT_ALIGNMENT for T.copy shared memory alignment.
@@ -49,17 +49,17 @@ class CumulativeScanPolicy:
     row_scan_wide_threads: int = 256
     # Longest chunk a thread takes. It lives in fp32 registers, so 256 would spill.
     row_scan_max_chunk: int = 128
-    # Pads row_scan_pad chooses between, in vector accesses. A whole vector access is
+    # Pads _row_scan_pad chooses between, in vector accesses. A whole vector access is
     # what keeps a chunk 16-byte aligned, which the shared access needs to stay 128-bit.
     row_scan_pad_vectors: tuple = (1, 2)
     row_scan_min_threads: int = 64
     row_scan_max_threads: int = 1024
 
 
-_SCAN_POLICY = CumulativeScanPolicy()
+_SCAN_POLICY = _CumulativeScanPolicy()
 
 
-def row_scan_pad(chunk: int, elem_bytes: int) -> int:
+def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
     """Return the padding, in elements, each staged chunk gets.
 
     Neighbouring lanes read one chunk each, so they sit ``(chunk + pad) * elem_bytes``
@@ -74,7 +74,7 @@ def row_scan_pad(chunk: int, elem_bytes: int) -> int:
     )
 
 
-def row_scan_chunk_ok(chunk: int, elem_bytes: int, threads: int) -> bool:
+def _row_scan_chunk_ok(chunk: int, elem_bytes: int, threads: int) -> bool:
     """Whether a block of *threads* may give each thread a chunk of *chunk* elements.
 
     Up to ``row_scan_chunk`` always. A block already ``row_scan_wide_threads`` wide may
@@ -90,10 +90,10 @@ def row_scan_chunk_ok(chunk: int, elem_bytes: int, threads: int) -> bool:
     )
 
 
-def row_scan_threads(N_padded: int, elem_bytes: int) -> int:
+def _row_scan_threads(N_padded: int, elem_bytes: int) -> int:
     """Threads the whole-row kernel gives a row of *N_padded*.
 
-    The narrowest block that divides the row and whose chunk :func:`row_scan_chunk_ok`
+    The narrowest block that divides the row and whose chunk :func:`_row_scan_chunk_ok`
     accepts, or the widest divisor tried when no block qualifies -- which
     :func:`row_scan_fits` then declines.
     """
@@ -102,7 +102,7 @@ def row_scan_threads(N_padded: int, elem_bytes: int) -> int:
     while threads <= _SCAN_POLICY.row_scan_max_threads:
         if N_padded % threads == 0:
             widest = threads
-            if row_scan_chunk_ok(N_padded // threads, elem_bytes, threads):
+            if _row_scan_chunk_ok(N_padded // threads, elem_bytes, threads):
                 return threads
         threads *= 2
     return widest
@@ -133,10 +133,10 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
             allocated for, and be divisible by *threads*.
         op_kind: One of "sum", "prod".
         dtype: TileLang dtype string.
-        threads: Threads per row, from :func:`row_scan_threads`.
+        threads: Threads per row, from :func:`_row_scan_threads`.
     """
     chunk_len = N // threads
-    pad = row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
+    pad = _row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
     # Shuffle steps to scan one warp's lanes, and the warps a block holds.
     n_steps = WARP_LANES.bit_length() - 1
     n_warps = max(threads // WARP_LANES, 1)
@@ -403,12 +403,12 @@ class _CumulativeKernelBase(Kernel):
     @staticmethod
     def row_scan_fits(N_padded: int, elem_bytes: int, smem_budget: int) -> bool:
         """Whether a row of *N_padded* can be scanned by one thread block."""
-        threads = row_scan_threads(N_padded, elem_bytes)
+        threads = _row_scan_threads(N_padded, elem_bytes)
         if N_padded % threads:
             return False
         chunk = N_padded // threads
-        staged = threads * (chunk + row_scan_pad(chunk, elem_bytes)) * elem_bytes
-        return staged <= smem_budget and row_scan_chunk_ok(chunk, elem_bytes, threads)
+        staged = threads * (chunk + _row_scan_pad(chunk, elem_bytes)) * elem_bytes
+        return staged <= smem_budget and _row_scan_chunk_ok(chunk, elem_bytes, threads)
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -476,7 +476,7 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
 
     def _program(self) -> object:
         # The chunk length is a compile-time bound, so the thread count is baked in.
-        self._threads = row_scan_threads(self.N_padded, self._elem_bytes)
+        self._threads = _row_scan_threads(self.N_padded, self._elem_bytes)
         return _row_scan_kernel(self.M, self.N, self.op_kind, self.dtype_str, self._threads)
 
     @property

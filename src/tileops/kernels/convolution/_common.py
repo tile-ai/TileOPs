@@ -77,7 +77,7 @@ def conv_autotune_configs(
     return valid
 
 
-def _launch(
+def launch(
     kernel: Kernel,
     *tensors: torch.Tensor,
     bias: Optional[torch.Tensor],

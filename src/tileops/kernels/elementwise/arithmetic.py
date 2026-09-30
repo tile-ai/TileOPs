@@ -8,13 +8,13 @@ import torch
 import tvm.tirx as tirx
 
 from tileops.kernels.elementwise._base import (
-    _FLOAT_DTYPES,
+    FLOAT_DTYPES,
+    AlphaScaledBinaryKernel,
     BinaryKernel,
     MultiInputElementwiseKernel,
-    _AlphaScaledBinaryKernel,
 )
-from tileops.kernels.elementwise._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
-from tileops.kernels.elementwise._nan import _bound, nan_max, nan_min
+from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
+from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 
 __all__ = [
     "AddFwdKernel",
@@ -32,20 +32,20 @@ __all__ = [
 ]
 
 
-class AddFwdKernel(_AlphaScaledBinaryKernel):
+class AddFwdKernel(AlphaScaledBinaryKernel):
     """Element-wise addition with scalar alpha: y = a + alpha * b."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
 
     @staticmethod
     def _combine(a, scaled_b):
         return a + scaled_b
 
 
-class SubFwdKernel(_AlphaScaledBinaryKernel):
+class SubFwdKernel(AlphaScaledBinaryKernel):
     """Element-wise subtraction with scalar alpha: y = a - alpha * b."""
 
-    SUPPORTED_DTYPES = _BINARY_NO_BOOL_DTYPES
+    SUPPORTED_DTYPES = BINARY_NO_BOOL_DTYPES
 
     @staticmethod
     def _combine(a, scaled_b):
@@ -60,7 +60,7 @@ class MulFwdKernel(BinaryKernel):
     (PyTorch semantics).
     """
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
@@ -98,9 +98,9 @@ def _full_range_fdiv(num, den):
                 T.cast(1.0, "float32"),
             ),
         )
-        return _bound(scale, lambda s: _approx_fdiv(num * s, den * s))
+        return bound(scale, lambda s: _approx_fdiv(num * s, den * s))
 
-    return _bound(T.abs(den), scaled)
+    return bound(T.abs(den), scaled)
 
 
 class DivFwdKernel(BinaryKernel):
@@ -110,7 +110,7 @@ class DivFwdKernel(BinaryKernel):
     float16 takes ``_approx_fdiv`` and bfloat16 ``_full_range_fdiv``.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:
@@ -142,7 +142,7 @@ class DivTruncFwdKernel(BinaryKernel):
     operand pairs of either dtype.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:
@@ -181,11 +181,11 @@ def _floored_quotient(num, den, limit, fast_body):
             over = T.call_extern("float32", "__fmaf_rn", -t, magnitude, T.copysign(num, q)) < zero
             return fast_body(tirx.Select(over, t - one, t), q)
 
-        return _bound(T.floor(q), pick)
+        return bound(T.floor(q), pick)
 
     inf = T.cast(float("inf"), "float32")
-    holds = _bound(quotient, lambda q: T.And(T.abs(q) < T.cast(limit, "float32"), magnitude < inf))
-    return _bound(quotient, value), holds
+    holds = bound(quotient, lambda q: T.And(T.abs(q) < T.cast(limit, "float32"), magnitude < inf))
+    return bound(quotient, value), holds
 
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
@@ -215,8 +215,8 @@ def _nudged_floor(num, den, dtype, fast_body):
         nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
-    holds = _bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
-    return _bound(quotient, value), holds
+    holds = bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
+    return bound(quotient, value), holds
 
 
 def _floored_tiers(num, den, dtype, limit, fast_body):
@@ -241,9 +241,9 @@ def _first_holding(tiers, last):
 
 def _on_float32(a, b, body):
     """``body(num, den)`` on the two operands widened to float32, each bound once."""
-    return _bound(
+    return bound(
         T.Cast("float32", a),
-        lambda num: _bound(T.Cast("float32", b), lambda den: body(num, den)),
+        lambda num: bound(T.Cast("float32", b), lambda den: body(num, den)),
     )
 
 
@@ -263,16 +263,16 @@ class RemainderFwdKernel(BinaryKernel):
         def from_quotient(k, q):
             r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
             # A zero remainder is fmod's, which keeps the dividend's sign.
-            return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+            return bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
 
         def signed(mod):
             flip = T.And(mod != zero, (den < zero) != (mod < zero))
             return tirx.Select(flip, mod + den, mod)
 
         tiers = _floored_tiers(num, den, dtype, _FAST_QUOTIENT, from_quotient)
-        return tiers, _bound(T.fmod(num, den), signed)
+        return tiers, bound(T.fmod(num, den), signed)
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:
@@ -302,7 +302,7 @@ class PowFwdKernel(BinaryKernel):
     restored. Error scales with ``|b * log2(a)|``; ``PowFwdOp`` tabulates it.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     REGISTER_COPY_NUM_PER_THREAD = 4
 
     @staticmethod
@@ -371,16 +371,16 @@ class FloorDivideFwdKernel(BinaryKernel):
                 up = T.Cast("float32", T.Cast(dtype, floored + one))
                 return tirx.Select(div - floored > T.cast(0.5, "float32"), up, floored)
 
-            near = _bound(T.Cast("float32", T.Cast(dtype, T.floor(div))), bump)
+            near = bound(T.Cast("float32", T.Cast(dtype, T.floor(div))), bump)
             return tirx.Select(div != zero, near, signed_zero)
 
         def slow():
             def from_mod(mod):
                 flip = T.And(mod != zero, (den < zero) != (mod < zero))
                 div = _ieee_fdiv(num - mod, den)
-                return _bound(tirx.Select(flip, div - one, div), rounded)
+                return bound(tirx.Select(flip, div - one, div), rounded)
 
-            general = _bound(T.fmod(num, den), from_mod)
+            general = bound(T.fmod(num, den), from_mod)
             return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
 
         def whole(k, q):
@@ -390,7 +390,7 @@ class FloorDivideFwdKernel(BinaryKernel):
         limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
         return _floored_tiers(num, den, dtype, limit, whole), slow()
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:
@@ -424,7 +424,7 @@ class LerpFwdKernel(BinaryKernel):
             positional ``(dtype, config, tune)`` tail stays uniform.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
@@ -461,7 +461,7 @@ class MaximumFwdKernel(BinaryKernel):
     isnan guard for NaN propagation.
     """
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:
@@ -497,7 +497,7 @@ class MinimumFwdKernel(BinaryKernel):
     rationale.
     """
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
 
     @property
     def stage_broadcast(self) -> bool:

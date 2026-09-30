@@ -13,7 +13,7 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import GemmCall
-from tileops.kernels.gemm.dense import _splitk_reduce_kernel
+from tileops.kernels.gemm.dense import splitk_reduce_kernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import device_calibration, get_sm_count
 
@@ -925,7 +925,7 @@ class GemmW4A16Kernel(Kernel):
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, self.m_pad, n, block_n, self.dtype_str
             )()
         elif self.config["split_k"] > 1:
-            self._reduce = _splitk_reduce_kernel(
+            self._reduce = splitk_reduce_kernel(
                 self.config["split_k"], self.m_pad, n, self.dtype_str
             )()
         else:

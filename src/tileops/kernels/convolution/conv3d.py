@@ -9,9 +9,9 @@ import torch
 
 from tileops.kernels.convolution._common import (
     CONV_SWIZZLE_PANEL,
-    _launch,
     conv_autotune_configs,
     conv_num_stages,
+    launch,
 )
 from tileops.kernels.convolution.call_spec import (
     Conv3dCall,
@@ -798,7 +798,7 @@ class Conv3dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, weight, bias=bias)
+        return launch(self, x, weight, bias=bias)
 
 
 class GroupConv3dKernel(Kernel):
@@ -977,7 +977,7 @@ class GroupConv3dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _launch(self, x, weight, bias=bias)
+        return launch(self, x, weight, bias=bias)
 
 
 class Conv3dNdhwcKernel(Kernel):
@@ -1169,4 +1169,4 @@ class Conv3dNdhwcKernel(Kernel):
             device=x.device,
             dtype=x.dtype,
         )
-        return _launch(self, x, weight, x_ndhwc, weight_kdrsc, out_ndhwc, bias=bias)
+        return launch(self, x, weight, x_ndhwc, weight_kdrsc, out_ndhwc, bias=bias)

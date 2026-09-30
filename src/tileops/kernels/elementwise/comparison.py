@@ -6,9 +6,9 @@ import torch
 from tileops.kernels.elementwise._base import (
     BinaryKernel,
     FloatPredicateKernel,
-    _Uint8StorageBinaryKernel,
+    Uint8StorageBinaryKernel,
 )
-from tileops.kernels.elementwise._dtype import _BINARY_FULL_DTYPES
+from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES
 
 __all__ = [
     "EqBoolStorageFwdKernel",
@@ -32,7 +32,7 @@ __all__ = [
 class EqFwdKernel(BinaryKernel):
     """Element-wise equality: y = (a == b)."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -40,7 +40,7 @@ class EqFwdKernel(BinaryKernel):
         return a == b
 
 
-class EqBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class EqBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise equality on uint8-backed bool storage."""
 
     @staticmethod
@@ -65,7 +65,7 @@ class NeFwdKernel(BinaryKernel):
     avoided.
     """
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -75,7 +75,7 @@ class NeFwdKernel(BinaryKernel):
         return a != b
 
 
-class NeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class NeBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise not-equal on uint8-backed bool storage."""
 
     @staticmethod
@@ -86,7 +86,7 @@ class NeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class GtFwdKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b)."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -94,7 +94,7 @@ class GtFwdKernel(BinaryKernel):
         return a > b
 
 
-class GtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class GtBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise greater-than on uint8-backed bool storage."""
 
     @staticmethod
@@ -105,7 +105,7 @@ class GtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class LtFwdKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b)."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -113,7 +113,7 @@ class LtFwdKernel(BinaryKernel):
         return a < b
 
 
-class LtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class LtBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise less-than on uint8-backed bool storage."""
 
     @staticmethod
@@ -124,7 +124,7 @@ class LtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class GeFwdKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b)."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -132,7 +132,7 @@ class GeFwdKernel(BinaryKernel):
         return a >= b
 
 
-class GeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class GeBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise greater-equal on uint8-backed bool storage."""
 
     @staticmethod
@@ -143,7 +143,7 @@ class GeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 class LeFwdKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b)."""
 
-    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
 
     @staticmethod
@@ -151,7 +151,7 @@ class LeFwdKernel(BinaryKernel):
         return a <= b
 
 
-class LeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+class LeBoolStorageFwdKernel(Uint8StorageBinaryKernel):
     """Element-wise less-equal on uint8-backed bool storage."""
 
     @staticmethod

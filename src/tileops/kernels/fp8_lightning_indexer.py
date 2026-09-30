@@ -160,7 +160,7 @@ def _fp8_lightning_indexer_kernel(
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit
-def clean_logits_(
+def _clean_logits_(
     threads: int = 512,
 ):
     batch = T.dynamic("batch")
@@ -252,7 +252,7 @@ class FP8LightningIndexerKernel(Kernel):
             CuSeqLenKE,
         )
         if clean_logits:
-            clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
+            _clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
     supported_archs: list[int] = [90]
 

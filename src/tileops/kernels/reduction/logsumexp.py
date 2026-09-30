@@ -56,7 +56,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class StreamingLogSumExpPolicy:
+class _StreamingLogSumExpPolicy:
     """Launch shape and eligibility gate of the streaming kernel.
 
     The launch pair is fixed rather than tuned, and ``LogSumExpStreamingKernel.applies``
@@ -79,7 +79,7 @@ class StreamingLogSumExpPolicy:
     max_floor: float = -3.4e38
 
 
-STREAMING_LOGSUMEXP = StreamingLogSumExpPolicy()
+_STREAMING_LOGSUMEXP = _StreamingLogSumExpPolicy()
 
 
 @functools.lru_cache(maxsize=64)
@@ -334,7 +334,7 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
     vec_groups = cols_per_thread // vec_elems
     warp_stages = WARP_LANES.bit_length() - 1
-    floor = STREAMING_LOGSUMEXP.max_floor
+    floor = _STREAMING_LOGSUMEXP.max_floor
     # Clamp for exponent arguments, above every finite fp16/bf16 value: a +inf element
     # contributes exp2(+inf) = +inf and its row folds to +inf, matching torch.
     ceil = -floor
@@ -509,7 +509,7 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
     """LogSumExp of long fp16/bf16 rows on a filled grid, one block per row.
 
     Rows stream straight to registers with the online recurrence at a fixed launch
-    shape (``STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves fp16/bf16 rows
+    shape (``_STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves fp16/bf16 rows
     long and many enough for that launch shape.
     """
 
@@ -517,7 +517,7 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
 
     @classmethod
     def applies(cls, call: LogSumExpCall) -> bool:
-        policy = STREAMING_LOGSUMEXP
+        policy = _STREAMING_LOGSUMEXP
         return (
             call.dtype in (torch.float16, torch.bfloat16)
             and policy.min_rows <= call.m
@@ -533,8 +533,8 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
             call.m,
             call.n,
             self.dtype_str,
-            STREAMING_LOGSUMEXP.threads,
-            STREAMING_LOGSUMEXP.cols_per_thread,
+            _STREAMING_LOGSUMEXP.threads,
+            _STREAMING_LOGSUMEXP.cols_per_thread,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 
 from tileops.kernels.elementwise._broadcast import row_tile_leaves_tail
-from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, _torch_dtype_nbytes
+from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, torch_dtype_nbytes
 from tileops.kernels.kernel_base import Kernel
 
 _AUTOTUNE_THREADS = (128, 256, 512)
@@ -65,7 +65,7 @@ def default_launch_config(
     # are what has to stay wide enough to keep the memory pipe busy.
     threads = default_threads or (_DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS)
 
-    elem_bytes = _torch_dtype_nbytes(input_dtype)
+    elem_bytes = torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
@@ -74,7 +74,7 @@ def default_launch_config(
             threads = min(_MAX_THREADS, threads * npt // capped)
         npt = capped
     else:
-        if _torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
+        if torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
             row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
         ):
             # A narrower result leaves the store short of a vector, so widen to cover it.
@@ -117,7 +117,7 @@ def elementwise_autotune_configs(
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    elem_bytes = _torch_dtype_nbytes(dtype)
+    elem_bytes = torch_dtype_nbytes(dtype)
     default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
     if strategy == "register_copy":
         default = max(default, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
@@ -128,7 +128,7 @@ def elementwise_autotune_configs(
 
 
 @dataclass(frozen=True)
-class ElementwiseOutputPlan:
+class _ElementwiseOutputPlan:
     logical_dtype: torch.dtype
     kernel_output_dtype: str
     bool_via_int8: bool = False
@@ -140,7 +140,7 @@ def elementwise_output_plan(
     *,
     strategy: str | None = None,
     bool_storage: bool = False,
-) -> ElementwiseOutputPlan:
+) -> _ElementwiseOutputPlan:
     """Return the dtype the kernel writes, and the dtype the caller sees."""
     logical_dtype = declared_output_dtype or input_dtype
     # Every strategy but `direct` can store the result through an int8 buffer, and
@@ -149,7 +149,7 @@ def elementwise_output_plan(
     kernel_output_dtype = (
         BOOL_STORAGE_DTYPE if bool_via_int8 else Kernel.dtype_to_str(logical_dtype)
     )
-    return ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
+    return _ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
 
 
 def _bool_output_needs_scalar(

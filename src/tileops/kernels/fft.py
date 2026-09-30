@@ -112,7 +112,7 @@ class FFTC2CCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class FFTPlan:
+class _FFTPlan:
     """The launch-order factors, layouts, builders, and architectures for one call."""
 
     factors: tuple
@@ -1376,7 +1376,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
     return _func
 
 
-def _plan_table() -> Dict[tuple, FFTPlan]:
+def _plan_table() -> Dict[tuple, _FFTPlan]:
     """One record per served (length, dtype); every one-CTA builder takes (row, grp)."""
 
     def _smem_pad(n: int, radix: tuple) -> tuple:
@@ -1407,7 +1407,7 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
                 builder = functools.partial(_build_three_pass, n)
             else:
                 builder = functools.partial(_build_four_pass, n)
-            records[n, dtype] = FFTPlan(
+            records[n, dtype] = _FFTPlan(
                 factors=(n,),
                 radix=(radix,),
                 tile=(),
@@ -1421,7 +1421,7 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
             functools.partial(_build_four_step_a, factors, level)
             for level in range(1, len(factors))
         )
-        records[n, dtype] = FFTPlan(
+        records[n, dtype] = _FFTPlan(
             factors=factors,
             radix=tuple(
                 (16, _factor_radix(f)) if _factor_passes(f) == 2 else (16, 16, _factor_radix(f))
@@ -1451,7 +1451,7 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
     return dict(sorted(records.items(), key=lambda kv: (kv[0][0], kv[0][1] != "complex64")))
 
 
-FFT_PLANS: Dict[tuple, FFTPlan] = _plan_table()
+FFT_PLANS: Dict[tuple, _FFTPlan] = _plan_table()
 
 
 # Bounded by FFT_PLANS, one entry per record.

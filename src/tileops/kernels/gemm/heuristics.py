@@ -57,7 +57,7 @@ __all__ = [
 _SMEM_BUDGET = BLOCK_SHARED_BYTES_OPT_IN[90]
 _MAX_ACCUM_REGS = 200
 
-TINY_M_BLOCK_N = 128
+_TINY_M_BLOCK_N = 128
 
 # Shortest K slice the FP8 split-K path pays for.
 _FP8_MIN_SLICE_K_TILES = 12
@@ -383,7 +383,7 @@ def _best_config_cached(
             if k_iters % sk == 0 and k_iters // sk >= 12:
                 return {
                     "block_m": 64,
-                    "block_n": TINY_M_BLOCK_N,
+                    "block_n": _TINY_M_BLOCK_N,
                     "block_k": 128,
                     "num_stages": 4,
                     "panel_size": 16,
@@ -391,7 +391,7 @@ def _best_config_cached(
                 }
         return {
             "block_m": 64,
-            "block_n": TINY_M_BLOCK_N,
+            "block_n": _TINY_M_BLOCK_N,
             "block_k": 128,
             "num_stages": 4,
             "panel_size": 8,

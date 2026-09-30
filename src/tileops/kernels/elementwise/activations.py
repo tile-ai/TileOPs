@@ -7,7 +7,7 @@ import tilelang.language as T
 
 from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
 from tileops.kernels.elementwise._base import (
-    _FLOAT_DTYPES,
+    FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
     MultiInputElementwiseKernel,
@@ -330,7 +330,7 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel):
 class SiluAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
 
     @staticmethod
@@ -348,7 +348,7 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
     Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
 
     @staticmethod
@@ -367,7 +367,7 @@ class GeluTanhAndMulFwdKernel(FusedGatedKernel):
     Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
 
     @staticmethod

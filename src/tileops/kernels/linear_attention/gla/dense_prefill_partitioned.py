@@ -15,8 +15,8 @@ from tileops.kernels.linear_attention.gla.call_spec import (
     dense_entry,
     serves_dense,
 )
-from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import _gla_fwd_a_kernel
-from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
+from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel, gla_precompute_g_kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -458,7 +458,7 @@ class GLADensePrefillPartitionedKernel(GLAFwdKernel, GLAInferenceFwdInterface):
     def _build_kernels(self, config: dict) -> None:
         partition_chunks = config["partition_chunks"]
         gate_dtype = "float16"
-        self._g_fn = _gla_precompute_g_kernel(
+        self._g_fn = gla_precompute_g_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -487,7 +487,7 @@ class GLADensePrefillPartitionedKernel(GLAFwdKernel, GLAInferenceFwdInterface):
             self.dim_k,
             self.dim_v,
         )(config["scan_threads"])
-        self._a_fn = _gla_fwd_a_kernel(
+        self._a_fn = gla_fwd_a_kernel(
             self.batch,
             self.seq_len,
             self.heads,

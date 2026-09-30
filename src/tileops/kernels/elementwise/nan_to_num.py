@@ -4,7 +4,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._base import ScalarParamUnaryKernel
-from tileops.kernels.elementwise._dtype import _clamp_to_dtype_range
+from tileops.kernels.elementwise._dtype import clamp_to_dtype_range
 
 __all__ = [
     "NanToNumFwdKernel",
@@ -17,9 +17,9 @@ class NanToNumFwdKernel(ScalarParamUnaryKernel):
     def __init__(
         self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None, tune=False
     ):
-        self.nan_val = _clamp_to_dtype_range(nan_val, dtype)
-        self.posinf_val = _clamp_to_dtype_range(posinf_val, dtype)
-        self.neginf_val = _clamp_to_dtype_range(neginf_val, dtype)
+        self.nan_val = clamp_to_dtype_range(nan_val, dtype)
+        self.posinf_val = clamp_to_dtype_range(posinf_val, dtype)
+        self.neginf_val = clamp_to_dtype_range(neginf_val, dtype)
         super().__init__(N_total, dtype, config=config, tune=tune)
 
     def _param_key(self):

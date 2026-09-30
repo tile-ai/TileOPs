@@ -18,11 +18,11 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
-TMA_DTYPE_UINT8 = 0
-TMA_INTERLEAVE_NONE = 0
-TMA_SWIZZLE_128B = 3
-TMA_L2_PROMOTION_128B = 2
-TMA_OOB_FILL_NONE = 0
+_TMA_DTYPE_UINT8 = 0
+_TMA_INTERLEAVE_NONE = 0
+_TMA_SWIZZLE_128B = 3
+_TMA_L2_PROMOTION_128B = 2
+_TMA_OOB_FILL_NONE = 0
 _FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
 
 
@@ -412,7 +412,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if tx == 0:
                                 T.mbarrier_expect_tx(v_raw_full, dim * 224)
                                 v_desc = T.create_tma_descriptor(
-                                    TMA_DTYPE_UINT8,
+                                    _TMA_DTYPE_UINT8,
                                     4,
                                     v.data,
                                     dim,
@@ -431,10 +431,10 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     1,
                                     1,
                                     1,
-                                    TMA_INTERLEAVE_NONE,
-                                    TMA_SWIZZLE_128B,
-                                    TMA_L2_PROMOTION_128B,
-                                    TMA_OOB_FILL_NONE,
+                                    _TMA_INTERLEAVE_NONE,
+                                    _TMA_SWIZZLE_128B,
+                                    _TMA_L2_PROMOTION_128B,
+                                    _TMA_OOB_FILL_NONE,
                                 )
                                 if gi_vp % 2 == 0:
                                     T.call_extern(

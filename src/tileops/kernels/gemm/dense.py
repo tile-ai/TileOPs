@@ -360,7 +360,7 @@ def _fp8_ws_splitk_pair(
         split_k=split_k,
         b_scale_rows=b_scale_rows,
     )(block_n, num_stages, group_size_m)
-    return mainloop, _splitk_reduce_kernel(split_k, m, n, out_dtype)()
+    return mainloop, splitk_reduce_kernel(split_k, m, n, out_dtype)()
 
 
 @functools.lru_cache(maxsize=32)
@@ -1128,7 +1128,7 @@ def _gemm_fp8_ws_splitk_kernel(
     changing the bytes any CTA reads, which is what a decode shape needs: one
     ``block_m`` row tile and few column tiles leave most of the device idle and
     each resident CTA at its own SM's read bandwidth. Each slice writes an fp32
-    partial tile into ``slices[split_k, m, n]``; :func:`_splitk_reduce_kernel`
+    partial tile into ``slices[split_k, m, n]``; :func:`splitk_reduce_kernel`
     sums them and casts. Slice 0 carries the bias, so the sum adds it once.
 
     The mainloop bodies are the macros :func:`_gemm_fp8_ws_kernel` uses; the
@@ -1598,7 +1598,7 @@ def _gemm_splitk_kernel(
     The K contraction is sliced across ``split_k`` CTAs (grid z). Each CTA
     runs the same producer/consumer pipeline as ``_gemm_kernel`` over its
     K slice and writes an fp32 partial tile to the workspace
-    ``w[split_k, m, n]``; ``_splitk_reduce_kernel`` then sums the slices and
+    ``w[split_k, m, n]``; ``splitk_reduce_kernel`` then sums the slices and
     casts to the storage dtype. Splitting only pays off when the natural
     (M, N) grid underfills the GPU — see ``GemmTmaKernel.forward`` for the
     dispatch. ``split_k`` must divide the K-tile count evenly.
@@ -1743,7 +1743,7 @@ def _gemm_splitk_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _splitk_reduce_kernel(
+def splitk_reduce_kernel(
     split_k: int,
     m: int,
     n: int,
@@ -2065,7 +2065,7 @@ def _gemm_coop2_splitk_kernel(
     single K-slice, this slices K across grid-z CTAs. Each CTA runs the coop2
     mainloop (1 producer + 2 math WGs, split-A / shared-B, ``block_m`` fixed at
     128 = two 64-row consumers) over its K-slice and writes an fp32 partial tile
-    into ``w[split_k, m, n]``; ``_splitk_reduce_kernel`` then sums the slices and
+    into ``w[split_k, m, n]``; ``splitk_reduce_kernel`` then sums the slices and
     casts to the storage dtype.
 
     The 2-consumer mainloop is the more WGMMA-efficient of the two, so it takes
@@ -2247,7 +2247,7 @@ def _splitk_pair(
     window to the two launches themselves.
 
     Allocating ``C`` would also fall in that window, so
-    ``_splitk_reduce_kernel`` takes it as an explicit parameter and both
+    ``splitk_reduce_kernel`` takes it as an explicit parameter and both
     callers allocate it *before* launching the mainloop.
     """
     if coop2:
@@ -2259,7 +2259,7 @@ def _splitk_pair(
             block_m, block_n, block_k, num_stages, panel_size, split_k
         )
     elems_per_cta = 256 if activation != "none" else 1024
-    return mainloop, _splitk_reduce_kernel(split_k, m, n, dtype, activation)(elems_per_cta)
+    return mainloop, splitk_reduce_kernel(split_k, m, n, dtype, activation)(elems_per_cta)
 
 
 @functools.lru_cache(maxsize=32)
@@ -3329,7 +3329,7 @@ class GemmCpAsyncKernel(Kernel):
         if split_k == 1:
             return result
         if not hasattr(self, "_compiled_reduce"):
-            self._compiled_reduce = _splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)()
+            self._compiled_reduce = splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)()
         output = a.new_empty((self.m, self.n))
         self._compiled_reduce(result, output)
         return output

@@ -7,9 +7,9 @@ import tilelang.language as T
 from tvm import DataType
 
 from tileops.kernels.elementwise._broadcast import (
-    _compute_broadcast_offsets,
-    _is_contiguous_same_shape,
     broadcast_plan_for,
+    compute_broadcast_offsets,
+    is_contiguous_same_shape,
     row_broadcast_split,
     row_tile_leaves_tail,
 )
@@ -66,7 +66,7 @@ def _broadcast_index_terms(plan_name):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
+def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
@@ -87,7 +87,7 @@ def _make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
+def make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     out_dtype = output_dtype or dtype
 
@@ -109,7 +109,7 @@ def _make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_
 
 
 @functools.lru_cache(maxsize=32)
-def _make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
+def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
@@ -290,7 +290,7 @@ def _row_broadcast_prim(
             """The *j*-th column of vector *v*, wherever in the grid that lands."""
             row = v // vecs_per_row
             col = (v % vecs_per_row) * num_per_thread + j
-            a_base, b_base = _compute_broadcast_offsets(
+            a_base, b_base = compute_broadcast_offsets(
                 row * inner, ndim, divisors, a_strides, b_strides
             )
             write_col(a, b, y, a_base, b_base, row, col)
@@ -315,7 +315,7 @@ def _row_broadcast_prim(
             for i, j in T.Parallel(threads, num_per_thread):
                 v = bx * threads + i
                 col = (v % vecs_per_row) * num_per_thread + j
-                a_base, b_base = _compute_broadcast_offsets(
+                a_base, b_base = compute_broadcast_offsets(
                     (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
                 )
                 if a_inner:
@@ -323,7 +323,7 @@ def _row_broadcast_prim(
                 if b_inner:
                     b_reg[i * num_per_thread + j] = b[b_base + col * b_inner]
             for i in T.Parallel(threads):
-                a_base, b_base = _compute_broadcast_offsets(
+                a_base, b_base = compute_broadcast_offsets(
                     ((bx * threads + i) // vecs_per_row) * inner,
                     ndim,
                     divisors,
@@ -355,7 +355,7 @@ def _row_broadcast_prim(
                     v = bx * threads + i
                     jr = _backwards(j, num_per_thread)
                     col = (v % vecs_per_row) * num_per_thread + jr
-                    a_base, b_base = _compute_broadcast_offsets(
+                    a_base, b_base = compute_broadcast_offsets(
                         (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
                     )
                     if _any_fails(held, num_per_thread):
@@ -404,7 +404,7 @@ def _row_broadcast_prim(
                     with T.Then():
                         by = bx // full_blocks
                         bxc = bx % full_blocks
-                        a_base, b_base = _compute_broadcast_offsets(
+                        a_base, b_base = compute_broadcast_offsets(
                             by * inner, ndim, divisors, a_strides, b_strides
                         )
                         write_full_block(a, b, y, a_base, b_base, by, bxc)
@@ -414,7 +414,7 @@ def _row_broadcast_prim(
                             with T.If(slot < tail_slots):  # noqa: SIM117
                                 with T.Then():
                                     tail_row = slot // tail_cols
-                                    ta_base, tb_base = _compute_broadcast_offsets(
+                                    ta_base, tb_base = compute_broadcast_offsets(
                                         tail_row * inner, ndim, divisors, a_strides, b_strides
                                     )
                                     write_col(
@@ -438,7 +438,7 @@ def _row_broadcast_prim(
         with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (bx, by):
             if fast is not None and stage:
                 T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
-            a_base, b_base = _compute_broadcast_offsets(
+            a_base, b_base = compute_broadcast_offsets(
                 by * inner, ndim, divisors, a_strides, b_strides
             )
             if exact:
@@ -458,7 +458,7 @@ def _row_broadcast_prim(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_register_copy(
+def make_binary_register_copy(
     N_total,
     dtype,
     op_name,
@@ -540,7 +540,7 @@ def _make_binary_register_copy(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_direct(
+def make_binary_direct(
     N_total,
     dtype,
     op_name,
@@ -554,7 +554,7 @@ def _make_binary_direct(
     out_dtype = output_dtype or dtype
     plan = broadcast_plan_for(plan_name)
 
-    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+    if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads):
@@ -599,7 +599,7 @@ def _make_binary_direct(
             with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
                 for i in T.Parallel(threads):
                     flat_idx = bx * threads + i
-                    a_off, b_off = _compute_broadcast_offsets(
+                    a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
                         ndim,
                         divisors,
@@ -614,7 +614,7 @@ def _make_binary_direct(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_binary_explicit(
+def make_binary_explicit(
     N_total,
     dtype,
     op_name,
@@ -649,7 +649,7 @@ def _make_binary_explicit(
 
         return kernel
 
-    if _is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
+    if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
         @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
@@ -686,7 +686,7 @@ def _make_binary_explicit(
             with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
                 for i, j in T.Parallel(threads, num_per_thread):
                     flat_idx = (bx * threads + i) * num_per_thread + j
-                    a_off, b_off = _compute_broadcast_offsets(
+                    a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
                         ndim,
                         divisors,
@@ -701,7 +701,7 @@ def _make_binary_explicit(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_direct(M, N, dtype, op_name, threads=256):
+def make_fused_gated_direct(M, N, dtype, op_name, threads=256):
     """FusedGated direct: 1 element per thread."""
 
     @tilelang.jit(out_idx=[1])
@@ -723,7 +723,7 @@ def _make_fused_gated_direct(M, N, dtype, op_name, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
+def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread."""
 
     @tilelang.jit(out_idx=[1])
