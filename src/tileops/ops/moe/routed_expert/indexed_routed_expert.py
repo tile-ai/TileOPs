@@ -106,7 +106,6 @@ class IndexedExpertMLPFwdOp(Op):
     ) -> None:
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
-        inputs = (output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
         call = IndexedExpertCall(
             num_tokens=tokens,
             top_k=top_k,
@@ -119,13 +118,19 @@ class IndexedExpertMLPFwdOp(Op):
         )
         metadata = None
         if call.grouped_dispatch:
-            stats = self.kernel_for("route_stats", inputs, call)
+            stats = self.kernel_for("route_stats", (topk_ids,), call)
             metadata = torch.empty(stats.output_size, dtype=torch.int32, device=topk_ids.device)
             stats(topk_ids, metadata)
         hidden_rows = hidden_states.new_empty(tokens, top_k, call.ffn_size)
         route_output = hidden_states.new_empty(tokens, top_k, hidden)
-        gate_up = self.kernel_for("expert_gate_up", inputs, call)
+        gate_up = self.kernel_for(
+            "expert_gate_up", (hidden_states, w_gate_up, topk_ids, metadata, hidden_rows), call
+        )
         gate_up(hidden_states, w_gate_up, topk_ids, metadata, out=hidden_rows)
-        down = self.kernel_for("expert_down", inputs, call)
+        down = self.kernel_for(
+            "expert_down", (hidden_rows, w_down, topk_ids, metadata, route_output), call
+        )
         down(hidden_rows, w_down, topk_ids, metadata, out=route_output)
-        self.kernel_for("weighted_reduce", inputs, call)(route_output, topk_weights, output)
+        self.kernel_for("weighted_reduce", (route_output, topk_weights, output), call)(
+            route_output, topk_weights, output
+        )

@@ -243,10 +243,6 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             "template_min_m": 512,
         }
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
     def forward(
         self, hidden: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:

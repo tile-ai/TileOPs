@@ -218,7 +218,7 @@ class MoeGroupedGemmFwdOp(Op):
             n=n,
             k=k,
         )
-        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata), call)
+        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata, out), call)
         return kernel(a, b, layout_metadata, out=out)
 
 
@@ -372,6 +372,6 @@ class MoePostPermuteFwdOp(Op):
             top_k=topk_weights.shape[1],
         )
         kernel = self.kernel_for(
-            "post_permute", (expert_output, topk_weights, inverse_indices), call
+            "post_permute", (expert_output, inverse_indices, topk_weights, out), call
         )
         return kernel(expert_output, inverse_indices, topk_weights, out=out)

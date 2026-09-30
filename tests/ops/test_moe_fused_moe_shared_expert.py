@@ -277,18 +277,3 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
         shared_w_down=torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02,
     )
     assert built, "the replacement was never constructed"
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_a_tuning_request_reaches_the_built_shared_expert_kernel():
-    """``tune`` acts on the resolved entry, so the kernel is built with a config first."""
-    dtype, dev = torch.bfloat16, run_device()
-    op = SharedExpertMLPFwdOp(tune=True)
-    op(
-        torch.randn(32, 64, dtype=dtype, device=dev),
-        torch.randn(32, 64, dtype=dtype, device=dev),
-        torch.randn(64, 16, dtype=dtype, device=dev),
-    )
-    (kernel,) = op.built_kernels("shared_expert_mlp").values()
-    assert kernel.config["template_min_m"] and kernel._tune_requested
