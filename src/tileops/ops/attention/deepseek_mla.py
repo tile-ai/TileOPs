@@ -152,7 +152,6 @@ class MultiHeadLatentAttentionVarlenFwdOp(Op):
             sm_scale=self.sm_scale,
             dtype=q.dtype,
             device=q.device,
-            tune=self.tune,
         )
 
     def forward(

@@ -166,7 +166,7 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 def test_bmm_persistent_calibrated_dispatch_region() -> None:
     """The persistent path claims aligned calls worth half a persistent wave on a calibrated board."""
 
-    def call(batch=64, m=128, n=2048, *, calibration="h200", tune=False):
+    def call(batch=64, m=128, n=2048, *, calibration="h200"):
         return BmmCall(
             batch=batch,
             m=m,
@@ -176,7 +176,6 @@ def test_bmm_persistent_calibrated_dispatch_region() -> None:
             arch=90,
             calibration=calibration,
             sm_count=132,
-            tune=tune,
         )
 
     assert BmmPersistentKernel.applies(call())
@@ -185,7 +184,6 @@ def test_bmm_persistent_calibrated_dispatch_region() -> None:
     assert not BmmPersistentKernel.applies(call(calibration=None))
     # n is TMA-aligned and the shape is large, so only the tile count rejects it.
     assert not BmmPersistentKernel.applies(call(batch=1, m=2048, n=1024))
-    assert BmmPersistentKernel.applies(call(tune=True))
 
 
 @pytest.mark.smoke
