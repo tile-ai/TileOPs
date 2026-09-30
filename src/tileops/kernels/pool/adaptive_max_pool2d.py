@@ -188,21 +188,6 @@ def _adaptive_max_pool2d_kernel(
     return _adaptive_max_pool2d_func
 
 
-def _launch_adaptive_max_pool2d(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-    config: dict,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    kernel = _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)
-    return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
-
-
 @functools.lru_cache(maxsize=32)
 def _adaptive_max_pool2d_with_indices_kernel(
     n: int,
@@ -281,24 +266,6 @@ def _adaptive_max_pool2d_with_indices_kernel(
     return _adaptive_max_pool2d_with_indices_func
 
 
-def _launch_adaptive_max_pool2d_with_indices(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-    config: dict,
-    x: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel = _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
-        **config
-    )
-    values, indices = kernel(x.reshape(n * c_in, h_in, w_in))
-    return values.view(n, c_in, out_h, out_w), indices.view(n, c_in, out_h, out_w)
-
-
 class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
     """Binds both adaptive max-pool kernels to the plane-staging config policy."""
 
@@ -317,12 +284,45 @@ class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
 class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase):
     """Adaptive max pooling forward kernel for NCHW inputs."""
 
+    @staticmethod
+    def _launch_adaptive_max_pool2d(
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        out_h: int,
+        out_w: int,
+        dtype: str,
+        config: dict,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        kernel = _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)
+        return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
+
     _build = staticmethod(_adaptive_max_pool2d_kernel)
-    _dispatch = staticmethod(_launch_adaptive_max_pool2d)
+    _dispatch = _launch_adaptive_max_pool2d
 
 
 class AdaptiveMaxPool2dWithIndicesKernel(_AdaptiveMaxPool2dKernelBase):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
+    @staticmethod
+    def _launch_adaptive_max_pool2d_with_indices(
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        out_h: int,
+        out_w: int,
+        dtype: str,
+        config: dict,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        kernel = _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
+            **config
+        )
+        values, indices = kernel(x.reshape(n * c_in, h_in, w_in))
+        return values.view(n, c_in, out_h, out_w), indices.view(n, c_in, out_h, out_w)
+
     _build = staticmethod(_adaptive_max_pool2d_with_indices_kernel)
-    _dispatch = staticmethod(_launch_adaptive_max_pool2d_with_indices)
+    _dispatch = _launch_adaptive_max_pool2d_with_indices

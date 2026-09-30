@@ -45,10 +45,6 @@ class WindowSpan(NamedTuple):
         return self.span // self.vector_elems
 
 
-def round_up(value: int, step: int) -> int:
-    return ((value + step - 1) // step) * step
-
-
 def window_span(
     tile_outputs: int,
     step: int,
@@ -79,6 +75,10 @@ def window_span(
         The access width, the elements staged in front of the first window, and the
         elements staged in all.
     """
+
+    def round_up(value: int, step: int) -> int:
+        return ((value + step - 1) // step) * step
+
     vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
     while vector_elems > 1 and (l_in % vector_elems or step % vector_elems):
         vector_elems //= 2
