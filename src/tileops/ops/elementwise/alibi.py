@@ -1,12 +1,14 @@
 """ALiBi position-encoding generative op."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import AlibiFwdKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.elementwise.call_spec import AlibiCall, AlibiFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import generated_on
 from tileops.ops.op_base import Op
 
 
@@ -25,6 +27,7 @@ class AlibiFwdOp(Op):
     """
 
     kernel_types = {"alibi": AlibiFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"alibi": AlibiFwdInterface}
 
     def __init__(
         self,
@@ -60,20 +63,14 @@ class AlibiFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per dtype and device; the extents are the op's."""
-        return call, lambda: self._build(*call)
-
-    def _build(self, dtype: torch.dtype, device_index: "int | None" = None):
-        impl, ctor_dtype = self.kernel_map["alibi"].specialize(dtype)
-        return impl(
-            self.seq_len, self.num_heads, ctor_dtype, tune=self.tune, device_index=device_index
-        )
-
     def forward(self) -> torch.Tensor:
         """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
-        device = self._declared_device()
-        index = None if device is None else device.index
-        kernel = self.kernel_for("alibi", (), (self.out_dtype, index))
-        out = kernel().reshape(self.num_heads, self.seq_len, self.seq_len)
+        call = AlibiCall(
+            device=generated_on(self),
+            seq_len=self.seq_len,
+            num_heads=self.num_heads,
+            dtype=self.out_dtype,
+        )
+        kernel = self.kernel_for("alibi", (), call)
+        out = kernel()
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

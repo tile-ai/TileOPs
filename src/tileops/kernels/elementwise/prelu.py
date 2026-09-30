@@ -6,6 +6,8 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, flat
+from tileops.kernels.elementwise.call_spec import PreluCall, PreluFwdInterface
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "PreluFwdKernel",
@@ -53,8 +55,12 @@ def _make_prelu_kernel(N, dtype, C, inner_size, threads=256, npt=8):
     return kernel
 
 
-class PreluFwdKernel(MultiInputElementwiseKernel):
+class PreluFwdKernel(MultiInputElementwiseKernel, PreluFwdInterface):
     """PReLU: y = x if x > 0 else weight[channel] * x."""
+
+    @classmethod
+    def entry_for(cls, call: PreluCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.num_channels, call.inner_size, call.dtype)
 
     def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
         self.C = C

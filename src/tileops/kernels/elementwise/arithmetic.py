@@ -15,6 +15,13 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
+from tileops.kernels.elementwise.call_spec import (
+    BinaryElementwiseFwdInterface,
+    LerpCall,
+    LerpFwdInterface,
+    LerpTensorFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "AddFwdKernel",
@@ -52,7 +59,7 @@ class SubFwdKernel(AlphaScaledBinaryKernel):
         return a - scaled_b
 
 
-class MulFwdKernel(BinaryKernel):
+class MulFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise multiplication: y = a * b.
 
     Supports the manifest dtype union (bool / unsigned / signed integer /
@@ -103,7 +110,7 @@ def _full_range_fdiv(num, den):
     return bound(T.abs(den), scaled)
 
 
-class DivFwdKernel(BinaryKernel):
+class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
@@ -132,7 +139,7 @@ def _ieee_fdiv(num, den):
     return T.call_extern("float32", "__fdiv_rn", num, den)
 
 
-class DivTruncFwdKernel(BinaryKernel):
+class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise truncated division: y = trunc(a / b), as torch computes it.
 
     torch rounds the quotient to the input dtype before truncating it, so a
@@ -247,7 +254,7 @@ def _on_float32(a, b, body):
     )
 
 
-class RemainderFwdKernel(BinaryKernel):
+class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise remainder: y = a % b, with the sign of b.
 
     torch's CUDA kernel takes ``fmod`` in fp32, which is exact, and adds b when the
@@ -295,7 +302,7 @@ class RemainderFwdKernel(BinaryKernel):
         return T.Cast(a.dtype, value), holds
 
 
-class PowFwdKernel(BinaryKernel):
+class PowFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise power: y = a ** b.
 
     Computed as ``exp2(b * log2|a|)`` with the sign of a negative base
@@ -339,7 +346,7 @@ class PowFwdKernel(BinaryKernel):
 _EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
 
 
-class FloorDivideFwdKernel(BinaryKernel):
+class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise floor division: y = floor(a / b), as torch defines it.
 
     Follows torch's CUDA kernel: ``(a - fmod(a, b)) / b`` in fp32, one less when the
@@ -413,7 +420,7 @@ class FloorDivideFwdKernel(BinaryKernel):
         return T.Cast(a.dtype, value), holds
 
 
-class LerpFwdKernel(BinaryKernel):
+class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
     """Element-wise lerp: y = a + weight * (b - a).
 
     PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
@@ -433,6 +440,10 @@ class LerpFwdKernel(BinaryKernel):
             "__init__ instead of calling op_func."
         )
 
+    @classmethod
+    def entry_for(cls, call: LerpCall) -> Entry:
+        return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, weight=call.weight)
+
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, weight=0.5):
         self._weight = weight
         super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
@@ -446,7 +457,7 @@ class LerpFwdKernel(BinaryKernel):
         return f"{self._op_func_name()}|weight={weight!r}", lerp_func
 
 
-class MaximumFwdKernel(BinaryKernel):
+class MaximumFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise maximum: y = max(a, b).
 
     For float dtypes, matches torch.maximum semantics:
@@ -481,7 +492,7 @@ class MaximumFwdKernel(BinaryKernel):
         return nan_max(a, b)
 
 
-class MinimumFwdKernel(BinaryKernel):
+class MinimumFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise minimum: y = min(a, b).
 
     For float dtypes, matches torch.minimum semantics:
@@ -557,7 +568,7 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     return kernel
 
 
-class LerpTensorFwdKernel(MultiInputElementwiseKernel):
+class LerpTensorFwdKernel(MultiInputElementwiseKernel, LerpTensorFwdInterface):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
     Implements the Tensor-weight overload of ``torch.lerp`` --

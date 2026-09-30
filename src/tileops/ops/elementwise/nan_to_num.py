@@ -1,21 +1,21 @@
 """NanToNum op: replace NaN, +Inf, -Inf with specified values."""
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import NanToNumFwdKernel
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import _PerDtypeKernels
-from tileops.ops.op_base import Op
+from tileops.kernels.elementwise.call_spec import NanToNumCall, NanToNumFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 
 
-class NanToNumFwdOp(_PerDtypeKernels, Op):
+class NanToNumFwdOp(UnaryOp):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"nan_to_num": NanToNumFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: NanToNumFwdInterface}
 
     def __init__(
         self,
@@ -50,31 +50,12 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        """Resolve the replacement values against *dtype*, then build.
-
-        A ``None`` bound means "this dtype's largest finite value", so it
-        cannot be resolved before the element type is known. Picking
-        ``finfo(dtype).max`` matches ``torch.nan_to_num``; forwarding ``+inf``
-        would write back the infinity the op was called to replace. A given value is
-        cast to *dtype* as torch casts it, through float32, so one past the dtype's
-        range becomes Inf.
-        """
-
-        def cast(value: float) -> float:
-            return torch.tensor(value, dtype=torch.float32).to(dtype).item()
-
-        posinf = torch.finfo(dtype).max if self.posinf is None else cast(self.posinf)
-        neginf = torch.finfo(dtype).min if self.neginf is None else cast(self.neginf)
-        # Replacement values are positional; the kernel constructor's
-        # parameter naming is encapsulated below the Op layer.
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, ctor_dtype, cast(self.nan), posinf, neginf, tune=self.tune)
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = input.contiguous()
-        return self._kernel((input,), input.dtype, input.numel())(input)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
-        return self._call_boundary(input)
+    def _call_spec(self, input: torch.Tensor) -> NanToNumCall:
+        return NanToNumCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            nan=self.nan,
+            posinf=self.posinf,
+            neginf=self.neginf,
+        )

@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._dtype import FLOAT_DTYPES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.elementwise.call_spec import SinusoidalCall, SinusoidalFwdInterface
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "SinusoidalFwdKernel",
@@ -69,7 +70,7 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, rows=_ROWS, co
     return kernel
 
 
-class SinusoidalFwdKernel(Kernel):
+class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
     """Sinusoidal positional encoding from "Attention Is All You Need".
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
@@ -86,6 +87,22 @@ class SinusoidalFwdKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: SinusoidalCall) -> "str | None":
+        if call.dtype in cls.SUPPORTED_DTYPES:
+            return None
+        supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
+        return f"serves dtypes [{supported}], not {call.dtype}"
+
+    @classmethod
+    def applies(cls, call: SinusoidalCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def entry_for(cls, call: SinusoidalCall) -> Entry:
+        index = None if call.device is None else call.device.index
+        return call, lambda: cls(call.seq_len, call.d_model, call.dtype, device_index=index)
 
     def __init__(self, seq_len, d_model, dtype, config=None, tune=False, device_index=None):
         super().__init__(device_index=device_index)
@@ -113,7 +130,10 @@ class SinusoidalFwdKernel(Kernel):
         self._compiled_fn = self.kernel(self.config["threads"])
 
     def forward(self):
+        """Return the encoding in the shape the interface publishes."""
         if self.device_index is None:
-            return self._compiled_fn()
-        with torch.cuda.device(self.device_index):
-            return self._compiled_fn()
+            out = self._compiled_fn()
+        else:
+            with torch.cuda.device(self.device_index):
+                out = self._compiled_fn()
+        return out.reshape(self.seq_len, self.d_model)

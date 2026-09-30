@@ -1,12 +1,14 @@
 """Sinusoidal positional encoding generative op."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import SinusoidalFwdKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.elementwise.call_spec import SinusoidalCall, SinusoidalFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import generated_on
 from tileops.ops.op_base import Op
 
 
@@ -25,6 +27,9 @@ class SinusoidalFwdOp(Op):
     """
 
     kernel_types = {"sinusoidal": SinusoidalFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "sinusoidal": SinusoidalFwdInterface
+    }
 
     def __init__(
         self,
@@ -60,20 +65,14 @@ class SinusoidalFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per dtype and device; the extents are the op's."""
-        return call, lambda: self._build(*call)
-
-    def _build(self, dtype: torch.dtype, device_index: "int | None" = None):
-        impl, ctor_dtype = self.kernel_map["sinusoidal"].specialize(dtype)
-        return impl(
-            self.seq_len, self.d_model, ctor_dtype, tune=self.tune, device_index=device_index
-        )
-
     def forward(self) -> torch.Tensor:
         """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
-        device = self._declared_device()
-        index = None if device is None else device.index
-        kernel = self.kernel_for("sinusoidal", (), (self.out_dtype, index))
-        out = kernel().reshape(self.seq_len, self.d_model)
+        call = SinusoidalCall(
+            device=generated_on(self),
+            seq_len=self.seq_len,
+            d_model=self.d_model,
+            dtype=self.out_dtype,
+        )
+        kernel = self.kernel_for("sinusoidal", (), call)
+        out = kernel()
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

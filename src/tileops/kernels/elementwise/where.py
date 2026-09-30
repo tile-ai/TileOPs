@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
+from tileops.kernels.elementwise.call_spec import WhereFwdInterface
 
 __all__ = [
     "WhereFwdKernel",
@@ -57,7 +58,7 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     return kernel
 
 
-class WhereFwdKernel(MultiInputElementwiseKernel):
+class WhereFwdKernel(MultiInputElementwiseKernel, WhereFwdInterface):
     """Where: out = cond ? x : y."""
 
     INPUTS = (("cond", "mask"), ("x", "tile"), ("y", "tile"))

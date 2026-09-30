@@ -1,6 +1,6 @@
 """MaskedFill ops (Tensor-value and scalar-value variants)."""
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -9,12 +9,18 @@ from tileops.kernels.elementwise import (
     MaskedFillFwdKernel,
     MaskedFillTensorValueFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.kernels.elementwise.call_spec import (
+    ElementwiseCall,
+    MaskedFillCall,
+    MaskedFillFwdInterface,
+    MaskedFillTensorValueFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
 
-class MaskedFillFwdOp(_PerDtypeKernels, Op):
+class MaskedFillFwdOp(Op):
     """MaskedFill with 0-dim Tensor value (``torch.Tensor.masked_fill(mask, value: Tensor)``).
 
     Output shape is the bidirectional broadcast of ``input`` and ``mask``;
@@ -23,6 +29,9 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: MaskedFillTensorValueFwdInterface
+    }
 
     def __init__(
         self,
@@ -44,12 +53,6 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        """The kernel names the implementation and storage for this dtype."""
-        impl, compute = self._selected_kernel_cls().specialize(dtype)
-        self._check_kernel_dtype(impl, dtype, compute)
-        return impl(n_total, compute, tune=self.tune)
-
     def _eager_forward(
         self,
         input: torch.Tensor,
@@ -60,7 +63,8 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         input = input.contiguous()
         mask = mask.contiguous()
         value = value.contiguous()
-        return self._kernel((input, mask, value), input.dtype, n_total)(input, mask, value)
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        return self.kernel_for(ELEMENTWISE, (input, mask, value), call)(input, mask, value)
 
     def forward(
         self,
@@ -72,7 +76,7 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         return self._call_boundary(input, mask, value)
 
 
-class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
+class MaskedFillScalarFwdOp(Op):
     """MaskedFill with Number (scalar) value.
 
     Conforms to ``torch.Tensor.masked_fill(mask, value: Number)``. Output
@@ -84,6 +88,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"masked_fill": MaskedFillFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: MaskedFillFwdInterface
+    }
 
     def __init__(
         self,
@@ -114,20 +121,14 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        """The fill value is baked in, one specialization per dtype."""
-        impl, compute = self._selected_kernel_cls().specialize(dtype)
-        self._check_kernel_dtype(impl, dtype, compute)
-        # The scalar is baked in, so it is normalized to the semantic dtype's
-        # value set — bool takes 0 or 1 whatever storage the kernel picked.
-        value = (1 if bool(self.value) else 0) if dtype == torch.bool else self.value
-        return impl(n_total, compute, value, tune=self.tune)
-
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
-        return self._kernel((input, mask), input.dtype, n_total)(input, mask)
+        call = MaskedFillCall(
+            device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
+        )
+        return self.kernel_for(ELEMENTWISE, (input, mask), call)(input, mask)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``mask``."""

@@ -30,6 +30,7 @@ from tileops.ops.elementwise import (
     SqrtFwdOp,
     TruncFwdOp,
 )
+from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import RandnFlatWorkload
 
@@ -591,6 +592,6 @@ def test_reciprocal_int_input_validation() -> None:
     op = ReciprocalFwdOp()
     assert op(torch.ones(4, device=run_device(), dtype=torch.float32)).dtype == torch.float32
     assert op(torch.ones(4, device=run_device(), dtype=torch.int32)).dtype == torch.float32
-    assert len(op.built_kernels(op._slot)) == 2, "each semantic dtype keys its own entry"
+    assert len(op.built_kernels(ELEMENTWISE)) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(4, device=run_device(), dtype=torch.float64))

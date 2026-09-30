@@ -7,7 +7,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._dtype import FLOAT_DTYPES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.elementwise.call_spec import AlibiCall, AlibiFwdInterface
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "AlibiFwdKernel",
@@ -56,7 +57,7 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     return kernel
 
 
-class AlibiFwdKernel(Kernel):
+class AlibiFwdKernel(Kernel, AlibiFwdInterface):
     """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
@@ -73,6 +74,22 @@ class AlibiFwdKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: AlibiCall) -> "str | None":
+        if call.dtype in cls.SUPPORTED_DTYPES:
+            return None
+        supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
+        return f"serves dtypes [{supported}], not {call.dtype}"
+
+    @classmethod
+    def applies(cls, call: AlibiCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def entry_for(cls, call: AlibiCall) -> Entry:
+        index = None if call.device is None else call.device.index
+        return call, lambda: cls(call.seq_len, call.num_heads, call.dtype, device_index=index)
 
     def __init__(self, seq_len, num_heads, dtype, config=None, tune=False, device_index=None):
         super().__init__(device_index=device_index)
@@ -106,7 +123,10 @@ class AlibiFwdKernel(Kernel):
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self):
+        """Return the bias in the shape the interface publishes."""
         if self.device_index is None:
-            return self._compiled_fn()
-        with torch.cuda.device(self.device_index):
-            return self._compiled_fn()
+            out = self._compiled_fn()
+        else:
+            with torch.cuda.device(self.device_index):
+                out = self._compiled_fn()
+        return out.reshape(self.num_heads, self.seq_len, self.seq_len)

@@ -7,6 +7,13 @@ import tilelang.language as T
 
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, ScalarParamUnaryKernel
 from tileops.kernels.elementwise._nan import nan_max, nan_min
+from tileops.kernels.elementwise.call_spec import (
+    BoundedUnaryFwdInterface,
+    BoundsCall,
+    ClampTensorCall,
+    ClampTensorFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "ClampFwdKernel",
@@ -14,13 +21,17 @@ __all__ = [
 ]
 
 
-class ClampFwdKernel(ScalarParamUnaryKernel):
+class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     """Clamp: y = clamp(x, min, max) with optional bounds.
 
     Computes in float32 and casts back at the store, so a half input keeps the
     precision of the comparison. A bound the caller omitted is not applied. A NaN
     input or bound gives NaN, as in ``torch.clamp``.
     """
+
+    @classmethod
+    def entry_for(cls, call: BoundsCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
         self.min_val = min_val
@@ -120,7 +131,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
     return kernel
 
 
-class ClampTensorFwdKernel(MultiInputElementwiseKernel):
+class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface):
     """Tensor-bound clamp: ``y = clamp(x, lo, hi)``.
 
     ``has_min`` / ``has_max`` select between the three forms used by the Tensor
@@ -131,6 +142,10 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel):
     ``torch.clamp_max``: a NaN in ``x``, ``lo`` or ``hi`` makes the output NaN
     at that position.
     """
+
+    @classmethod
+    def entry_for(cls, call: ClampTensorCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.has_min, call.has_max)
 
     def __init__(self, N_total, dtype, has_min, has_max, config=None, tune=False):
         if not (has_min or has_max):

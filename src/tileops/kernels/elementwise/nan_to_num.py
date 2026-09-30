@@ -5,14 +5,36 @@ import torch
 
 from tileops.kernels.elementwise._base import ScalarParamUnaryKernel
 from tileops.kernels.elementwise._dtype import clamp_to_dtype_range
+from tileops.kernels.elementwise.call_spec import NanToNumCall, NanToNumFwdInterface
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "NanToNumFwdKernel",
 ]
 
 
-class NanToNumFwdKernel(ScalarParamUnaryKernel):
+def _cast(value: float, dtype: torch.dtype) -> float:
+    """*value* as *dtype* holds it, through float32, as torch casts a Python scalar."""
+    return torch.tensor(value, dtype=torch.float32).to(dtype).item()
+
+
+class NanToNumFwdKernel(ScalarParamUnaryKernel, NanToNumFwdInterface):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
+
+    @classmethod
+    def entry_for(cls, call: NanToNumCall) -> Entry:
+        """Resolve the replacements against the element type, then build.
+
+        A bound the call left unset stands for the largest finite value of the element
+        type, which is what ``torch.nan_to_num`` writes; forwarding an infinity would
+        write back the value the op was called to replace. A stated one is cast as torch
+        casts it, through float32, so a value past the type's range becomes an infinity.
+        """
+        dtype = call.dtype
+        posinf = torch.finfo(dtype).max if call.posinf is None else _cast(call.posinf, dtype)
+        neginf = torch.finfo(dtype).min if call.neginf is None else _cast(call.neginf, dtype)
+        nan = _cast(call.nan, dtype)
+        return call, lambda: cls(call.n_total, dtype, nan, posinf, neginf)
 
     def __init__(
         self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None, tune=False

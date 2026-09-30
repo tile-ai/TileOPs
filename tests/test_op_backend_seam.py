@@ -59,15 +59,11 @@ def _register(recorder, target="acme", op="RMSNormFwdOp", claims=True):
 
 
 def _stub_op(**kwargs):
-    """An op whose in-tree kernel is a no-op, so the in-tree path runs on any device."""
+    """An op that builds no kernel, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
         def _eager_forward(self, x, weight=None):
-            self.kernel_for("stub", (), x.dtype)
             return torch.zeros_like(x)
-
-        def entry_for(self, role, call):
-            return call, lambda: None
 
     StubOp.__name__ = "StubOp"
     return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)

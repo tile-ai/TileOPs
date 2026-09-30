@@ -6,30 +6,90 @@ enumeration ``Op.autotune`` runs over.
 
 import dataclasses
 import types
+from abc import abstractmethod
 
 import pytest
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops import op_base
 from tileops.ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
+_CPU = torch.device("cpu")
+
+
+@dataclasses.dataclass(frozen=True)
+class _Call(CallSpec):
+    """What the doubles are built from: one build per ``key``, named by ``name``."""
+
+    key: torch.dtype = torch.float16
+    name: str = ""
+
+
+class _FwdRecording(KernelInterface):
+    """The place the doubles call their main kernel."""
+
+    request = _Call
+
+    @abstractmethod
+    def forward(self) -> None:
+        """Run nothing; the double exists to be built, enumerated and tuned."""
+
+
+class _AuxRecording(KernelInterface):
+    """A second place, so one ``key`` can name two entries that do not collide."""
+
+    request = _Call
+
+    @abstractmethod
+    def forward(self) -> None:
+        """Run nothing; the double exists to be built, enumerated and tuned."""
+
 
 class _RecordingKernel(Kernel):
     """Kernel that records its name when tuned, so autotune order is visible."""
 
-    def __init__(self, name: str, tuned: list):
+    devices = frozenset({"cpu"})
+    # Per-test sinks, installed by ``_recording_kernels``.
+    tuned: list = []
+    builds: list = []
+    role: str = "fwd"
+
+    @classmethod
+    def entry_for(cls, call: _Call):
+        def factory():
+            cls.builds.append((cls.role, call.key))
+            return cls(call.name)
+
+        return call.key, factory
+
+    def __init__(self, name: str):
         super().__init__()
         self.name = name
-        self._tuned = tuned
 
     def forward(self):
         return None
 
     def autotune(self, warmup=25, rep=50):
-        self._tuned.append(self.name)
+        type(self).tuned.append(self.name)
+
+
+def _recording_kernels(tuned: list, builds: list):
+    """The two implementations one ``_SlottedOp`` instance runs, recording into *tuned*."""
+
+    class Fwd(_RecordingKernel, _FwdRecording):
+        role = "fwd"
+
+    class Aux(_RecordingKernel, _AuxRecording):
+        role = "aux"
+
+    for cls in (Fwd, Aux):
+        cls.tuned = tuned
+        cls.builds = builds
+    return Fwd, Aux
 
 
 def _make_op_subclass():
@@ -74,13 +134,19 @@ class TestCompositeKernelMapOverride:
 class _SlottedOp(Op):
     """Op whose forward-built kernels all go through ``kernel_for``."""
 
+    interfaces = {"fwd": _FwdRecording, "aux": _AuxRecording}
+
     def __init__(self, tuned: list):
         self._tuned = tuned
         self.builds: list[tuple[str, object]] = []
+        self.tune = False
+        fwd, aux = _recording_kernels(tuned, self.builds)
+        self.kernel_types = {"fwd": fwd, "aux": aux}
+        self._install_kernel_map(None)
 
     @property
     def default_kernel_map(self):
-        return {}
+        return dict(self.kernel_types)
 
     def _infer_output_shapes(self, *shapes):
         return {}
@@ -94,17 +160,8 @@ class _SlottedOp(Op):
     def forward(self, *a, **kw):
         return None
 
-    def entry_for(self, role: str, call):
-        key, name = call
-
-        def factory():
-            self.builds.append((role, key))
-            return _RecordingKernel(name, self._tuned)
-
-        return key, factory
-
     def build(self, role: str, key, name: str):
-        return self.kernel_for(role, (), (key, name))
+        return self.kernel_for(role, (), _Call(device=_CPU, key=key, name=name))
 
 
 class TestGetOrBuildKernel:
@@ -122,15 +179,15 @@ class TestGetOrBuildKernel:
         fp16 = op.build("fwd", torch.float16, "fp16")
         bf16 = op.build("fwd", torch.bfloat16, "bf16")
         assert fp16 is not bf16
-        assert set(op.built_kernels("fwd")) == {torch.float16, torch.bfloat16}
+        assert {key for _, key in op.built_kernels("fwd")} == {torch.float16, torch.bfloat16}
 
     def test_same_key_in_distinct_roles_does_not_collide(self):
         """An auxiliary kernel keyed by the same dtype is a second role."""
         op = _SlottedOp([])
-        attention = op.build("attention", torch.float16, "attention")
-        append = op.build("append", torch.float16, "append")
-        assert attention is not append
-        assert list(op.built_kernels("append")) == [torch.float16]
+        main = op.build("fwd", torch.float16, "main")
+        aux = op.build("aux", torch.float16, "aux")
+        assert main is not aux
+        assert [key for _, key in op.built_kernels("aux")] == [torch.float16]
 
     def test_built_kernels_is_empty_before_the_first_build(self):
         assert dict(_SlottedOp([]).built_kernels("fwd")) == {}
@@ -153,34 +210,27 @@ class TestIterKernels:
             kernel: Kernel
             compute_dtype: torch.dtype
 
-        class BundleOp(_SlottedOp):
-            def entry_for(self, role, call):
-                if role == "pair":
-                    return call, lambda: (
-                        _RecordingKernel("pre", tuned),
-                        _RecordingKernel("bwd", tuned),
-                    )
-                return call, lambda: Entry(_RecordingKernel("record", tuned), torch.float32)
-
-            def populate(self):
-                self.kernel_for("pair", (), torch.float16)
-                self.kernel_for("entry", (), torch.bfloat16)
-
-        op = BundleOp(tuned)
-        op.populate()
+        op = _SlottedOp(tuned)
+        fwd, aux = op.kernel_map["fwd"], op.kernel_map["aux"]
+        fwd.entry_for = classmethod(lambda cls, call: (call.key, lambda: (cls("pre"), cls("bwd"))))
+        aux.entry_for = classmethod(
+            lambda cls, call: (call.key, lambda: Entry(cls("record"), torch.float32))
+        )
+        op.build("fwd", torch.float16, "pair")
+        op.build("aux", torch.bfloat16, "entry")
         assert sorted(k.name for k in op.iter_kernels()) == ["bwd", "pre", "record"]
 
     def test_yields_the_directly_bound_kernel(self):
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.kernel = _RecordingKernel("bound", tuned)
+        op.kernel = op.kernel_map["fwd"]("bound")
         assert [k.name for k in op.iter_kernels()] == ["bound"]
 
     def test_ignores_kernels_bound_to_other_attributes(self):
         """Enumeration is explicit: an unregistered attribute is not searched."""
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.some_other_attribute = _RecordingKernel("hidden", tuned)
+        op.some_other_attribute = op.kernel_map["fwd"]("hidden")
         assert list(op.iter_kernels()) == []
 
     def test_ignores_a_kernel_dict_the_op_owns(self):
@@ -192,7 +242,7 @@ class TestIterKernels:
         """
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.private_cache = {torch.float16: _RecordingKernel("private", tuned)}
+        op.private_cache = {torch.float16: op.kernel_map["fwd"]("private")}
         assert list(op.iter_kernels()) == []
         op.autotune()
         assert tuned == []
@@ -213,7 +263,7 @@ class TestIterKernels:
 
         composite = CompositeOp(tuned)
         composite.delegate_for("stage", None, delegate)
-        composite.build("own", torch.float16, "own")
+        composite.build("fwd", torch.float16, "own")
         assert sorted(k.name for k in composite.iter_kernels()) == ["delegate", "own"]
 
     def test_deduplicates_a_kernel_shared_with_a_delegate(self):
@@ -225,12 +275,12 @@ class TestIterKernels:
         class CompositeOp(_SlottedOp):
             delegate_types = {"stage": _SlottedOp}
 
-            def entry_for(self, role, call):
-                return call, lambda: shared
-
         composite = CompositeOp(tuned)
+        composite.kernel_map["fwd"].entry_for = classmethod(
+            lambda cls, call: (call.key, lambda: shared)
+        )
         composite.delegate_for("stage", None, delegate)
-        composite.kernel_for("fwd", (), torch.float16)
+        composite.build("fwd", torch.float16, "shared")
         assert [k.name for k in composite.iter_kernels()] == ["shared"]
 
 
@@ -240,7 +290,7 @@ class TestAutotune:
     def test_autotune_tunes_the_bound_kernel_and_every_role_entry(self):
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.kernel = _RecordingKernel("bound", tuned)
+        op.kernel = op.kernel_map["fwd"]("bound")
         op.build("fwd", torch.float16, "fp16")
         op.build("fwd", torch.bfloat16, "bf16")
         op.build("aux", torch.float16, "aux")
@@ -263,44 +313,15 @@ class TestAutotune:
         assert tuned == ["delegate"]
 
 
-class _TunableOp(Op):
-    """Op whose factory honours ``self.tune``, the way a shipped op's does.
-
-    Mirrors the call sites: the flag is read when the factory runs and handed
-    to the kernel, which tunes itself at construction.
-    """
+class _TunableOp(_SlottedOp):
+    """Op whose builds the dispatcher puts in tuned mode from ``self.tune``."""
 
     def __init__(self, tuned: list, *, tune: bool = False):
-        self._tuned = tuned
+        super().__init__(tuned)
         self.tune = tune
 
-    @property
-    def default_kernel_map(self):
-        return {}
-
-    def forward(self, *a, **kw):
-        return None
-
-    def _infer_output_shapes(self, *shapes):
-        return {}
-
-    def _validate_dtypes(self, *args):
-        return None
-
-    def eval_roofline(self):
-        return (0, 0)
-
-    def entry_for(self, role, call):
-        def factory():
-            kernel = _RecordingKernel(str(call), self._tuned)
-            if self.tune:
-                kernel.request_tune()
-            return kernel
-
-        return call, factory
-
     def build(self, dtype):
-        return self.kernel_for("fwd", (), dtype)
+        return super().build("fwd", dtype, str(dtype))
 
 
 class TestTunedMode:
@@ -374,18 +395,6 @@ class TestTunedMode:
         op.delegate_for("stage", None, rec=tuned).build(torch.float16)
         assert tuned == ["torch.float16"]
 
-    def test_tune_is_not_in_an_in_tree_kernel_identity(self):
-        """``autotune()`` after a build reuses the entry rather than building a second one."""
-        from tileops.kernels.fft import FFTC2CCall, FFTC2CDecomposedKernel, FFTC2COneCTAKernel
-
-        fft_call = FFTC2CCall(n=1024)
-        pairs = [
-            (FFTC2COneCTAKernel.entry_for, fft_call),
-            (FFTC2CDecomposedKernel.entry_for, fft_call),
-        ]
-        for entry_for, record in pairs:
-            assert entry_for(record)[0] == entry_for(dataclasses.replace(record, tune=True))[0]
-
 
 class TestDelegateFor:
     """``Op.delegate_for`` is the single get-or-build for sub-ops."""
@@ -403,14 +412,13 @@ class TestDelegateFor:
 
         op = CompositeOp([])
         op.target = "acme"
-        op.dispatch_kernel({"k": Kernel})
         first = op.delegate_for("stage", 1, width=1)
         assert op.delegate_for("stage", 1, width=1) is first
         second = op.delegate_for("stage", 2, width=2)
         assert type(first) is DelegateOp and second is not first
         assert seen == [
-            {"width": 1, "target": "acme", "kernel_map": {"k": Kernel}},
-            {"width": 2, "target": "acme", "kernel_map": {"k": Kernel}},
+            {"width": 1, "target": "acme", "kernel_map": None},
+            {"width": 2, "target": "acme", "kernel_map": None},
         ]
 
     def test_enumerates_held_sub_ops_in_stage_order(self):
@@ -555,10 +563,12 @@ def test_kernel_types_declare_the_keys_an_override_may_name(
     """``default_kernel_map`` is ``kernel_types``, and an override may name only a key some
     created op class declares."""
     from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.kernels.gemm.call_spec import GemmFwdInterface
 
     monkeypatch.setattr(op_base, "_DISPATCH_KEYS", set())
     attrs = {
         "kernel_types": {"probe_kernel": GemmTmaKernel},
+        "interfaces": {"gemm": GemmFwdInterface},
         "forward": lambda self, *a, **kw: None,
         "_infer_output_shapes": lambda self, *shapes: {},
         "_validate_dtypes": lambda self, *args: None,

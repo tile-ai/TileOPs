@@ -1,17 +1,18 @@
 """Where op: out = condition ? input : other (with broadcasting)."""
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import WhereFwdKernel
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.kernels.elementwise.call_spec import ElementwiseCall, WhereFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
 
-class WhereFwdOp(_PerDtypeKernels, Op):
+class WhereFwdOp(Op):
     """Where: out = condition ? input : other (with full PyTorch broadcasting).
 
     Conforms to ``torch.where(condition, input, other)``: ``condition`` is a
@@ -22,6 +23,7 @@ class WhereFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"where": WhereFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: WhereFwdInterface}
 
     def __init__(
         self,
@@ -43,10 +45,6 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, ctor_dtype, tune=self.tune)
-
     def _eager_forward(
         self,
         condition: torch.Tensor,
@@ -57,9 +55,9 @@ class WhereFwdOp(_PerDtypeKernels, Op):
         condition = condition.contiguous()
         input = input.contiguous()
         other = other.contiguous()
-        return self._kernel((condition, input, other), input.dtype, n_total)(
-            condition, input, other
-        )
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        kernel = self.kernel_for(ELEMENTWISE, (condition, input, other), call)
+        return kernel(condition, input, other)
 
     def forward(
         self,

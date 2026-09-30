@@ -85,7 +85,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
             vocab=vocab,
             dtype=draft_probs.dtype,
             num_draft=num_draft,
-            tune=self.tune,
         )
         inputs = (draft_probs, draft_token_ids, target_probs, seed, offset)
         kernel = self.kernel_for("chain_speculative_sampling", inputs, call)

@@ -16,7 +16,6 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
-    TypeVar,
     Union,
 )
 
@@ -32,11 +31,8 @@ from tileops.backend import (
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import IMPLEMENTATIONS, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.compile_boundary import register_instance
-
-_Entry = TypeVar("_Entry")
-
 
 # Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
 # it and every sub-op it builds, so every key that can replace something in that op is here.
@@ -331,8 +327,7 @@ class Op(ABC):
                     pending.extend(getattr(registered[above], "preferred_over", ()))
             preferred[key] = frozenset(seen)
         self._preferred = MappingProxyType(preferred)
-        if self.interfaces:
-            self._interface_keys = self._install_interfaces()
+        self._interface_keys = self._install_interfaces()
 
     def _install_interfaces(self) -> Mapping[str, tuple[str, ...]]:
         """Return each kernel interface's keys, each implementation checked against it.
@@ -476,24 +471,6 @@ class Op(ABC):
         """
         return self.select_kernel_key(self._interface_keys[interface], call)
 
-    # FIXME(staged-rollout): selection among every installed key, across kernel interfaces.
-    #
-    # Broken invariant: an interface's implementations are the keys that inherit it
-    #     (ops-design.md § Kernel selection).
-    # Why: unmigrated ops and their tests select through this without declaring interfaces.
-    # Cleanup: when every op declares ``interfaces``, delete this and select through
-    #     ``select_implementation``.
-    def select_kernel(self, call: object, keys: "tuple[str, ...] | None" = None) -> type[Kernel]:
-        """Return the implementation that serves *call*.
-
-        A name is the handle ``kernel_map=`` replaces an implementation by; the class
-        is the answer. *keys* defaults to every key installed.
-
-        Raises:
-            ValueError: What :meth:`select_kernel_key` raises.
-        """
-        return self.kernel_map[self.select_kernel_key(keys or tuple(self.kernel_map or ()), call)]
-
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
         ensure_loaded()  # before any traced region, which the first call may be inside
@@ -502,98 +479,6 @@ class Op(ABC):
             check(self)
         self._install_kernel_map(kernel_map)
         self._instance_key = register_instance(self)
-
-    def _get_or_build_kernel(
-        self,
-        name: str,
-        inputs: "Sequence[torch.Tensor | None]",
-        plan: Callable[[], Entry],
-    ) -> _Entry:
-        """Return the in-tree entry for this call, building it once on a miss.
-
-        The memoization primitive under :meth:`kernel_for`, which is what an op calls.
-
-        Args:
-            name: Which of this op's kernels is being asked for.
-            inputs: The tensors this kernel will be handed. An ``optional: true`` input the
-                call did not pass occupies its slot as ``None``.
-            plan: The in-tree identity and builder.
-
-        Returns:
-            The stored entry, identical across calls describing the same specialization.
-
-        Raises:
-            OpNotAvailableError: The op has no in-tree implementation for *name*.
-        """
-
-        # Plain attribute reads and dict lookups, no ``self.__dict__``: this
-        # runs inside a dynamo-traced forward on every cache hit, and dynamo
-        # cannot trace a method call on an instance ``__dict__``.
-        roles = getattr(self, "_built_entries", None)
-        if roles is None:
-            roles = {}
-            self._built_entries = roles
-        entries = roles.get(name)
-        if entries is None:
-            entries = {}
-            roles[name] = entries
-
-        key, build = plan()
-        if build is None:
-            raise OpNotAvailableError(
-                f"{type(self).__name__} has no in-tree implementation for {name!r}, "
-                f"so it needs a target that registers one; known targets for this "
-                f"op: {registered_targets(type(self).__name__)}"
-            )
-        # A build reads the device it is built on (its architecture, SM count, compile
-        # target), so it is built with the call's device current: its tensors' device, or
-        # for an op with no tensor input the device it declares.
-        device = next((t.device for t in inputs if t is not None and t.is_cuda), None)
-        if device is None:
-            declared = self._declared_device()
-            device = declared if declared is not None and declared.type == "cuda" else None
-        if key not in entries:
-            with torch.cuda.device(device) if device is not None else contextlib.nullcontext():
-                entry = build()
-            if self.tune:
-                for kernel in self._entry_kernels(entry):
-                    kernel.request_tune()
-            entries[key] = entry
-        return entries[key]
-
-    # FIXME(staged-rollout): the memoization an op without kernel interfaces reaches the cache by.
-    #
-    # Broken invariant: every kernel is reached through a kernel interface, one lookup per hit
-    #     (ops-design.md § Kernel selection).
-    # Why: unmigrated ops override this, or select among every key through it, per call.
-    # Cleanup: when every op declares ``interfaces``, delete this, ``_get_or_build_kernel``
-    #     and the branch of ``kernel_for`` for a role that is no interface.
-    def entry_for(self, role: str, call: object) -> Entry:
-        """How to build what serves *call* for *role*, and what keys the result.
-
-        The default asks the implementation every installed key selects for *call*. An op
-        with one implementation and no call record overrides this and states its own
-        identity and builder. An op with nothing in tree has no builder, and the caller
-        reports that.
-
-        Raises:
-            ValueError: What :meth:`select_kernel` raises.
-        """
-        if not self.kernel_map:
-            return None, None
-        # A repeated call record is a lookup: selection and the identity depend on
-        # nothing else.
-        selected = getattr(self, "_selected_entries", None)
-        if selected is None:
-            selected = {}
-            self._selected_entries = selected
-        entry = selected.get((role, call))
-        if entry is None:
-            cls = self.select_kernel(call)
-            identity, build = cls.entry_for(call)
-            entry = ((cls, identity), build)
-            selected[(role, call)] = entry
-        return entry
 
     def kernel_for(
         self,
@@ -610,37 +495,38 @@ class Op(ABC):
         its build identity names (:meth:`_resolve_entry`).
 
         Args:
-            interface: The kernel interface, one of ``interfaces``. An op that declares none
-                names the memoization bucket of one kernel it runs, never the name of an
-                implementation it chose.
-            inputs: The tensors this kernel will be handed; an op that declares no interfaces
-                has its device checked from them.
-            call: The call spec: for an interface, an instance of its ``request``.
+            interface: The kernel interface, one of ``interfaces``.
+            inputs: The tensors this kernel will be handed, in the order the interface's
+                ``forward`` takes them, an absent optional one as ``None``.
+            call: The call spec, an instance of the interface's ``request``.
 
         Raises:
-            ValueError: What :meth:`_resolve_entry` or :meth:`entry_for` raises.
+            ValueError: What :meth:`_resolve_entry` raises.
             TypeError: What :meth:`_resolve_entry` raises.
-            OpNotAvailableError: No implementation runs on the call's device, or what
-                :meth:`_get_or_build_kernel` raises.
+            OpNotAvailableError: This op declares no such interface, so it has nothing in
+                tree to serve the call; or no implementation runs on the call's device.
         """
-        if interface in self.interfaces:
-            dispatched = getattr(self, "_dispatched", None)
-            if dispatched is None:
-                dispatched = {}
-                self._dispatched = dispatched
-            try:
-                entry = dispatched.get((interface, call))
-            except TypeError:
-                # The miss path's checks name what makes the call spec unusable.
-                self._resolve_entry(interface, call)
-                raise
-            # A stated device fact takes no part in equality, so a hit would accept it.
-            if entry is None or call.stated_device_facts:
-                entry = self._resolve_entry(interface, call)
-                dispatched[(interface, call)] = entry
-            return entry
-        self._refuse_device(inputs, call)
-        return self._get_or_build_kernel(interface, inputs, lambda: self.entry_for(interface, call))
+        if interface not in self.interfaces:
+            raise OpNotAvailableError(
+                f"{type(self).__name__} has no in-tree implementation for {interface!r}, "
+                f"so it needs a target that registers one; known targets for this "
+                f"op: {registered_targets(type(self).__name__)}"
+            )
+        dispatched = getattr(self, "_dispatched", None)
+        if dispatched is None:
+            dispatched = {}
+            self._dispatched = dispatched
+        try:
+            entry = dispatched.get((interface, call))
+        except TypeError:
+            # The miss path's checks name what makes the call spec unusable.
+            self._resolve_entry(interface, call)
+            raise
+        # A stated device fact takes no part in equality, so a hit would accept it.
+        if entry is None or call.stated_device_facts:
+            entry = self._resolve_entry(interface, call)
+            dispatched[(interface, call)] = entry
+        return entry
 
     def _resolve_entry(self, interface: str, call: CallSpec) -> object:
         """Resolve the entry serving *call* for *interface*, on a miss of the dispatch cache.
@@ -687,25 +573,6 @@ class Op(ABC):
                 for kernel in self._entry_kernels(entry):
                     kernel.request_tune()
         return entry
-
-    def _refuse_device(self, inputs: "Sequence[torch.Tensor | None]", call: object) -> None:
-        """Raise when no implementation in the kernel map declares the call's device type.
-
-        Each implementation states the devices it runs on (``Kernel.devices``), so a replacement
-        that runs elsewhere is asked about its own. The call's device is the call record's, else
-        its inputs' (a CPU-resident input yields to any other), else the op's ``device`` parameter.
-        """
-        tensors = sorted((t for t in inputs if t is not None), key=lambda t: t.device.type == "cpu")
-        device = getattr(call, "device", None) or (tensors[0].device if tensors else None)
-        device = torch.device(device) if device is not None else self._declared_device()
-        classes = (self.kernel_map or {}).values()
-        if device is None or not classes:
-            return
-        if not any(device.type in getattr(c, "devices", Kernel.devices) for c in classes):
-            raise OpNotAvailableError(
-                f"{type(self).__name__}'s in-tree kernels do not run on {device}; known targets "
-                f"for this op: {registered_targets(type(self).__name__)}"
-            )
 
     @classmethod
     @functools.cache

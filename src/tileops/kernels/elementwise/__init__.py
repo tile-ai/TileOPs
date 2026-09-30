@@ -5,8 +5,6 @@ The templates every kernel here is built from are in ``_base``; the dtype helper
 they share are in ``_dtype``.
 """
 
-import torch
-
 from tileops.kernels.elementwise._base import BinaryKernel, FusedGatedKernel, UnaryKernel
 from tileops.kernels.elementwise._broadcast import coalesce_broadcast_dims
 from tileops.kernels.elementwise.activations import (
@@ -54,6 +52,8 @@ from tileops.kernels.elementwise.bitwise import (
 )
 from tileops.kernels.elementwise.clamp import ClampFwdKernel, ClampTensorFwdKernel
 from tileops.kernels.elementwise.comparison import (
+    AlwaysFalseFwdKernel,
+    AlwaysTrueFwdKernel,
     EqBoolStorageFwdKernel,
     EqFwdKernel,
     GeBoolStorageFwdKernel,
@@ -84,19 +84,24 @@ from tileops.kernels.elementwise.masked_fill import (
 )
 from tileops.kernels.elementwise.math_unary import (
     AbsFwdKernel,
+    AbsIntFwdKernel,
     CeilFwdKernel,
     CosFwdKernel,
     ErfFwdKernel,
     ExpFwdKernel,
     Expm1FwdKernel,
     FloorFwdKernel,
+    IntIdentityFwdKernel,
     Log1pFwdKernel,
     LogFwdKernel,
     NegFwdKernel,
+    NegIntFwdKernel,
     ReciprocalFwdKernel,
+    RoundDecimalsFwdKernel,
     RoundFwdKernel,
     RsqrtFwdKernel,
     SignFwdKernel,
+    SignIntFwdKernel,
     SinFwdKernel,
     SqrtFwdKernel,
     TruncFwdKernel,
@@ -106,33 +111,13 @@ from tileops.kernels.elementwise.prelu import PreluFwdKernel
 from tileops.kernels.elementwise.sinusoidal import SinusoidalFwdKernel
 from tileops.kernels.elementwise.where import WhereFwdKernel
 
-# Bool operands are served by the uint8-backed siblings imported above. Declaring
-# the pairing here — rather than having the op pick a second kernel_map slot and
-# a storage dtype — keeps the choice inside this backend. A backend with native
-# bool declares nothing and serves bool from its general implementation.
-for _primary, _impl in (
-    (EqFwdKernel, EqBoolStorageFwdKernel),
-    (NeFwdKernel, NeBoolStorageFwdKernel),
-    (GtFwdKernel, GtBoolStorageFwdKernel),
-    (LtFwdKernel, LtBoolStorageFwdKernel),
-    (GeFwdKernel, GeBoolStorageFwdKernel),
-    (LeFwdKernel, LeBoolStorageFwdKernel),
-    (LogicalAndFwdKernel, LogicalAndBoolStorageFwdKernel),
-    (LogicalOrFwdKernel, LogicalOrBoolStorageFwdKernel),
-    (LogicalNotFwdKernel, LogicalNotBoolStorageFwdKernel),
-    (BitwiseAndFwdKernel, BitwiseAndBoolStorageFwdKernel),
-    (BitwiseOrFwdKernel, BitwiseOrBoolStorageFwdKernel),
-    (BitwiseXorFwdKernel, BitwiseXorBoolStorageFwdKernel),
-    # masked_fill needs no sibling: the same kernel serves bool in uint8 storage.
-    (MaskedFillFwdKernel, MaskedFillFwdKernel),
-    (MaskedFillTensorValueFwdKernel, MaskedFillTensorValueFwdKernel),
-):
-    _primary.BOOL_IMPL = (_impl, torch.uint8)
-
 __all__ = [
     "AbsFwdKernel",
+    "AbsIntFwdKernel",
     "AddFwdKernel",
     "AlibiFwdKernel",
+    "AlwaysFalseFwdKernel",
+    "AlwaysTrueFwdKernel",
     "BinaryKernel",
     "BitwiseAndBoolStorageFwdKernel",
     "BitwiseAndFwdKernel",
@@ -167,6 +152,7 @@ __all__ = [
     "HardsigmoidFwdKernel",
     "HardswishFwdKernel",
     "HardtanhFwdKernel",
+    "IntIdentityFwdKernel",
     "IsfiniteFwdKernel",
     "IsinfFwdKernel",
     "IsnanFwdKernel",
@@ -195,16 +181,19 @@ __all__ = [
     "NeBoolStorageFwdKernel",
     "NeFwdKernel",
     "NegFwdKernel",
+    "NegIntFwdKernel",
     "PowFwdKernel",
     "PreluFwdKernel",
     "ReciprocalFwdKernel",
     "ReluFwdKernel",
     "RemainderFwdKernel",
+    "RoundDecimalsFwdKernel",
     "RoundFwdKernel",
     "RsqrtFwdKernel",
     "SeluFwdKernel",
     "SigmoidFwdKernel",
     "SignFwdKernel",
+    "SignIntFwdKernel",
     "SiluAndMulFwdKernel",
     "SiluFwdKernel",
     "SinFwdKernel",
