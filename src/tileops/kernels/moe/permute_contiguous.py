@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe.call_spec import PrePermuteCall
+from tileops.kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
 
 __all__ = ["MoePrePermuteContiguousKernel"]
 
@@ -331,7 +331,7 @@ def _make_gather(
     return _gather
 
 
-class MoePrePermuteContiguousKernel(Kernel):
+class MoePrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -344,13 +344,8 @@ class MoePrePermuteContiguousKernel(Kernel):
             layout, "selection_key", None
         ) in cls._SUPPORTED_LAYOUT_KEYS and call.input_dtype in (torch.bfloat16, torch.float16)
 
-    def __init__(
-        self,
-        call: PrePermuteCall,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
+    def __init__(self, call: PrePermuteCall, config: Optional[dict] = None) -> None:
+        super().__init__(device_index=call.device.index if call.device is not None else None)
         layout = call.layout
         self.layout_key = getattr(layout, "selection_key", "")
         self.num_tokens = call.num_tokens
@@ -366,7 +361,7 @@ class MoePrePermuteContiguousKernel(Kernel):
             else math.ceil((self.numel + self.num_experts * (self.alignment - 1)) / self.alignment)
             * self.alignment
         )
-        self.init_config(config, tune or call.tune)
+        self.init_config(config)
 
         if self.layout_key == "tight_physical_psum":
             self._parallel_scan_fns = None

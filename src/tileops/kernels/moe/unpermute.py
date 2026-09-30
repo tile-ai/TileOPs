@@ -17,7 +17,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
 from tileops.utils import get_sm_count
 
 __all__ = ["MoeUnpermuteKernel"]
@@ -75,7 +76,7 @@ def _make_unpermute_kernel(
     return _unpermute
 
 
-class MoeUnpermuteKernel(Kernel):
+class MoeUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     """Weighted inverse-permute kernel for staged PostPermute.
 
     Restores token order from staged inverse indices and applies weighted
@@ -90,7 +91,6 @@ class MoeUnpermuteKernel(Kernel):
             (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
         dtype: Data type of expert output and final output (bf16 or fp16).
         config: Optional config dict with ``threads``.
-        tune: Whether to autotune.
         sm_count: Device SM count used to choose the low-token launch width.
 
     Example:
@@ -101,6 +101,40 @@ class MoeUnpermuteKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    _LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
+
+    @classmethod
+    def applies(cls, call: PostPermuteCall) -> bool:
+        return (
+            call.layout_key in cls._LAYOUT_KEYS
+            and call.input_dtype in (torch.bfloat16, torch.float16)
+            and call.output_dtype == call.input_dtype
+        )
+
+    @classmethod
+    def entry_for(cls, call: PostPermuteCall) -> Entry:
+        """One build per route extents, hidden width, routing scale, dtype and device."""
+        index = call.device.index if call.device is not None else None
+        scaling = call.epilogue.routed_scaling_factor
+        identity = (
+            call.num_tokens,
+            call.top_k,
+            call.hidden_size,
+            call.materialized_rows,
+            scaling,
+            call.input_dtype,
+            index,
+        )
+        return identity, lambda: cls(
+            call.num_tokens,
+            call.top_k,
+            call.hidden_size,
+            call.materialized_rows,
+            scaling=scaling,
+            dtype=call.input_dtype,
+            sm_count=call.sm_count,
+            device_index=index,
+        )
 
     def __init__(
         self,
@@ -111,7 +145,6 @@ class MoeUnpermuteKernel(Kernel):
         scaling: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         config: Optional[dict] = None,
-        tune: bool = False,
         sm_count: Optional[int] = None,
         *,
         device_index: Optional[int] = None,
@@ -126,7 +159,7 @@ class MoeUnpermuteKernel(Kernel):
         self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
         if self.sm_count <= 0:
             raise ValueError("sm_count must be positive")
-        self.init_config(config, tune)
+        self.init_config(config)
 
         self._unpermute_fn = _make_unpermute_kernel(
             num_tokens,

@@ -32,7 +32,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.moe.call_spec import FusedTopKCall, FusedTopKFwdInterface
 from tileops.utils import WARP_LANES
 
 __all__ = ["FusedTopKKernel"]
@@ -306,7 +307,7 @@ def _fused_topk_kernel(
     return _func
 
 
-class FusedTopKKernel(Kernel):
+class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
     """MoE top-k routing kernel — fused scoring + top-k, zero __syncthreads().
 
     Uses a per-warp algorithm: each warp of 32 lanes independently handles one
@@ -336,6 +337,31 @@ class FusedTopKKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: FusedTopKCall) -> Entry:
+        """One build per routing shape, scoring semantics, bias presence, dtype and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.num_tokens,
+            call.num_experts,
+            call.top_k,
+            call.scoring_func,
+            call.renormalize,
+            call.with_correction_bias,
+            call.dtype,
+            index,
+        )
+        return identity, lambda: cls(
+            num_tokens=call.num_tokens,
+            num_experts=call.num_experts,
+            top_k=call.top_k,
+            scoring_func=call.scoring_func,
+            renormalize=call.renormalize,
+            with_correction_bias=call.with_correction_bias,
+            dtype=call.dtype,
+            device_index=index,
+        )
 
     def __init__(
         self,

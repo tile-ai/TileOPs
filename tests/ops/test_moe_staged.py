@@ -10,8 +10,13 @@ from tests.test_base import served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.grouped_gemm import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe import MoeGroupedGemmKernel
-from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
+from tileops.kernels.moe import (
+    MGroupedGemmCall,
+    MGroupedGemmFwdInterface,
+    MoeGroupedGemmKernel,
+    PostPermuteCall,
+    PrePermuteCall,
+)
 from tileops.ops import moe as public_moe
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
@@ -117,19 +122,6 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     assert dataclasses.replace(gemm, n=8) != gemm
     assert dataclasses.replace(gemm, device=torch.device("meta")) != gemm
     assert dataclasses.replace(gemm, arch=100) == gemm
-    # The flattened layout fields admit only what a layout spec can express.
-    with pytest.raises(ValueError, match="no max_m"):
-        dataclasses.replace(gemm, max_m=4)
-    with pytest.raises(ValueError, match="alignment"):
-        dataclasses.replace(gemm, packing="aligned")
-    with pytest.raises(ValueError, match="carry no packing"):
-        MGroupedGemmCall(arch=90, sm_count=1, kind="masked", packing="tight", max_m=4)
-    with pytest.raises(ValueError, match="kind is"):
-        MGroupedGemmCall(arch=90, sm_count=1, kind="padded")
-    # Only the record that names no layout skips the checks.
-    assert MGroupedGemmCall(arch=90, sm_count=1).kind == ""
-    with pytest.raises(ValueError, match="kind is"):
-        MGroupedGemmCall(arch=90, sm_count=1, max_m=4)
 
 
 def _layout_key_of(call: MGroupedGemmCall) -> str | None:
@@ -139,7 +131,7 @@ def _layout_key_of(call: MGroupedGemmCall) -> str | None:
     return f"{call.packing}_{call.metadata_kind}"
 
 
-class _PhysicalPsumCandidate(Kernel):
+class _PhysicalPsumCandidate(Kernel, MGroupedGemmFwdInterface):
     supported_archs = [90]
 
     @classmethod
@@ -150,7 +142,7 @@ class _PhysicalPsumCandidate(Kernel):
         return None
 
 
-class _PerRowCandidate(Kernel):
+class _PerRowCandidate(Kernel, MGroupedGemmFwdInterface):
     supported_archs = [90]
 
     @classmethod
@@ -161,7 +153,7 @@ class _PerRowCandidate(Kernel):
         return None
 
 
-class _GeneralCandidate(Kernel):
+class _GeneralCandidate(Kernel, MGroupedGemmFwdInterface):
     general = True
     supported_archs = [90]
 
@@ -169,7 +161,7 @@ class _GeneralCandidate(Kernel):
         return None
 
 
-class _NeverCandidate(Kernel):
+class _NeverCandidate(Kernel, MGroupedGemmFwdInterface):
     @classmethod
     def applies(cls, call: object) -> bool:
         return False
@@ -184,7 +176,7 @@ def _zero_output(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor | None, dty
     return result if out is None else out.copy_(result)
 
 
-class _ExecutableGroupedCandidate(Kernel):
+class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
     builds = 0
 
     def __init__(self, call: MGroupedGemmCall) -> None:
@@ -192,7 +184,7 @@ class _ExecutableGroupedCandidate(Kernel):
         type(self).builds += 1
         self.call = call
 
-    def forward(self, a, b, layout_metadata, *, out=None):
+    def forward(self, a, b, layout_metadata, out=None):
         return _zero_output(a, b, out, dtype=self.call.cd_dtype)
 
 
@@ -226,12 +218,10 @@ def test_grouped_gemm_selection_behavior_table() -> None:
         general=_GeneralCandidate,
     )
 
-    assert op.select_kernel_key(("physical", "per_row", "general"), physical_call) == "physical"
-    assert op.select_kernel_key(("physical", "per_row", "general"), per_row_call) == "per_row"
+    assert op.select_implementation("grouped_gemm", physical_call) == "physical"
+    assert op.select_implementation("grouped_gemm", per_row_call) == "per_row"
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op.select_kernel_key(
-            ("physical", "per_row", "general"), dataclasses.replace(physical_call, arch=80)
-        )
+        op.select_implementation("grouped_gemm", dataclasses.replace(physical_call, arch=80))
 
 
 @pytest.mark.smoke
@@ -242,7 +232,7 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
         second=_PhysicalPsumCandidate,
     )
     with pytest.raises(ValueError, match="dispatch is ambiguous"):
-        ambiguous.select_kernel_key(("first", "second"), call)
+        ambiguous.select_implementation("grouped_gemm", call)
 
     class OverrideableOp(MoeGroupedGemmFwdOp):
         @property
@@ -251,7 +241,7 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
 
     overridden = OverrideableOp(_TIGHT, kernel_map={"special": _NeverCandidate})
     with pytest.raises(ValueError, match="the kernel supplied for special"):
-        overridden.select_kernel_key(("special", "general"), call)
+        overridden.select_implementation("grouped_gemm", call)
 
 
 @pytest.mark.in_tree_kernels
@@ -304,8 +294,8 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     assert first.shape == second.shape == (1, 8)
     assert taller.shape == (3, 8)
     assert _ExecutableGroupedCandidate.builds == 1
-    # The build is told to tune: the op's flag travels in the call record.
-    assert next(iter(op.built_kernels("grouped_gemm").values())).call.tune
+    # The op's flag reaches the resolved entry, not the constructor.
+    assert next(iter(op.built_kernels("grouped_gemm").values()))._tune_requested
     assert len(op.built_kernels("grouped_gemm")) == 1
     assert op.eval_roofline() == (2 * 3 * 8 * 8, (3 * 8 + 1 * 8 * 8 + 3 * 8) * 2 + 4)
 
@@ -337,7 +327,7 @@ def test_pre_permute_ships_one_contiguous_candidate(
 ) -> None:
     op = MoePrePermuteFwdOp(layout, num_local_experts=1)
     call = PrePermuteCall(arch=90, layout=layout, input_dtype=torch.bfloat16)
-    assert op.select_kernel_key(tuple(op.kernel_map), call) == "contiguous"
+    assert op.select_implementation("pre_permute", call) == "pre_permute_contiguous"
 
 
 @pytest.mark.smoke

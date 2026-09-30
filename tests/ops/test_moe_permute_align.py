@@ -196,4 +196,4 @@ def test_permute_align_builds_one_kernel_per_routed_count() -> None:
     op = MoePermuteAlignFwdOp(num_experts=8, block_size=16)
     for tokens in (4, 4, 6):
         op(torch.randint(0, 8, (tokens, 2), dtype=torch.int32, device=run_device()))
-    assert len(op.built_kernels("permute_align_kernel")) == 2
+    assert len(op.built_kernels("permute_align")) == 2

@@ -5,8 +5,12 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.moe import MoePermuteAlignKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.moe import (
+    MoePermuteAlignKernel,
+    PermuteAlignCall,
+    PermuteAlignFwdInterface,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["MoePermuteAlignFwdOp"]
@@ -27,8 +31,9 @@ class MoePermuteAlignFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "permute_align_kernel": MoePermuteAlignKernel
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"permute_align": MoePermuteAlignKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "permute_align": PermuteAlignFwdInterface
     }
 
     def __init__(
@@ -56,12 +61,6 @@ class MoePermuteAlignFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def entry_for(self, role: str, call: int) -> Entry:
-        """One implementation, built per routed count ``T * K``."""
-        return call, lambda: self.kernel_map[role](
-            call, self.num_experts, self.block_size, tune=self.tune
-        )
-
     def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.
 
@@ -79,5 +78,10 @@ class MoePermuteAlignFwdOp(Op):
         self, topk_ids: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Launch inside the operator, where dynamo does not follow the kernel call."""
-        kernel = self.kernel_for("permute_align_kernel", (topk_ids,), topk_ids.numel())
-        return kernel(topk_ids)
+        call = PermuteAlignCall(
+            num_routes=topk_ids.numel(),
+            num_experts=self.num_experts,
+            block_size=self.block_size,
+            device=topk_ids.device,
+        )
+        return self.kernel_for("permute_align", (topk_ids,), call)(topk_ids)

@@ -28,7 +28,8 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
     WeightedReduceNoOp. A call with few routes per expert (``T * K <= 2 * E``) on
     ``silu_and_mul`` with ``H % 128 == 0`` and ``F % 256 == 0`` runs the indexed
-    small-route op; every other call runs the staged pipeline.
+    small-route op; every other call runs the staged pipeline. The two moduli are the
+    widths the indexed kernels are tiled for, not a limit of what they compute.
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {

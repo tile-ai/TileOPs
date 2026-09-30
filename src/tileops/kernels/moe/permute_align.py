@@ -29,7 +29,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
 
 __all__ = ["MoePermuteAlignKernel"]
 
@@ -303,7 +304,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     return _small
 
 
-class MoePermuteAlignKernel(Kernel):
+class MoePermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     """MoE token permutation and alignment kernel.
 
     Converts ``topk_ids`` into the three index arrays required by MoE grouped GEMM.
@@ -312,11 +313,10 @@ class MoePermuteAlignKernel(Kernel):
         numel: Total number of (token, expert) assignments = total_tokens * top_k.
         num_experts: Number of experts.
         block_size: GEMM tile size (M dimension).
-        config: Optional config dict with "threads".
-        tune: Whether to autotune. The thread count is fixed by the
-            single-block cumulative-count algorithm, so ``autotune_configs``
-            is undefined and ``tune=True`` degrades to the default config with
-            a warning from ``Kernel.init_config``.
+        config: Optional config dict with "threads". The thread count is fixed by the
+            single-block cumulative-count algorithm, so this kernel defines no
+            ``autotune_configs``.
+        device_index: The device this kernel is built for.
 
     Note:
         ``dtype`` does not apply. Every tensor this kernel reads or writes is
@@ -332,15 +332,25 @@ class MoePermuteAlignKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    @classmethod
+    def entry_for(cls, call: PermuteAlignCall) -> Entry:
+        """One build per routed count, expert count, tile height and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.num_routes, call.num_experts, call.block_size, index)
+        return identity, lambda: cls(
+            call.num_routes, call.num_experts, call.block_size, device_index=index
+        )
+
     def __init__(
         self,
         numel: int,
         num_experts: int,
         block_size: int,
         config: Optional[dict] = None,
-        tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.numel = numel
         self.num_experts = num_experts
         self.block_size = block_size
@@ -357,7 +367,7 @@ class MoePermuteAlignKernel(Kernel):
             self._align_fn = None
             self._scatter_fn = None
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

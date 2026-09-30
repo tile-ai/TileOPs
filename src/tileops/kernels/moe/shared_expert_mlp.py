@@ -12,7 +12,8 @@ from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.moe.call_spec import SharedExpertMLPCall, SharedExpertMLPFwdInterface
 from tileops.utils import get_sm_count, get_sm_version
 
 __all__ = ["SharedExpertMLPKernel"]
@@ -60,7 +61,7 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     return _func
 
 
-class SharedExpertMLPKernel(Kernel):
+class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     """Shared expert MLP producing ``[T, H]``.
 
     Inputs are ``hidden[T, H]``, concatenated ``w_gate_up[2F, H]``, and
@@ -94,6 +95,19 @@ class SharedExpertMLPKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    @classmethod
+    def entry_for(cls, call: SharedExpertMLPCall) -> Entry:
+        """One build per token count, width, expert width, dtype and device."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.num_tokens, call.hidden_size, call.ffn_size, call.dtype, index)
+        return identity, lambda: cls(
+            num_tokens=call.num_tokens,
+            hidden_size=call.hidden_size,
+            ffn_size=call.ffn_size,
+            dtype=call.dtype,
+            device_index=index,
+        )
+
     def __init__(
         self,
         num_tokens: int,
@@ -101,7 +115,6 @@ class SharedExpertMLPKernel(Kernel):
         ffn_size: int,
         dtype: torch.dtype = torch.bfloat16,
         config=None,
-        tune: bool = False,
         *,
         device_index: "int | None" = None,
     ):
@@ -110,7 +123,7 @@ class SharedExpertMLPKernel(Kernel):
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.dtype = dtype
-        self.init_config(config, tune)
+        self.init_config(config)
 
         sm_version = get_sm_version(device_index)
         sm_count = get_sm_count(device_index)
