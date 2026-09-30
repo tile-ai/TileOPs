@@ -75,26 +75,6 @@ def widths_for_row(n_padded: int) -> tuple:
     return CANDIDATE_THREADS_BY_WIDTH if n_padded <= NARROW_ROW else _CANDIDATE_THREADS
 
 
-def _feasible_threads(
-    n_padded: int, dtype: torch.dtype = torch.float16, widths: tuple = _CANDIDATE_THREADS
-) -> list[int]:
-    """Thread counts that divide the row and keep loads 128-bit vectorizable.
-
-    128-bit needs ``16 // element_size`` columns per thread (8 for fp16/bf16, 4
-    for fp32). If no candidate meets that floor (small rows), fall back to any
-    thread count that divides the row so the autotune space is never empty.
-
-    Args:
-        n_padded: Padded row width.
-        dtype: Element type the row is stored in.
-        widths: Block widths to draw from.
-    """
-    min_elements = VECTOR_ACCESS_BYTES // torch.tensor([], dtype=dtype).element_size()
-    candidates = [t for t in widths if n_padded % t == 0]
-    vectorizable = [t for t in candidates if n_padded // t >= min_elements]
-    return vectorizable or candidates
-
-
 def select_row_config() -> dict:
     """Structurally collapse-free default ``{block_m, threads}`` for a row reduction.
 
@@ -149,6 +129,26 @@ def select_row_configs(
         widths: Block widths to draw from.
         block_ms: Rows-per-block values to offer.
     """
+
+    def _feasible_threads(
+        n_padded: int, dtype: torch.dtype = torch.float16, widths: tuple = _CANDIDATE_THREADS
+    ) -> list[int]:
+        """Thread counts that divide the row and keep loads 128-bit vectorizable.
+
+        128-bit needs ``16 // element_size`` columns per thread (8 for fp16/bf16, 4
+        for fp32). If no candidate meets that floor (small rows), fall back to any
+        thread count that divides the row so the autotune space is never empty.
+
+        Args:
+            n_padded: Padded row width.
+            dtype: Element type the row is stored in.
+            widths: Block widths to draw from.
+        """
+        min_elements = VECTOR_ACCESS_BYTES // torch.tensor([], dtype=dtype).element_size()
+        candidates = [t for t in widths if n_padded % t == 0]
+        vectorizable = [t for t in candidates if n_padded // t >= min_elements]
+        return vectorizable or candidates
+
     threads = _feasible_threads(n_padded, dtype, widths)
     smem_per_row = n_padded * torch.tensor([], dtype=dtype).element_size()
     max_block_m = _ROW_SMEM_BUDGET_BYTES // (num_buffers * smem_per_row)

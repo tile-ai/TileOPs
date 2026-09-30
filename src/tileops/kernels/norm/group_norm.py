@@ -140,26 +140,6 @@ class _RowNormKernel(Kernel):
         return select_row_configs(self.D_padded, self.dtype, widths=self._row_widths)
 
 
-def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
-    """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
-
-    Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
-    ``m % G``, and column ``d`` holds that group's local channel
-    ``d // spatial_size``.
-
-    Args:
-        row: Row index into the (M, D) view.
-        col: Column index into the (M, D) view.
-        num_groups: Number of groups G.
-        channels_per_group: C / G.
-        spatial_size: Number of spatial elements per channel.
-
-    Returns:
-        Index into the length-C weight / bias vectors.
-    """
-    return (row % num_groups) * channels_per_group + col // spatial_size
-
-
 @functools.lru_cache(maxsize=32)
 def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct):
     """Build a row-wise normalization kernel with a per-channel affine.
@@ -186,6 +166,25 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
+        def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
+            """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
+
+            Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
+            ``m % G``, and column ``d`` holds that group's local channel
+            ``d // spatial_size``.
+
+            Args:
+                row: Row index into the (M, D) view.
+                col: Column index into the (M, D) view.
+                num_groups: Number of groups G.
+                channels_per_group: C / G.
+                spatial_size: Number of spatial elements per channel.
+
+            Returns:
+                Index into the length-C weight / bias vectors.
+            """
+            return (row % num_groups) * channels_per_group + col // spatial_size
+
         masked = D_padded != D
         # One channel owns the whole row exactly when a group holds one channel.
         row_constant_affine = channels_per_group == 1
