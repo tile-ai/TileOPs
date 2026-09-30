@@ -5,8 +5,8 @@ Inputs use THD layout:
   k/v: [T_kv, H_kv, D]
 
 ``cu_seqlens_q`` and ``cu_seqlens_kv`` describe per-request packed ranges.
-Causal masking uses bottom-right alignment per request, matching the dense
-prefill contract when q_len may be smaller than kv_len.
+Causal masking and the sliding window use bottom-right alignment per request,
+matching the dense prefill contract when q_len may be smaller than kv_len.
 """
 
 import functools
@@ -52,9 +52,13 @@ def _gqa_prefill_varlen_fwd_kernel(
     sm_scale: Optional[float] = None,
     softcap: float = 0.0,
     dtype: str = "float16",
+    window_size_left: int = -1,
+    window_size_right: int = -1,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
+    has_left = window_size_left >= 0
+    has_right = window_size_right >= 0
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -146,18 +150,36 @@ def _gqa_prefill_varlen_fwd_kernel(
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
 
-                    loop_range = (
-                        T.max(
+                    if is_causal:
+                        loop_range = T.max(
                             0,
                             T.ceildiv(T.min(kv_len, causal_offset + q_row[0] + block_m), block_n),
                         )
-                        if is_causal
-                        else T.ceildiv(kv_len, block_n)
-                    )
+                    elif has_right:
+                        loop_range = T.max(
+                            0,
+                            T.ceildiv(
+                                T.min(
+                                    kv_len,
+                                    causal_offset + q_row[0] + block_m + window_size_right,
+                                ),
+                                block_n,
+                            ),
+                        )
+                    else:
+                        loop_range = T.ceildiv(kv_len, block_n)
+                    # Key tiles wholly left of the window are skipped, not masked.
+                    if has_left:
+                        k_first = T.max(0, causal_offset + q_row[0] - window_size_left) // block_n
+                        loop_range = T.max(0, loop_range - k_first)
 
                     for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
-                        tile_start = k_idx * block_n
-                        tile_end = (k_idx + 1) * block_n
+                        if has_left:
+                            tile_start = (k_first + k_idx) * block_n
+                            tile_end = (k_first + k_idx + 1) * block_n
+                        else:
+                            tile_start = k_idx * block_n
+                            tile_end = (k_idx + 1) * block_n
                         if tile_end <= kv_len:
                             T.copy(
                                 k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
@@ -188,10 +210,17 @@ def _gqa_prefill_varlen_fwd_kernel(
                                     & (kv_pos < kv_len)
                                     & (kv_pos <= q_pos + causal_offset)
                                 )
-                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                            elif has_right:
+                                valid = (
+                                    (q_pos < q_len)
+                                    & (kv_pos < kv_len)
+                                    & (kv_pos <= q_pos + causal_offset + window_size_right)
+                                )
                             else:
                                 valid = (q_pos < q_len) & (kv_pos < kv_len)
-                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                            if has_left:
+                                valid = valid & (kv_pos >= q_pos + causal_offset - window_size_left)
+                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                         T.gemm(
                             q_shared,
                             k_shared,
@@ -249,14 +278,14 @@ def _gqa_prefill_varlen_fwd_kernel(
 
 
 class GQAPrefillVarlenFwdKernel(VarlenKernel):
-    """Packed prefill over per-request ranges of any length."""
+    """Packed prefill over per-request ranges of any length, with or without a sliding window."""
 
     supported_archs: list[int] = [80, 89, 90]
     general: bool = True
 
     @classmethod
     def applies(cls, call) -> bool:
-        return not (call.is_fp8 or call.fuse_rope or call.uses_sliding_window)
+        return not (call.is_fp8 or call.fuse_rope)
 
     def _make_kernel(self) -> Callable:
         return _gqa_prefill_varlen_fwd_kernel(
@@ -268,6 +297,8 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            self.window_size_left,
+            self.window_size_right,
         )
 
     @property
