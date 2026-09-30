@@ -1,6 +1,8 @@
-from tileops.kernels.attention.call_spec import MlaDecodeCall, SparseMlaCall
+from tileops.kernels.attention.call_spec import MlaDecodeCall, MlaVarlenCall, SparseMlaCall
 from tileops.kernels.attention.deepseek_dsa_decode import SparseMlaBasicKernel, SparseMlaKernel
 from tileops.kernels.attention.deepseek_mla_decode import MLADecodeWsKernel
+from tileops.kernels.attention.deepseek_mla_varlen import MLAVarlenPrefillFwdKernel
+from tileops.kernels.attention.deepseek_mla_varlen_ws import MLAVarlenPrefillWSFwdKernel
 from tileops.kernels.attention.deepseek_nsa_cmp_fwd import NSACmpFwdVarlenKernel
 from tileops.kernels.attention.deepseek_nsa_fwd import NSAFwdVarlenKernel
 from tileops.kernels.attention.deepseek_nsa_topk import NSATopkVarlenKernel
@@ -49,7 +51,10 @@ __all__ = [
     "MHABwdWsKernel",
     "MHADecodePagedWsKernel",
     "MLADecodeWsKernel",
+    "MLAVarlenPrefillFwdKernel",
+    "MLAVarlenPrefillWSFwdKernel",
     "MlaDecodeCall",
+    "MlaVarlenCall",
     "NSACmpFwdVarlenKernel",
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",
