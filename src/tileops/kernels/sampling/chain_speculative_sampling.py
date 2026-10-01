@@ -11,6 +11,7 @@ from tileops._csrc import csrc_path
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
+from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
 from tileops.kernels.sampling.row_tiles import load_vector, vector_width
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -46,13 +47,6 @@ def _chain_speculative_sampling_kernel(
     rounds = -(-chunk // pace)
     draw_rounds = -(-(num_draft + 1) // threads)
     part_span = -(-parts // WARP_LANES)
-    # Philox4x32-10 (Salmon et al., SC'11): round multipliers, Weyl key increments, and the
-    # top bits of one 32-bit output word that make a uniform, as ``workloads/sampling.py``
-    # takes them.
-    even_mul, odd_mul = 0xD2511F53, 0xCD9E8D57
-    even_weyl, odd_weyl = 0x9E3779B9, 0xBB67AE85
-    philox_rounds = 10
-    uniform_bits = 24
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _chain_speculative_sampling_func():
@@ -203,27 +197,10 @@ def _chain_speculative_sampling_kernel(
                         counter[3] = T.cast(
                             (offset[0] >> T.int64(32)) & T.int64(0xFFFFFFFF), "uint32"
                         )
-                        for step in T.serial(philox_rounds):
-                            if step > 0:
-                                key[0] = key[0] + T.uint32(even_weyl)
-                                key[1] = key[1] + T.uint32(odd_weyl)
-                            bump[0] = (
-                                T.call_extern("uint32", "__umulhi", counter[2], T.uint32(odd_mul))
-                                ^ counter[1]
-                                ^ key[0]
-                            )
-                            bump[1] = (
-                                T.call_extern("uint32", "__umulhi", counter[0], T.uint32(even_mul))
-                                ^ counter[3]
-                                ^ key[1]
-                            )
-                            counter[1] = counter[2] * T.uint32(odd_mul)
-                            counter[3] = counter[0] * T.uint32(even_mul)
-                            counter[0] = bump[0]
-                            counter[2] = bump[1]
+                        mix(counter, key, bump)
                         warp[0] = T.cast(
-                            counter[0] >> T.uint32(32 - uniform_bits), "float32"
-                        ) * T.float32(2.0**-uniform_bits)
+                            counter[0] >> T.uint32(32 - UNIFORM_BITS), "float32"
+                        ) * T.float32(2.0**-UNIFORM_BITS)
                         if draw_index[0] == num_draft:
                             token_uniform[0] = warp[0]
                         else:

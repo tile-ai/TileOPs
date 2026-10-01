@@ -15,6 +15,7 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.sampling.call_spec import SamplingCall, SamplingFromProbsFwdInterface
+from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
 from tileops.kernels.sampling.row_tiles import load_vector, row_split, vector_width
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -49,13 +50,6 @@ def _sampling_from_probs_kernel(
     leaf_span = -(-leaves // WARP_LANES)
     rounds = -(-chunk // pace)
     part_span = -(-parts // WARP_LANES)
-    # Philox4x32-10 (Salmon et al., SC'11): round multipliers, Weyl key increments, and the
-    # top bits of one 32-bit output word that make a uniform, as ``workloads/sampling.py``
-    # takes them.
-    even_mul, odd_mul = 0xD2511F53, 0xCD9E8D57
-    even_weyl, odd_weyl = 0x9E3779B9, 0xBB67AE85
-    philox_rounds = 10
-    uniform_bits = 24
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _sampling_from_probs_func():
@@ -211,27 +205,10 @@ def _sampling_from_probs_kernel(
                 counter[1] = T.cast(line, "uint32")
                 counter[2] = T.cast(offset[0] & T.int64(0xFFFFFFFF), "uint32")
                 counter[3] = T.cast((offset[0] >> T.int64(32)) & T.int64(0xFFFFFFFF), "uint32")
-                for step in T.serial(philox_rounds):
-                    if step > 0:
-                        key[0] = key[0] + T.uint32(even_weyl)
-                        key[1] = key[1] + T.uint32(odd_weyl)
-                    bump[0] = (
-                        T.call_extern("uint32", "__umulhi", counter[2], T.uint32(odd_mul))
-                        ^ counter[1]
-                        ^ key[0]
-                    )
-                    bump[1] = (
-                        T.call_extern("uint32", "__umulhi", counter[0], T.uint32(even_mul))
-                        ^ counter[3]
-                        ^ key[1]
-                    )
-                    counter[1] = counter[2] * T.uint32(odd_mul)
-                    counter[3] = counter[0] * T.uint32(even_mul)
-                    counter[0] = bump[0]
-                    counter[2] = bump[1]
+                mix(counter, key, bump)
                 aim[1] = T.cast(
-                    T.cast(counter[0] >> T.uint32(32 - uniform_bits), "float32")
-                    * T.float32(2.0**-uniform_bits),
+                    T.cast(counter[0] >> T.uint32(32 - UNIFORM_BITS), "float32")
+                    * T.float32(2.0**-UNIFORM_BITS),
                     "float64",
                 )
 
