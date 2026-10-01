@@ -39,8 +39,8 @@ from tileops.kernels.norm.batch_norm import (
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormFwdInferInterface,
-    BatchNormFwdTrainInterface,
+    BatchNormInferFwdInterface,
+    BatchNormTrainFwdInterface,
 )
 from tileops.ops.norm.norm_base import affine_or_constant
 from tileops.ops.op_base import Op
@@ -80,8 +80,8 @@ class BatchNormFwdOp(Op):
         "fwd_infer_kernel": BatchNormFwdInferKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "batch_norm_fwd_train": BatchNormFwdTrainInterface,
-        "batch_norm_fwd_infer": BatchNormFwdInferInterface,
+        "batch_norm_fwd_train": BatchNormTrainFwdInterface,
+        "batch_norm_fwd_infer": BatchNormInferFwdInterface,
     }
 
     def __init__(

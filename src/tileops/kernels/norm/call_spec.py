@@ -16,15 +16,15 @@ __all__ = [
     "AdaLayerNormZeroFwdInterface",
     "BatchNormBwdInterface",
     "BatchNormCall",
-    "BatchNormFwdInferInterface",
-    "BatchNormFwdTrainInterface",
+    "BatchNormInferFwdInterface",
+    "BatchNormTrainFwdInterface",
     "FusedAddLayerNormFwdInterface",
     "FusedAddRMSNormFwdInterface",
     "GroupNormCall",
     "GroupNormFwdInterface",
-    "InstanceNormFwdInferInterface",
+    "InstanceNormInferFwdInterface",
     "InstanceNormFwdInterface",
-    "InstanceNormFwdTrainInterface",
+    "InstanceNormTrainFwdInterface",
     "LayerNormCall",
     "LayerNormFwdInterface",
     "RMSNormFwdInterface",
@@ -71,7 +71,7 @@ class LayerNormCall(CallSpec):
     dtype: torch.dtype = torch.float16
 
 
-class BatchNormFwdTrainInterface(KernelInterface):
+class BatchNormTrainFwdInterface(KernelInterface):
     """Batch normalization by the batch statistics, updating the running ones."""
 
     request = BatchNormCall
@@ -102,7 +102,7 @@ class BatchNormFwdTrainInterface(KernelInterface):
         """
 
 
-class BatchNormFwdInferInterface(KernelInterface):
+class BatchNormInferFwdInterface(KernelInterface):
     """Batch normalization by the running statistics."""
 
     request = BatchNormCall
@@ -194,7 +194,7 @@ class InstanceNormFwdInterface(KernelInterface):
         """
 
 
-class InstanceNormFwdTrainInterface(KernelInterface):
+class InstanceNormTrainFwdInterface(KernelInterface):
     """Instance normalization by each instance's statistics, updating the running ones."""
 
     request = BatchNormCall
@@ -225,7 +225,7 @@ class InstanceNormFwdTrainInterface(KernelInterface):
         """
 
 
-class InstanceNormFwdInferInterface(KernelInterface):
+class InstanceNormInferFwdInterface(KernelInterface):
     """Instance normalization by the running statistics."""
 
     request = BatchNormCall

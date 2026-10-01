@@ -12,13 +12,9 @@ This document holds the contracts those rules emit against.
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable      | Family      | Purpose                                                                                                          |
-| ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
-| `_kernel_key` | reduction   | Kernel-map lookup key                                                                                            |
-| `_kernel_cls` | reduction   | Kernel class reference                                                                                           |
-| `_op_kind`    | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
-| `_op_name`    | elementwise | `torch.library.custom_op` registration key                                                                       |
-| `kernel_cls`  | elementwise | Kernel class reference                                                                                           |
+| Variable   | Family    | Purpose                                                                                                          |
+| ---------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_op_kind` | reduction | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
 
 **The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base and all concrete ops.
 
@@ -57,8 +53,11 @@ Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles 
 | `supported_archs`                    | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)                          |
 | `kernel`                             | `Callable`              | Compiled TileLang kernel function                                   |
 | `autotune_accepts_random_int_inputs` | `bool`                  | Whether autotuning may generate the integer tensor inputs at random |
+| `devices`                            | `frozenset[str]`        | Device types the implementation runs on; default `{"cuda"}`         |
+| `general`                            | `bool`                  | Below every other implementation of its interface; at most one      |
+| `preferred_over`                     | `frozenset[str]`        | Keys of the implementations it wins over, transitively              |
 
-Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
+Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`. Selection classmethods, each with a default ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)): `applies(call)` and `refusal(call)` state the calls the implementation serves, `unavailable(call)` reads `devices` and `supported_archs`, and `entry_for(call)` returns the build identity and the factory.
 
 ## Optional Hooks (Appendix)
 
@@ -69,8 +68,8 @@ A restriction on the accepted domain is a refinement of the signature, never a h
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
 - **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).
-- **Kernel class:** `{PascalCaseName}{Direction}Kernel`. Same direction-suffix rule.
-- **Kernel interface:** `{PascalCaseName}{Direction}Interface`, beside the call spec it names in the family's `call_spec.py`. Same direction-suffix rule.
+- **Kernel class:** `{PascalCaseName}Kernel`, naming the algorithm and its variant, e.g. `BatchNormBwdSplitKernel`. No direction suffix is required: the interface it inherits carries the direction.
+- **Kernel interface:** `{PascalCaseName}{Direction}Interface`, beside the call spec it names: in the family's `call_spec.py`, or in the kernel module of a family with one kernel file. Same direction-suffix rule as the op class: variant words precede the direction, e.g. `BatchNormTrainFwdInterface`.
 - **`kernel_map` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](op-slot-rules.md#slot-s14).
 - **Builder functions:** `snake_case`, e.g. `def rms_norm_fwd(M, N, dtype, ...): ...`.
 - **Filenames:** all-lowercase with underscores. Multi-word abbreviations stay fully lowercase (`rms_norm.py`, `ssd_decode.py`; never `RMSNorm.py` or `Ssd_decode.py`). Norm-related names never contract (`rms_norm`, not `rmsnorm`).

@@ -1,6 +1,6 @@
 → [layer-boundaries.md §Implementation](../../docs/design/layer-boundaries.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
 
-- Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
+- Class names: PascalCase `{Name}{Direction}Op` (Op layer), `{Name}{Direction}Interface` (kernel interface) and `{Name}Kernel` (Kernel layer). The Op and interface direction suffix is mandatory, with variant words before it; a Kernel names its algorithm and variant. Manifest author chooses `{Name}`. Builder functions stay snake_case.
 
 - `kernel_types` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel classes. `default_kernel_map` is derived from it. The code owns it; the manifest does not list kernels. See [op-slot-rules.md § Slot S14](../../docs/design/op-slot-rules.md#slot-s14).
 
@@ -12,7 +12,7 @@
 
 - Declare `interfaces` on every op that holds kernels: the name of each place the op calls a kernel → its `KernelInterface` class. Open a new interface only where semantic control flow or the kernel call contract changes, never per shape, dtype, architecture or performance. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
 
-- Define a kernel interface in the family's `kernels/<family>/call_spec.py`: `request` names the frozen `CallSpec` subclass; an abstract `forward` states the tensors handed and the value returned.
+- Define a kernel interface in the family's `kernels/<family>/call_spec.py`, or in the kernel module of a family with one kernel file: `request` names the frozen `CallSpec` subclass; an abstract `forward` states the tensors handed and the value returned.
 
 - Make each implementation a `Kernel` subclass that inherits its interface, takes the interface's `forward` arguments, and is built only through its classmethod `entry_for(call)`, which returns a hashable build identity and a builder.
 

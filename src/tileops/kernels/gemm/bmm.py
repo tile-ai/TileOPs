@@ -16,7 +16,7 @@ from tileops.kernels.gemm.call_spec import (
     BmmFp8Call,
     BmmFp8FwdInterface,
     BmmFp8TransposeCall,
-    BmmFp8TransposeInterface,
+    BmmFp8TransposeFwdInterface,
     BmmFwdInterface,
 )
 from tileops.kernels.grouped_gemm.heuristics import GemmType
@@ -1167,7 +1167,7 @@ class BmmFp8Kernel(_BmmFp8Kernel):
         ]
 
 
-class BmmFp8TransposeKernel(Kernel, BmmFp8TransposeInterface):
+class BmmFp8TransposeKernel(Kernel, BmmFp8TransposeFwdInterface):
     """Swap the last two axes of a contiguous FP8 ``[batch, rows, cols]`` tensor.
 
     Staged through shared memory so both the load and the store stay coalesced,

@@ -29,7 +29,7 @@ from tileops.kernels.norm._config import (
 from tileops.kernels.norm.call_spec import (
     BatchNormCall,
     InstanceNormFwdInterface,
-    InstanceNormFwdTrainInterface,
+    InstanceNormTrainFwdInterface,
 )
 from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
 
@@ -305,7 +305,7 @@ def _instance_norm_stats_kernel(N, C, splits, dtype):
     return _func
 
 
-class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormFwdTrainInterface):
+class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInterface):
     """InstanceNorm forward that also updates the running statistics in place.
 
     GroupNorm's row tiling and config space, with a program of its own. Each block owns one channel and ``block_m`` of its samples. ``running_mean[c]`` and
