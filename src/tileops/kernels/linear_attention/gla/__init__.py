@@ -6,6 +6,9 @@ from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
 from tileops.kernels.linear_attention.gla.gla_bwd import GLABwdKernel
 from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel
 from tileops.kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefillFwdKernel
+from tileops.kernels.linear_attention.gla.varlen_prefill_partitioned import (
+    GLAVarlenPrefillPartitionedFwdKernel,
+)
 
 __all__ = [
     "GLABwdKernel",
@@ -14,4 +17,5 @@ __all__ = [
     "GLADensePrefillSubchunkKernel",
     "GLAFwdKernel",
     "GLAVarlenPrefillFwdKernel",
+    "GLAVarlenPrefillPartitionedFwdKernel",
 ]

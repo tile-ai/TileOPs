@@ -35,6 +35,8 @@ pytestmark = pytest.mark.skipif(
 
 _SM90 = 90
 _SM80 = 80
+# Multiprocessors of the board the GLA inference regions are read against.
+_SM_COUNT = 132
 
 
 def _serves(op, call: GemmCall) -> type:
@@ -244,23 +246,27 @@ def test_gla_decode_dispatch(dtype: torch.dtype, expected: str) -> None:
 
 
 # --- GLA inference: one token is decode, whole 64-token rows are chunk-parallel prefill,
-# and a packed call or a row that is not a whole chunk is the packed kernel. The partitioned
+# and a packed call or a row that is not a whole chunk is the packed kernel, whose state
+# walk is partitioned where a per-sequence walk serves the call badly. The dense partitioned
 # kernel's region reads a device calibration, which a spec built without a device does not
 # carry, so no row here selects it.
 
 
-def _inference_call(seq_len: int, varlen: bool = False, dim: int = 64) -> GLAInferenceCallSpec:
+def _inference_call(
+    seq_len: int, varlen: bool = False, dim: int = 64, heads: int = 4, sequences: int = 1
+) -> GLAInferenceCallSpec:
     return GLAInferenceCallSpec(
         arch=_SM90,
+        sm_count=_SM_COUNT,
         batch=1,
         seq_len=seq_len,
-        heads=4,
+        heads=heads,
         dim_k=dim,
         dim_v=dim,
         dtype=torch.bfloat16,
         scale=dim**-0.5,
         varlen=varlen,
-        num_sequences=1,
+        num_sequences=sequences,
     )
 
 
@@ -273,6 +279,16 @@ def _inference_call(seq_len: int, varlen: bool = False, dim: int = 64) -> GLAInf
         pytest.param(_inference_call(2048), "gla_dense_prefill_subchunk", id="whole-chunks"),
         pytest.param(_inference_call(100), "gla_varlen_prefill", id="part-chunk-row"),
         pytest.param(_inference_call(4096, varlen=True), "gla_varlen_prefill", id="packed"),
+        pytest.param(
+            _inference_call(4096, varlen=True, dim=128, heads=16, sequences=4),
+            "gla_varlen_prefill_partitioned",
+            id="packed-wide",
+        ),
+        pytest.param(
+            _inference_call(3000),
+            "gla_varlen_prefill_partitioned",
+            id="part-chunk-long-row",
+        ),
     ],
 )
 def test_gla_inference_dispatch(call: GLAInferenceCallSpec, expected: str) -> None:
