@@ -92,6 +92,12 @@ repos:
         language: python
         files: ^(tests|workloads)/.*\.py$
 
+      - id: interface-names-lint
+        name: kernel interface name lint
+        entry: python scripts/lint/interface_names_lint.py
+        language: python
+        files: ^src/tileops/kernels/.*\.py$
+
       - id: manifest-spec-layout
         name: manifest spec layout
         entry: "manifest YAML goes directly in src/tileops/manifest/spec/ as .yaml, the only place the loader reads"

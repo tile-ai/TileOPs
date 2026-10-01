@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQABwdInterface,
-    GQABwdPreprocessInterface,
+    GQAPreprocessBwdInterface,
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -53,7 +53,7 @@ def _flashattn_bwd_preprocess_kernel(
     return flash_bwd_prep
 
 
-class FlashAttnBwdPreprocessKernel(Kernel, GQABwdPreprocessInterface):
+class FlashAttnBwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
     """Row-wise ``delta = rowsum(o * do)`` for the GQA/MHA backward pass; also zeroes
     the f32 ``dq`` accumulator the backward kernel adds into.
 

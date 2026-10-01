@@ -17,10 +17,10 @@ __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
     "GQABwdInterface",
-    "GQABwdPreprocessInterface",
     "GQADenseFwdInterface",
     "GQAPagedFwdInterface",
     "GQAPrefillPagedFwdInterface",
+    "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
     "MLADecodeFwdInterface",
@@ -397,7 +397,7 @@ class GQAPrefillPagedFwdInterface(KernelInterface):
         """
 
 
-class GQABwdPreprocessInterface(KernelInterface):
+class GQAPreprocessBwdInterface(KernelInterface):
     """The row statistics a grouped-query attention backward consumes."""
 
     request = AttentionCall
@@ -441,7 +441,7 @@ class GQABwdInterface(KernelInterface):
             v: The same, for the values.
             do: Shaped like *q*.
             lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
-            delta: What ``GQABwdPreprocessInterface`` returned first.
+            delta: What ``GQAPreprocessBwdInterface`` returned first.
             dq_accum: What it returned second; this call accumulates into it, in its own order.
 
         Returns:

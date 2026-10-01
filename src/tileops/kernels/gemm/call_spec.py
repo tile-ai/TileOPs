@@ -15,7 +15,7 @@ __all__ = [
     "BmmFp8Call",
     "BmmFp8FwdInterface",
     "BmmFp8TransposeCall",
-    "BmmFp8TransposeInterface",
+    "BmmFp8TransposeFwdInterface",
     "BmmFwdInterface",
     "GemmCall",
     "GemmFp8Call",
@@ -24,7 +24,7 @@ __all__ = [
     "GemmW4A16Call",
     "GemmW4A16FwdInterface",
     "W4A16RepackCall",
-    "W4A16RepackInterface",
+    "W4A16RepackFwdInterface",
 ]
 
 
@@ -203,7 +203,7 @@ class GemmW4A16FwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device``. Weight element ``(n, k)`` is
         ``(q - weight_zero[n, g]) * weight_scale[n, g]`` with ``g = k // call.group_size``
         and ``q`` its INT4 value. *packed_weight* is in the order
-        :class:`W4A16RepackInterface` produces, which has the same shape and dtype as the
+        :class:`W4A16RepackFwdInterface` produces, which has the same shape and dtype as the
         row-major packing and cannot be told from it at runtime.
 
         Args:
@@ -217,7 +217,7 @@ class GemmW4A16FwdInterface(KernelInterface):
         """
 
 
-class W4A16RepackInterface(KernelInterface):
+class W4A16RepackFwdInterface(KernelInterface):
     """The weight order :class:`GemmW4A16FwdInterface` reads, produced once at load time."""
 
     request = W4A16RepackCall
@@ -285,7 +285,7 @@ class BmmFp8FwdInterface(KernelInterface):
         """
 
 
-class BmmFp8TransposeInterface(KernelInterface):
+class BmmFp8TransposeFwdInterface(KernelInterface):
     """The axis swap that puts a batched FP8 operand K-innermost for the WGMMA kernel."""
 
     request = BmmFp8TransposeCall

@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm.call_spec import W4A16RepackCall, W4A16RepackInterface
+from tileops.kernels.gemm.call_spec import W4A16RepackCall, W4A16RepackFwdInterface
 from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -59,7 +59,7 @@ def _w4a16_repack_kernel(n: int, packed_k: int) -> Callable:
     return build
 
 
-class W4A16RepackKernel(Kernel, W4A16RepackInterface):
+class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
     """Move each K step's nibbles into the order the prepacked GEMM decodes.
 
     Args:

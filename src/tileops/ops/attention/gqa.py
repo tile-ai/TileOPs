@@ -26,10 +26,10 @@ from tileops.kernels.attention import (
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQABwdInterface,
-    GQABwdPreprocessInterface,
     GQADenseFwdInterface,
     GQAPagedFwdInterface,
     GQAPrefillPagedFwdInterface,
+    GQAPreprocessBwdInterface,
     GQAVarlenFwdInterface,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
@@ -1046,7 +1046,7 @@ class GroupedQueryAttentionBwdOp(Op):
         "gqa_bwd_ws_kernel": MHABwdWsKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gqa_bwd_preprocess": GQABwdPreprocessInterface,
+        "gqa_bwd_preprocess": GQAPreprocessBwdInterface,
         "gqa_bwd": GQABwdInterface,
     }
 

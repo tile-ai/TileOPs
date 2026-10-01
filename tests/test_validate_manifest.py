@@ -85,7 +85,7 @@ class TestSchema:
 
 
 class TestComposition:
-    """`composition`: uniquely named stages, each naming an entry or a kernel role."""
+    """`composition`: uniquely named stages, each naming an entry or a `kernel_types` key."""
 
     @staticmethod
     def _errors(validator, stages, kind="composite"):

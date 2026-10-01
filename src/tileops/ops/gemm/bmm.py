@@ -17,7 +17,7 @@ from tileops.kernels.gemm import (
     BmmFp8Kernel,
     BmmFp8PersistentKernel,
     BmmFp8TransposeCall,
-    BmmFp8TransposeInterface,
+    BmmFp8TransposeFwdInterface,
     BmmFp8TransposeKernel,
     BmmFp8WsKernel,
     BmmFwdInterface,
@@ -127,7 +127,7 @@ class BmmFp8FwdOp(Op):
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "bmm_fp8": BmmFp8FwdInterface,
-        "bmm_fp8_transpose": BmmFp8TransposeInterface,
+        "bmm_fp8_transpose": BmmFp8TransposeFwdInterface,
     }
 
     def __init__(

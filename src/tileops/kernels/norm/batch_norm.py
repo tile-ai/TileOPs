@@ -19,9 +19,9 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormFwdInferInterface,
-    BatchNormFwdTrainInterface,
-    InstanceNormFwdInferInterface,
+    BatchNormInferFwdInterface,
+    BatchNormTrainFwdInterface,
+    InstanceNormInferFwdInterface,
 )
 
 __all__ = [
@@ -708,7 +708,7 @@ class _BatchNormKernel(Kernel):
         return max(1, min(call.n * call.spatial, -(-cls._SPLIT_TARGET_BLOCKS // call.c)))
 
 
-class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
+class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface):
     """Training forward with a channel held in registers, launched with ``self.launch``."""
 
     def forward(
@@ -835,7 +835,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
 
 
-class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
+class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface):
     """Training forward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel one block does not hold and that is long enough, among few enough
@@ -1050,7 +1050,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainInterface)
         return y, mean_out, rstd_out
 
 
-class BatchNormFwdTrainKernel(Kernel, BatchNormFwdTrainInterface):
+class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
     """Training forward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -1248,7 +1248,7 @@ def _batch_norm_fwd_infer_kernel(
     return _bn_fwd_infer_func
 
 
-class BatchNormFwdInferKernel(Kernel, BatchNormFwdInferInterface, InstanceNormFwdInferInterface):
+class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormInferFwdInterface):
     """Inference-mode batch normalization forward kernel.
 
     Args:

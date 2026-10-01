@@ -13,8 +13,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormFwdInferInterface,
-    BatchNormFwdTrainInterface,
+    BatchNormInferFwdInterface,
+    BatchNormTrainFwdInterface,
 )
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
@@ -380,7 +380,7 @@ class _FakeKernel(Kernel):
         self.momentum = call.momentum
 
 
-class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormFwdInferInterface):
+class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormInferFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
@@ -395,7 +395,7 @@ class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormFwdInferInterface):
         return _from_cl(y.to(self.dtype), x.shape)
 
 
-class _FakeBatchNormFwdTrainKernel(_FakeKernel, BatchNormFwdTrainInterface):
+class _FakeBatchNormFwdTrainKernel(_FakeKernel, BatchNormTrainFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
