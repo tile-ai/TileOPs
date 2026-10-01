@@ -447,16 +447,17 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype,dim,heads", [(torch.bfloat16, 64, 4), (torch.float16, 128, 16)])
+@pytest.mark.parametrize("dtype,dim,heads", [(torch.bfloat16, 64, 4), (torch.float16, 128, 2)])
 @pytest.mark.parametrize("scale", [None, 0.3])
 def test_gla_packed_varlen_matches_fla(
     dtype: torch.dtype, dim: int, heads: int, scale: float | None
 ) -> None:
     """Sequence lengths from one token up, with the state and the host offsets each absent.
 
-    The wide case runs the partitioned state walk, where the longest row spans several
-    partitions and the state a chunk is read with is one the scan composed; the narrow one
-    runs the per-sequence walk.
+    The float16 case is the fewest heads at which a per-sequence state walk oversubscribes
+    the device, so it runs the partitioned walk: its longest row spans several partitions
+    and the state a chunk is read with is one the scan composed. The bfloat16 case runs the
+    per-sequence walk.
     """
     if chunk_gla is None:
         pytest.skip("FLA not installed")

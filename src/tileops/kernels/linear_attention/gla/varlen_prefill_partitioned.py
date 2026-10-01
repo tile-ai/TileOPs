@@ -110,7 +110,6 @@ def gla_varlen_local_state_kernel(
                 leads = (bx % num_slices) % num_v_partitions == 0
 
                 part_cum = T.alloc_shared([num_seqs + 1], "int32")
-                chunk_cum = T.alloc_shared([num_seqs + 1], "int32")
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
                 seq = T.alloc_local([1], "int32")
@@ -129,14 +128,21 @@ def gla_varlen_local_state_kernel(
                 tail_gate = T.alloc_shared([CHUNK_TOKENS, dim_k_part], "float32")
                 decayed = T.alloc_fragment([CHUNK_TOKENS, dim_k_part], dtype)
                 last = T.alloc_fragment([dim_k_part], "float32")
+                chunks = T.alloc_local([1], "int32")
 
                 part_tiling.cumsum_offsets(cu_seqlens, part_cum)
-                chunk_tiling.cumsum_offsets(cu_seqlens, chunk_cum)
                 if part < part_cum[num_seqs]:
                     part_tiling.decode(part, part_cum, lo, hi, seq, first)
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
-                    base = chunk_cum[seq[0]] + first[0] // CHUNK_TOKENS
+                    # The chunk this partition starts at, counted over the sequences before
+                    # it so the block holds one prefix array rather than two.
+                    chunks[0] = first[0] // CHUNK_TOKENS
+                    for g in T.serial(num_seqs):
+                        if g < seq[0]:
+                            size = T.cast(cu_seqlens[g + 1] - cu_seqlens[g], "int32")
+                            chunks[0] += (size + CHUNK_TOKENS - 1) // CHUNK_TOKENS
+                    base = chunks[0]
 
                     T.fill(state, 0.0)
                     T.fill(reach, 0.0)
@@ -145,7 +151,7 @@ def gla_varlen_local_state_kernel(
                     # are the pipelined walk, and the body holds no branch, which is what
                     # lets the loads for the chunks ahead issue while this one's product
                     # runs. The trip count comes from the offsets rather than from
-                    # ``chunk_cum``: a shared-memory read cannot stand in a loop extent.
+                    # a prefix array: a shared-memory read cannot stand in a loop extent.
                     whole = T.min(end - start, partition_chunks * CHUNK_TOKENS) // CHUNK_TOKENS
                     for i_c in T.Pipelined(whole, num_stages=num_stages):
                         token = start + i_c * CHUNK_TOKENS
@@ -278,7 +284,6 @@ def gla_varlen_scan_kernel(
     block_k: int,
     block_v: int,
     num_stages: int,
-    dtype: str,
 ):
     """Compose one sequence's partition summaries into the state each partition starts from.
 
@@ -303,7 +308,7 @@ def gla_varlen_scan_kernel(
             summary_reach: T.Tensor([num_partitions, heads, dim_k], "float32"),
             initial_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
-            start_state: T.Tensor([num_partitions, heads, dim_k, dim_v], dtype),
+            start_state: T.Tensor([num_partitions, heads, dim_k, dim_v], "float32"),
             final_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
         ):
             with T.Kernel(num_seqs * num_tiles, heads, threads=threads) as (bx, i_h):
@@ -334,9 +339,9 @@ def gla_varlen_scan_kernel(
                 # summaries ahead are loaded while this one is composed.
                 for i_p in T.Pipelined(count, num_stages=num_stages):
                     for i_k, i_v in T.Parallel(block_k, block_v):
-                        start_state[base + i_p, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
-                            state[i_k, i_v], dtype
-                        )
+                        start_state[base + i_p, i_h, k_offset + i_k, v_offset + i_v] = state[
+                            i_k, i_v
+                        ]
                     T.copy(
                         summary_state[
                             base + i_p,
@@ -397,13 +402,12 @@ def gla_varlen_partitioned_output_kernel(
             g_cumsum: T.Tensor([1, total_tokens, heads, dim_k], "float32"),
             chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], dtype),
             chunk_reach: T.Tensor([num_chunks, heads, dim_k], "float32"),
-            start_state: T.Tensor([num_partitions, heads, dim_k, dim_v], dtype),
+            start_state: T.Tensor([num_partitions, heads, dim_k, dim_v], "float32"),
             causal: T.Tensor([1, total_tokens, heads, CHUNK_TOKENS], dtype),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             o: T.Tensor([1, total_tokens, heads, dim_v], dtype),
         ):
             with T.Kernel(num_chunks, heads, threads=threads) as (chunk, i_h):
-                part_cum = T.alloc_shared([num_seqs + 1], "int32")
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
@@ -414,14 +418,21 @@ def gla_varlen_partitioned_output_kernel(
                 q_gated = T.alloc_shared([CHUNK_TOKENS, dim_k], dtype)
                 state = T.alloc_shared([dim_k, dim_v], dtype)
                 acc = T.alloc_fragment([CHUNK_TOKENS, dim_v], "float32")
+                partitions = T.alloc_local([1], "int32")
 
-                part_tiling.cumsum_offsets(cu_seqlens, part_cum)
                 tiling.cumsum_offsets(cu_seqlens, tile_cum)
                 if chunk < tile_cum[num_seqs]:
                     tiling.decode(chunk, tile_cum, lo, hi, seq, first)
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
-                    part = part_cum[seq[0]] + first[0] // partition_tokens
+                    # The partition this chunk lies in, counted over the sequences before it
+                    # so the block holds one prefix array rather than two.
+                    partitions[0] = first[0] // partition_tokens
+                    for g in T.serial(num_seqs):
+                        if g < seq[0]:
+                            size = T.cast(cu_seqlens[g + 1] - cu_seqlens[g], "int32")
+                            partitions[0] += (size + partition_tokens - 1) // partition_tokens
+                    part = partitions[0]
 
                     # The query and its gate are read into the gated query and not staged:
                     # each is read once, and the two tiles they would occupy are what holds
@@ -442,7 +453,7 @@ def gla_varlen_partitioned_output_kernel(
                         )
                     for d, j in T.Parallel(dim_k, dim_v):
                         state[d, j] = T.cast(
-                            T.cast(start_state[part, i_h, d, j], "float32")
+                            start_state[part, i_h, d, j]
                             * T.exp2(chunk_reach[chunk, i_h, d] * LOG2E)
                             + T.cast(chunk_state[chunk, i_h, d, j], "float32"),
                             dtype,
@@ -622,7 +633,6 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
             self._scan_tile_k,
             self._scan_tile_v,
             self._scan_stages,
-            name,
         )(self._state_threads)
         self._causal = gla_varlen_causal_kernel(total, num_sequences, heads, dim_k, scale, name)(
             self._causal_threads
