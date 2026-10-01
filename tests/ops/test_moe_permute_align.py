@@ -21,7 +21,14 @@ class MoePermuteAlignFixture(FixtureBase):
         (
             "total_tokens, top_k, num_experts, block_size",
             [
-                pytest.param(4, 2, 4, 4, marks=pytest.mark.smoke, id="tiny-bs4"),
+                pytest.param(
+                    4,
+                    2,
+                    4,
+                    4,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="moe")],
+                    id="tiny-bs4",
+                ),
                 pytest.param(16, 2, 8, 16, marks=pytest.mark.full, id="small-bs16"),
                 pytest.param(128, 4, 8, 64, marks=pytest.mark.full, id="medium-bs64"),
                 pytest.param(1024, 8, 64, 128, marks=pytest.mark.full, id="large-bs128"),

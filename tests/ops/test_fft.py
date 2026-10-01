@@ -19,7 +19,13 @@ class FFTTest(FFTWorkload, TestBase):
 # One smallest or boundary case per execution structure. The range test below
 # covers every plan-table entry without allocating its tensors.
 _CORRECTNESS_CASES = (
-    pytest.param(2, torch.complex64, (), marks=pytest.mark.smoke, id="tiny-lower"),
+    pytest.param(
+        2,
+        torch.complex64,
+        (),
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="fft")],
+        id="tiny-lower",
+    ),
     pytest.param(64, torch.complex64, (), marks=pytest.mark.smoke, id="warp8-lower"),
     pytest.param(4096, torch.complex128, (), marks=pytest.mark.smoke, id="three-pass-upper-c128"),
     pytest.param(32768, torch.complex64, (3,), marks=pytest.mark.smoke, id="two-factor-lower"),

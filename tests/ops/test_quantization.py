@@ -72,15 +72,21 @@ def _subnormal(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _case(op_cls, rows, cols, dtype):
-    return pytest.param(op_cls, rows, cols, dtype, id=f"{op_cls.__name__}-{dtype}")
+def _case(op_cls, rows, cols, dtype, marks=()):
+    return pytest.param(op_cls, rows, cols, dtype, marks=marks, id=f"{op_cls.__name__}-{dtype}")
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "op_cls, rows, cols, dtype",
     [
-        _case(INT8QuantPerTensorFwdOp, 128, 1024, torch.float16),
+        _case(
+            INT8QuantPerTensorFwdOp,
+            128,
+            1024,
+            torch.float16,
+            marks=pytest.mark.packaging(family="quantization"),
+        ),
         _case(INT8QuantPerTensorFwdOp, 128, 1024, torch.bfloat16),
         _case(INT8QuantPerTensorFwdOp, 128, 1024, torch.float32),
         _case(INT8QuantPerChannelFwdOp, 256, 1024, torch.float16),

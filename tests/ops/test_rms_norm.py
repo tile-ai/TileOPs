@@ -31,7 +31,7 @@ class RMSNormFixture(FixtureBase):
                     4096,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="norm")],
                 ),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),

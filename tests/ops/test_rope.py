@@ -328,7 +328,12 @@ class RopeBasicFixture(FixtureBase):
             "batch, seq_len, num_heads, head_dim, dtype",
             [
                 pytest.param(
-                    2, 128, 8, 64, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                    2,
+                    128,
+                    8,
+                    64,
+                    torch.float16,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="rope")],
                 ),
                 pytest.param(2, 128, 8, 64, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2, 128, 8, 64, torch.float32, marks=pytest.mark.smoke),

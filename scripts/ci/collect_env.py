@@ -94,6 +94,13 @@ def collect() -> dict:
     except ImportError:
         pass
 
+    try:
+        import tileops
+
+        env["tileops"] = tileops.__version__
+    except (ImportError, md.PackageNotFoundError):
+        pass
+
     env.update(_gpu_state())
 
     # Every installed distribution, not a chosen few: which library matters to

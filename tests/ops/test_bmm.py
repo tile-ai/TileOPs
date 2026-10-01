@@ -33,7 +33,7 @@ class BmmFixture(FixtureBase):
                     128,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="gemm")],
                     id="smoke-fp16-b4-128",
                 ),
                 pytest.param(

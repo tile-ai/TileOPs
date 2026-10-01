@@ -69,7 +69,7 @@ class GemmFixture(FixtureBase):
                     False,
                     False,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="gemm")],
                     id="smoke-fp16-square",
                 ),
                 pytest.param(

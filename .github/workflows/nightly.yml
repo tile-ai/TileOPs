@@ -467,41 +467,24 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Install TileOPs (image-baked stack, --no-deps)
-        run: bash scripts/ci/install_tileops.sh
-        shell: bash
-
       - name: Build and test wheel package
         run: |
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
-          python3 -m pip install -c constraints.txt build pytest pytest-timeout
-
-          echo "=== Build wheel package ==="
+          python3 -m pip install -c constraints.txt build
           python3 -m build --wheel
-          echo "=== Build artifacts ==="
           ls -lh dist/*.whl
-
-          echo "=== Install built wheel ==="
-          python3 -m pip install dist/*.whl
-
-          # Run outside the checkout so `tileops` resolves to the wheel, not src/.
-          TMP_TEST_DIR="$(mktemp -d "${RUNNER_TEMP}/packaging-test.XXXXXX")"
-          cp -r tests "${TMP_TEST_DIR}/tests"
-          cp -r workloads "${TMP_TEST_DIR}/workloads"
-          cp pyproject.toml "${TMP_TEST_DIR}/"
-          cd "${TMP_TEST_DIR}"
 
           echo "=== Runtime cache env ==="
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-          echo "=== Run pytest packaging ==="
-          python3 -m pytest -q tests/ops -m "packaging" \
-            --timeout=900 --timeout-method=thread \
-            --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
+          # torch and tilelang come from the image; the release workflow runs the same
+          # script with --deps pypi.
+          bash scripts/ci/verify_installed_wheel.sh \
+            --wheel "$(ls dist/*.whl)" --deps image --work-dir packaging-verify
         shell: bash
 
       - name: Upload wheel artifact
@@ -520,6 +503,7 @@ jobs:
           name: packaging-logs-${{ github.sha }}_${{ github.run_attempt }}
           path: |
             packaging.log
-            packaging_smoke.xml
+            packaging-verify/packaging.xml
+            packaging-verify/env.json
           if-no-files-found: warn
           retention-days: 14
