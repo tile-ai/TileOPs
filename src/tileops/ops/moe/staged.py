@@ -11,6 +11,7 @@ from tileops.kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
     MoeGroupedGemmKernel,
+    MoeGroupedGemmMmaKernel,
     MoePrePermuteContiguousKernel,
     MoeUnpermuteKernel,
     PostPermuteCall,
@@ -126,7 +127,10 @@ class MoeGroupedGemmFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"grouped_gemm": MoeGroupedGemmKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "grouped_gemm": MoeGroupedGemmKernel,
+        "grouped_gemm_mma": MoeGroupedGemmMmaKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm": MGroupedGemmFwdInterface
     }

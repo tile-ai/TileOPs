@@ -16,6 +16,7 @@ from tileops.ops.moe import (
     FusedMoeFwdOp,
     FusedTopKFwdOp,
 )
+from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
 
 # vLLM optional import
@@ -208,7 +209,12 @@ def test_fused_moe_qwen3(
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
-    if _VLLM_AVAILABLE and scoring_func == "softmax":
+    # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
+    if (
+        _VLLM_AVAILABLE
+        and scoring_func == "softmax"
+        and get_shared_memory_optin(hidden.device.index) >= 128 * 1024
+    ):
         out_vllm = _vllm_fused_experts(
             hidden.float(),
             w_gate_up.float(),

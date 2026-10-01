@@ -7,12 +7,12 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.backend import BUILTIN
-from tileops.kernels.grouped_gemm import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
     MoeGroupedGemmKernel,
+    MoeGroupedGemmMmaKernel,
     PostPermuteCall,
     PrePermuteCall,
 )
@@ -26,6 +26,7 @@ from tileops.ops.moe import (
     MoePrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
+from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
 from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
 
@@ -299,7 +300,7 @@ def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> No
     """A call outside every shipped candidate's region says so, rather than crashing."""
     device = torch.device("cuda")
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
-    assert set(op.kernel_map) == {"grouped_gemm"}
+    assert set(op.kernel_map) == {"grouped_gemm", "grouped_gemm_mma"}
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(
             torch.empty(2, 8, dtype=torch.bfloat16, device=device),
@@ -347,7 +348,6 @@ def _run(workload) -> tuple:
     return op, out
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "layout,rows,dtype",
     [
@@ -378,16 +378,16 @@ def _run(workload) -> tuple:
     ],
 )
 def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
-    """Each claimed layout: the op selects the template, builds it once, matches the reference."""
+    """Each claimed layout: the op builds the device's kernel once and matches the reference."""
     op, out = _run(MoeGroupedGemmWorkload(_gemm_call(dtype, layout, K=512, E=_E, N=256, **rows)))
     assert out.dtype is dtype and out.shape[-1] == 256
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
-        assert isinstance(kernel, MoeGroupedGemmKernel)
-        assert isinstance(kernel.inner, GemmTemplate)
+        arch = get_sm_version(out.device.index)
+        expected = MoeGroupedGemmKernel if arch == 90 else MoeGroupedGemmMmaKernel
+        assert type(kernel) is expected
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_reuses_its_kernel_across_row_counts():
     """The materialized row count is not in the build identity: a second M reuses the kernel."""
@@ -401,11 +401,10 @@ def test_grouped_gemm_reuses_its_kernel_across_row_counts():
         assert len(op.built_kernels("grouped_gemm")) == 1
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 def test_grouped_gemm_fuses_the_gated_activation(activation):
-    """With ``activation`` the op hands the template a gate||up ``b`` and gets ffn columns back."""
+    """With ``activation`` the op hands the kernel a gate||up ``b`` and gets ffn columns back."""
     call = _gemm_call(
         torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=600, K=512, E=_E, N=192, activation=activation
     )
@@ -413,10 +412,9 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
     assert out.shape == (600, 192)
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
-        assert kernel.inner.activation == activation
+        assert kernel.call.activation == activation
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_dims_off_the_tile_grid():
     """Cover non-tile-aligned K and N."""
@@ -427,7 +425,6 @@ def test_grouped_gemm_dims_off_the_tile_grid():
     )
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_fp32_output_and_preallocated_out():
     call = _gemm_call(
@@ -441,7 +438,6 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     torch.testing.assert_close(out, workload.ref_program(a, b, metadata), rtol=1e-3, atol=1e-2)
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_a_strided_out():
     """The output buffer is declared contiguous; a strided one is refused before the kernel."""
@@ -454,7 +450,6 @@ def test_grouped_gemm_refuses_a_strided_out():
         op(*workload.gen_inputs(), out=out)
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     """Calls outside the adapter's region are refused by selection, naming the reason."""
@@ -478,6 +473,58 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     ids = torch.tensor([0] * 8 + [1] * 8, dtype=torch.int32, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ids)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "kind, packing, metadata_kind, alignment, max_m, rows",
+    [
+        pytest.param("contiguous", "tight", "physical_psum", 1, None, 600, id="tight-psum"),
+        pytest.param("contiguous", "aligned", "physical_psum", 128, None, 1152, id="aligned-psum"),
+        pytest.param("contiguous", "aligned", "per_row", 128, None, 1152, id="aligned-per-row"),
+        pytest.param("masked", None, None, 1, 128, _E * 128, id="masked"),
+    ],
+)
+def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    packing: "str | None",
+    metadata_kind: "str | None",
+    alignment: int,
+    max_m: "int | None",
+    rows: int,
+):
+    """The metadata is an int32 input that sets which tiles run, so tuning cannot take it
+    random: the supply builds the call's own rows in its layout."""
+    call = MGroupedGemmCall(
+        kind=kind,
+        packing=packing,
+        metadata_kind=metadata_kind,
+        alignment=alignment,
+        max_m=max_m,
+        ab_dtype=torch.bfloat16,
+        cd_dtype=torch.bfloat16,
+        num_groups=_E,
+        m=rows,
+        n=256,
+        k=512,
+    )
+    monkeypatch.setattr(MoeGroupedGemmMmaKernel, "_check_arch", lambda self: None)
+    supply = MoeGroupedGemmMmaKernel(call).autotune_supply_prog
+    a, b, layout, c = supply([None] * 4)
+
+    lead = [_E, max_m] if kind == "masked" else [rows]
+    assert [list(t.shape) for t in (a, b, c)] == [[*lead, 512], [_E, 256, 512], [*lead, 256]]
+    if kind == "masked":
+        assert layout.shape == (_E,) and 0 < int(layout.max()) <= max_m
+    elif metadata_kind == "per_row":
+        assert layout.shape == (rows,) and int(layout.min()) >= 0 and int(layout.max()) < _E
+    else:
+        assert layout.shape == (_E,) and bool((layout.diff() > 0).all())
+        assert int(layout[-1]) <= rows
+    with pytest.raises(RuntimeError, match="expects 4 parameters"):
+        supply([None] * 5)
 
 
 @pytest.mark.sm90

@@ -34,7 +34,7 @@ class IndexedExpertMLPFwdOp(Op):
     leader copies that expert's weights, so the minimum DRAM traffic the roofline prices
     is one read per distinct expert. That pays off while the routes
     are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
-    shapes where it does. The indexed kernels require SM90.
+    shapes where it does.
     """
 
     compile_boundary: ClassVar[bool] = True

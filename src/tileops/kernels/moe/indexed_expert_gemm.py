@@ -16,6 +16,7 @@ from tileops.kernels.moe.call_spec import (
     IndexedRouteStatsFwdInterface,
     IndexedWeightedReduceFwdInterface,
 )
+from tileops.utils import get_shared_memory_optin
 
 __all__ = [
     "IndexedExpertDownKernel",
@@ -254,7 +255,7 @@ def _weighted_reduce(
 class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
     """Describe same-expert route groups on device."""
 
-    supported_archs = [90]
+    supported_archs = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
@@ -302,7 +303,7 @@ class IndexedExpertGemmTemplate(Kernel):
     ``[E,2N,K]`` for a gated activation; output is ``[T,top_k,N]``.
     """
 
-    supported_archs = [90]
+    supported_archs = [80, 86, 89, 90]
 
     def __init__(
         self,
@@ -358,6 +359,14 @@ class IndexedExpertGemmTemplate(Kernel):
         ):
             block_k = 256
             num_stages = 2
+        # A stage holds the 16-row A tile and the weight tile. Where the stages do not fit a
+        # block's shared memory, take fewer, then a narrower K step.
+        rows = 16 + (2 if self.activation != "none" else 1) * block_n
+        limit = get_shared_memory_optin(self.device_index)
+        while num_stages > 1 and num_stages * rows * block_k * self.dtype.itemsize > limit:
+            num_stages -= 1
+        while block_k > 64 and num_stages * rows * block_k * self.dtype.itemsize > limit:
+            block_k //= 2
         return {
             "block_n": block_n,
             "block_k": block_k,
@@ -413,7 +422,7 @@ class IndexedExpertGemmTemplate(Kernel):
 class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
     """Apply routing weights and reduce route-major expert output to tokens."""
 
-    supported_archs = [90]
+    supported_archs = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
