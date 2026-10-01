@@ -12,7 +12,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla.call_spec import (
@@ -265,10 +265,11 @@ def gla_varlen_causal_kernel(
 ):
     """Form the causal query-key product of one chunk, one 16-token sub-block at a time.
 
-    Every pair anchors both exponents on the query sub-block's first row and runs on tensor
-    cores, the diagonal one included: within one sub-block the two exponents travel at most
-    its own 16 tokens of gate, which float32 holds, and the causal mask is applied to the
-    product rather than to the operands.
+    A pair below the diagonal anchors both exponents on the query sub-block's first row,
+    where the causal pairing makes both nonpositive, so neither factor can overflow and the
+    product runs on tensor cores. The diagonal pair's key exponent is positive, and the two
+    factors together span the sub-block's whole gate decay; it takes the same product where
+    that span is representable and the exact per-pair form where it is not.
     """
     # The sub-block the chunk's causal product is tiled by. It bounds how far the two
     # exponents around one anchor row can travel, which is what keeps them representable.
@@ -313,7 +314,13 @@ def gla_varlen_causal_kernel(
                 q_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
                 k_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
                 product = T.alloc_fragment([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], "float32")
+                spans = T.alloc_fragment([dim_k], "float32")
+                span = T.alloc_fragment([1], "float32")
+                terms = T.alloc_fragment([SUBCHUNK_TOKENS, dim_k], "float32")
+                sums = T.alloc_fragment([SUBCHUNK_TOKENS], "float32")
 
+                # Only the diagonal pair reads a span, and it is the one that measures it.
+                span[0] = 0.0
                 tiling.cumsum_offsets(cu_seqlens, tile_cum)
                 if chunk < tile_cum[num_seqs]:
                     tiling.decode(chunk, tile_cum, lo, hi, seq, first)
@@ -334,6 +341,12 @@ def gla_varlen_causal_kernel(
                             )
                             g_k[j, d] = g_cumsum[0, T.min(col + j, end - 1), i_h, d]
 
+                        if bj == bi:
+                            for d in T.Parallel(dim_k):
+                                spans[d] = (g_q[0, d] - g_k[SUBCHUNK_TOKENS - 1, d]) * LOG2E
+                            T.reduce_max(spans, span, dim=0)
+
+                    if bj < bi or (bj == bi and span[0] < BF16_SPLIT_EXP2_SPAN):
                         for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
                             q_gated[i, d] = T.cast(
                                 T.cast(queries[i, d], "float32")
@@ -353,6 +366,19 @@ def gla_varlen_causal_kernel(
                             block[i, j] = T.cast(
                                 T.if_then_else(bj < bi or j <= i, product[i, j], 0.0), dtype
                             )
+                    elif bj == bi:
+                        for j in T.Serial(SUBCHUNK_TOKENS):
+                            for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
+                                terms[i, d] = (
+                                    T.cast(queries[i, d], "float32")
+                                    * T.cast(keys[j, d], "float32")
+                                    * T.exp2((g_q[i, d] - g_k[j, d]) * LOG2E)
+                                )
+                            T.reduce_sum(terms, sums, dim=1)
+                            for i in T.Parallel(SUBCHUNK_TOKENS):
+                                block[i, j] = T.cast(
+                                    T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype
+                                )
                     else:
                         for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
                             block[i, j] = T.cast(0, dtype)

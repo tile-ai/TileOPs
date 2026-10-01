@@ -44,6 +44,11 @@ SM_RESIDENT_BLOCKS: dict[int, int] = {
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 
+# Widest exponent gap a pair of bfloat16 factors can carry between them. A product written
+# as exp(a) * exp(-a) holds only while both factors are representable, and bfloat16 runs to
+# 2**127; the margin leaves room for the operands the factors scale.
+BF16_SPLIT_EXP2_SPAN: float = 120.0
+
 # 1/sqrt(2), for the erf form of GELU: 0.5 * x * (1 + erf(x / sqrt(2))).
 INV_SQRT2: float = 0.7071067811865476
 
