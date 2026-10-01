@@ -3,12 +3,26 @@
 import tilelang.language as T
 import torch
 
-from tileops.kernels.elementwise._base import FloatUnaryKernel
-from tileops.kernels.elementwise._dtype import log_for_output_precision
+from tileops.kernels.elementwise._base import FloatUnaryKernel, TorchFallbackKernel
+from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise.call_spec import (
+    ElementwiseCall,
+    ReciprocalFwdInterface,
+    RoundCall,
+    RoundFwdInterface,
+    UnaryElementwiseFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry, Kernel
+
+# The integral element types the manifest admits for the unary math ops. This backend
+# compiles float programs only, so a torch fallback answers for them.
+INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
 
 __all__ = [
+    "INT_DTYPES",
     "AbsFwdKernel",
+    "AbsIntFwdKernel",
     "CeilFwdKernel",
     "CosFwdKernel",
     "ErfFwdKernel",
@@ -17,18 +31,22 @@ __all__ = [
     "FloorFwdKernel",
     "Log1pFwdKernel",
     "LogFwdKernel",
+    "IntIdentityFwdKernel",
     "NegFwdKernel",
+    "NegIntFwdKernel",
     "ReciprocalFwdKernel",
+    "RoundDecimalsFwdKernel",
     "RoundFwdKernel",
     "RsqrtFwdKernel",
     "SignFwdKernel",
+    "SignIntFwdKernel",
     "SinFwdKernel",
     "SqrtFwdKernel",
     "TruncFwdKernel",
 ]
 
 
-class ExpFwdKernel(FloatUnaryKernel):
+class ExpFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise exp(x)."""
 
     @staticmethod
@@ -36,7 +54,7 @@ class ExpFwdKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32"))
 
 
-class LogFwdKernel(FloatUnaryKernel):
+class LogFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise log(x)."""
 
     BYTES_PER_THREAD = 32
@@ -46,7 +64,7 @@ class LogFwdKernel(FloatUnaryKernel):
         return log_for_output_precision(x, T.cast(x, "float32"))
 
 
-class SqrtFwdKernel(FloatUnaryKernel):
+class SqrtFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sqrt(x)."""
 
     BYTES_PER_THREAD = 32
@@ -56,7 +74,7 @@ class SqrtFwdKernel(FloatUnaryKernel):
         return T.sqrt(T.cast(x, "float32"))
 
 
-class RsqrtFwdKernel(FloatUnaryKernel):
+class RsqrtFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise 1/sqrt(x)."""
 
     @staticmethod
@@ -64,7 +82,7 @@ class RsqrtFwdKernel(FloatUnaryKernel):
         return T.rsqrt(T.cast(x, "float32"))
 
 
-class AbsFwdKernel(FloatUnaryKernel):
+class AbsFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise |x|."""
 
     @staticmethod
@@ -72,7 +90,7 @@ class AbsFwdKernel(FloatUnaryKernel):
         return T.abs(x)
 
 
-class NegFwdKernel(FloatUnaryKernel):
+class NegFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise -x."""
 
     @staticmethod
@@ -80,7 +98,7 @@ class NegFwdKernel(FloatUnaryKernel):
         return -x
 
 
-class ReciprocalFwdKernel(FloatUnaryKernel):
+class ReciprocalFwdKernel(FloatUnaryKernel, ReciprocalFwdInterface):
     """Element-wise 1/x.
 
     Integral inputs are this backend's business: it has no integer kernel, so it
@@ -91,13 +109,14 @@ class ReciprocalFwdKernel(FloatUnaryKernel):
 
     BYTES_PER_THREAD = 32
 
-    _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        return None if call.dtype in INT_DTYPES else super().refusal(call)
 
     @classmethod
-    def specialize(cls, dtype: torch.dtype) -> tuple:
-        if dtype in cls._INT_DTYPES:
-            return cls, torch.float32
-        return super().specialize(dtype)
+    def entry_for(cls, call: ElementwiseCall) -> Entry:
+        dtype = torch.float32 if call.dtype in INT_DTYPES else call.dtype
+        return call, lambda: cls(call.n_total, dtype)
 
     @staticmethod
     def op_func(x):
@@ -109,7 +128,7 @@ class ReciprocalFwdKernel(FloatUnaryKernel):
         return super().forward(x)
 
 
-class SignFwdKernel(FloatUnaryKernel):
+class SignFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sign(x): -1, 0, or +1."""
 
     @staticmethod
@@ -127,7 +146,7 @@ class SignFwdKernel(FloatUnaryKernel):
         )
 
 
-class SinFwdKernel(FloatUnaryKernel):
+class SinFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sin(x)."""
 
     BYTES_PER_THREAD = 32
@@ -137,7 +156,7 @@ class SinFwdKernel(FloatUnaryKernel):
         return T.sin(T.cast(x, "float32"))
 
 
-class CosFwdKernel(FloatUnaryKernel):
+class CosFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise cos(x)."""
 
     BYTES_PER_THREAD = 32
@@ -147,7 +166,7 @@ class CosFwdKernel(FloatUnaryKernel):
         return T.cos(T.cast(x, "float32"))
 
 
-class FloorFwdKernel(FloatUnaryKernel):
+class FloorFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise floor(x).
 
     Casts to fp32 before calling ``T.floor`` because ``hfloor`` is not
@@ -159,7 +178,7 @@ class FloorFwdKernel(FloatUnaryKernel):
         return T.floor(T.cast(x, "float32"))
 
 
-class CeilFwdKernel(FloatUnaryKernel):
+class CeilFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise ceil(x).
 
     Casts to fp32 before calling ``T.ceil`` because ``hceil`` is not
@@ -171,7 +190,7 @@ class CeilFwdKernel(FloatUnaryKernel):
         return T.ceil(T.cast(x, "float32"))
 
 
-class RoundFwdKernel(FloatUnaryKernel):
+class RoundFwdKernel(FloatUnaryKernel, RoundFwdInterface):
     """Element-wise round(x) with banker's rounding (round-to-nearest-even).
 
     Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
@@ -179,12 +198,18 @@ class RoundFwdKernel(FloatUnaryKernel):
     ``hnearbyint`` is not available for ``cutlass::half_t``.
     """
 
+    @classmethod
+    def refusal(cls, call: RoundCall) -> "str | None":
+        if call.decimals != 0:
+            return f"rounds to whole numbers, not {call.decimals} decimal places"
+        return super().refusal(call)
+
     @staticmethod
     def op_func(x):
         return T.nearbyint(T.cast(x, "float32"))
 
 
-class TruncFwdKernel(FloatUnaryKernel):
+class TruncFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise trunc(x) -- integer part toward zero.
 
     Casts to fp32 before calling ``T.trunc`` because ``htrunc`` is not
@@ -196,7 +221,7 @@ class TruncFwdKernel(FloatUnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfFwdKernel(FloatUnaryKernel):
+class ErfFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise erf(x)."""
 
     BYTES_PER_THREAD = 32
@@ -206,7 +231,7 @@ class ErfFwdKernel(FloatUnaryKernel):
         return erf(x, x.dtype)
 
 
-class Log1pFwdKernel(FloatUnaryKernel):
+class Log1pFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise log(1 + x).
 
     fp32 takes ``T.log1p``, which keeps the small values ``log(1 + x)`` rounds away
@@ -224,9 +249,81 @@ class Log1pFwdKernel(FloatUnaryKernel):
         return log_for_output_precision(x, T.cast(1.0, "float32") + wide)
 
 
-class Expm1FwdKernel(FloatUnaryKernel):
+class Expm1FwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise exp(x) - 1."""
 
     @staticmethod
     def op_func(x):
         return T.exp(T.cast(x, "float32")) - T.cast(1.0, "float32")
+
+
+class AbsIntFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface):
+    """The absolute value of an integral input."""
+
+    SUPPORTED_DTYPES = INT_DTYPES
+    handler = staticmethod(torch.abs)
+
+
+class NegIntFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface):
+    """The negation of an integral input."""
+
+    SUPPORTED_DTYPES = INT_DTYPES
+    handler = staticmethod(torch.neg)
+
+
+class SignIntFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface):
+    """The sign of an integral input."""
+
+    SUPPORTED_DTYPES = INT_DTYPES
+    handler = staticmethod(torch.sign)
+
+
+class IntIdentityFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface, RoundFwdInterface):
+    """An integral input, unchanged: floor, ceil, round and trunc all leave it alone."""
+
+    SUPPORTED_DTYPES = INT_DTYPES
+    handler = staticmethod(torch.Tensor.clone)
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        if getattr(call, "decimals", 0) != 0:
+            return f"leaves whole numbers alone, which {call.decimals} decimal places do not"
+        return super().refusal(call)
+
+
+class RoundDecimalsFwdKernel(Kernel, RoundFwdInterface):
+    """Rounding to a non-zero number of decimal places.
+
+    ``round(x, decimals=k)`` is ``round(x * 10 ** k) / 10 ** k``, which the
+    round-to-nearest-integer program does not do; torch computes it. The class compiles
+    nothing, so there is nothing to tune.
+    """
+
+    SUPPORTED_DTYPES = FLOAT_DTYPES + INT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: RoundCall) -> "str | None":
+        if call.decimals == 0:
+            return "rounds to a non-zero number of decimal places"
+        if call.dtype not in cls.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
+            return f"serves dtypes [{supported}], not {call.dtype}"
+        return None
+
+    @classmethod
+    def applies(cls, call: RoundCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def entry_for(cls, call: RoundCall) -> Entry:
+        return call.decimals, lambda: cls(call.decimals)
+
+    def __init__(self, decimals: int) -> None:
+        """Round to *decimals* places."""
+        super().__init__()
+        self.decimals = decimals
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        # Through float32, so scaling by ``10 ** decimals`` cannot overflow a narrow
+        # input; the single down-cast restores the element type.
+        return torch.round(input.float(), decimals=self.decimals).to(input.dtype)

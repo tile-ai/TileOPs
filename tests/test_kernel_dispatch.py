@@ -388,87 +388,8 @@ def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest()
     assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
 
 
-# FIXME(staged-rollout): the ops that still reach kernels outside a kernel interface.
-#
-# Broken invariant: every op declares ``interfaces`` (ops-design.md § Kernel selection).
-# Why: ops migrate one family per PR.
-# Cleanup: a migration PR deletes the names it migrates; delete this list with the last one.
-_LEGACY_OPS = frozenset(
-    [
-        "AbsFwdOp",
-        "AddFwdOp",
-        "AlibiFwdOp",
-        "BitwiseAndFwdOp",
-        "BitwiseNotFwdOp",
-        "BitwiseOrFwdOp",
-        "BitwiseXorFwdOp",
-        "CeilFwdOp",
-        "ClampFwdOp",
-        "ClampScalarFwdOp",
-        "CosFwdOp",
-        "DivFwdOp",
-        "EluFwdOp",
-        "EqFwdOp",
-        "ErfFwdOp",
-        "ExpFwdOp",
-        "Expm1FwdOp",
-        "FloorDivideFwdOp",
-        "FloorFwdOp",
-        "GeFwdOp",
-        "GeluAndMulFwdOp",
-        "GeluFwdOp",
-        "GeluTanhAndMulFwdOp",
-        "GtFwdOp",
-        "HardsigmoidFwdOp",
-        "HardswishFwdOp",
-        "HardtanhFwdOp",
-        "IsfiniteFwdOp",
-        "IsinfFwdOp",
-        "IsnanFwdOp",
-        "LeFwdOp",
-        "LeakyReluFwdOp",
-        "LerpFwdOp",
-        "LerpTensorFwdOp",
-        "Log1pFwdOp",
-        "LogFwdOp",
-        "LogicalAndFwdOp",
-        "LogicalNotFwdOp",
-        "LogicalOrFwdOp",
-        "LtFwdOp",
-        "MaskedFillFwdOp",
-        "MaskedFillScalarFwdOp",
-        "MaximumFwdOp",
-        "MinimumFwdOp",
-        "MishFwdOp",
-        "MulFwdOp",
-        "NanToNumFwdOp",
-        "NeFwdOp",
-        "NegFwdOp",
-        "PowFwdOp",
-        "PreluFwdOp",
-        "ReciprocalFwdOp",
-        "ReluFwdOp",
-        "RemainderFwdOp",
-        "RoundFwdOp",
-        "RsqrtFwdOp",
-        "SeluFwdOp",
-        "SigmoidFwdOp",
-        "SignFwdOp",
-        "SiluAndMulFwdOp",
-        "SiluFwdOp",
-        "SinFwdOp",
-        "SinusoidalFwdOp",
-        "SoftplusFwdOp",
-        "SqrtFwdOp",
-        "SubFwdOp",
-        "TanhFwdOp",
-        "TruncFwdOp",
-        "WhereFwdOp",
-    ]
-)
-
-
-def test_no_op_reaches_kernels_outside_an_interface_unless_listed() -> None:
+def test_every_op_reaches_its_kernels_through_an_interface() -> None:
+    """An op that builds a kernel of its own declares the interface it calls it through."""
     for module in pkgutil.walk_packages(tileops.ops.__path__, "tileops.ops."):
         importlib.import_module(module.name)
     ops, pending = set(), [Op]
@@ -483,11 +404,6 @@ def test_no_op_reaches_kernels_outside_an_interface_unless_listed() -> None:
         and not cls.__name__.startswith("_")
         and not inspect.isabstract(cls)
         and not cls.interfaces
-        and (
-            cls.kernel_types
-            or cls.default_kernel_map is not Op.default_kernel_map
-            or cls.entry_for is not Op.entry_for
-        )
+        and (cls.kernel_types or cls.default_kernel_map is not Op.default_kernel_map)
     }
-    assert sorted(legacy - _LEGACY_OPS) == [], "declare interfaces instead"
-    assert sorted(_LEGACY_OPS - legacy) == [], "migrated: remove these from the list"
+    assert sorted(legacy) == [], "declare interfaces instead"

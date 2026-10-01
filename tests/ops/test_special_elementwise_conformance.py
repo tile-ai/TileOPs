@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import standard_tolerance
+from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 
 # WhereFwdOp full broadcasting
@@ -160,7 +161,7 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     torch.testing.assert_close(op(inp, mn, None), torch.clamp(inp, min=mn))
     torch.testing.assert_close(op(inp, None, mx), torch.clamp(inp, max=mx))
 
-    assert len(op.built_kernels(op._slot)) == 3, "one kernel per presence pattern"
+    assert len(op.built_kernels(ELEMENTWISE)) == 3, "one kernel per presence pattern"
 
 
 # ClampScalarFwdOp, and ClampFwdOp with one bound withheld

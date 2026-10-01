@@ -1,18 +1,19 @@
 """PReLU op: y = x if x > 0 else weight[channel] * x."""
 
 from math import prod
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.kernels.elementwise.call_spec import PreluCall, PreluFwdInterface
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
 
-class PreluFwdOp(_PerDtypeKernels, Op):
+class PreluFwdOp(Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
@@ -22,6 +23,7 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"prelu": PreluFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: PreluFwdInterface}
 
     def __init__(
         self,
@@ -43,19 +45,19 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int, num_channels: int, inner_size: int):
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, num_channels, inner_size, ctor_dtype, tune=self.tune)
-
     def _eager_forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         input = input.contiguous()
         weight = weight.contiguous()
         # Elements per channel per row: PyTorch puts the channel at dim 1.
         inner_size = prod(input.shape[2:]) if input.ndim > 2 else 1
-        kernel = self._kernel(
-            (input, weight), input.dtype, input.numel(), weight.numel(), inner_size
+        call = PreluCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            num_channels=weight.numel(),
+            inner_size=inner_size,
         )
-        return kernel(input, weight)
+        return self.kernel_for(ELEMENTWISE, (input, weight), call)(input, weight)
 
     def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``weight``."""

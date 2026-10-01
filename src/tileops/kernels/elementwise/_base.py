@@ -39,7 +39,15 @@ from tileops.kernels.elementwise._policy import (
     elementwise_autotune_configs,
     elementwise_output_plan,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.elementwise.call_spec import (
+    AlphaScaledBinaryFwdInterface,
+    AlphaScaledCall,
+    BroadcastCall,
+    ElementwiseCall,
+    FusedGatedCall,
+    FusedGatedFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "BinaryKernel",
@@ -49,6 +57,7 @@ __all__ = [
     "LogicalUnaryKernel",
     "MultiInputElementwiseKernel",
     "ScalarParamUnaryKernel",
+    "TorchFallbackKernel",
     "UnaryKernel",
 ]
 
@@ -76,6 +85,23 @@ class _ElementwiseKernel(Kernel):
     # Extent of the row a broadcast block walks, or ``None`` where blocks are not
     # cut from rows. Only the binary families lay a grid out that way.
     row_broadcast_inner: int | None = None
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        """Refuse an element type this family's programs do not serve.
+
+        ``refusal`` is the primitive here and ``applies`` reads it, so a caller told that
+        nothing served the call learns which element types each class does serve. A class
+        that computes a semantic dtype in another storage type states its own.
+        """
+        if cls.SUPPORTED_DTYPES is None or call.dtype in cls.SUPPORTED_DTYPES:
+            return None
+        supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
+        return f"serves dtypes [{supported}], not {call.dtype}"
 
     def _validate_supported_dtype(self, dtype) -> None:
         if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
@@ -157,6 +183,10 @@ class UnaryKernel(_StrategyKernel):
     def op_func(x):
         """Pointwise operation. Must be overridden by subclass."""
         raise NotImplementedError
+
+    @classmethod
+    def entry_for(cls, call: ElementwiseCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype)
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
@@ -283,6 +313,10 @@ class BinaryKernel(_StrategyKernel):
     # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
     fast_func = None
 
+    @classmethod
+    def entry_for(cls, call: BroadcastCall) -> Entry:
+        return call, lambda: cls(call.a_shape, call.b_shape, call.dtype)
+
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
         super().__init__()
         self._validate_supported_dtype(dtype)
@@ -407,7 +441,7 @@ class BinaryKernel(_StrategyKernel):
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
-class FusedGatedKernel(_StrategyKernel):
+class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     """Template base class for fused gated elementwise kernels.
 
     Input layout: x has shape (M, 2*N) where x[:, :N] is the gate
@@ -435,6 +469,10 @@ class FusedGatedKernel(_StrategyKernel):
     def activation_func(x):
         """Activation function. Must be overridden by subclass."""
         raise NotImplementedError
+
+    @classmethod
+    def entry_for(cls, call: FusedGatedCall) -> Entry:
+        return call, lambda: cls(call.m, call.n, call.dtype)
 
     def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
@@ -523,10 +561,22 @@ class LogicalUnaryKernel(UnaryKernel):
 
 
 class Uint8StorageUnaryKernel(UnaryKernel):
-    """Unary kernel that computes on uint8 but accepts and returns bool."""
+    """Unary kernel that computes on uint8 but accepts and returns bool.
+
+    It serves the bool calls of the key it is preferred over, which is where bool storage
+    being one byte is this backend's fact rather than the op's.
+    """
 
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = (torch.uint8,)
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        return None if call.dtype == torch.bool else f"serves bool operands, not {call.dtype}"
+
+    @classmethod
+    def entry_for(cls, call: ElementwiseCall) -> Entry:
+        return call, lambda: cls(call.n_total, torch.uint8)
 
     def forward(self, x):
         as_bool = x.dtype == torch.bool
@@ -537,10 +587,22 @@ class Uint8StorageUnaryKernel(UnaryKernel):
 
 
 class Uint8StorageBinaryKernel(BinaryKernel):
-    """Binary kernel that computes on uint8 but accepts and returns bool."""
+    """Binary kernel that computes on uint8 but accepts and returns bool.
+
+    It serves the bool calls of the key it is preferred over, which is where bool storage
+    being one byte is this backend's fact rather than the op's.
+    """
 
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = (torch.uint8,)
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        return None if call.dtype == torch.bool else f"serves bool operands, not {call.dtype}"
+
+    @classmethod
+    def entry_for(cls, call: BroadcastCall) -> Entry:
+        return call, lambda: cls(call.a_shape, call.b_shape, torch.uint8)
 
     def forward(self, a, b):
         as_bool = a.dtype == torch.bool
@@ -552,7 +614,7 @@ class Uint8StorageBinaryKernel(BinaryKernel):
         return result.view(torch.bool) if as_bool else result
 
 
-class AlphaScaledBinaryKernel(BinaryKernel):
+class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
     """Shared base for ``y = a (op) alpha * b`` kernels.
 
     Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
@@ -572,6 +634,10 @@ class AlphaScaledBinaryKernel(BinaryKernel):
             "AlphaScaledBinaryKernel uses a per-instance op_func built from "
             "alpha; use the kernel via __init__ instead of calling op_func."
         )
+
+    @classmethod
+    def entry_for(cls, call: AlphaScaledCall) -> Entry:
+        return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, alpha=call.alpha)
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, alpha=1):
         # The op's signature admits an integral input only an integral alpha the dtype
@@ -688,6 +754,10 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     SUPPORTED_DTYPES = FLOAT_DTYPES
     INPUTS: tuple = ()
 
+    @classmethod
+    def entry_for(cls, call: ElementwiseCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype)
+
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
         self._validate_supported_dtype(dtype)
@@ -768,3 +838,38 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
         result = self._compiled_fn(*args).reshape(out_shape)
         return result.view(torch.bool) if as_bool else result
+
+
+class TorchFallbackKernel(Kernel):
+    """The answer for element types this backend compiles no program for.
+
+    Torch computes it. The class takes no construction argument, so every call shares one
+    entry, and it exposes no program, so tuning walks past it.
+    """
+
+    # The element types this class answers for; a subclass states its own.
+    SUPPORTED_DTYPES: tuple = ()
+
+    @staticmethod
+    def handler(input: "torch.Tensor") -> "torch.Tensor":
+        """The answer for one input. Must be overridden by subclass."""
+        raise NotImplementedError
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        if call.dtype in cls.SUPPORTED_DTYPES:
+            return None
+        served = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
+        return f"serves dtypes [{served}], not {call.dtype}"
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return (), lambda: cls()
+
+    def forward(self, input: "torch.Tensor") -> "torch.Tensor":
+        # Contiguous like the compiled path: the layout must not depend on the element type.
+        return type(self).handler(input).contiguous()

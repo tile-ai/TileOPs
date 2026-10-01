@@ -59,12 +59,6 @@ class CallSpec:
     smem_budget: int = dataclasses.field(default=_DeviceFact("smem_budget"), compare=False)
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
-    # FIXME(staged-rollout): tuning policy travels on the record of an unmigrated call.
-    #
-    # Broken invariant: a call spec carries call facts only (ops-design.md § Kernel selection).
-    # Why: unmigrated ops and their kernels still pass ``tune`` through the record.
-    # Cleanup: when every op declares ``interfaces``, delete this field.
-    tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
         stated = frozenset(f for f in _DEVICE_FACTS if f"_{f}" in vars(self))
@@ -137,7 +131,7 @@ class CallSpec:
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in (*_DEVICE_FACTS, "device", "tune")
+            if f.name not in (*_DEVICE_FACTS, "device")
             and getattr(self, f.name) != getattr(default, f.name)
         ]
         return ", ".join([*(f"{name}={value}" for name, value in facts.items()), *stated])

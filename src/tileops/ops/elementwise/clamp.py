@@ -1,17 +1,23 @@
 """Clamp ops: Tensor-bound bounds, and the scalar-bound form."""
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import ClampFwdKernel, ClampTensorFwdKernel
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.kernels.elementwise.call_spec import (
+    BoundedUnaryFwdInterface,
+    BoundsCall,
+    ClampTensorCall,
+    ClampTensorFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 from tileops.ops.op_base import Op
 
 
-class ClampFwdOp(_PerDtypeKernels, Op):
+class ClampFwdOp(Op):
     """Clamp with Tensor lower and/or upper bounds (broadcasting).
 
     Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``
@@ -27,6 +33,9 @@ class ClampFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"clamp_tensor": ClampTensorFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: ClampTensorFwdInterface
+    }
 
     def __init__(
         self,
@@ -47,16 +56,6 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int, has_min: bool, has_max: bool):
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(
-            n_total,
-            ctor_dtype,
-            has_min=has_min,
-            has_max=has_max,
-            tune=self.tune,
-        )
-
     def _eager_forward(
         self,
         input: torch.Tensor,
@@ -68,14 +67,14 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         input = input.contiguous()
         min = None if min is None else min.contiguous()
         max = None if max is None else max.contiguous()
-        kernel = self._kernel(
-            (input, min, max),
-            input.dtype,
-            n_total,
-            min is not None,
-            max is not None,
+        call = ClampTensorCall(
+            device=input.device,
+            n_total=n_total,
+            dtype=input.dtype,
+            has_min=min is not None,
+            has_max=max is not None,
         )
-        return kernel(input, min, max)
+        return self.kernel_for(ELEMENTWISE, (input, min, max), call)(input, min, max)
 
     def forward(
         self,
@@ -87,11 +86,13 @@ class ClampFwdOp(_PerDtypeKernels, Op):
         return self._call_boundary(input, min, max)
 
 
-class ClampScalarFwdOp(_PerDtypeKernels, Op):
+class ClampScalarFwdOp(UnaryOp):
     """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``)."""
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"clamp": ClampFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: BoundedUnaryFwdInterface
+    }
 
     def __init__(
         self,
@@ -118,21 +119,11 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        """The bounds are baked into the kernel, one specialization per dtype."""
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(
-            n_total,
-            ctor_dtype,
+    def _call_spec(self, input: torch.Tensor) -> BoundsCall:
+        return BoundsCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
             min_val=self.min,
             max_val=self.max,
-            tune=self.tune,
         )
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = input.contiguous()
-        return self._kernel((input,), input.dtype, input.numel())(input)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
-        return self._call_boundary(input)

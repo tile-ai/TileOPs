@@ -2,7 +2,7 @@
 
 One row per region the family's own predicates used to draw, including the
 boundaries they turned on: element type, dimensions, layout, and architecture.
-Selection is asserted through ``select_implementation`` / ``select_kernel``, which
+Selection is asserted through ``select_implementation``, which
 resolve the implementation without compiling anything.
 """
 

@@ -1,6 +1,8 @@
 """Activation elementwise ops (ReLU + parametric/param-free families)."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
+
+import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import (
@@ -22,11 +24,21 @@ from tileops.kernels.elementwise import (
     SoftplusFwdKernel,
     TanhFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.elementwise.call_spec import (
+    BoundedUnaryFwdInterface,
+    BoundsCall,
+    EluCall,
+    EluFwdInterface,
+    LeakyReluCall,
+    LeakyReluFwdInterface,
+    SoftplusCall,
+    SoftplusFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.elementwise._base import (
+    ELEMENTWISE,
     FusedGatedOp,
     UnaryOp,
-    _ParametricActivationOp,
     _ParamFreeActivationOp,
     _UnaryActivationMixin,
 )
@@ -116,11 +128,11 @@ class SeluFwdOp(_ParamFreeActivationOp):
     kernel_types = {"selu": SeluFwdKernel}
 
 
-class LeakyReluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
+class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     kernel_types = {"leaky_relu": LeakyReluFwdKernel}
-    _scalar_params = ("negative_slope",)
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LeakyReluFwdInterface}
 
     def __init__(
         self,
@@ -144,12 +156,20 @@ class LeakyReluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
+    def _call_spec(self, input: torch.Tensor) -> LeakyReluCall:
+        return LeakyReluCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            negative_slope=self.negative_slope,
+        )
 
-class EluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
+
+class EluFwdOp(_UnaryActivationMixin, UnaryOp):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     kernel_types = {"elu": EluFwdKernel}
-    _scalar_params = ("alpha",)
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: EluFwdInterface}
 
     def __init__(
         self,
@@ -173,12 +193,19 @@ class EluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
+    def _call_spec(self, input: torch.Tensor) -> EluCall:
+        return EluCall(
+            device=input.device, n_total=input.numel(), dtype=input.dtype, alpha=self.alpha
+        )
 
-class HardtanhFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
+
+class HardtanhFwdOp(_UnaryActivationMixin, UnaryOp):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
     kernel_types = {"hardtanh": HardtanhFwdKernel}
-    _scalar_params = ("min_val", "max_val")
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: BoundedUnaryFwdInterface
+    }
 
     def __init__(
         self,
@@ -205,12 +232,21 @@ class HardtanhFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
+    def _call_spec(self, input: torch.Tensor) -> BoundsCall:
+        return BoundsCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            min_val=self.min_val,
+            max_val=self.max_val,
+        )
 
-class SoftplusFwdOp(_ParametricActivationOp):
+
+class SoftplusFwdOp(UnaryOp):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     kernel_types = {"softplus": SoftplusFwdKernel}
-    _scalar_params = ("beta", "threshold")
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: SoftplusFwdInterface}
 
     def __init__(
         self,
@@ -233,6 +269,15 @@ class SoftplusFwdOp(_ParametricActivationOp):
         self.beta = beta
         self.threshold = threshold
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+
+    def _call_spec(self, input: torch.Tensor) -> SoftplusCall:
+        return SoftplusCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            beta=self.beta,
+            threshold=self.threshold,
+        )
 
 
 class SiluAndMulFwdOp(FusedGatedOp):

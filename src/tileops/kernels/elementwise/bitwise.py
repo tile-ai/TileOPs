@@ -8,6 +8,10 @@ from tileops.kernels.elementwise._base import (
     Uint8StorageBinaryKernel,
     UnaryKernel,
 )
+from tileops.kernels.elementwise.call_spec import (
+    BinaryElementwiseFwdInterface,
+    UnaryElementwiseFwdInterface,
+)
 
 __all__ = [
     "BitwiseAndBoolStorageFwdKernel",
@@ -20,7 +24,7 @@ __all__ = [
 ]
 
 
-class BitwiseAndFwdKernel(BinaryKernel):
+class BitwiseAndFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise AND: y = a & b (integer inputs)."""
 
     SUPPORTED_DTYPES = BITWISE_DTYPES
@@ -30,15 +34,17 @@ class BitwiseAndFwdKernel(BinaryKernel):
         return a & b
 
 
-class BitwiseAndBoolStorageFwdKernel(Uint8StorageBinaryKernel):
+class BitwiseAndBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise AND on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"bitwise_and"})
 
     @staticmethod
     def op_func(a, b):
         return T.bitwise_and(a, b)
 
 
-class BitwiseOrFwdKernel(BinaryKernel):
+class BitwiseOrFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
     SUPPORTED_DTYPES = BITWISE_DTYPES
@@ -48,15 +54,17 @@ class BitwiseOrFwdKernel(BinaryKernel):
         return a | b
 
 
-class BitwiseOrBoolStorageFwdKernel(Uint8StorageBinaryKernel):
+class BitwiseOrBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise OR on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"bitwise_or"})
 
     @staticmethod
     def op_func(a, b):
         return T.bitwise_or(a, b)
 
 
-class BitwiseXorFwdKernel(BinaryKernel):
+class BitwiseXorFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
 
     SUPPORTED_DTYPES = BITWISE_DTYPES
@@ -66,15 +74,17 @@ class BitwiseXorFwdKernel(BinaryKernel):
         return a ^ b
 
 
-class BitwiseXorBoolStorageFwdKernel(Uint8StorageBinaryKernel):
+class BitwiseXorBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise bitwise XOR on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"bitwise_xor"})
 
     @staticmethod
     def op_func(a, b):
         return T.bitwise_xor(a, b)
 
 
-class BitwiseNotFwdKernel(UnaryKernel):
+class BitwiseNotFwdKernel(UnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise bitwise NOT (~x) for bool/integer inputs.
 
     Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on

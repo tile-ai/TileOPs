@@ -10,6 +10,10 @@ from tileops.kernels.elementwise._base import (
     Uint8StorageBinaryKernel,
     Uint8StorageUnaryKernel,
 )
+from tileops.kernels.elementwise.call_spec import (
+    BinaryPredicateFwdInterface,
+    UnaryPredicateFwdInterface,
+)
 
 __all__ = [
     "LogicalAndBoolStorageFwdKernel",
@@ -21,7 +25,7 @@ __all__ = [
 ]
 
 
-class LogicalAndFwdKernel(BinaryKernel):
+class LogicalAndFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical AND with non-zero truthiness."""
 
     SUPPORTED_DTYPES = LOGICAL_DTYPES
@@ -34,15 +38,17 @@ class LogicalAndFwdKernel(BinaryKernel):
         return a_nonzero & b_nonzero
 
 
-class LogicalAndBoolStorageFwdKernel(Uint8StorageBinaryKernel):
+class LogicalAndBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical AND on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"logical_and"})
 
     @staticmethod
     def op_func(a, b):
         return T.bitwise_and(a, b)
 
 
-class LogicalOrFwdKernel(BinaryKernel):
+class LogicalOrFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical OR with non-zero truthiness."""
 
     SUPPORTED_DTYPES = LOGICAL_DTYPES
@@ -55,15 +61,17 @@ class LogicalOrFwdKernel(BinaryKernel):
         return a_nonzero | b_nonzero
 
 
-class LogicalOrBoolStorageFwdKernel(Uint8StorageBinaryKernel):
+class LogicalOrBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical OR on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"logical_or"})
 
     @staticmethod
     def op_func(a, b):
         return T.bitwise_or(a, b)
 
 
-class LogicalNotFwdKernel(LogicalUnaryKernel):
+class LogicalNotFwdKernel(LogicalUnaryKernel, UnaryPredicateFwdInterface):
     """Element-wise logical NOT with torch-style bool output."""
 
     @staticmethod
@@ -71,8 +79,10 @@ class LogicalNotFwdKernel(LogicalUnaryKernel):
         return x == T.cast(0, x.dtype)
 
 
-class LogicalNotBoolStorageFwdKernel(Uint8StorageUnaryKernel):
+class LogicalNotBoolStorageFwdKernel(Uint8StorageUnaryKernel, UnaryPredicateFwdInterface):
     """Element-wise logical NOT on uint8-backed bool storage."""
+
+    preferred_over = frozenset({"logical_not"})
 
     @staticmethod
     def op_func(x):

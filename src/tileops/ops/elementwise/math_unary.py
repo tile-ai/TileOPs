@@ -1,31 +1,41 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import (
     AbsFwdKernel,
+    AbsIntFwdKernel,
     CeilFwdKernel,
     CosFwdKernel,
     ErfFwdKernel,
     ExpFwdKernel,
     Expm1FwdKernel,
     FloorFwdKernel,
+    IntIdentityFwdKernel,
     Log1pFwdKernel,
     LogFwdKernel,
     NegFwdKernel,
+    NegIntFwdKernel,
     ReciprocalFwdKernel,
+    RoundDecimalsFwdKernel,
     RoundFwdKernel,
     RsqrtFwdKernel,
     SignFwdKernel,
+    SignIntFwdKernel,
     SinFwdKernel,
     SqrtFwdKernel,
     TruncFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import UnaryOp, _IntIdentityUnaryOp
+from tileops.kernels.elementwise.call_spec import (
+    ReciprocalFwdInterface,
+    RoundCall,
+    RoundFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 
 
 class ExpFwdOp(UnaryOp):
@@ -52,18 +62,16 @@ class RsqrtFwdOp(UnaryOp):
     kernel_types = {"rsqrt": RsqrtFwdKernel}
 
 
-class AbsFwdOp(_IntIdentityUnaryOp):
+class AbsFwdOp(UnaryOp):
     """Element-wise |x|."""
 
-    kernel_types = {"abs": AbsFwdKernel}
-    _int_handler = staticmethod(torch.abs)
+    kernel_types = {"abs": AbsFwdKernel, "abs_int": AbsIntFwdKernel}
 
 
-class NegFwdOp(_IntIdentityUnaryOp):
+class NegFwdOp(UnaryOp):
     """Element-wise -x."""
 
-    kernel_types = {"neg": NegFwdKernel}
-    _int_handler = staticmethod(torch.neg)
+    kernel_types = {"neg": NegFwdKernel, "neg_int": NegIntFwdKernel}
 
 
 class ReciprocalFwdOp(UnaryOp):
@@ -75,13 +83,15 @@ class ReciprocalFwdOp(UnaryOp):
     """
 
     kernel_types = {"reciprocal": ReciprocalFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: ReciprocalFwdInterface
+    }
 
 
-class SignFwdOp(_IntIdentityUnaryOp):
+class SignFwdOp(UnaryOp):
     """Element-wise sign(x): -1, 0, or +1."""
 
-    kernel_types = {"sign": SignFwdKernel}
-    _int_handler = staticmethod(torch.sign)
+    kernel_types = {"sign": SignFwdKernel, "sign_int": SignIntFwdKernel}
 
 
 class SinFwdOp(UnaryOp):
@@ -96,51 +106,33 @@ class CosFwdOp(UnaryOp):
     kernel_types = {"cos": CosFwdKernel}
 
 
-class FloorFwdOp(_IntIdentityUnaryOp):
+class FloorFwdOp(UnaryOp):
     """Element-wise floor(x)."""
 
-    kernel_types = {"floor": FloorFwdKernel}
+    kernel_types = {"floor": FloorFwdKernel, "floor_int": IntIdentityFwdKernel}
 
 
-class CeilFwdOp(_IntIdentityUnaryOp):
+class CeilFwdOp(UnaryOp):
     """Element-wise ceil(x)."""
 
-    kernel_types = {"ceil": CeilFwdKernel}
+    kernel_types = {"ceil": CeilFwdKernel, "ceil_int": IntIdentityFwdKernel}
 
 
-class _RoundDecimalsCall:
-    """In-tree stand-in for ``round(x, decimals=k)`` with ``k != 0``.
-
-    ``round(x, decimals=k) == round(x * 10**k) / 10**k``, which the shipped
-    round-to-nearest-integer kernel does not do. Only the in-tree path builds one:
-    with a target selected, ``decimals`` is handed over as the manifest param it is
-    and the backend serves every value of it. Not a ``Kernel``, so ``autotune`` walks
-    past it — there is nothing to tune.
-    """
-
-    def __init__(self, decimals: int):
-        """Build the op. Shapes and dtype are taken from the first call."""
-        self._decimals = decimals
-
-    def __call__(self, input: torch.Tensor) -> torch.Tensor:
-        # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
-        # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
-        # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
-        # at the end restores the op's contract dtype.
-        return torch.round(input.float(), decimals=self._decimals).to(input.dtype)
-
-
-class RoundFwdOp(_IntIdentityUnaryOp):
+class RoundFwdOp(UnaryOp):
     """Element-wise round(x) to ``decimals`` decimal places.
 
     The shipped kernel performs banker's round-to-nearest-integer, matching
     ``torch.round`` for ``decimals=0``. ``decimals`` is a manifest param, so it is
-    fixed for the instance and handed to whichever kernel serves the op; in-tree, a
-    non-zero value selects ``_RoundDecimalsCall``.
+    fixed for the instance and handed to whichever kernel serves the op.
 
     """
 
-    kernel_types = {"round": RoundFwdKernel}
+    kernel_types = {
+        "round": RoundFwdKernel,
+        "round_int": IntIdentityFwdKernel,
+        "round_decimals": RoundDecimalsFwdKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: RoundFwdInterface}
 
     def __init__(
         self,
@@ -162,16 +154,19 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         self.decimals = decimals
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        if self.decimals != 0:
-            return _RoundDecimalsCall(self.decimals)
-        return super()._build(dtype, n_total)
+    def _call_spec(self, input: torch.Tensor) -> RoundCall:
+        return RoundCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            decimals=self.decimals,
+        )
 
 
-class TruncFwdOp(_IntIdentityUnaryOp):
+class TruncFwdOp(UnaryOp):
     """Element-wise trunc(x)."""
 
-    kernel_types = {"trunc": TruncFwdKernel}
+    kernel_types = {"trunc": TruncFwdKernel, "trunc_int": IntIdentityFwdKernel}
 
 
 class ErfFwdOp(UnaryOp):

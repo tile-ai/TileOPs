@@ -10,6 +10,7 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.manifest import load_manifest
+from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.reduction.reduce import SumFwdOp
@@ -130,7 +131,7 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     torch.testing.assert_close(op(i, i + 1), i & (i + 1))
     torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
 
-    built = tuple(op.built_kernels(op._slot).values())
+    built = tuple(op.built_kernels(ELEMENTWISE).values())
     assert len(built) == 2, "bool and int32 are two specializations"
     if served_in_tree(op):
         assert len({type(k) for k in built}) == 2, "and two different kernel classes"
@@ -149,7 +150,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
     torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
     torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
 
-    built = tuple(op.built_kernels(op._slot).values())
+    built = tuple(op.built_kernels(ELEMENTWISE).values())
     assert len(built) == 2, "bool and float32 are two specializations"
     if served_in_tree(op):
         assert len({type(k) for k in built}) == 2, "and two different kernel classes"
@@ -169,7 +170,7 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
     torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
 
-    assert len(op.built_kernels(op._slot)) == 2, "bool and float32 are two specializations"
+    assert len(op.built_kernels(ELEMENTWISE)) == 2, "bool and float32 are two specializations"
 
 
 def _single_tensor_elementwise_ops():

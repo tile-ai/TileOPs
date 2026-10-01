@@ -483,7 +483,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MlaVarlenFwdInterface):
             dtype=call.dtype,
             device_index=call.device.index if call.device is not None else None,
         )
-        return tuple(args.items()), lambda: cls(**args, tune=call.tune)
+        return tuple(args.items()), lambda: cls(**args)
 
     def __init__(
         self,

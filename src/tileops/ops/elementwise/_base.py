@@ -1,4 +1,4 @@
-"""Elementwise op infrastructure: umbrella bases, helpers, registration factories.
+"""Elementwise op infrastructure: umbrella bases and the shared construction parameters.
 
 Three umbrella Op base classes, one per shape the family's kernels take:
 
@@ -14,86 +14,50 @@ type is not a construction parameter: an instance serves whichever dtype its cal
 passes, one specialization per element type, built on first use.
 """
 
-from typing import Callable, ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.elementwise.call_spec import (
+    BinaryElementwiseFwdInterface,
+    BroadcastCall,
+    ElementwiseCall,
+    FusedGatedCall,
+    FusedGatedFwdInterface,
+    UnaryElementwiseFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
-_MANIFEST_INT_DTYPES = (
-    torch.uint8,
-    torch.int8,
-    torch.int16,
-    torch.int32,
-    torch.int64,
-)
-_PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
+# The one name every elementwise op calls its kernel through.
+ELEMENTWISE = "elementwise"
 
 
-class _PerDtypeKernels:
-    """The family's one way to reach a kernel: ``self._kernel(inputs, dtype, *dims)``.
+def generated_on(op: Op) -> "torch.device | None":
+    """Where an op with no tensor input produces its output.
 
-    A subclass supplies ``_build(dtype, *dims)`` for one specialization. What comes
-    back is called with the manifest-declared tensors, so the in-tree path and a
-    target's path hand back the same kind of thing.
+    The ``device`` parameter it declares, else the current CUDA device. The call spec
+    names it rather than leaving it unset, because a build reads the device it compiles
+    for and the entry is keyed by the call.
     """
-
-    @property
-    def _slot(self) -> str:
-        """The one dispatch key this op's ``kernel_map`` holds; also its memory role."""
-        ((slot, _),) = self.kernel_map.items()
-        return slot
-
-    def _selected_kernel_cls(self):
-        """The kernel class that will run, honoring a ``kernel_map`` override.
-
-        Capability questions must go to this class, never to the family default:
-        an override that supports a different dtype set is the whole point of
-        supplying one.
-        """
-        ((_, kernel_cls),) = self.kernel_map.items()
-        return kernel_cls
-
-    def _kernel(self, inputs: tuple, dtype: torch.dtype, *dims):
-        """Return what serves this call, building it once per specialization.
-
-        Args:
-            inputs: The tensors the kernel will be handed, one slot per
-                ``signature.inputs`` entry, in that order; an optional input this call
-                did not pass keeps its slot as ``None``.
-            dtype: This call's element type.
-            dims: What else the *in-tree* kernel is compiled for — the dimensions it
-                bakes in, plus any presence that changes what gets built. A target's
-                kernel is keyed on the input signature instead, by the base class.
-        """
-        return self.kernel_for(self._slot, inputs, (dtype, *dims))
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built for the dtype and the extents it bakes in."""
-        return call, lambda: self._build(*call)
-
-    def _build(self, dtype: torch.dtype, *dims):
-        """Construct the in-tree kernel for one specialization."""
-        raise NotImplementedError(f"{type(self).__name__} must implement _build")
-
-    def _check_kernel_dtype(self, impl: type, dtype: torch.dtype, compute: torch.dtype) -> None:
-        """Refuse a dtype the selected kernel class does not serve."""
-        supported = impl.SUPPORTED_DTYPES
-        if supported is not None and compute not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(f"{self._slot} does not support dtype {dtype}. Supported: [{names}]")
+    declared = op._declared_device()
+    if declared is not None:
+        return declared
+    return torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
 
 
-class UnaryOp(_PerDtypeKernels, Op):
+class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
-    A subclass sets ``kernel_types``, its one dispatch key. The element count arrives
+    A subclass sets ``kernel_types``, its dispatch keys. The element count arrives
     with the tensor, so nothing about shape is a construction parameter.
     """
 
     compile_boundary: ClassVar[bool] = True
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: UnaryElementwiseFwdInterface
+    }
 
     def __init__(
         self,
@@ -114,46 +78,32 @@ class UnaryOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        """Build one specialization for the semantic *dtype*."""
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return self._build_kernel_instance(
-            N_total=n_total,
-            dtype=ctor_dtype,
-            tune=self.tune,
-            impl=impl,
-        )
-
-    def _build_kernel_instance(
-        self,
-        *,
-        N_total: int,
-        dtype: torch.dtype,
-        tune: bool,
-        impl: type,
-    ):
-        """Construct the kernel. Subclasses override to specialize construction."""
-        return impl(N_total, dtype, tune=tune)
+    def _call_spec(self, input: torch.Tensor) -> ElementwiseCall:
+        """The call record for *input*; a subclass with parameters widens it."""
+        return ElementwiseCall(device=input.device, n_total=input.numel(), dtype=input.dtype)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator."""
         input = input.contiguous()
-        return self._kernel((input,), input.dtype, input.numel())(input)
+        return self.kernel_for(ELEMENTWISE, (input,), self._call_spec(input))(input)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         return self._call_boundary(input)
 
 
-class BinaryOp(_PerDtypeKernels, Op):
+class BinaryOp(Op):
     """Template base class for binary elementwise ops with broadcast.
 
-    A subclass sets ``kernel_types``, its one dispatch key. Both operand shapes arrive
+    A subclass sets ``kernel_types``, its dispatch keys. Both operand shapes arrive
     with the tensors; the broadcast *lowering* — dim coalescing and stride synthesis —
     is the kernel's, so this class only hands the two shapes down.
     """
 
     compile_boundary: ClassVar[bool] = True
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: BinaryElementwiseFwdInterface
+    }
 
     def __init__(
         self,
@@ -174,29 +124,28 @@ class BinaryOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, a_shape: tuple, b_shape: tuple):
-        """Build one specialization for the semantic *dtype* and this broadcast."""
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        self._check_kernel_dtype(impl, dtype, ctor_dtype)
-        return self._build_kernel_instance(self.tune, ctor_dtype, impl, a_shape, b_shape)
-
-    def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
-        """Construct the kernel. Subclasses override to inject extra kwargs."""
-        return impl(a_shape, b_shape, dtype, tune=tune)
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> BroadcastCall:
+        """The call record for the two operands; a subclass with parameters widens it."""
+        return BroadcastCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+        )
 
     def _eager_forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator."""
         input = input.contiguous()
         other = other.contiguous()
-        kernel = self._kernel((input, other), input.dtype, tuple(input.shape), tuple(other.shape))
-        return kernel(input, other)
+        call = self._call_spec(input, other)
+        return self.kernel_for(ELEMENTWISE, (input, other), call)(input, other)
 
     def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``other``."""
         return self._call_boundary(input, other)
 
 
-class FusedGatedOp(_PerDtypeKernels, Op):
+class FusedGatedOp(Op):
     """Template base class for fused gated elementwise ops.
 
     Input: x of shape (M, 2*N). gate = x[:, :N], value = x[:, N:].
@@ -207,6 +156,9 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     """
 
     compile_boundary: ClassVar[bool] = True
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: FusedGatedFwdInterface
+    }
 
     def __init__(
         self,
@@ -227,15 +179,11 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, m: int, n: int):
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        self._check_kernel_dtype(impl, dtype, ctor_dtype)
-        return impl(m, n, ctor_dtype, tune=self.tune)
-
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
-        return self._kernel((x,), x.dtype, x.shape[0], x.shape[1] // 2)(x)
+        call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
+        return self.kernel_for(ELEMENTWISE, (x,), call)(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""
@@ -287,105 +235,3 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         """
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
-
-
-class _ParametricActivationOp(UnaryOp):
-    """Shared base for the activations with scalar construction parameters.
-
-    LeakyReLU, ELU, Hardtanh and Softplus. Leaves own their ``__init__`` because scalar
-    names and defaults vary per leaf: each records its parameters on ``self``, then
-    delegates to ``UnaryOp.__init__``.
-    """
-
-    # Names of the scalar parameters baked into the kernel; each names both the
-    # attribute on ``self`` and the kernel kwarg.
-    _scalar_params: tuple[str, ...] = ()
-
-    def _build(self, dtype: torch.dtype, n_total: int):
-        kwargs = {name: getattr(self, name) for name in type(self)._scalar_params}
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, ctor_dtype, tune=self.tune, **kwargs)
-
-
-class _AlphaScaledBinaryOp(BinaryOp):
-    """Shared base for ops that take a scalar ``alpha`` multiplier on ``other``.
-
-    PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
-    other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
-    ``alpha`` is baked into the kernel — one specialization per
-    ``(alpha, element type, broadcast)`` — so non-default alpha runs through the
-    same fast kernel as the default. It stays out of the memory key because it is
-    fixed for the instance.
-    """
-
-    def __init__(
-        self,
-        *,
-        alpha: int | float = 1,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            alpha: Multiplier on ``other`` (default 1).
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.alpha = alpha
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
-
-    def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
-        return impl(a_shape, b_shape, dtype, tune=tune, alpha=self.alpha)
-
-
-def _int_identity(input: torch.Tensor) -> torch.Tensor:
-    """The default integer answer: the op leaves such a value unchanged."""
-    return input.clone()
-
-
-class _IntFallbackCall:
-    """What ``_IntIdentityUnaryOp`` builds for a dtype the shipped kernels do not serve.
-
-    Callable with the op's tensors, like a kernel, but not a ``Kernel``: ``autotune``
-    walks past it. Only the in-tree path builds one — a target that registers the op is
-    asked for a kernel instead.
-    """
-
-    def __init__(self, handler):
-        """Serve a call with *handler*, a function of the op's input."""
-        self._handler = handler
-
-    def __call__(self, input: torch.Tensor) -> torch.Tensor:
-        # Contiguous like the kernel path: the layout must not depend on which dtype
-        # the op was handed.
-        return self._handler(input).contiguous()
-
-
-class _IntIdentityUnaryOp(UnaryOp):
-    """Base for unary ops whose manifest declares integer dtypes the shipped
-    float-only kernels do not serve.
-
-    Such a dtype builds ``_IntFallbackCall``; subclasses set ``_int_handler``. Every
-    other dtype goes to the kernel, which raises on its own dtype check. A
-    ``kernel_map`` override that declares integer support in ``SUPPORTED_DTYPES`` is
-    used instead — the choice is made in ``_build``, which only the in-tree path
-    reaches.
-    """
-
-    _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(_int_identity)
-    # Subclasses may extend the fallback dtype set when the manifest
-    # signature includes additional non-float dtypes (e.g. torch.bool for
-    # the is{nan,inf,finite} predicates).
-    _fallback_dtypes: tuple = _MANIFEST_INT_DTYPES
-
-    def _build(self, dtype: torch.dtype, n_total: int):
-        if dtype in type(self)._fallback_dtypes:
-            impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-            supported = impl.SUPPORTED_DTYPES
-            if supported is None or ctor_dtype in supported:
-                return super()._build(dtype, n_total)
-            return _IntFallbackCall(type(self)._int_handler)
-        return super()._build(dtype, n_total)

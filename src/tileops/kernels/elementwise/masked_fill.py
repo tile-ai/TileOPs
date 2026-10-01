@@ -4,9 +4,17 @@ import functools
 
 import tilelang
 import tilelang.language as T
+import torch
 
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
 from tileops.kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, clamp_to_dtype_range
+from tileops.kernels.elementwise.call_spec import (
+    ElementwiseCall,
+    MaskedFillCall,
+    MaskedFillFwdInterface,
+    MaskedFillTensorValueFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "MaskedFillFwdKernel",
@@ -15,6 +23,13 @@ __all__ = [
 
 # uint8/intN + fp16/bf16/fp32. bool operands arrive in uint8 storage.
 _MASKED_FILL_DTYPES = BITWISE_DTYPES[1:] + FLOAT_DTYPES
+
+
+def _bool_as_uint8(dtype, value):
+    """The storage type these programs compute *dtype* in, and *value* in its value set."""
+    if dtype != torch.bool:
+        return dtype, value
+    return torch.uint8, (None if value is None else int(bool(value)))
 
 
 @functools.lru_cache(maxsize=32)
@@ -60,7 +75,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     return kernel
 
 
-class MaskedFillFwdKernel(MultiInputElementwiseKernel):
+class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
     """MaskedFill: out = mask ? fill_value : x.
 
     Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
@@ -71,6 +86,15 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel):
 
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"))
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        return None if call.dtype == torch.bool else super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: MaskedFillCall) -> Entry:
+        dtype, value = _bool_as_uint8(call.dtype, call.value)
+        return call, lambda: cls(call.n_total, dtype, value)
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
         self.fill_value = clamp_to_dtype_range(fill_value, dtype)
@@ -127,7 +151,9 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
     return kernel
 
 
-class MaskedFillTensorValueFwdKernel(MultiInputElementwiseKernel):
+class MaskedFillTensorValueFwdKernel(
+    MultiInputElementwiseKernel, MaskedFillTensorValueFwdInterface
+):
     """MaskedFill kernel with 0-dim Tensor fill value.
 
     Computes ``out = mask ? value : x``. Bool storage is reinterpreted as uint8
@@ -137,6 +163,15 @@ class MaskedFillTensorValueFwdKernel(MultiInputElementwiseKernel):
 
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"), ("value", "value"))
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        return None if call.dtype == torch.bool else super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: ElementwiseCall) -> Entry:
+        dtype, _ = _bool_as_uint8(call.dtype, None)
+        return call, lambda: cls(call.n_total, dtype)
 
     @staticmethod
     def _builder_fn():

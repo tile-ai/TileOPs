@@ -1,6 +1,6 @@
 """Binary arithmetic elementwise ops with broadcasting."""
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -19,11 +19,62 @@ from tileops.kernels.elementwise import (
     RemainderFwdKernel,
     SubFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise._base import BinaryOp, _AlphaScaledBinaryOp, _PerDtypeKernels
+from tileops.kernels.elementwise.call_spec import (
+    AlphaScaledBinaryFwdInterface,
+    AlphaScaledCall,
+    ElementwiseCall,
+    LerpCall,
+    LerpFwdInterface,
+    LerpTensorFwdInterface,
+)
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops.elementwise._base import ELEMENTWISE, BinaryOp
 from tileops.ops.op_base import Op
 
 _DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
+
+
+class _AlphaScaledBinaryOp(BinaryOp):
+    """Shared base for ops that take a scalar ``alpha`` multiplier on ``other``.
+
+    PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
+    other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
+    ``alpha`` is baked into the kernel — one specialization per
+    ``(alpha, element type, broadcast)`` — so non-default alpha runs through the
+    same fast kernel as the default.
+    """
+
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: AlphaScaledBinaryFwdInterface
+    }
+
+    def __init__(
+        self,
+        *,
+        alpha: int | float = 1,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            alpha: Multiplier on ``other`` (default 1).
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
+        """
+        self.alpha = alpha
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> AlphaScaledCall:
+        return AlphaScaledCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+            alpha=self.alpha,
+        )
 
 
 class AddFwdOp(_AlphaScaledBinaryOp):
@@ -150,6 +201,7 @@ class LerpFwdOp(BinaryOp):
     """
 
     kernel_types = {"lerp": LerpFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LerpFwdInterface}
 
     def __init__(
         self,
@@ -171,8 +223,14 @@ class LerpFwdOp(BinaryOp):
         self.weight = weight
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
-        return impl(a_shape, b_shape, dtype, tune=tune, weight=self.weight)
+    def _call_spec(self, input: torch.Tensor, end: torch.Tensor) -> LerpCall:
+        return LerpCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(end.shape),
+            dtype=input.dtype,
+            weight=self.weight,
+        )
 
     def forward(self, input: torch.Tensor, end: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``end``."""
@@ -199,7 +257,7 @@ class MinimumFwdOp(BinaryOp):
     kernel_types = {"minimum": MinimumFwdKernel}
 
 
-class LerpTensorFwdOp(_PerDtypeKernels, Op):
+class LerpTensorFwdOp(Op):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
     Conforms to the Tensor-weight overload of ``torch.lerp`` —
@@ -210,6 +268,9 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types = {"lerp_tensor": LerpTensorFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: LerpTensorFwdInterface
+    }
 
     def __init__(
         self,
@@ -229,10 +290,6 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _build(self, dtype: torch.dtype, n_total: int):
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, ctor_dtype, tune=self.tune)
-
     def _eager_forward(
         self,
         input: torch.Tensor,
@@ -243,7 +300,9 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         input = input.contiguous()
         end = end.contiguous()
         weight = weight.contiguous()
-        return self._kernel((input, end, weight), input.dtype, n_total)(input, end, weight)
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        kernel = self.kernel_for(ELEMENTWISE, (input, end, weight), call)
+        return kernel(input, end, weight)
 
     def forward(
         self,

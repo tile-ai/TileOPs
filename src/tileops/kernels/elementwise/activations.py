@@ -16,6 +16,18 @@ from tileops.kernels.elementwise._base import (
 from tileops.kernels.elementwise._dtype import log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.elementwise._nan import nan_max, nan_min
+from tileops.kernels.elementwise.call_spec import (
+    BoundedUnaryFwdInterface,
+    BoundsCall,
+    EluCall,
+    EluFwdInterface,
+    LeakyReluCall,
+    LeakyReluFwdInterface,
+    SoftplusCall,
+    SoftplusFwdInterface,
+    UnaryElementwiseFwdInterface,
+)
+from tileops.kernels.kernel_base import Entry
 
 __all__ = [
     "EluFwdKernel",
@@ -38,7 +50,7 @@ __all__ = [
 ]
 
 
-class ReluFwdKernel(FloatUnaryKernel):
+class ReluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """ReLU: y = max(x, 0)."""
 
     @staticmethod
@@ -46,7 +58,7 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class GeluFwdKernel(FloatUnaryKernel):
+class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the standard erf formulation."""
 
     BYTES_PER_THREAD = 32
@@ -60,7 +72,7 @@ class GeluFwdKernel(FloatUnaryKernel):
         return half * wide * (one + erf(wide * inv_sqrt_2, x.dtype))
 
 
-class GeluTanhFwdKernel(FloatUnaryKernel):
+class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the tanh approximation.
 
     Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
@@ -78,7 +90,7 @@ class GeluTanhFwdKernel(FloatUnaryKernel):
         return half * x_f32 * (one + T.tanh(inner))
 
 
-class SiluFwdKernel(FloatUnaryKernel):
+class SiluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     MIN_NUM_PER_THREAD = 2
@@ -96,7 +108,7 @@ class SiluFwdKernel(FloatUnaryKernel):
         return wide / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
-class SigmoidFwdKernel(FloatUnaryKernel):
+class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sigmoid(x)."""
 
     BYTES_PER_THREAD = 32
@@ -113,7 +125,7 @@ class SigmoidFwdKernel(FloatUnaryKernel):
         return one / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
 
 
-class TanhFwdKernel(FloatUnaryKernel):
+class TanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise tanh(x)."""
 
     BYTES_PER_THREAD = 32
@@ -123,7 +135,7 @@ class TanhFwdKernel(FloatUnaryKernel):
         return T.tanh(T.cast(x, "float32"))
 
 
-class HardswishFwdKernel(FloatUnaryKernel):
+class HardswishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) * (1 / 6).
 
     Scaling by the reciprocal is what ``torch.nn.functional.hardswish`` does, so
@@ -141,7 +153,7 @@ class HardswishFwdKernel(FloatUnaryKernel):
         return x * clamped * one_sixth
 
 
-class HardsigmoidFwdKernel(FloatUnaryKernel):
+class HardsigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) * (1 / 6).
 
     Scaling by the reciprocal is what ``torch.nn.functional.hardsigmoid`` does, so
@@ -158,7 +170,7 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
         return nan_min(nan_max(x + three, zero), six) * one_sixth
 
 
-class MishFwdKernel(FloatUnaryKernel):
+class MishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
     # Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
@@ -182,7 +194,7 @@ class MishFwdKernel(FloatUnaryKernel):
         return wide * saturated / (saturated + two)
 
 
-class SeluFwdKernel(FloatUnaryKernel):
+class SeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
 
     alpha = 1.6732632423543772, scale = 1.0507009873554805
@@ -198,8 +210,12 @@ class SeluFwdKernel(FloatUnaryKernel):
         return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
 
 
-class LeakyReluFwdKernel(ScalarParamUnaryKernel):
+class LeakyReluFwdKernel(ScalarParamUnaryKernel, LeakyReluFwdInterface):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
+
+    @classmethod
+    def entry_for(cls, call: LeakyReluCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.negative_slope)
 
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
         self.negative_slope = negative_slope
@@ -222,8 +238,12 @@ class LeakyReluFwdKernel(ScalarParamUnaryKernel):
         return op_func
 
 
-class EluFwdKernel(ScalarParamUnaryKernel):
+class EluFwdKernel(ScalarParamUnaryKernel, EluFwdInterface):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
+
+    @classmethod
+    def entry_for(cls, call: EluCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.alpha)
 
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
         self.alpha = alpha
@@ -245,8 +265,12 @@ class EluFwdKernel(ScalarParamUnaryKernel):
         return op_func
 
 
-class HardtanhFwdKernel(ScalarParamUnaryKernel):
+class HardtanhFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
+
+    @classmethod
+    def entry_for(cls, call: BoundsCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
 
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
         self.min_val = min_val
@@ -306,10 +330,14 @@ def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
     return kernel
 
 
-class SoftplusFwdKernel(MultiInputElementwiseKernel):
+class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     INPUTS = (("x", "tile"),)
+
+    @classmethod
+    def entry_for(cls, call: SoftplusCall) -> Entry:
+        return call, lambda: cls(call.n_total, call.dtype, call.beta, call.threshold)
 
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
         self.beta = beta
