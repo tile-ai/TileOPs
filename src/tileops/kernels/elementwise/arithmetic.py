@@ -189,11 +189,12 @@ def _floored_quotient(num, den, limit, fast_body):
             over = T.call_extern("float32", "__fmaf_rn", -t, magnitude, T.copysign(num, q)) < zero
             return fast_body(tirx.Select(over, t - one, t), q)
 
-        return bound(T.floor(q), pick)
+        return pick(T.floor(q))
 
     inf = T.cast(float("inf"), "float32")
-    holds = bound(quotient, lambda q: T.And(T.abs(q) < T.cast(limit, "float32"), magnitude < inf))
-    return bound(quotient, value), holds
+    # A tier writes its value out at each mention rather than binding it: see ``bound``.
+    holds = T.And(T.abs(quotient) < T.cast(limit, "float32"), magnitude < inf)
+    return value(quotient), holds
 
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
@@ -225,8 +226,8 @@ def _nudged_floor(num, den, dtype, fast_body):
         nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
-    holds = bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
-    return bound(quotient, value), holds
+    holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
+    return value(quotient), holds
 
 
 def _floored_tiers(num, den, dtype, limit, fast_body):
@@ -273,7 +274,7 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         def from_quotient(k, q):
             r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
             # A zero remainder is fmod's, which keeps the dividend's sign.
-            return bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+            return tirx.Select(r == zero, T.copysign(zero, num), r)
 
         def signed(mod):
             flip = T.And(mod != zero, (den < zero) != (mod < zero))

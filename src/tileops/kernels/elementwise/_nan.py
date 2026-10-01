@@ -9,10 +9,17 @@ __all__ = ["keep_nan", "nan_max", "nan_min"]
 def bound(x, body):
     """``body(x)`` with *x* evaluated once, however often *body* mentions it.
 
-    A select names its operand in the test and in an arm, and a nested call (a
-    clamp is ``nan_min(nan_max(x, lo), hi)``) names the inner select three times.
-    Written out unbound, nvcc keeps the copies and branches around each one; bound
-    to a local, the select compiles to a compare and a predicated instruction.
+    Bind where *body* nests another bound body, which multiplies the mentions: written
+    out, the floored fallbacks grow FloorDivide float32 from 1384 SASS instructions to
+    9488. Do not bind in a body a guarded builder replicates per vector -- the floored
+    tiers -- where TileLang 0.1.13 fails to lower the binding; those mention their value
+    a few times in one flat expression, which nvcc folds for nothing.
+
+    Which side a call sits on is settled by measurement, not by reading the compiler: a
+    binding inside a select arm, and six binds nested in one body, both lower fine here,
+    so neither explains the tiers. The select bodies this helper was written for need it
+    no more -- max, min, clamp, erf and gelu compile to the same SASS at the same
+    register count unbound.
     """
     if isinstance(x, (tirx.Var, tirx.FloatImm, tirx.IntImm)):
         return body(x)
