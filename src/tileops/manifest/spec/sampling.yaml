@@ -118,7 +118,7 @@ SamplingFromProbsFwdOp:
   # token is never drawn. Each row finite, non-negative and with a positive total is the
   # caller's obligation.
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, V: Dim}
     inputs:
@@ -133,10 +133,13 @@ SamplingFromProbsFwdOp:
   - {B: 256, V: 128256, label: llama-8b-b256}
   - {B: 128, V: 151936, label: qwen3-235b-b128}
   - {B: 64, V: 201088, label: gpt-oss-120b-b64}
+  - {B: 17, V: 129280, label: ds-v3-b17}
+  - {B: 100, V: 32000, label: llama2-7b-b100}
   roofline:
-    # Per element: the row total, then the running sum and its compare against the draw;
-    # per row: the draw scaled by the total.
-    flops: "3 * B * V + B"
+    # Per element: one add, folding the row into the partial sums the draw is placed
+    # against. Per row: the search over those sums, fewer than V / 64 operations, and the
+    # draw scaled by the row total.
+    flops: "B * V + B"
 
 ChainSpeculativeSamplingFwdOp:
   # Verifies N draft tokens per request. Draft token i is accepted with probability

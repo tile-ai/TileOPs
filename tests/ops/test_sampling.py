@@ -29,6 +29,7 @@ from workloads.sampling import (
     min_p_mask,
     probability_above,
     sampling_call,
+    sampling_from_probs,
     top_k_mask,
     top_p_mask,
 )
@@ -307,6 +308,13 @@ def test_top_k_top_p_mask_selects_its_one_implementation():
         op.select_implementation("top_k_top_p_mask_fwd", wide)
 
 
+@pytest.mark.in_tree_kernels
+def test_sampling_from_probs_refuses_a_call_int32_cannot_index():
+    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.float32)
+    with pytest.raises(ValueError, match="B \\* V"):
+        SamplingFromProbsFwdOp().select_implementation("sampling_from_probs", call)
+
+
 def test_sampling_from_probs():
     """Unnormalized rows with every fourth weight zero, drawn in 65536 identical rows."""
     n, vocab = 65536, 64
@@ -325,6 +333,30 @@ def test_sampling_from_probs():
     assert out.dtype == torch.int32
     _assert_follows(out, weights / weights.sum())
     assert torch.equal(out, op(probs, seed, offset))
+
+
+def test_sampling_from_probs_draws_the_same_token_at_every_launch_shape():
+    """A row drawn inside batches that take different launches gives one token, and weight.
+
+    The batch settles how many blocks share a row, and with it how the prefix sums the
+    search descends are grouped. ``B = 1`` splits the row across the device and takes the
+    grid barrier; a batch past the block count leaves the row to one block and takes none.
+    Every seventh weight is zero, so the same case says the split row draws no zero weight.
+    """
+    device = run_device()
+    torch.manual_seed(3)
+    weights = torch.rand(151936, device=device)
+    weights[::7] = 0
+    row = weights / weights.sum()
+    seed = torch.tensor([1234], dtype=torch.int64, device=device)
+    offset = torch.tensor([7], dtype=torch.int64, device=device)
+    drawn = {
+        batch: _run(SamplingFromProbsFwdOp(), row.expand(batch, -1).contiguous(), seed, offset)[0]
+        for batch in (1, 17, 300)
+    }
+    assert len(set(int(token) for token in drawn.values())) == 1, drawn
+    assert (row[torch.stack(list(drawn.values())).long()] > 0).all()
+    assert int(drawn[1]) == int(sampling_from_probs(row[None], seed, offset)[0])
 
 
 def _assert_verifies_chains(tokens, num, draft_ids, draft, target, accepted):

@@ -16,6 +16,7 @@ __all__ = [
     "block_extremes",
     "fold_extremes",
     "load_vector",
+    "row_split",
     "store_masked",
     "vector_width",
 ]
@@ -33,6 +34,15 @@ def vector_width(vocab: int, itemsize: int) -> int:
     and written element by element.
     """
     return VECTOR_ACCESS_BYTES // itemsize if vocab * itemsize % VECTOR_ACCESS_BYTES == 0 else 1
+
+
+def row_split(row_tiles: int, batch: int, sm_count: int) -> int:
+    """Blocks to put on one row of ``row_tiles`` tiles, for a batch of ``batch`` rows.
+
+    A row is split only while the batch leaves blocks idle, and never past its own tiles:
+    the grid barrier a split takes needs the whole grid resident, which this keeps it.
+    """
+    return max(1, min(row_tiles, sm_count // max(batch, 1)))
 
 
 @T.macro
