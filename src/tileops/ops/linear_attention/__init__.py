@@ -9,6 +9,7 @@ from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
 from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
 from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
+from tileops.ops.linear_attention.kimi_delta_attention import KimiDeltaAttentionFwdOp
 
 __all__: list[str] = [
     "DeltaNetBwdOp",
@@ -21,4 +22,5 @@ __all__: list[str] = [
     "GLADecodeFwdOp",
     "GLAFwdOp",
     "GLAInferenceFwdOp",
+    "KimiDeltaAttentionFwdOp",
 ]
