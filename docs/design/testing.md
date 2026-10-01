@@ -71,7 +71,9 @@ Each parameterized case must serve one of:
 1. **Dtype correctness** — verify a supported dtype.
 1. **Shape coverage** — verify a distinct code path (boundary, tile edge, alignment).
 1. **Feature coverage** — verify a feature flag or mode (`causal=True`, `tune=True`).
-1. **Regression** — reproduce a fixed bug (reference issue/PR in comment).
+1. **Regression** — reproduce a fixed bug. The docstring states the fault the case
+   guards; an issue or PR number is a review-process reference and
+   `scripts/lint/shipped_refs_lint.py` rejects one in shipped source.
 
 No performance exploration, autotune sweeps, or duplicate code-path coverage.
 

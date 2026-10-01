@@ -75,18 +75,24 @@ DEFAULT_THREADS: int = 256
 FRAGMENT_ELEMS_PER_THREAD: int = 64
 
 
-def exp_shifted(value, shift_log2e):
-    """``exp(value - shift)``, as one fused multiply-add and one ``exp2``.
+def exp_shifted(value, shift):
+    """``exp(value - shift)``, as one subtract, one multiply and one ``exp2``.
 
-    *shift_log2e* is ``shift * LOG2E``, which the caller takes once per row rather
-    than once per element. ``exp2`` is one instruction where ``exp`` is a call
-    sequence, and over a full row that call is the largest arithmetic cost a
-    streaming softmax pays.
+    The difference is taken before the scaling, not after. Scaling each operand
+    by ``LOG2E`` first and subtracting inside the product lets nvcc contract the
+    pair into a single ``FFMA``, which evaluates ``value * LOG2E`` exactly against
+    an already-rounded ``shift * LOG2E``: the two no longer cancel, and the
+    maximum element of a row stops exponentiating to 1. The residual grows with
+    the magnitude of the row, reaching ``exp2(-1.84)`` instead of ``1.0`` at
+    ``value = shift = 1e8``.
+
+    ``exp2`` is one instruction where ``exp`` is a call sequence, and over a full
+    row that call is the largest arithmetic cost a streaming softmax pays.
 
     A shift of ``-inf`` still yields ``NaN`` for a ``-inf`` value, as ``exp`` does:
     both sides of the subtraction are ``-inf``.
     """
-    return T.exp2(value * LOG2E - shift_log2e)
+    return T.exp2((value - shift) * LOG2E)
 
 
 # Largest integer count fp32 carries exactly; a statistic folded through
