@@ -73,10 +73,8 @@ def gla_fwd_a_kernel(
                 g_k = T.alloc_shared([block_c, dim_k], "float32")
                 a_s = T.alloc_shared([block_c, block_c], dtype)
                 # The gate-scaled operands are staged in bfloat16 whatever the activations
-                # are. On the diagonal pair the key exponent is positive, because the anchor
-                # row precedes every key in its own sub-block, and it reaches e raised to
-                # sixteen times the largest gate, which float16 cannot represent and
-                # bfloat16 can.
+                # are: it is the wider exponent of the two, and the diagonal block needs every
+                # bit of it. Where even bfloat16 is too narrow the block takes the exact form.
                 q_gated = T.alloc_shared([block_c, dim_k], "bfloat16")
                 k_gated = T.alloc_shared([block_c, dim_k], "bfloat16")
                 spans = T.alloc_fragment([dim_k], "float32")

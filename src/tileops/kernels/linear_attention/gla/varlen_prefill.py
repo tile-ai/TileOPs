@@ -226,8 +226,6 @@ def gla_varlen_state_kernel(
                             v[0, T.min(first + i, end - 1), i_h, v_offset + d],
                             T.cast(0, dtype),
                         )
-                    # The chunk decays the state by its own last accumulated gate, then adds the
-                    # keys it decays by the distance back to that row, contracted with the values.
                     for d in T.Parallel(dim_k_part):
                         last[d] = tail_gate[CHUNK_TOKENS - 1, d]
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
@@ -316,10 +314,9 @@ def gla_varlen_causal_kernel(
                 g_q = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "float32")
                 g_k = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "float32")
                 block = T.alloc_shared([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], dtype)
-                # The gate-scaled operands are staged in bfloat16 whatever the activations are.
-                # On the diagonal pair the key exponent is positive, because the anchor row
-                # precedes every key in its own sub-block, and it reaches e raised to sixteen
-                # times the largest gate, which float16 cannot represent and bfloat16 can.
+                # The gate-scaled operands are staged in bfloat16 whatever the activations
+                # are: it is the wider exponent of the two, and the diagonal pair needs every
+                # bit of it. Where even bfloat16 is too narrow the pair takes the exact form.
                 q_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
                 k_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
                 product = T.alloc_fragment([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], "float32")
