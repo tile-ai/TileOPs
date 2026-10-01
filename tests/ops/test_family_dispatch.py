@@ -18,12 +18,14 @@ from tileops.kernels.linear_attention import (
     GLAChunkCall,
     GLADecodeCall,
 )
+from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
 from tileops.ops.gemm.bmm import BmmFp8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
 from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
+from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
 from workloads.device import run_device_available
 
@@ -239,6 +241,42 @@ def test_gla_decode_dispatch(dtype: torch.dtype, expected: str) -> None:
     call = GLADecodeCall(arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128, dtype=dtype)
 
     assert op.select_implementation("gla_decode", call) == expected
+
+
+# --- GLA inference: one token is decode, whole 64-token rows are chunk-parallel prefill,
+# and a packed call or a row that is not a whole chunk is the packed kernel. The partitioned
+# kernel's region reads a device calibration, which a spec built without a device does not
+# carry, so no row here selects it.
+
+
+def _inference_call(seq_len: int, varlen: bool = False, dim: int = 64) -> GLAInferenceCallSpec:
+    return GLAInferenceCallSpec(
+        arch=_SM90,
+        batch=1,
+        seq_len=seq_len,
+        heads=4,
+        dim_k=dim,
+        dim_v=dim,
+        dtype=torch.bfloat16,
+        scale=dim**-0.5,
+        varlen=varlen,
+        num_sequences=1,
+    )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(_inference_call(1), "gla_dense_decode", id="decode"),
+        pytest.param(_inference_call(2048), "gla_dense_prefill_subchunk", id="whole-chunks"),
+        pytest.param(_inference_call(100), "gla_varlen_prefill", id="part-chunk-row"),
+        pytest.param(_inference_call(4096, varlen=True), "gla_varlen_prefill", id="packed"),
+    ],
+)
+def test_gla_inference_dispatch(call: GLAInferenceCallSpec, expected: str) -> None:
+    assert GLAInferenceFwdOp().select_implementation("gla_inference", call) == expected
 
 
 # --- Gated DeltaNet: one token continuing a state is decode, whole chunks of 64 from

@@ -12,7 +12,7 @@ from tileops.kernels.kernel_base import Entry
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
-    dense_entry,
+    build_entry,
     serves_dense,
 )
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
@@ -407,7 +407,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInter
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        return dense_entry(
+        return build_entry(
             cls,
             call,
             batch=call.batch,

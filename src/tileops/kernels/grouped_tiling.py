@@ -62,6 +62,7 @@ class GroupTiling:
         ``offsets[g + 1] - offsets[g]`` is the row count of group ``g``.
         Varlen operators already receive that representation, so they should
         not materialize a second sizes tensor merely to schedule row tiles.
+        The offsets are read at whatever integer width they arrive in.
         """
         num_groups, block_m = self.num_groups, self.block_m
 
@@ -69,7 +70,7 @@ class GroupTiling:
         def group_tile_cumsum_offsets(offsets, s_cum):
             s_cum[0] = T.int32(0)
             for g in T.serial(num_groups):
-                size = offsets[g + 1] - offsets[g]
+                size = T.cast(offsets[g + 1] - offsets[g], "int32")
                 s_cum[g + 1] = s_cum[g] + (size + T.int32(block_m - 1)) // T.int32(block_m)
 
         return group_tile_cumsum_offsets
