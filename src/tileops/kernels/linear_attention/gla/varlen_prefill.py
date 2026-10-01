@@ -306,8 +306,12 @@ def gla_varlen_causal_kernel(
                 g_q = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "float32")
                 g_k = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "float32")
                 block = T.alloc_shared([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], dtype)
-                q_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], dtype)
-                k_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], dtype)
+                # The gate-scaled operands are staged in bfloat16 whatever the activations are.
+                # On the diagonal pair the key exponent is positive, because the anchor row
+                # precedes every key in its own sub-block, and it reaches e raised to sixteen
+                # times the largest gate, which float16 cannot represent and bfloat16 can.
+                q_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
+                k_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], "bfloat16")
                 product = T.alloc_fragment([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], "float32")
 
                 tiling.cumsum_offsets(cu_seqlens, tile_cum)
@@ -335,13 +339,13 @@ def gla_varlen_causal_kernel(
                                 T.cast(queries[i, d], "float32")
                                 * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
                                 * scale,
-                                dtype,
+                                "bfloat16",
                             )
                         for j, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
                             k_gated[j, d] = T.cast(
                                 T.cast(keys[j, d], "float32")
                                 * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
-                                dtype,
+                                "bfloat16",
                             )
                         T.fill(product, 0.0)
                         T.gemm(q_gated, k_gated, product, transpose_B=True)
