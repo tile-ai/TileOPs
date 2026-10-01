@@ -118,6 +118,8 @@ class BlockConfigPlanner:
         frag_slots: ``(block_m, tile_n)`` fragments the kernel keeps alive at once.
             Registers, not shared memory: a tile that fits in shared memory can still
             spill.
+        workspace_bytes: Shared memory the tiled kernel allocates besides its tiles,
+            such as the scratch of a reduction across threads.
     """
 
     @staticmethod
@@ -141,12 +143,14 @@ class BlockConfigPlanner:
         smem_budget: int,
         num_buffers: int = 1,
         frag_slots: int = 1,
+        workspace_bytes: int = 0,
     ):
         self.N_padded = N_padded
         self.elem_bytes = elem_bytes
         self.smem_budget = smem_budget
         self.num_buffers = num_buffers
         self.frag_slots = frag_slots
+        self.workspace_bytes = workspace_bytes
 
     @property
     def _row_bytes(self) -> int:
@@ -227,7 +231,7 @@ class BlockConfigPlanner:
             self.elem_bytes,
             self.N_padded,
             alignment=self._column_alignment(block_m, threads),
-            budget=min(self.smem_budget, col_budget),
+            budget=min(self.smem_budget - self.workspace_bytes, col_budget),
             num_buffers=self.num_buffers,
         )
 
@@ -292,7 +296,7 @@ class BlockConfigPlanner:
             )
         if tile_n > MAX_SINGLE_TILE_COLS:
             return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
-        held = self.num_buffers * block_m * tile_n * self.elem_bytes
+        held = self.num_buffers * block_m * tile_n * self.elem_bytes + self.workspace_bytes
         if held > self.smem_budget:
             return (
                 f"tile_n={tile_n} with block_m={block_m} needs {held} bytes of "
