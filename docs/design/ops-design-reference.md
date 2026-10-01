@@ -65,6 +65,15 @@ Hooks family bases expose for op-specific semantics. The scaffolding playbook do
 
 A restriction on the accepted domain is a refinement of the signature, never a hook. A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
 
+| Hook              | Family    | Purpose                                                                                      |
+| ----------------- | --------- | -------------------------------------------------------------------------------------------- |
+| `_empty`          | reduction | The manifest's empty-`dim` mode of `reduced`: `"full"`, `"noop"` or `"reject"`               |
+| `_identity`       | reduction | The result over an empty reduced extent                                                      |
+| `_output`         | reduction | The output dtype of a logical reduction (`torch.bool`, or `torch.int64` for `count_nonzero`) |
+| `_call`           | reduction | The call spec the `reduce` interface takes                                                   |
+| `_output_dtype`   | reduction | The output dtype; the input's by default                                                     |
+| `_scalar_forward` | reduction | The result on a 0-d input                                                                    |
+
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
 - **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).

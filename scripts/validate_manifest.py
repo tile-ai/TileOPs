@@ -113,7 +113,7 @@ def _composition_errors(
     op_name: str, composition: dict, all_op_names: Collection[str]
 ) -> list[str]:
     """`composition` (docs/design/manifest.md § Composition): a kind and a non-empty list of
-    uniquely named stages, each naming a manifest entry (`op`) or a kernel role (`kernel`).
+    uniquely named stages, each naming a manifest entry (`op`) or one of the op's `kernel_types` keys (`kernel`).
 
     Whether the stages are the class's `delegate_types` and `kernel_types` is the parity check's.
     """
