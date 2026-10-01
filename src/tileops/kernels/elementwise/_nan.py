@@ -9,10 +9,9 @@ __all__ = ["keep_nan", "nan_max", "nan_min"]
 def bound(x, body):
     """``body(x)`` with *x* evaluated once, however often *body* mentions it.
 
-    A select names its operand in the test and in an arm, and a nested call (a
-    clamp is ``nan_min(nan_max(x, lo), hi)``) names the inner select three times.
-    Written out unbound, nvcc keeps the copies and branches around each one; bound
-    to a local, the select compiles to a compare and a predicated instruction.
+    Bind a non-leaf *x* that *body* mentions more than once. Do not bind in a body a
+    guarded builder replicates per vector -- the floored tiers -- where TileLang 0.1.13
+    fails to lower the binding.
     """
     if isinstance(x, (tirx.Var, tirx.FloatImm, tirx.IntImm)):
         return body(x)

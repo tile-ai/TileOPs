@@ -13,10 +13,7 @@
   </p>
 
 <p>
-    <a href="#built-for-agents"><b>Why it's different</b></a> ·
-    <a href="#built-with-tilefoundry"><b>TileFoundry</b></a> ·
     <a href="#quick-start"><b>Quick Start</b></a> ·
-    <a href="#how-it-works"><b>How it works</b></a> ·
     <a href="#installation"><b>Installation</b></a> ·
     <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><b>Benchmarks</b></a> ·
     <a href="https://tile-ai.github.io/TileOPs.github.io/"><b>Docs</b></a>

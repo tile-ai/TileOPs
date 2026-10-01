@@ -13,9 +13,11 @@ from tileops.kernels.elementwise import (
     AddFwdKernel,
     BitwiseAndFwdKernel,
     EluFwdKernel,
+    FloorDivideFwdKernel,
     HardtanhFwdKernel,
     LeakyReluFwdKernel,
     PowFwdKernel,
+    RemainderFwdKernel,
     SiluAndMulFwdKernel,
 )
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
@@ -198,3 +200,31 @@ def test_fused_gated_explicit_config_follows_the_work():
             c["num_per_thread"] == cfg["num_per_thread"] and c["threads"] == cfg["threads"]
             for c in kernel.autotune_configs
         )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("kernel_cls", "ref_fn"),
+    [
+        pytest.param(RemainderFwdKernel, torch.remainder, id="remainder"),
+        pytest.param(FloorDivideFwdKernel, torch.floor_divide, id="floor_divide"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dtype", "npt"),
+    [
+        # The top of each dtype's sweep: twice the elements its bytes a thread give.
+        pytest.param(torch.float16, 16, id="float16"),
+        pytest.param(torch.bfloat16, 16, id="bfloat16"),
+        pytest.param(torch.float32, 8, id="float32"),
+    ],
+)
+def test_floored_kernels_build_at_the_widest_tuned_fold(kernel_cls, ref_fn, dtype, npt) -> None:
+    """The floored bodies build and stay exact where a thread holds more than one vector."""
+    threads = 128
+    n = threads * npt
+    a = torch.rand(n, device="cuda", dtype=dtype) + 0.5
+    b = torch.rand(n, device="cuda", dtype=dtype) + 0.5
+    kernel = kernel_cls(a.shape, b.shape, dtype, config={"threads": threads, "num_per_thread": npt})
+    torch.testing.assert_close(kernel.forward(a, b), ref_fn(a, b), atol=0.0, rtol=0.0)
