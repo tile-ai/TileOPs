@@ -540,16 +540,10 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
                 and call.seq_len % CHUNK_TOKENS != 0
                 and call.seq_len // CHUNK_TOKENS > cls._partition_lengths[0]
             )
-        return cls._per_sequence_blocks(call) > cls._blocks_per_sm * call.sm_count
-
-    @classmethod
-    def _per_sequence_blocks(cls, call: GLAInferenceCallSpec) -> int:
-        """Blocks a walk of one block per sequence, head and state slice would launch.
-
-        That walk splits the state tile to the GEMM's minimum operand extent along the key
-        axis and once along the value axis, which is the finest split it has.
-        """
-        return call.num_sequences * call.heads * (call.dim_k // GEMM_MIN_N) * 2
+        # The per-sequence walk splits the state tile to the GEMM's minimum operand extent
+        # along the key axis and once along the value axis, which is the finest split it has.
+        per_sequence_blocks = call.num_sequences * call.heads * (call.dim_k // GEMM_MIN_N) * 2
+        return per_sequence_blocks > cls._blocks_per_sm * call.sm_count
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
@@ -559,6 +553,15 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
         # buy comes from the partitions, which cost no re-read at all.
         k_partitions = max(1, call.dim_k // cls._state_tile_k)
         v_partitions = max(1, call.dim_v // cls._state_tile_v)
+        # The longest partition whose blocks still cover the device.
+        chunks = call.batch * call.seq_len // CHUNK_TOKENS
+        slices = k_partitions * v_partitions
+        target = cls._blocks_per_sm * call.sm_count
+        partition_chunks = cls._partition_lengths[-1]
+        for length in cls._partition_lengths:
+            if chunks // length * slices * call.heads >= target:
+                partition_chunks = length
+                break
         return build_entry(
             cls,
             call,
@@ -570,18 +573,8 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
             dim_v=call.dim_v,
             k_partitions=k_partitions,
             v_partitions=v_partitions,
-            partition_chunks=cls._partition_chunks_for(call, k_partitions * v_partitions),
+            partition_chunks=partition_chunks,
         )
-
-    @classmethod
-    def _partition_chunks_for(cls, call: GLAInferenceCallSpec, slices: int) -> int:
-        """The longest partition whose blocks still cover the device."""
-        chunks = call.batch * call.seq_len // CHUNK_TOKENS
-        target = cls._blocks_per_sm * call.sm_count
-        for length in cls._partition_lengths:
-            if chunks // length * slices * call.heads >= target:
-                return length
-        return cls._partition_lengths[-1]
 
     def __init__(
         self,
