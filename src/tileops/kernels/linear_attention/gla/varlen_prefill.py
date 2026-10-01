@@ -278,6 +278,9 @@ def gla_varlen_causal_kernel(
     tiling = GroupTiling(num_seqs, CHUNK_TOKENS)
     num_chunks = tiling.tile_upper_bound(total_tokens)
     num_subchunks = CHUNK_TOKENS // SUBCHUNK_TOKENS
+    # Only the pairs at or below the diagonal are launched; the output pass masks the rest,
+    # which is where the product it reads is zero anyway.
+    num_pairs = num_subchunks * (num_subchunks + 1) // 2
 
     @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
     def _fn(threads: int = 128):
@@ -289,13 +292,19 @@ def gla_varlen_causal_kernel(
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             causal: T.Tensor([1, total_tokens, heads, CHUNK_TOKENS], dtype),
         ):
-            with T.Kernel(num_chunks * num_subchunks * num_subchunks, heads, threads=threads) as (
-                bx,
-                i_h,
-            ):
-                chunk = bx // (num_subchunks * num_subchunks)
-                bi = bx % (num_subchunks * num_subchunks) // num_subchunks
-                bj = bx % num_subchunks
+            with T.Kernel(num_chunks * num_pairs, heads, threads=threads) as (bx, i_h):
+                chunk = bx // num_pairs
+                pair = bx % num_pairs
+                rows = T.alloc_local([1], "int32")
+
+                # The pair's query sub-block is the last one whose triangular number the
+                # pair index reaches, and its key sub-block is the remainder.
+                rows[0] = 0
+                for b in range(num_subchunks):
+                    if b * (b + 1) // 2 <= pair:
+                        rows[0] = b
+                bi = rows[0]
+                bj = pair - bi * (bi + 1) // 2
 
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
                 lo = T.alloc_local([1], "int32")
@@ -329,24 +338,23 @@ def gla_varlen_causal_kernel(
                     row = start + bi * SUBCHUNK_TOKENS
                     col = start + bj * SUBCHUNK_TOKENS
 
-                    if bj <= bi:
-                        for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
-                            queries[i, d] = q[0, T.min(row + i, end - 1), i_h, d]
-                            g_q[i, d] = g_cumsum[0, T.min(row + i, end - 1), i_h, d]
-                        for j, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
-                            keys[j, d] = T.if_then_else(
-                                col + j < end,
-                                k[0, T.min(col + j, end - 1), i_h, d],
-                                T.cast(0, dtype),
-                            )
-                            g_k[j, d] = g_cumsum[0, T.min(col + j, end - 1), i_h, d]
+                    for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
+                        queries[i, d] = q[0, T.min(row + i, end - 1), i_h, d]
+                        g_q[i, d] = g_cumsum[0, T.min(row + i, end - 1), i_h, d]
+                    for j, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
+                        keys[j, d] = T.if_then_else(
+                            col + j < end,
+                            k[0, T.min(col + j, end - 1), i_h, d],
+                            T.cast(0, dtype),
+                        )
+                        g_k[j, d] = g_cumsum[0, T.min(col + j, end - 1), i_h, d]
 
-                        if bj == bi:
-                            for d in T.Parallel(dim_k):
-                                spans[d] = (g_q[0, d] - g_k[SUBCHUNK_TOKENS - 1, d]) * LOG2E
-                            T.reduce_max(spans, span, dim=0)
+                    if bj == bi:
+                        for d in T.Parallel(dim_k):
+                            spans[d] = (g_q[0, d] - g_k[SUBCHUNK_TOKENS - 1, d]) * LOG2E
+                        T.reduce_max(spans, span, dim=0)
 
-                    if bj < bi or (bj == bi and span[0] < BF16_SPLIT_EXP2_SPAN):
+                    if bj < bi or span[0] < BF16_SPLIT_EXP2_SPAN:
                         for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
                             q_gated[i, d] = T.cast(
                                 T.cast(queries[i, d], "float32")
@@ -366,7 +374,7 @@ def gla_varlen_causal_kernel(
                             block[i, j] = T.cast(
                                 T.if_then_else(bj < bi or j <= i, product[i, j], 0.0), dtype
                             )
-                    elif bj == bi:
+                    else:
                         for j in T.Serial(SUBCHUNK_TOKENS):
                             for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
                                 terms[i, d] = (
@@ -379,9 +387,6 @@ def gla_varlen_causal_kernel(
                                 block[i, j] = T.cast(
                                     T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype
                                 )
-                    else:
-                        for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
-                            block[i, j] = T.cast(0, dtype)
 
                     for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
                         if row + i < end:
@@ -424,9 +429,7 @@ def gla_varlen_output_kernel(
                 hi = T.alloc_local([1], "int32")
                 seq = T.alloc_local([1], "int32")
                 first = T.alloc_local([1], "int32")
-                queries = T.alloc_shared([CHUNK_TOKENS, dim_k], dtype)
                 values = T.alloc_shared([CHUNK_TOKENS, dim_v], dtype)
-                gate = T.alloc_shared([CHUNK_TOKENS, dim_k], "float32")
                 weights = T.alloc_shared([CHUNK_TOKENS, CHUNK_TOKENS], dtype)
                 q_gated = T.alloc_shared([CHUNK_TOKENS, dim_k], dtype)
                 state = T.alloc_shared([dim_k, dim_v], dtype)
@@ -438,20 +441,25 @@ def gla_varlen_output_kernel(
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
 
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
-                        queries[i, d] = q[0, T.min(start + i, end - 1), i_h, d]
-                        gate[i, d] = g_cumsum[0, T.min(start + i, end - 1), i_h, d]
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_v):
-                        values[i, d] = v[0, T.min(start + i, end - 1), i_h, d]
-                    for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
-                        weights[i, j] = causal[0, T.min(start + i, end - 1), i_h, j]
-                    for d, j in T.Parallel(dim_k, dim_v):
-                        state[d, j] = chunk_state[chunk, i_h, d, j]
+                    # The query and its gate are read into the gated query and not staged:
+                    # each is read once, and the two tiles they would occupy are what holds
+                    # this block's shared footprint to one that keeps three blocks resident.
                     for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
                         q_gated[i, d] = T.cast(
-                            T.cast(queries[i, d], "float32") * T.exp2(gate[i, d] * LOG2E), dtype
+                            T.cast(q[0, T.min(start + i, end - 1), i_h, d], "float32")
+                            * T.exp2(g_cumsum[0, T.min(start + i, end - 1), i_h, d] * LOG2E),
+                            dtype,
                         )
-
+                    for i, d in T.Parallel(CHUNK_TOKENS, dim_v):
+                        values[i, d] = v[0, T.min(start + i, end - 1), i_h, d]
+                    # The causal pass launches only the sub-block pairs at or below the
+                    # diagonal, so the product above the diagonal is read as the zero it is.
+                    for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
+                        weights[i, j] = T.if_then_else(
+                            j <= i, causal[0, T.min(start + i, end - 1), i_h, j], T.cast(0, dtype)
+                        )
+                    for d, j in T.Parallel(dim_k, dim_v):
+                        state[d, j] = chunk_state[chunk, i_h, d, j]
                     T.fill(acc, 0.0)
                     T.gemm(q_gated, state, acc)
                     for i, j in T.Parallel(CHUNK_TOKENS, dim_v):
