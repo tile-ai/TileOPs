@@ -5,7 +5,6 @@ from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
-from workloads.device import run_device
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 
 pytestmark = pytest.mark.smoke
@@ -37,24 +36,37 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
-    initial_state = torch.zeros(1, 2, 128, 128, dtype=torch.float32, device=run_device())
-    with pytest.raises(ValueError, match="initial_state"):
-        op(*inputs, initial_state=initial_state)
+
+@pytest.mark.sm90
+def test_gated_deltanet_dense_prefill_continues_an_initial_state() -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_dense_prefill_runs_a_64_wide_state() -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 64, 2, 64, torch.bfloat16)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
-def test_gated_deltanet_partitioned_dense_prefill_matches_reference() -> None:
+@pytest.mark.parametrize("has_initial_state", [False, True], ids=["from-zero", "continued"])
+def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
+    has_initial_state: bool,
+) -> None:
     """Exercise warmup, state correction, and partitioned forward together."""
     torch.manual_seed(42)
-    test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16)
+    test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16, has_initial_state=has_initial_state)
     # 8 chunks split into partitions of 4.
     kernel = GatedDeltaNetDensePrefillFwdKernel(
         1, 2, 512, 128, 128**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
     )
-    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(kernel, q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2)
+    test.check(kernel, q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.sm90

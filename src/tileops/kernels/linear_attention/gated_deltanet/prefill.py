@@ -43,13 +43,13 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        Equal-length prefill from a zero state, in chunks of 64 tokens.
+        Equal-length prefill in chunks of 64 tokens over a 64- or 128-wide square state.
         """
         dense = call.dense_refusal
         if dense is not None:
             return dense
-        if call.has_initial_state:
-            return "does not support prefill with initial_state"
+        if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
+            return "does not support K and V other than matching 64 or 128"
         if call.seq_len < 64 or call.seq_len % 64 != 0:
             return "requires a prefill T that is a positive multiple of 64"
         return None
@@ -164,6 +164,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         beta: torch.Tensor,
         chunk_size: int,
         max_local_chunks: int,
+        initial_state: torch.Tensor | None,
         raw_sequence_lengths: tuple[int, ...] | None = None,
     ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         batch, num_tokens, num_heads, _ = k.shape
@@ -193,7 +194,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             k.device.index,
         )
         if not use_partition:
-            return None, raw_cu_seqlens, None, raw_cu_seqlens
+            return initial_state, raw_cu_seqlens, None, raw_cu_seqlens
         assert cp_cu_seqlens_t is not None
         assert seq_map_c2r_t is not None
         assert seq_map_r2c_t is not None
@@ -219,7 +220,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             num_warmup_chunks=num_warmup_chunks,
         )
         cp_h0 = correct_initial_states(
-            raw_h0=None,
+            raw_h0=initial_state,
             ht_buffer=ht,
             mt_buffer=mt,
             fallback_mask=fallback_mask,
@@ -248,7 +249,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        del initial_state, cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
+        del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
         self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len, head = q.shape[:3]
@@ -269,6 +270,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             beta,
             chunk_size,
             self.config["max_local_chunks"],
+            initial_state,
             raw_sequence_lengths=None if batch == 1 else (seq_len,) * batch,
         )
         o, _states, final_state = fused_gdr_fwd(

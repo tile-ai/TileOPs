@@ -14,11 +14,26 @@ from tileops.kernels.linear_attention.call_spec import (
     GatedDeltaNetFwdInterface,
 )
 
-__all__ = ["GatedDeltaNetDenseDecodeFwdKernel"]
+__all__ = [
+    "DENSE_DECODE_SM90_CONFIG",
+    "GatedDeltaNetDenseDecodeFwdKernel",
+    "gated_deltanet_dense_decode_sm90_tl",
+]
+
+# The launch shape of the decode program, shared by the gated kernel and the ungated one
+# that runs the same program with a zero gate. One warp owns a 16-column state tile, two
+# lanes reduce the key dimension for each output column. Re-fit maxrregcount by sweeping
+# it against the decode workload rows of `benchmarks/ops/bench_gated_deltanet.py`.
+DENSE_DECODE_SM90_CONFIG = {
+    "threads": 32,
+    "v_tile": 16,
+    "lane_group": 2,
+    "maxrregcount": 146,
+}
 
 
 @functools.lru_cache(maxsize=32)
-def _gated_deltanet_dense_decode_sm90_tl(
+def gated_deltanet_dense_decode_sm90_tl(
     batch: int,
     heads: int,
     dim: int,
@@ -131,11 +146,13 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        One token continuing a state the caller owns.
+        One token continuing a 128-wide square state the caller owns.
         """
         dense = call.dense_refusal
         if dense is not None:
             return dense
+        if call.dim_k != 128 or call.dim_v != 128:
+            return "does not support K and V other than 128"
         if call.seq_len != 1:
             return "serves one token per call"
         if not call.has_initial_state:
@@ -172,7 +189,7 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         self.scale = scale
         self.dtype = dtype
         self.init_config()
-        self._kernel_fn = _gated_deltanet_dense_decode_sm90_tl(
+        self._kernel_fn = gated_deltanet_dense_decode_sm90_tl(
             batch,
             heads,
             dim,
@@ -185,12 +202,7 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {
-            "threads": 32,
-            "v_tile": 16,
-            "lane_group": 2,
-            "maxrregcount": 146,
-        }
+        return dict(DENSE_DECODE_SM90_CONFIG)
 
     def forward(
         self,

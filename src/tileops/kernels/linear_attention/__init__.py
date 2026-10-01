@@ -24,6 +24,7 @@ from tileops.kernels.linear_attention.call_spec import (
 )
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
+    DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdKernel,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "DeltaNetDecodeFwdInterface",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
+    "DeltaNetDenseDecodeFwdKernel",
     "DeltaNetDensePrefillFwdKernel",
     "DeltaNetFwdInterface",
     "DeltaNetFwdKernel",

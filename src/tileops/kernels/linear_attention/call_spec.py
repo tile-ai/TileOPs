@@ -136,8 +136,9 @@ class GatedDeltaNetCall(CallSpec):
     def dense_refusal(self) -> Optional[str]:
         """Why no dense gated program serves this call, or ``None`` when one may.
 
-        The recurrence variants and head or state widths the in-tree pair does not
-        implement, whatever the sequence length. Both implementations ask it first.
+        The recurrence variants and head counts the in-tree pair does not implement,
+        whatever the sequence length. Both implementations ask it first, then state
+        the state widths they serve themselves.
         """
         unsupported = [
             name
@@ -148,7 +149,6 @@ class GatedDeltaNetCall(CallSpec):
                 ("use_gate_in_kernel=True", self.gate_in_kernel),
                 ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
                 ("HV != H", self.value_heads != self.heads),
-                ("K or V != 128", self.dim_k != 128 or self.dim_v != 128),
             )
             if present
         ]

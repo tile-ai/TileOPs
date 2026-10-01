@@ -42,6 +42,8 @@ DeltaNetInferenceFwdOp:
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
   - {B: 2, S: 16384, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-16k}
   - {B: 1, S: 4096, H: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-4k}
+  - {B: 2, S: 12288, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-12k-continued}
+  - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-continued}
   roofline:
     flops: "B * S * H * (6 * K * V + 2 * K)"
 
@@ -98,6 +100,8 @@ GatedDeltaNetFwdOp:
   - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-32k}
   - {B: 1, S: 1, H: 16, HV: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-b1}
   - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-b8}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-continued}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-narrow-state}
   roofline:
     flops: "B * S * HV * 7 * K * V"
 
