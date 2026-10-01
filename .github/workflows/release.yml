@@ -124,7 +124,8 @@ jobs:
           SHA: ${{ steps.version.outputs.sha }}
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${SHA}")"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${SHA}")"
+          export SOURCE_DATE_EPOCH
           # The isolated build environment installs its backend under these pins.
           export PIP_CONSTRAINT="${GITHUB_WORKSPACE}/scripts/ci/release-build-constraints.txt"
           # A tag build derives the version from the tag in each clone; a dispatch has no tag.
@@ -255,7 +256,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s  %s\n' "${WHEEL_SHA256}" "dist/${WHEEL}" "${SDIST_SHA256}" "dist/${SDIST}" | sha256sum --check --strict
-          [ "$(ls dist | wc -l)" -eq 2 ] || { ls -l dist; echo "::error::dist/ holds more than the two built files"; exit 1; }
+          [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq 2 ] || { ls -l dist; echo "::error::dist/ holds more than the two built files"; exit 1; }
 
       - name: Publish to TestPyPI
         if: ${{ github.event_name == 'workflow_dispatch' }}
