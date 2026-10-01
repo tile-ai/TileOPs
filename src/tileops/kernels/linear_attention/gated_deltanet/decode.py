@@ -148,9 +148,13 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
 
         One token continuing a 128-wide square state the caller owns.
         """
-        dense = call.dense_refusal
-        if dense is not None:
-            return dense
+        variant = call.recurrence_refusal
+        if variant is not None:
+            return variant
+        if call.varlen:
+            return "serves a single token of an equal-length call"
+        if call.value_heads != call.heads:
+            return "serves one key head per value head"
         if call.dim_k != 128 or call.dim_v != 128:
             return "does not support K and V other than 128"
         if call.seq_len != 1:

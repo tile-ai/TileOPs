@@ -44,6 +44,9 @@ DeltaNetInferenceFwdOp:
   - {B: 1, S: 4096, H: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-4k}
   - {B: 2, S: 12288, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-12k-continued}
   - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-continued}
+  - {B: 1, S: 4096, H: 4, K: 64, V: 64, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
+  - {B: 1, S: 4096, H: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: bfloat16}], label: varlen-ragged}
+  - {B: 2, S: 3000, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-3000}
   roofline:
     flops: "B * S * H * (6 * K * V + 2 * K)"
 
@@ -102,6 +105,9 @@ GatedDeltaNetFwdOp:
   - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-b8}
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-continued}
   - {B: 1, S: 4096, H: 16, HV: 16, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-narrow-state}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
+  - {B: 1, S: 4096, H: 4, HV: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: float16}], label: varlen-ragged-grouped}
+  - {B: 1, S: 3000, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-3000}
   roofline:
     flops: "B * S * HV * 7 * K * V"
 

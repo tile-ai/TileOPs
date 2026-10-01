@@ -10,18 +10,29 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gated_deltanet.prefill_common import prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)
 def prefill_chunk_local_cumsum_bthd_tl(
-    batch: int,
+    total_tokens: int,
+    num_sequences: int,
     head: int,
-    seq_len: int,
     chunk_size: int,
     dtype: str,
+    offsets_dtype: str,
 ):
-    num_chunks = seq_len // chunk_size
+    """Accumulate the gate inside each chunk, restarting at every sequence start.
+
+    A contiguous ``[batch, seq_len, head]`` gate is the same bytes as a packed
+    ``[1, batch * seq_len, head]`` one whose offsets step by ``seq_len``, so an equal-length
+    call is a packed call and runs this kernel too. The grid covers the most chunks the
+    offsets can describe and a block past the count they give retires at once, which is what
+    keeps the launch extent out of the offsets' values.
+    """
+    tiling = GroupTiling(num_sequences, chunk_size)
+    num_chunks = tiling.tile_upper_bound(total_tokens)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -30,22 +41,34 @@ def prefill_chunk_local_cumsum_bthd_tl(
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _func():
+    def _func(threads: int = 128):
         @T.prim_func
         def chunk_cumsum_bthd_kernel(
-            g: T.Tensor([batch, seq_len, head], dtype),
-            out: T.Tensor([batch, seq_len, head], dtype),
+            g: T.Tensor([1, total_tokens, head], dtype),
+            cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
+            out: T.Tensor([1, total_tokens, head], dtype),
         ):
-            with T.Kernel(batch, num_chunks, threads=128) as (bid, cid):
-                base = cid * chunk_size
+            with T.Kernel(num_chunks, threads=threads) as (cid,):
+                tile_cum = T.alloc_shared([num_sequences + 1], "int32")
+                lo = T.alloc_local([1], "int32")
+                hi = T.alloc_local([1], "int32")
+                seq = T.alloc_local([1], "int32")
+                first = T.alloc_local([1], "int32")
                 acc_s = T.alloc_shared([head], "float32")
 
-                for hid in T.Parallel(head):
-                    acc_s[hid] = T.float32(0.0)
-                for i in T.Serial(chunk_size):
+                tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                if cid < tile_cum[num_sequences]:
+                    tiling.decode(cid, tile_cum, lo, hi, seq, first)
+                    base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                    end = T.cast(cu_seqlens[seq[0] + 1], "int32")
+
                     for hid in T.Parallel(head):
-                        acc_s[hid] = acc_s[hid] + T.cast(g[bid, base + i, hid], "float32")
-                        out[bid, base + i, hid] = T.cast(acc_s[hid], dtype)
+                        acc_s[hid] = T.float32(0.0)
+                    for i in T.Serial(chunk_size):
+                        for hid in T.Parallel(head):
+                            if base + i < end:
+                                acc_s[hid] = acc_s[hid] + T.cast(g[0, base + i, hid], "float32")
+                                out[0, base + i, hid] = T.cast(acc_s[hid], dtype)
 
         return chunk_cumsum_bthd_kernel
 
@@ -54,17 +77,27 @@ def prefill_chunk_local_cumsum_bthd_tl(
 
 @functools.lru_cache(maxsize=32)
 def _prefill_blocksolve_A_bthd_tl(
-    batch: int,
+    total_tokens: int,
+    num_sequences: int,
     head: int,
-    seq_len: int,
+    key_head: int,
     chunk_size: int,
     dim_k: int,
     dtype: str,
+    offsets_dtype: str,
     use_gate: bool = True,
 ):
     if chunk_size != 64 or dim_k not in (64, 128):
         raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
+    if head % key_head != 0:
+        raise ValueError(f"head ({head}) must be a multiple of key_head ({key_head})")
 
+    # Recurrent heads sharing one key head. The solve reads the key at head ``hid // group``
+    # rather than against a key widened to the recurrent head count, which would cross
+    # memory once per recurrent head instead of once per key head.
+    group = head // key_head
+    tiling = GroupTiling(num_sequences, chunk_size)
+    num_chunks = tiling.tile_upper_bound(total_tokens)
     block_t = 64
     block_c = 16
     block_k = 64
@@ -81,17 +114,18 @@ def _prefill_blocksolve_A_bthd_tl(
     def _func(threads=32):
         @T.prim_func
         def prefill_blocksolve_A_bthd_tl(
-            k: T.Tensor([batch, seq_len, head, dim_k], dtype),
-            g: T.Tensor([batch, seq_len, head], dtype),
-            beta: T.Tensor([batch, seq_len, head], dtype),
-            A: T.Tensor([batch, seq_len, head, chunk_size], dtype),
+            k: T.Tensor([1, total_tokens, key_head, dim_k], dtype),
+            g: T.Tensor([1, total_tokens, head], dtype),
+            beta: T.Tensor([1, total_tokens, head], dtype),
+            cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
+            A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
         ):
-            with T.Kernel(batch, head, seq_len // block_t, threads=threads) as (
-                bid,
-                hid,
-                cid,
-            ):
-                base = cid * block_t
+            with T.Kernel(num_chunks, head, threads=threads) as (cid, hid):
+                tile_cum = T.alloc_shared([num_sequences + 1], "int32")
+                lo = T.alloc_local([1], "int32")
+                hi = T.alloc_local([1], "int32")
+                seq = T.alloc_local([1], "int32")
+                first = T.alloc_local([1], "int32")
                 k0 = T.alloc_shared([block_c, block_k], dtype)
                 k1 = T.alloc_shared([block_c, block_k], dtype)
                 k2 = T.alloc_shared([block_c, block_k], dtype)
@@ -119,6 +153,13 @@ def _prefill_blocksolve_A_bthd_tl(
                 G33 = T.alloc_fragment([block_c, block_c], accum_dtype)
                 tmp = T.alloc_fragment([block_c, block_c], accum_dtype)
 
+                tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                tiling.decode(cid, tile_cum, lo, hi, seq, first)
+                base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                end = T.cast(cu_seqlens[seq[0] + 1], "int32")
+                # Recurrent head ``hid`` reads the key head it shares with its group.
+                khid = hid // group
+
                 T.annotate_layout(
                     {
                         k0: tilelang.layout.make_swizzled_layout(k0),
@@ -131,13 +172,17 @@ def _prefill_blocksolve_A_bthd_tl(
                     }
                 )
 
+                # A row past its sequence's end repeats the last real row's accumulated
+                # gate and takes a zero step size. Its row of the strictly lower matrix is
+                # then zero, so its row of the inverse is the identity's and a chunk that
+                # runs off the end is the same program as a whole one.
                 if use_gate:
-                    T.copy(g[bid, base : base + block_t, hid], g_s, disable_tma=True)
-                T.copy(
-                    beta[bid, base : base + block_t, hid],
-                    beta_s,
-                    disable_tma=True,
-                )
+                    for t in T.Parallel(block_t):
+                        g_s[t] = g[0, T.min(base + t, end - 1), hid]
+                for t in T.Parallel(block_t):
+                    beta_s[t] = T.if_then_else(
+                        base + t < end, beta[0, base + t, hid], T.cast(0, dtype)
+                    )
 
                 T.clear(G00)
                 T.clear(G10)
@@ -152,38 +197,41 @@ def _prefill_blocksolve_A_bthd_tl(
 
                 for kt in T.Serial(dim_k // block_k):
                     koff = kt * block_k
-                    T.async_copy(
-                        k[bid, base : base + block_c, hid, koff : koff + block_k],
-                        k0,
-                    )
-                    T.async_copy(
-                        k[
-                            bid,
-                            base + block_c : base + 2 * block_c,
-                            hid,
-                            koff : koff + block_k,
-                        ],
-                        k1,
-                    )
-                    T.async_copy(
-                        k[
-                            bid,
-                            base + 2 * block_c : base + 3 * block_c,
-                            hid,
-                            koff : koff + block_k,
-                        ],
-                        k2,
-                    )
-                    T.async_copy(
-                        k[
-                            bid,
-                            base + 3 * block_c : base + 4 * block_c,
-                            hid,
-                            koff : koff + block_k,
-                        ],
-                        k3,
-                    )
-                    T.ptx_wait_group(0)
+                    # A chunk lying whole inside its sequence stages the four sub-blocks as
+                    # contiguous runs the copy engine can issue ahead. Only a sequence's
+                    # last chunk reads rows that are not all its own, and it clamps the row
+                    # index instead, which costs that one chunk the pipelined copy.
+                    if base + block_t <= end:
+                        T.async_copy(k[0, base : base + block_c, khid, koff : koff + block_k], k0)
+                        T.async_copy(
+                            k[0, base + block_c : base + 2 * block_c, khid, koff : koff + block_k],
+                            k1,
+                        )
+                        T.async_copy(
+                            k[
+                                0,
+                                base + 2 * block_c : base + 3 * block_c,
+                                khid,
+                                koff : koff + block_k,
+                            ],
+                            k2,
+                        )
+                        T.async_copy(
+                            k[
+                                0,
+                                base + 3 * block_c : base + 4 * block_c,
+                                khid,
+                                koff : koff + block_k,
+                            ],
+                            k3,
+                        )
+                        T.ptx_wait_group(0)
+                    else:
+                        for t, d in T.Parallel(block_c, block_k):
+                            k0[t, d] = k[0, T.min(base + t, end - 1), khid, koff + d]
+                            k1[t, d] = k[0, T.min(base + block_c + t, end - 1), khid, koff + d]
+                            k2[t, d] = k[0, T.min(base + 2 * block_c + t, end - 1), khid, koff + d]
+                            k3[t, d] = k[0, T.min(base + 3 * block_c + t, end - 1), khid, koff + d]
                     T.sync_threads()
 
                     T.gemm(k0, k0, G00, transpose_B=True)
@@ -434,28 +482,32 @@ def _prefill_blocksolve_A_bthd_tl(
                 T.sync_threads()
 
                 for i, j in T.Parallel(block_c, block_c):
-                    A[bid, base + i, hid, j] = T.cast(i_s[0, i, j], dtype)
-                    A[bid, base + i, hid, block_c + j] = T.cast(0, dtype)
-                    A[bid, base + i, hid, 2 * block_c + j] = T.cast(0, dtype)
-                    A[bid, base + i, hid, 3 * block_c + j] = T.cast(0, dtype)
-                    A[bid, base + block_c + i, hid, j] = T.cast(a_s[1, i, j], dtype)
-                    A[bid, base + block_c + i, hid, block_c + j] = T.cast(i_s[1, i, j], dtype)
-                    A[bid, base + block_c + i, hid, 2 * block_c + j] = T.cast(0, dtype)
-                    A[bid, base + block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
-                    A[bid, base + 2 * block_c + i, hid, j] = T.cast(a_s[3, i, j], dtype)
-                    A[bid, base + 2 * block_c + i, hid, block_c + j] = T.cast(a_s[4, i, j], dtype)
-                    A[bid, base + 2 * block_c + i, hid, 2 * block_c + j] = T.cast(
-                        i_s[2, i, j], dtype
-                    )
-                    A[bid, base + 2 * block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
-                    A[bid, base + 3 * block_c + i, hid, j] = T.cast(a_s[6, i, j], dtype)
-                    A[bid, base + 3 * block_c + i, hid, block_c + j] = T.cast(a_s[7, i, j], dtype)
-                    A[bid, base + 3 * block_c + i, hid, 2 * block_c + j] = T.cast(
-                        a_s[8, i, j], dtype
-                    )
-                    A[bid, base + 3 * block_c + i, hid, 3 * block_c + j] = T.cast(
-                        i_s[3, i, j], dtype
-                    )
+                    if base + i < end:
+                        A[0, base + i, hid, j] = T.cast(i_s[0, i, j], dtype)
+                        A[0, base + i, hid, block_c + j] = T.cast(0, dtype)
+                        A[0, base + i, hid, 2 * block_c + j] = T.cast(0, dtype)
+                        A[0, base + i, hid, 3 * block_c + j] = T.cast(0, dtype)
+                    if base + block_c + i < end:
+                        A[0, base + block_c + i, hid, j] = T.cast(a_s[1, i, j], dtype)
+                        A[0, base + block_c + i, hid, block_c + j] = T.cast(i_s[1, i, j], dtype)
+                        A[0, base + block_c + i, hid, 2 * block_c + j] = T.cast(0, dtype)
+                        A[0, base + block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
+                    if base + 2 * block_c + i < end:
+                        A[0, base + 2 * block_c + i, hid, j] = T.cast(a_s[3, i, j], dtype)
+                        A[0, base + 2 * block_c + i, hid, block_c + j] = T.cast(a_s[4, i, j], dtype)
+                        A[0, base + 2 * block_c + i, hid, 2 * block_c + j] = T.cast(
+                            i_s[2, i, j], dtype
+                        )
+                        A[0, base + 2 * block_c + i, hid, 3 * block_c + j] = T.cast(0, dtype)
+                    if base + 3 * block_c + i < end:
+                        A[0, base + 3 * block_c + i, hid, j] = T.cast(a_s[6, i, j], dtype)
+                        A[0, base + 3 * block_c + i, hid, block_c + j] = T.cast(a_s[7, i, j], dtype)
+                        A[0, base + 3 * block_c + i, hid, 2 * block_c + j] = T.cast(
+                            a_s[8, i, j], dtype
+                        )
+                        A[0, base + 3 * block_c + i, hid, 3 * block_c + j] = T.cast(
+                            i_s[3, i, j], dtype
+                        )
 
         return prefill_blocksolve_A_bthd_tl
 
@@ -466,21 +518,38 @@ def prefill_blocksolve_A_bthd(
     k: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
+    cu_seqlens: torch.Tensor,
     chunk_size: int,
     use_gate: bool = True,
 ) -> torch.Tensor:
-    batch, seq_len, head, dim_k = k.shape
-    A = torch.empty(batch, seq_len, head, chunk_size, dtype=k.dtype, device=k.device)
+    """The per-chunk triangular inverse the delta rule contracts against.
+
+    Args:
+        k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
+        g: ``(1, total_tokens, head)`` gate, accumulated within each chunk.
+        beta: ``(1, total_tokens, head)`` step sizes.
+        cu_seqlens: ``(num_sequences + 1,)`` packed row offsets.
+        chunk_size: Tokens one chunk of the recurrence contracts over.
+        use_gate: Read *g*; a zero-gate caller leaves it unread.
+
+    Returns:
+        New ``(1, total_tokens, head, chunk_size)`` inverse in *k*'s dtype.
+    """
+    _, total_tokens, key_head, dim_k = k.shape
+    head = g.shape[-1]
+    A = torch.empty(1, total_tokens, head, chunk_size, dtype=k.dtype, device=k.device)
     kernel = _prefill_blocksolve_A_bthd_tl(
-        batch,
+        total_tokens,
+        cu_seqlens.shape[0] - 1,
         head,
-        seq_len,
+        key_head,
         chunk_size,
         dim_k,
         str(k.dtype).split(".")[-1],
+        str(cu_seqlens.dtype).split(".")[-1],
         use_gate,
     )
-    kernel(k, g, beta, A)
+    kernel(k, g, beta, cu_seqlens, A)
     return A
 
 
@@ -1208,9 +1277,9 @@ def fused_gdr_h(
         is_cp = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        chunk_offsets, num_chunks = prepare_chunk_offsets(cu_seqlens, chunk_size)
-        chunk_offsets = chunk_offsets.to(cu_seqlens.dtype)
-        num_chunks = num_chunks if output_h else 0
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, chunk_size).to(cu_seqlens.dtype)
+        # Only a per-chunk buffer needs the count, and reading it synchronizes the device.
+        num_chunks = int(chunk_offsets[-1].item()) if output_h else 0
         is_varlen = True
         if num_warmup_chunks is None:
             num_warmup_chunks = torch.empty(

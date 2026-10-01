@@ -83,6 +83,7 @@ class DeltaNetInferenceCall(CallSpec):
     scale: float = 0.0
     l2norm: bool = False
     varlen: bool = False
+    num_sequences: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -131,24 +132,23 @@ class GatedDeltaNetCall(CallSpec):
     gate_in_kernel: bool = False
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
+    num_sequences: int = 0
 
     @property
-    def dense_refusal(self) -> Optional[str]:
-        """Why no dense gated program serves this call, or ``None`` when one may.
+    def recurrence_refusal(self) -> Optional[str]:
+        """Why no in-tree gated program serves this call, or ``None`` when one may.
 
-        The recurrence variants and head counts the in-tree pair does not implement,
-        whatever the sequence length. Both implementations ask it first, then state
-        the state widths they serve themselves.
+        The recurrence variants the in-tree pair does not implement, whatever the sequence
+        length or head counts. Both implementations ask it first, then state the shapes
+        they serve themselves.
         """
         unsupported = [
             name
             for name, present in (
-                ("packed varlen", self.varlen),
                 ("state_v_first=True", self.state_v_first),
                 ("use_qk_l2norm_in_kernel=True", self.l2norm),
                 ("use_gate_in_kernel=True", self.gate_in_kernel),
                 ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
-                ("HV != H", self.value_heads != self.heads),
             )
             if present
         ]

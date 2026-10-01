@@ -419,12 +419,31 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_only
+def test_deltanet_prefill_packs_ragged_sequences() -> None:
+    """Lengths below, across and on a chunk boundary in one packed call."""
+    torch.manual_seed(42)
+    test = DeltaNetInferenceTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=3e-3, rtol=3e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
+    torch.manual_seed(42)
+    test = DeltaNetInferenceTest(2, 100, 4, 64, torch.bfloat16)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=3e-3, rtol=3e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_only
 def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
     # 16 chunks split into partitions of 4.
     kernel = DeltaNetDensePrefillFwdKernel(
-        2, 4, 512, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
+        2, 4, 512, 2, False, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
     )
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
     test.check(kernel, *inputs, atol=1.6e-2, rtol=1.6e-2)
