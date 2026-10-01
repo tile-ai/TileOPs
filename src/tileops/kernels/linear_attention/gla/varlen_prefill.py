@@ -477,16 +477,13 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
         # What the launch waits on is one state block's walk, so the state tile is split
         # until the device is covered. The key axis is split first and all the way: a block
         # then reads only its own key channels and its own slice of the float32 gate, and
-        # nothing is read twice. Splitting the value axis reads those two again per slice,
-        # so it is taken only while it still puts another block on an idle multiprocessor.
+        # nothing is read twice. The value axis is split once more, which halves the tile a
+        # prefetch stage stages and so raises how many blocks stay resident at the walk's
+        # prefetch depth; splitting it further reads the keys and the gate again per slice
+        # and measures worse. Re-fit by timing the manifest rows over the pairs that keep
+        # both slices at or above the GEMM's minimum operand extent.
         k_partitions = call.dim_k // GEMM_MIN_N
-        v_partitions = 1
-        blocks = call.num_sequences * call.heads * k_partitions
-        while (
-            blocks * v_partitions * 2 <= call.sm_count
-            and call.dim_v // (v_partitions * 2) >= GEMM_MIN_N
-        ):
-            v_partitions *= 2
+        v_partitions = 2 if call.dim_v // 2 >= GEMM_MIN_N else 1
         return build_entry(
             cls,
             call,
