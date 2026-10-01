@@ -14,6 +14,7 @@
 
 <p>
     <a href="#built-for-agents"><b>Why it's different</b></a> ·
+    <a href="#built-with-tilefoundry"><b>TileFoundry</b></a> ·
     <a href="#quick-start"><b>Quick Start</b></a> ·
     <a href="#how-it-works"><b>How it works</b></a> ·
     <a href="#installation"><b>Installation</b></a> ·
@@ -39,6 +40,11 @@ drift, no bloat, code that stays maintainable. The design serves three goals:
   benchmarks.
 - **Tunable.** The roofline model reports each kernel's gap to its bound, and nightly
   benchmarks compare each kernel with the fastest other implementation on the same GPU.
+
+## Built with TileFoundry
+
+TileOPs kernels are forged with [TileFoundry](https://github.com/tile-ai/TileFoundry), an agentic
+platform for high-performance kernel generation.
 
 ## Quick Start
 
@@ -133,11 +139,6 @@ The rendered site carries what this table cannot: the
 [API reference](https://tile-ai.github.io/TileOPs.github.io/api/) generated from the operator
 signatures, and the [performance tables](https://tile-ai.github.io/TileOPs.github.io/benchmarks/)
 from the nightly run, each operator against the tuned libraries it competes with.
-
-## Built with TileFoundry
-
-TileOPs kernels are forged with [TileFoundry](https://github.com/tile-ai/TileFoundry), an
-agentic platform for high-performance kernel generation.
 
 ## Contributing
 
