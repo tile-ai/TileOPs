@@ -242,7 +242,7 @@ A metadata tensor's type is in the signature; its values come from the generator
 
 A composite op records the sub-op classes its built-in path may hold and where its own kernels sit, as `composition: {kind: composite, stages: [...]}`. When and how often an instance is built stays in code, as do scheduling and forward.
 
-- A stage is `{name, op | kernel, optional}`: it names a manifest entry (`op`) or one of the op's kernel roles (`kernel`). A sub-op not held for every call is an `optional: true` stage; the condition stays in code.
+- A stage is `{name, op | kernel, optional}`: it names a manifest entry (`op`) or one of the op's kernel keys (`kernel`). A sub-op not held for every call is an `optional: true` stage; the condition stays in code.
 - Whether a parent's roofline equals its stages' is not specified by this design.
 - For an implemented parametric entry, the validator holds `op` stages to the class's `delegate_types` and `kernel` stages to its `kernel_types`, each in order.
 - `stages` is a non-empty list; stage names are unique; `optional` is a boolean.
