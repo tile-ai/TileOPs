@@ -7,6 +7,7 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.transform import PassConfigKey
 
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.grouped_gemm.heuristics import ACTIVATIONS, GemmType
@@ -45,7 +46,12 @@ def _moe_grouped_gemm_mma_kernel(
     fused = activation != "none"
     c_cols = n // 2 if fused else n
 
-    @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        # Under WS the producer reads its own copy of the group index, which find_tile
+        # never writes, so B would be loaded from an arbitrary group.
+        pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+    )
     def _moe_grouped_gemm_mma_func(
         block_m: int, block_n: int, block_k: int, num_stages: int, threads: int
     ) -> Callable:
@@ -146,6 +152,8 @@ def _moe_grouped_gemm_mma_kernel(
                             C_s[i, j] = T.cast(activate(acc[i, j], acc_up[i, j]), cd_dtype)
                     else:
                         T.copy(acc, C_s)
+                    # C_s is written and read under different thread mappings.
+                    T.sync_threads()
                     for i, j in T.Parallel(block_m, tile_n):
                         if (r0 + i < row_end[0]) & (n0 + j < c_cols):
                             if masked:
