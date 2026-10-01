@@ -107,7 +107,7 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps=self.sinkhorn_eps,
             device=x.device,
         )
-        self.kernel = self.kernel_for("mhc_pre", (phi, x, b), call)
+        self.kernel = self.kernel_for("mhc_pre", call)
         return self.kernel(
             phi,
             x,
@@ -188,5 +188,5 @@ class MHCPostFwdOp(Op):
             device=x_layer_out.device,
         )
         inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
-        self.kernel = self.kernel_for("mhc_post", inputs, call)
+        self.kernel = self.kernel_for("mhc_post", call)
         return self.kernel(*inputs)

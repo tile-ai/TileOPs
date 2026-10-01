@@ -85,7 +85,7 @@ class UnaryOp(Op):
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator."""
         input = input.contiguous()
-        return self.kernel_for(ELEMENTWISE, (input,), self._call_spec(input))(input)
+        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
@@ -138,7 +138,7 @@ class BinaryOp(Op):
         input = input.contiguous()
         other = other.contiguous()
         call = self._call_spec(input, other)
-        return self.kernel_for(ELEMENTWISE, (input, other), call)(input, other)
+        return self.kernel_for(ELEMENTWISE, call)(input, other)
 
     def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``other``."""
@@ -183,7 +183,7 @@ class FusedGatedOp(Op):
         """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
-        return self.kernel_for(ELEMENTWISE, (x,), call)(x)
+        return self.kernel_for(ELEMENTWISE, call)(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""

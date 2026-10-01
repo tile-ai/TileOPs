@@ -86,7 +86,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     op = GemmFwdOp(kernel_map={"gemm_tma": IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op.kernel_for("gemm", (), _gemm_call())
+        op.kernel_for("gemm", _gemm_call())
 
 
 @pytest.mark.cuda_only
@@ -117,7 +117,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op.kernel_for("gemm", (), _gemm_call())
+        op.kernel_for("gemm", _gemm_call())
 
 
 @pytest.mark.cuda_only

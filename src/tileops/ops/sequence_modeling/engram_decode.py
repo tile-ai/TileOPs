@@ -126,4 +126,4 @@ class EngramDecodeFwdOp(Op):
             dtype=inputs[0].dtype,
             device=inputs[0].device,
         )
-        return self.kernel_for("engram_decode", inputs, call)(*inputs)
+        return self.kernel_for("engram_decode", call)(*inputs)

@@ -480,12 +480,7 @@ class Op(ABC):
         self._install_kernel_map(kernel_map)
         self._instance_key = register_instance(self)
 
-    def kernel_for(
-        self,
-        interface: str,
-        inputs: "Sequence[torch.Tensor | None]",
-        call: object = None,
-    ) -> object:
+    def kernel_for(self, interface: str, call: object) -> object:
         """Return the in-tree entry that serves *call* for *interface*, resolving it on a miss.
 
         The one way an op's in-tree implementation reaches a kernel. It runs only when the
@@ -496,8 +491,6 @@ class Op(ABC):
 
         Args:
             interface: The kernel interface, one of ``interfaces``.
-            inputs: The tensors this kernel will be handed, in the order the interface's
-                ``forward`` takes them, an absent optional one as ``None``.
             call: The call spec, an instance of the interface's ``request``.
 
         Raises:

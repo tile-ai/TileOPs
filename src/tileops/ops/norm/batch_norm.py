@@ -158,7 +158,7 @@ class BatchNormFwdOp(Op):
             momentum=self.momentum,
         )
         interface = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
-        kernel = self.kernel_for(interface, (x_ncs, *handed, weight, bias), call)
+        kernel = self.kernel_for(interface, call)
         self.kernel = kernel
 
         # The training kernel also returns the batch statistics, which the manifest keeps
@@ -265,7 +265,7 @@ class BatchNormBwdOp(Op):
         mean = mean.contiguous()
         rstd = rstd.contiguous()
         call = BatchNormCall(device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype)
-        kernel = self.kernel_for("batch_norm_bwd", (grad_out_ncs, x_ncs, weight, mean, rstd), call)
+        kernel = self.kernel_for("batch_norm_bwd", call)
         self.kernel = kernel
         grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
         return grad_x.view(x.shape), grad_weight, grad_bias

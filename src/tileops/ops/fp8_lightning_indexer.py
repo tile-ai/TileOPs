@@ -121,7 +121,7 @@ class FP8LightningIndexerFwdOp(Op):
             t.contiguous()
             for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
         )
-        self.kernel = self.kernel_for("fp8_lightning_indexer", inputs, call)
+        self.kernel = self.kernel_for("fp8_lightning_indexer", call)
         return self.kernel(*inputs)
 
     def per_custom_dims_cast_to_fp8(

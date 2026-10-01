@@ -57,7 +57,7 @@ class PreluFwdOp(Op):
             num_channels=weight.numel(),
             inner_size=inner_size,
         )
-        return self.kernel_for(ELEMENTWISE, (input, weight), call)(input, weight)
+        return self.kernel_for(ELEMENTWISE, call)(input, weight)
 
     def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``weight``."""

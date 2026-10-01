@@ -94,7 +94,7 @@ class MoePrePermuteFwdOp(Op):
             top_k=local_expert_ids.shape[1],
             routing_input_kind="local_expert_ids",
         )
-        kernel = self.kernel_for("pre_permute", (hidden_states, local_expert_ids), call)
+        kernel = self.kernel_for("pre_permute", call)
         return kernel(hidden_states, local_expert_ids)
 
 
@@ -218,7 +218,7 @@ class MoeGroupedGemmFwdOp(Op):
             n=n,
             k=k,
         )
-        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata, out), call)
+        kernel = self.kernel_for("grouped_gemm", call)
         return kernel(a, b, layout_metadata, out=out)
 
 
@@ -371,7 +371,5 @@ class MoePostPermuteFwdOp(Op):
             hidden_size=expert_output.shape[-1],
             top_k=topk_weights.shape[1],
         )
-        kernel = self.kernel_for(
-            "post_permute", (expert_output, inverse_indices, topk_weights, out), call
-        )
+        kernel = self.kernel_for("post_permute", call)
         return kernel(expert_output, inverse_indices, topk_weights, out=out)

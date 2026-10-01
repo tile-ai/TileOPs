@@ -84,4 +84,4 @@ class SharedExpertMLPFwdOp(Op):
             dtype=hidden_states.dtype,
             device=hidden_states.device,
         )
-        return self.kernel_for("shared_expert_mlp", tensors, call)(*tensors)
+        return self.kernel_for("shared_expert_mlp", call)(*tensors)

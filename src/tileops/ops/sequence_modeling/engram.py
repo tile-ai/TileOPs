@@ -118,7 +118,7 @@ class EngramGateConvFwdOp(Op):
             dtype=inputs[0].dtype,
             device=inputs[0].device,
         )
-        return self.kernel_for("engram_gate_conv_fwd", inputs, call)(*inputs)
+        return self.kernel_for("engram_gate_conv_fwd", call)(*inputs)
 
 
 class EngramGateConvBwdOp(Op):
@@ -247,4 +247,4 @@ class EngramGateConvBwdOp(Op):
             dtype=inputs[0].dtype,
             device=inputs[0].device,
         )
-        return self.kernel_for("engram_gate_conv_bwd", inputs, call)(*inputs)
+        return self.kernel_for("engram_gate_conv_bwd", call)(*inputs)

@@ -73,6 +73,6 @@ class SinusoidalFwdOp(Op):
             d_model=self.d_model,
             dtype=self.out_dtype,
         )
-        kernel = self.kernel_for("sinusoidal", (), call)
+        kernel = self.kernel_for("sinusoidal", call)
         out = kernel()
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

@@ -102,6 +102,6 @@ class FusedAddLayerNormFwdOp(Op):
         weight = weight.contiguous()
         bias = bias.contiguous()
         call = LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
-        kernel = self.kernel_for("fused_add_layer_norm", (x, residual, weight, bias), call)
+        kernel = self.kernel_for("fused_add_layer_norm", call)
         y, residual_out = kernel(x, residual, weight, bias)
         return y, residual_out

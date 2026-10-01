@@ -163,7 +163,7 @@ class _ReduceOpBase(Op):
         )
 
     def _launch(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int):
-        return self.kernel_for("reduce", (x,), self._call(x, axes, n))(x)
+        return self.kernel_for("reduce", self._call(x, axes, n))(x)
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> CallSpec:
         """The call spec of reducing *axes* of *x*, ``n`` elements to each output."""

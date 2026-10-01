@@ -80,5 +80,5 @@ class FP8QuantPerBlockFwdOp(Op):
             cols=w.shape[1],
             dtype=w.dtype,
         )
-        kernel = self.kernel_for("fp8_quant_per_block_fwd", (w,), call)
+        kernel = self.kernel_for("fp8_quant_per_block_fwd", call)
         return kernel(w)

@@ -104,7 +104,7 @@ class SSDChunkScanFwdOp(Op):
             dtype=x.dtype,
             device=x.device,
         )
-        kernel = self.kernel_for("ssd_chunk_scan_fwd", (x, cb, dA_cumsum, C, prev_states, dt), call)
+        kernel = self.kernel_for("ssd_chunk_scan_fwd", call)
         return kernel(
             x.contiguous(),
             cb.contiguous(),

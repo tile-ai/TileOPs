@@ -107,7 +107,7 @@ class SSDChunkStateFwdOp(Op):
             has_seq_idx=seq_idx is not None,
             device=x.device,
         )
-        kernel = self.kernel_for("ssd_chunk_state_fwd", (x, Bmat, dt, dA_cumsum, seq_idx), call)
+        kernel = self.kernel_for("ssd_chunk_state_fwd", call)
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()

@@ -91,4 +91,4 @@ class RMSNormFwdOp(Op):
             eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
             dtype=x.dtype,
         )
-        return self.kernel_for("rms_norm", (x, weight), call)(x, weight)
+        return self.kernel_for("rms_norm", call)(x, weight)

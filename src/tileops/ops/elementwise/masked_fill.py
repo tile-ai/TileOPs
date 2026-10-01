@@ -64,7 +64,7 @@ class MaskedFillFwdOp(Op):
         mask = mask.contiguous()
         value = value.contiguous()
         call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        return self.kernel_for(ELEMENTWISE, (input, mask, value), call)(input, mask, value)
+        return self.kernel_for(ELEMENTWISE, call)(input, mask, value)
 
     def forward(
         self,
@@ -128,7 +128,7 @@ class MaskedFillScalarFwdOp(Op):
         call = MaskedFillCall(
             device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
         )
-        return self.kernel_for(ELEMENTWISE, (input, mask), call)(input, mask)
+        return self.kernel_for(ELEMENTWISE, call)(input, mask)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``mask``."""

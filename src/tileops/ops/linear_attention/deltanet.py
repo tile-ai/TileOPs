@@ -107,7 +107,7 @@ class DeltaNetFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        kernel = self.kernel_for("deltanet_fwd", (q, k, v, beta), self._call(q, v))
+        kernel = self.kernel_for("deltanet_fwd", self._call(q, v))
         return kernel(q, k, v, beta)
 
     def compute_roof(self) -> str:
@@ -214,7 +214,7 @@ class DeltaNetBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_bwd", inputs, self._call(q, v))
+        kernel = self.kernel_for("deltanet_bwd", self._call(q, v))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

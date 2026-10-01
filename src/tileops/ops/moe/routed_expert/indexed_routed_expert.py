@@ -120,17 +120,11 @@ class IndexedExpertMLPFwdOp(Op):
         if call.grouped_dispatch:
             size = IndexedRouteStatsFwdInterface.output_size(call)
             metadata = torch.empty(size, dtype=torch.int32, device=topk_ids.device)
-            self.kernel_for("route_stats", (topk_ids, metadata), call)(topk_ids, metadata)
+            self.kernel_for("route_stats", call)(topk_ids, metadata)
         hidden_rows = hidden_states.new_empty(tokens, top_k, call.ffn_size)
         route_output = hidden_states.new_empty(tokens, top_k, hidden)
-        gate_up = self.kernel_for(
-            "expert_gate_up", (hidden_states, w_gate_up, topk_ids, metadata, hidden_rows), call
-        )
+        gate_up = self.kernel_for("expert_gate_up", call)
         gate_up(hidden_states, w_gate_up, topk_ids, metadata, out=hidden_rows)
-        down = self.kernel_for(
-            "expert_down", (hidden_rows, w_down, topk_ids, metadata, route_output), call
-        )
+        down = self.kernel_for("expert_down", call)
         down(hidden_rows, w_down, topk_ids, metadata, out=route_output)
-        self.kernel_for("weighted_reduce", (route_output, topk_weights, output), call)(
-            route_output, topk_weights, output
-        )
+        self.kernel_for("weighted_reduce", call)(route_output, topk_weights, output)

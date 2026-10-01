@@ -96,5 +96,5 @@ class AdaLayerNormZeroFwdOp(Op):
         shift = shift.contiguous()
         gate = gate.contiguous()
         call = LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype)
-        kernel = self.kernel_for("ada_layer_norm", (x, scale, shift, gate), call)
+        kernel = self.kernel_for("ada_layer_norm", call)
         return kernel(x, scale, shift, gate)

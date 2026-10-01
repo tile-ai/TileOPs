@@ -135,7 +135,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, kv, indices)
-        kernel = self.kernel_for("sparse_mla", inputs, self._sparse_mla_call(q, kv, indices))
+        kernel = self.kernel_for("sparse_mla", self._sparse_mla_call(q, kv, indices))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

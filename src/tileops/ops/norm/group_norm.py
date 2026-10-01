@@ -121,7 +121,7 @@ class GroupNormFwdOp(Op):
             dtype=x.dtype,
             passes_affine=affine,
         )
-        kernel = self.kernel_for("group_norm", (x, weight, bias), call)
+        kernel = self.kernel_for("group_norm", call)
         self.kernel = kernel
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.

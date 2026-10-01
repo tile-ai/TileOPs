@@ -91,9 +91,7 @@ class SSDStatePassingFwdOp(Op):
             dtype=states.dtype,
             device=states.device,
         )
-        kernel = self.kernel_for(
-            "ssd_state_passing_fwd", (states, dA_chunk_cumsum, initial_states), call
-        )
+        kernel = self.kernel_for("ssd_state_passing_fwd", call)
 
         states = states.contiguous()
         dA_chunk_cumsum = dA_chunk_cumsum.contiguous()

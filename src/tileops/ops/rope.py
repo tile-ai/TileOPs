@@ -186,7 +186,7 @@ class _RopeOpBase(Op):
         )
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         x = x.contiguous()
-        self.kernel = self.kernel_for("rope", (x, cos, sin), call)
+        self.kernel = self.kernel_for("rope", call)
         return self.kernel(x, cos, sin)
 
 
@@ -294,7 +294,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
         )
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
         x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
-        self.kernel = self.kernel_for("rope_neox_position_ids", (x, cos, sin, position_ids), call)
+        self.kernel = self.kernel_for("rope_neox_position_ids", call)
         output = self.kernel(x, cos, sin, position_ids)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in

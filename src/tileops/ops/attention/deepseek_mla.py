@@ -88,7 +88,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("mla_decode_kernel", inputs, call)(*inputs)
+        return self.kernel_for("mla_decode_kernel", call)(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -190,7 +190,7 @@ class MultiHeadLatentAttentionVarlenFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
-        return self.kernel_for("mla_varlen_fwd", inputs, self.varlen_call(inputs))(*inputs)
+        return self.kernel_for("mla_varlen_fwd", self.varlen_call(inputs))(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

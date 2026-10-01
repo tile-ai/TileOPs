@@ -56,7 +56,7 @@ class WhereFwdOp(Op):
         input = input.contiguous()
         other = other.contiguous()
         call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, (condition, input, other), call)
+        kernel = self.kernel_for(ELEMENTWISE, call)
         return kernel(condition, input, other)
 
     def forward(

@@ -99,5 +99,5 @@ class FusedTopKFwdOp(Op):
             dtype=gating_output.dtype,
             device=gating_output.device,
         )
-        kernel = self.kernel_for("fused_topk", (gating_output, correction_bias), call)
+        kernel = self.kernel_for("fused_topk", call)
         return kernel(gating_output, correction_bias)

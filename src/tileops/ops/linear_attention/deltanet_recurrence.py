@@ -103,5 +103,5 @@ class DeltaNetDecodeFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        kernel = self.kernel_for("deltanet_decode", (q, k, v, beta, state), call)
+        kernel = self.kernel_for("deltanet_decode", call)
         return kernel(q, k, v, beta, state)
