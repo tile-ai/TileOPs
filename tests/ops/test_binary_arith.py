@@ -5,6 +5,8 @@ floor_divide, lerp, maximum, minimum (plus existing add).
 Also includes L4 edge case tests for div, remainder, floor_divide, pow.
 """
 
+import functools
+
 import pytest
 import torch
 
@@ -468,11 +470,25 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
-    "dtype, rounding_mode",
+    "dtype, make_op, ref_fn",
     [
-        pytest.param(torch.bfloat16, None, id="bfloat16"),
-        pytest.param(torch.bfloat16, "trunc", id="bfloat16-trunc"),
-        pytest.param(torch.float16, "trunc", id="float16-trunc"),
+        pytest.param(torch.bfloat16, DivFwdOp, torch.div, id="bfloat16-div"),
+        pytest.param(
+            torch.bfloat16,
+            functools.partial(DivFwdOp, rounding_mode="trunc"),
+            functools.partial(torch.div, rounding_mode="trunc"),
+            id="bfloat16-div-trunc",
+        ),
+        pytest.param(
+            torch.float16,
+            functools.partial(DivFwdOp, rounding_mode="trunc"),
+            functools.partial(torch.div, rounding_mode="trunc"),
+            id="float16-div-trunc",
+        ),
+        pytest.param(torch.bfloat16, RemainderFwdOp, torch.remainder, id="bfloat16-remainder"),
+        pytest.param(
+            torch.bfloat16, FloorDivideFwdOp, torch.floor_divide, id="bfloat16-floor-divide"
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -482,11 +498,12 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
         pytest.param((64, 1024), (1, 1024), id="bias"),
     ],
 )
-def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, rounding_mode) -> None:
+def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
     """The fast 16-bit divide gives torch's result bit for bit.
 
     Random bit patterns put divisors past ``2**126`` and below ``2**-126`` among
-    ordinary ones.
+    ordinary ones. Those are the divisors the floored ops' cheap tier declines,
+    because the reciprocal it takes answers a zero or an infinity for them.
     """
     gen = torch.Generator(device=run_device()).manual_seed(0)
 
@@ -495,8 +512,7 @@ def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, rounding_m
         return raw.to(torch.int16).view(dtype)
 
     a, b = bits(a_shape), bits(b_shape)
-    out = DivFwdOp(rounding_mode=rounding_mode)(a, b)
-    ref = torch.div(a, b, rounding_mode=rounding_mode)
+    out, ref = make_op()(a, b), ref_fn(a, b)
     number = ~ref.isnan()
     assert torch.equal(out.isnan(), ~number)
     assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))

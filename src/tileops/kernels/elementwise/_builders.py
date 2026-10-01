@@ -14,6 +14,7 @@ from tileops.kernels.elementwise._broadcast import (
     row_tile_leaves_tail,
 )
 from tileops.kernels.elementwise._op_body import GuardedOpFunc, op_func_for
+from tileops.kernels.elementwise._prelude import PRELUDE
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
@@ -71,7 +72,7 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg, prelude=PRELUDE) as bx:
                 for i in T.Parallel(threads_arg):
                     idx = bx * threads_arg + i
                     y[idx] = op_func(x[idx])
@@ -93,7 +94,7 @@ def make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_p
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg, prelude=PRELUDE) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
                     y[idx] = op_func(x[idx])
@@ -119,7 +120,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_pe
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg, prelude=PRELUDE) as bx:
                 if contiguous:
                     base = bx * block_size + T.get_thread_binding() * npt_arg
                     x_run = T.alloc_local((npt_arg,), dtype)
@@ -373,7 +374,7 @@ def _row_broadcast_prim(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(grid_vecs, threads=threads) as bx:
+            with T.Kernel(grid_vecs, threads=threads, prelude=PRELUDE) as bx:
                 if fast is not None and stage:
                     T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
                 if stage:
@@ -398,7 +399,7 @@ def _row_broadcast_prim(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(body_blocks + tail_blocks, threads=threads) as bx:  # noqa: SIM117
+            with T.Kernel(body_blocks + tail_blocks, threads=threads, prelude=PRELUDE) as bx:  # noqa: SIM117
                 with T.If(bx < body_blocks):
                     with T.Then():
                         by = bx // full_blocks
@@ -434,7 +435,10 @@ def _row_broadcast_prim(
         b: T.Tensor((b_numel,), dtype),
         y: T.Tensor((N_total,), out_dtype),
     ):
-        with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (bx, by):
+        with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads, prelude=PRELUDE) as (
+            bx,
+            by,
+        ):
             if fast is not None and stage:
                 T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
             a_base, b_base = compute_broadcast_offsets(
@@ -494,7 +498,7 @@ def make_binary_register_copy(
             b: T.Tensor((N_total,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE) as bx:
                 if contiguous:
                     base = bx * block_size + T.get_thread_binding() * num_per_thread
                     a_run = T.alloc_local((num_per_thread,), dtype)
@@ -567,7 +571,7 @@ def make_binary_direct(
                 b: T.Tensor((N_total,), dtype),
                 y: T.Tensor((N_total,), out_dtype),
             ):
-                with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
+                with T.Kernel(T.ceildiv(N_total, threads), threads=threads, prelude=PRELUDE) as bx:
                     for i in T.Parallel(threads):
                         idx = bx * threads + i
                         y[idx] = op_func(a[idx], b[idx])
@@ -597,7 +601,7 @@ def make_binary_direct(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(N_total, threads), threads=threads, prelude=PRELUDE) as bx:
                 for i in T.Parallel(threads):
                     flat_idx = bx * threads + i
                     a_off, b_off = compute_broadcast_offsets(
@@ -663,7 +667,9 @@ def make_binary_explicit(
                 b: T.Tensor((N_total,), dtype),
                 y: T.Tensor((N_total,), out_dtype),
             ):
-                with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+                with T.Kernel(
+                    T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE
+                ) as bx:
                     for i, j in T.Parallel(threads, num_per_thread):
                         idx = (bx * threads + i) * num_per_thread + j
                         y[idx] = op_func(a[idx], b[idx])
@@ -684,7 +690,7 @@ def make_binary_explicit(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE) as bx:
                 for i, j in T.Parallel(threads, num_per_thread):
                     flat_idx = (bx * threads + i) * num_per_thread + j
                     a_off, b_off = compute_broadcast_offsets(
@@ -711,7 +717,10 @@ def make_fused_gated_direct(M, N, dtype, op_name, threads=256):
 
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
+            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg, prelude=PRELUDE) as (
+                bx,
+                by,
+            ):
                 for i in T.Parallel(threads_arg):
                     col = bx * threads_arg + i
                     gate = x[by, col]
@@ -734,7 +743,10 @@ def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=
 
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
-            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg, prelude=PRELUDE) as (
+                bx,
+                by,
+            ):
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     col = (bx * threads_arg + i) * npt_arg + j
                     gate = x[by, col]

@@ -15,6 +15,7 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
+from tileops.kernels.elementwise._prelude import approx_reciprocal
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
     LerpCall,
@@ -211,12 +212,14 @@ def _nudged_floor(num, den, dtype, fast_body):
     exact whole quotient ``q`` left short back onto it, so the floor of the nudged
     quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
     on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
-    or NaN operand, every quotient that underflows and every divisor ``_approx_fdiv``
-    does not cover.
+    or NaN operand, every quotient that underflows and every divisor
+    ``approx_reciprocal`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
-    # One reciprocal serves every element that shares b.
-    quotient = num * _approx_fdiv(T.cast(1.0, "float32"), den)
+    # One reciprocal serves every element that shares b. ``approx_reciprocal`` answers a
+    # zero or an infinity for the divisors it does not cover, and ``holds`` refuses both,
+    # so the operand pairs it declines reach the exact body below instead.
+    quotient = num * approx_reciprocal(den)
 
     def value(q):
         nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
