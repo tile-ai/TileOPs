@@ -64,7 +64,7 @@ class AvgPool1dFixture(FixtureBase):
                     True,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-k3-default-stride-fp16",
                 ),
                 pytest.param(
@@ -146,7 +146,7 @@ class AvgPool2dFixture(FixtureBase):
                     None,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-3x3-default-stride-fp16",
                 ),
                 pytest.param(
@@ -317,7 +317,7 @@ class AvgPool3dFixture(FixtureBase):
                     None,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-2x2x2-default-stride-fp16",
                 ),
                 pytest.param(
@@ -699,7 +699,7 @@ _MAX_POOL1D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-k3-s2-p1-fp16",
     ),
     pytest.param(
@@ -852,7 +852,7 @@ _MAX_POOL2D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-3x3-s2-p1-fp16",
     ),
     pytest.param(
@@ -996,7 +996,7 @@ _MAX_POOL3D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-k2-s2-fp16",
     ),
     pytest.param(
@@ -1650,7 +1650,7 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     (6, 6),
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-spp-6x6-fp16",
                 ),
                 pytest.param(
@@ -1726,7 +1726,7 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     (6, 6),
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-spp-6x6-fp16",
                 ),
                 pytest.param(

@@ -5,17 +5,13 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0,<2.14.0",
-    # tilelang as a compatibility range, not a source or exact pin. CI does not resolve tilelang
-    # from this range: the runner image bakes a specific tilelang build and CI installs tileops
-    # with --no-deps against it. constraints.txt pins tilelang's runtime deps (torch, triton,
-    # apache-tvm-ffi, ...) for reproducibility but intentionally does NOT pin tilelang itself.
-    # Downstream `pip install tileops` resolves a compatible tilelang release; apache-tvm-ffi
-    # comes in transitively via tilelang's own metadata — no manual cap here.
-    "tilelang>=0.1.9,<0.2.0",
-    "pyyaml>=6.0",
+    # The one combination .github/workflows/release.yml verifies on an SM90 device, from
+    # official PyPI. Widening any of them means verifying that combination there first.
+    "torch>=2.13.0,<2.14.0",
+    "tilelang==0.1.12",
+    "pyyaml>=6.0.1,<7",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["llm", "inference", "gpu", "kernel", "tiling"]
@@ -24,8 +20,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -45,7 +39,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-xdist>=3.0",
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.1",
 ]
 bench = [
     "flash-attn==2.8.3",
@@ -181,7 +175,7 @@ markers = [
     "smoke: fast PR critical-path tests",
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
-    "packaging: minimal wheel-install sanity check (one case per op family)",
+    "packaging(family): wheel-install sanity check; one case per tileops._FAMILIES member, which `family` names",
     "sm90: needs compute capability 9.x; skipped elsewhere, never skipped on an SM90 device",
     "cuda_only: needs a CUDA device whatever the target; deselected when --tileops-device is not cuda",
     "in_tree_kernels: asserts on the in-tree kernels an op built; deselected when --tileops-target is not builtin",

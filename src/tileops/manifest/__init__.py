@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 from importlib import resources
+from importlib.resources.abc import Traversable
 from typing import Any
 
 import yaml
@@ -39,13 +40,8 @@ _SPEC_DIR = "spec"
 _TYPES_FILE = "types.yaml"
 
 
-def manifest_files() -> list:
-    """Return the YAML files contributing to the merged manifest, sorted by name.
-
-    Each element is an ``importlib.resources`` ``Traversable`` (file-like
-    handle with ``read_text``); typed as ``list`` for Python 3.10
-    compatibility, since ``importlib.resources.abc`` was added in 3.11.
-    """
+def manifest_files() -> list[Traversable]:
+    """Return the YAML files contributing to the merged manifest, sorted by name."""
     root = resources.files(_PACKAGE) / _SPEC_DIR
     return sorted(
         (

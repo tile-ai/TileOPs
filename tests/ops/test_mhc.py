@@ -18,7 +18,14 @@ class MHCPreFixture(FixtureBase):
         (
             "batch, n_expand, c_x, dtype, tune",
             [
-                pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(
+                    1,
+                    4,
+                    1280,
+                    torch.bfloat16,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="sequence_modeling")],
+                ),
                 pytest.param(2, 4, 1920, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(6, 4, 1000, torch.bfloat16, False, marks=pytest.mark.full),

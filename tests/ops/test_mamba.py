@@ -32,7 +32,16 @@ from workloads.mamba import (
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune",
     [
-        pytest.param(1, 2, 64, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
+        pytest.param(
+            1,
+            2,
+            64,
+            1,
+            64,
+            torch.float16,
+            False,
+            marks=[pytest.mark.smoke, pytest.mark.packaging(family="mamba")],
+        ),
         pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
         pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.smoke),
         pytest.param(1, 2, 64, 1, 64, torch.float16, True, marks=pytest.mark.full),

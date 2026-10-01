@@ -23,7 +23,10 @@ class ReduceBasicFixture(FixtureBase):
             "m, n, dtype",
             [
                 pytest.param(
-                    128, 512, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                    128,
+                    512,
+                    torch.float16,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
                 ),
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),

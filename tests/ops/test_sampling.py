@@ -149,6 +149,7 @@ def test_top_k_mask_matches_the_reference_bit_for_bit(dtype: torch.dtype, vocab:
     assert torch.equal(out.view(bits), ref.view(bits))
 
 
+@pytest.mark.packaging(family="sampling")
 def test_top_k_mask_cuts_a_row_its_samples_misplace():
     """Every value a sample can land on is the row's smallest, so the bracket the samples
     give holds no rank the k-th value can take."""

@@ -25,7 +25,9 @@ class ReluFixture(FixtureBase):
             [
                 # Smoke: one typical shape per supported dtype
                 pytest.param(
-                    1_000_000, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                    1_000_000,
+                    torch.float16,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="elementwise")],
                 ),
                 pytest.param(1_000_000, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
