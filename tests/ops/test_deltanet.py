@@ -8,6 +8,9 @@ import torch
 from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
+from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall
+from tileops.kernels.linear_attention.deltanet import deltanet_bwd
+from tileops.kernels.linear_attention.deltanet.deltanet_bwd import DeltaNetBwdKernel
 from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
@@ -158,9 +161,11 @@ class DeltaNetBwdFixture(FixtureBase):
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, 2, 64, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 256, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(
                     2,
                     64,
@@ -254,6 +259,54 @@ def test_deltanet_autograd_matches_the_ops_it_wraps() -> None:
     torch.testing.assert_close(o, o_ref)
     for name, leaf, ref in zip(("dq", "dk", "dv", "dbeta"), leaves, grads_ref, strict=True):
         torch.testing.assert_close(leaf.grad, ref, msg=lambda m, n=name: f"{n}: {m}")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "budget, chunk_size, dim_k, dim_v, dtype, stages",
+    [
+        pytest.param(101376, 32, 64, 64, torch.float32, 1, id="sm89-c32-fp32"),
+        pytest.param(101376, 64, 64, 64, torch.float16, 2, id="sm89-c64-fp16"),
+        # Each refused by one program alone: the per-chunk backward, the recurrence, w/u.
+        pytest.param(101376, 64, 64, 64, torch.float32, None, id="sm89-c64-fp32-refused"),
+        pytest.param(101376, 32, 128, 128, torch.float16, None, id="sm89-c32-d128-refused"),
+        pytest.param(101376, 64, 64, 128, torch.float16, None, id="sm89-dv128-refused"),
+        pytest.param(166912, 64, 128, 128, torch.float16, 1, id="sm80-d128"),
+        pytest.param(232448, 64, 64, 64, torch.float16, 2, id="sm90-c64-fp16"),
+        pytest.param(232448, 64, 128, 128, torch.float16, 1, id="sm90-d128"),
+    ],
+)
+def test_deltanet_bwd_config_follows_the_shared_memory_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    budget: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: torch.dtype,
+    stages: "int | None",
+) -> None:
+    """The recurrence's stage count and the refusal each follow their bound at a budget."""
+    call = DeltaNetChunkCall(
+        batch=1,
+        heads=1,
+        seq_len=4 * chunk_size,
+        chunk_size=chunk_size,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        dtype=dtype,
+        arch=89,
+        sm_count=1,
+        smem_budget=budget,
+    )
+    if stages is None:
+        assert "needs at least" in DeltaNetBwdKernel.refusal(call)
+        return
+    assert DeltaNetBwdKernel.refusal(call) is None
+    monkeypatch.setattr(DeltaNetBwdKernel, "_check_arch", lambda self: None)
+    monkeypatch.setattr(deltanet_bwd, "get_shared_memory_optin", lambda index=None: budget)
+    dtype_str = DeltaNetBwdKernel.dtype_to_str(dtype)
+    kernel = DeltaNetBwdKernel(1, 1, 4 * chunk_size, chunk_size, dim_k, dim_v, dtype_str)
+    assert kernel.config["num_stages"] == stages
 
 
 class DeltaNetInferenceTest(DeltaNetInferenceWorkload, TestBase):

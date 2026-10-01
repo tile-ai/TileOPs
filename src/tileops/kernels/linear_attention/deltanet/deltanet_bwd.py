@@ -255,7 +255,6 @@ def _dh_recurrence_bwd_tl(
                 w_c = T.alloc_shared([block_C, dim_k], dtype)
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 dh_loc = T.alloc_shared([dim_k, dim_v], accum_dtype)
-                dP = T.alloc_shared([block_C, dim_k], dtype)
                 dh_buf = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_fp32 = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
@@ -300,9 +299,11 @@ def _dh_recurrence_bwd_tl(
                     # dk_corr = v_new @ dh_buf^T
                     T.clear(dP_frag)
                     T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
-                    T.copy(dP_frag, dP)
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        dk_corr[bid, hid, t_bwd * block_C + n, kk] = dP[n, kk]
+                    T.copy(
+                        dP_frag,
+                        dk_corr[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
+                        disable_tma=True,
+                    )
 
                     # dh = dh_local + (I - W^T @ K) @ dh_future
                     #    = dh_local + dh_future - W^T @ (K @ dh_future)
@@ -343,7 +344,6 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         threads: int,
         parallel_threads: int,
         recurrence_threads: int,
-        wu_lean: bool,
         do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -383,8 +383,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
             dim_k,
             dim_v,
             dtype,
-            lean=wu_lean,
-        )(num_stages, threads)
+        )(threads)
 
         dq, dk_partial, dw, du_partial, v_new, dh_local = bwd_parallel_fn(do, q, k, w, u, S)
         dk_corr, du_corr = dh_recurrence_bwd_fn(k, w, v_new, dh_local)
@@ -423,6 +422,34 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         index = call.device.index if call.device is not None else None
         return (*arguments, index), lambda: cls(*arguments)
 
+    @classmethod
+    def applies(cls, call: DeltaNetChunkCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
+        """Why the call cannot fit the device's shared memory, or ``None``.
+
+        Reads lower bounds of the three programs at their smallest configuration (the
+        recurrence at one stage): a refused call fits no placement TileLang could choose. A
+        call between a lower bound and the size TileLang compiles is built, and fits or not
+        as TileLang places it.
+        """
+        if not call.smem_budget:
+            return None
+        c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
+        need = max(
+            cls._parallel_live_bytes(c, k, v, elem),
+            cls._recurrence_live_bytes(c, k, v, elem),
+            cls._wu_live_bytes(c, k, v),
+        )
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
+            f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
+        )
+
     def __init__(
         self,
         batch: int,
@@ -443,39 +470,57 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        cap = get_shared_memory_optin(self.device_index)
-        # The phase-ordered w/u backward where shared memory cannot hold the default.
-        self._wu_lean = self._wu_shared_bytes() > cap
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         threads = 256 if self.chunk_size >= 64 else 128
-        # One stage where shared memory cannot hold two (fp32 on SM89's 99 KB).
-        fits = self._recurrence_shared_bytes(2) <= get_shared_memory_optin(self.device_index)
         return {
-            "num_stages": 2 if fits else 1,
+            "num_stages": max(self._recurrence_stage_options()),
             "threads": threads,
             "parallel_threads": threads,
             "recurrence_threads": threads,
         }
 
-    def _recurrence_shared_bytes(self, num_stages: int) -> int:
-        """Shared memory the dh recurrence allocates: k, w, v_new and the fp32 dh_local tile
-        per stage, then dP, dh_buf and k_dh."""
+    def _recurrence_stage_options(self) -> list[int]:
+        """Recurrence stage counts to choose from: two only where their upper bound fits the
+        device; one stays, as ``refusal`` vets it."""
         elem = getattr(torch, self.dtype_str).itemsize
-        c, k, v = self.chunk_size, self.dim_k, self.dim_v
-        per_stage = (2 * c * k + c * v) * elem + k * v * 4
-        return num_stages * per_stage + (c * k + k * v + c * v) * elem
+        two = self._recurrence_shared_bytes(self.chunk_size, self.dim_k, self.dim_v, elem, 2)
+        return [1, 2] if two <= get_shared_memory_optin(self.device_index) else [1]
 
-    def _wu_shared_bytes(self) -> int:
-        """Peak shared memory of the default w/u backward: five fp32 row tiles, two chunk
-        squares and the state live at once, with the dk_partial and dk_corr tiles. The
-        wider of dim_k and dim_v stands for both, which over-counts when they differ."""
-        elem = getattr(torch, self.dtype_str).itemsize
-        c, k, v = self.chunk_size, self.dim_k, self.dim_v
-        d = max(k, v)
-        return (5 * c * d + 2 * c * c + k * v + c) * 4 + 2 * c * k * elem
+    @staticmethod
+    def _recurrence_shared_bytes(c: int, k: int, v: int, elem: int, num_stages: int) -> int:
+        """Upper bound on the dh recurrence's shared memory: every buffer it allocates, k, w,
+        v_new and the fp32 dh_local tile per stage, then dh_buf and k_dh. TileLang may place
+        buffers whose lifetimes do not overlap in one space, so the compiled size can be
+        smaller."""
+        per_stage = (2 * c * k + c * v) * elem + k * v * 4
+        return num_stages * per_stage + (k * v + c * v) * elem
+
+    @staticmethod
+    def _parallel_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the per-chunk backward's shared memory: q, k, w, h and d_v_new are
+        live with do and v_new at the d_attn product, or with do and d_attn at the dq one."""
+        return (3 * c * k + 2 * c * v + k * v + max(c * v, c * c)) * elem
+
+    @staticmethod
+    def _recurrence_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the one-stage dh recurrence's shared memory: at either GEMM of a
+        chunk, w, v_new, dh_buf and the fp32 dh_local are live with k (the first) or k_dh
+        (the second)."""
+        return (c * k + c * v + k * v + max(c * k, c * v)) * elem + k * v * 4
+
+    @staticmethod
+    def _wu_live_bytes(c: int, k: int, v: int) -> int:
+        """Lower bound on the w/u backward's shared memory, every buffer fp32: the largest
+        set live at once at one of its GEMMs."""
+        return 4 * max(
+            c * c + 3 * c * v + c,  # dAu: Au, du, du_corr, v_beta, beta
+            c * v + k * v + c * k + 2 * c,  # dw correction: du_corr, S, dw, beta, dbeta_v
+            c * c + 3 * c * k + 2 * c,  # dAw: Aw, dw, k, k_beta, beta, dbeta_v
+            2 * c * c + 2 * c * k + 2 * c,  # A_inv backward: Aw, dA_inv, k, k_beta, beta, dbeta
+        )
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune each sub-kernel independently and merge best configs."""
@@ -503,7 +548,11 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         parallel_best = tuned_parallel.config
         print(f"  Best: {parallel_best}")
 
-        recurrence_configs = [{"num_stages": ns, "threads": t} for ns in [1, 2] for t in [128, 256]]
+        recurrence_configs = [
+            {"num_stages": ns, "threads": t}
+            for ns in self._recurrence_stage_options()
+            for t in [128, 256]
+        ]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
         _recurrence_at = dict(configs=recurrence_configs, warmup=warmup, rep=rep)
@@ -520,9 +569,9 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         recurrence_best = tuned_recurrence.config
         print(f"  Best: {recurrence_best}")
 
-        wu_bwd_configs = [{"num_stages": ns, "threads": t} for ns in [1, 2] for t in [128, 256]]
+        wu_bwd_configs = [{"threads": t} for t in [128, 256]]
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
-        wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt, lean=self._wu_lean)
+        wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
         _wu_bwd_at = dict(configs=wu_bwd_configs, warmup=warmup, rep=rep)
         _wu_bwd_dns = list(self._autotune_initial_kwargs(wu_bwd_jit, wu_bwd_configs[0]).keys())
         if _wu_bwd_dns:
@@ -568,7 +617,6 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
             self.config.get("threads", 256),
             self.config.get("parallel_threads", 256),
             self.config.get("recurrence_threads", 256),
-            self._wu_lean,
             do,
             q,
             k,
