@@ -23,6 +23,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import (
+    LOG2E,
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "down_rows_split",
     "down_rows_splits",
     "edge_axis_split",
+    "exp_shifted",
     "fold_rows_kernel",
     "identity_for",
     "restore_reduced",
@@ -71,6 +73,20 @@ DEFAULT_THREADS: int = 256
 
 # Tile elements one thread may hold across its live fragments before ptxas spills.
 FRAGMENT_ELEMS_PER_THREAD: int = 64
+
+
+def exp_shifted(value, shift_log2e):
+    """``exp(value - shift)``, as one fused multiply-add and one ``exp2``.
+
+    *shift_log2e* is ``shift * LOG2E``, which the caller takes once per row rather
+    than once per element. ``exp2`` is one instruction where ``exp`` is a call
+    sequence, and over a full row that call is the largest arithmetic cost a
+    streaming softmax pays.
+
+    A shift of ``-inf`` still yields ``NaN`` for a ``-inf`` value, as ``exp`` does:
+    both sides of the subtraction are ``-inf``.
+    """
+    return T.exp2(value * LOG2E - shift_log2e)
 
 
 # Largest integer count fp32 carries exactly; a statistic folded through

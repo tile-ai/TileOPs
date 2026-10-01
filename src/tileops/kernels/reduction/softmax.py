@@ -25,6 +25,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
@@ -35,6 +36,7 @@ from tileops.kernels.reduction._primitives import (
     RowTiledAutotuneMixin,
     align_up,
     ceildiv_int,
+    exp_shifted,
     restore_same_shape,
     rows_for_axes,
 )
@@ -92,6 +94,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
                 staged = T.alloc_shared((block_m, N_padded if _stages_row else 1), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 row_max = T.alloc_fragment((block_m,), "float32")
+                max_log2e = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
                 row_scale = T.alloc_fragment((block_m,), "float32")
 
@@ -126,9 +129,11 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
 
+                for i in T.Parallel(block_m):
+                    max_log2e[i] = row_max[i] * LOG2E
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
-                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                        x_f32[i, j] = exp_shifted(x_f32[i, j], max_log2e[i])
                 T.reduce_sum(x_f32, row_sum, dim=1)
 
                 if op_kind == "softmax":
@@ -205,6 +210,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     row_max = T.alloc_fragment((block_m,), "float32")
+                    max_log2e = T.alloc_fragment((block_m,), "float32")
                     row_sum = T.alloc_fragment((block_m,), "float32")
                     prev_max = T.alloc_fragment((block_m,), "float32")
                     tile_max = T.alloc_fragment((block_m,), "float32")
@@ -248,14 +254,17 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                         for i in T.Parallel(block_m):
                             prev_max[i] = row_max[i]
                             row_max[i] = T.max(row_max[i], tile_max[i])
+                            max_log2e[i] = row_max[i] * LOG2E
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
+                                tile_f32[i, j] = exp_shifted(tile_f32[i, j], max_log2e[i])
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                         for i in T.Parallel(block_m):
-                            row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
+                            row_sum[i] = (
+                                row_sum[i] * exp_shifted(prev_max[i], max_log2e[i]) + tile_sum[i]
+                            )
 
                     # Precompute reciprocal to replace division with
                     # multiplication in the per-element normalisation.
@@ -287,8 +296,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                                     for i in T.serial(block_m):
                                         for j in T.Parallel(tile_n):
                                             p2_f32[i, j] = (
-                                                T.exp(
-                                                    T.cast(p2_shared[i, j], "float32") - row_max[i]
+                                                exp_shifted(
+                                                    T.cast(p2_shared[i, j], "float32"),
+                                                    max_log2e[i],
                                                 )
                                                 * inv_sum[i]
                                             )
@@ -297,12 +307,12 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                                         for j in T.Parallel(tile_n):
                                             p2_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                                T.exp(
+                                                exp_shifted(
                                                     T.cast(
                                                         x[pid_m * block_m + i, t * tile_n + j],
                                                         "float32",
-                                                    )
-                                                    - row_max[i]
+                                                    ),
+                                                    max_log2e[i],
                                                 )
                                                 * inv_sum[i],
                                                 0.0,
@@ -312,7 +322,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                             for i in T.serial(block_m):
                                 for j in T.Parallel(tile_n):
                                     p2_f32[i, j] = (
-                                        T.exp(T.cast(p2_shared[i, j], "float32") - row_max[i])
+                                        exp_shifted(
+                                            T.cast(p2_shared[i, j], "float32"), max_log2e[i]
+                                        )
                                         * inv_sum[i]
                                     )
 
@@ -338,6 +350,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
 
                     row_max = T.alloc_fragment((block_m,), "float32")
+                    max_log2e = T.alloc_fragment((block_m,), "float32")
                     row_sum = T.alloc_fragment((block_m,), "float32")
                     prev_max = T.alloc_fragment((block_m,), "float32")
                     tile_max = T.alloc_fragment((block_m,), "float32")
@@ -378,14 +391,17 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
                         for i in T.Parallel(block_m):
                             prev_max[i] = row_max[i]
                             row_max[i] = T.max(row_max[i], tile_max[i])
+                            max_log2e[i] = row_max[i] * LOG2E
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
+                                tile_f32[i, j] = exp_shifted(tile_f32[i, j], max_log2e[i])
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                         for i in T.Parallel(block_m):
-                            row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
+                            row_sum[i] = (
+                                row_sum[i] * exp_shifted(prev_max[i], max_log2e[i]) + tile_sum[i]
+                            )
 
                     # Precompute log(sum) to avoid recomputing per-element
                     log_sum = T.alloc_fragment((block_m,), "float32")
