@@ -72,5 +72,5 @@ class FP8QuantFwdOp(Op):
             dtype=input_tensor.dtype,
             device=input_tensor.device,
         )
-        self.kernel = self.kernel_for("fp8_quant", (input_tensor,), call)
+        self.kernel = self.kernel_for("fp8_quant", call)
         return self.kernel(input_tensor)

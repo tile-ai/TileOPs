@@ -78,5 +78,5 @@ class INT8QuantPerChannelFwdOp(Op):
             cols=w.shape[1],
             dtype=w.dtype,
         )
-        kernel = self.kernel_for("int8_quant_per_channel_fwd", (w,), call)
+        kernel = self.kernel_for("int8_quant_per_channel_fwd", call)
         return kernel(w)

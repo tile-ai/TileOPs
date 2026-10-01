@@ -113,4 +113,4 @@ class GLAInferenceFwdOp(Op):
             varlen=cu_seqlens is not None,
             device=q.device,
         )
-        return self.kernel_for("gla_inference", inputs, call)(*inputs)
+        return self.kernel_for("gla_inference", call)(*inputs)

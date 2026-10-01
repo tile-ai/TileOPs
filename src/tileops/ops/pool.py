@@ -246,7 +246,7 @@ class MeanPoolingFwdOp(Op):
             accum_dtype=self.accum_dtype,
             device=x.device,
         )
-        kernel = self.kernel_for("mean_pooling", (x, offsets_arg, indices_arg), call)
+        kernel = self.kernel_for("mean_pooling", call)
         return kernel(x, offsets_arg, indices=indices_arg)
 
     def _validate_ragged(
@@ -342,7 +342,7 @@ class _AvgPoolFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("avg_pool", (input,), call)
+        self.kernel = self.kernel_for("avg_pool", call)
         return self.kernel(input)
 
 
@@ -543,7 +543,7 @@ class _MaxPoolFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("max_pool", (input,), call)
+        self.kernel = self.kernel_for("max_pool", call)
         return self.kernel(input)
 
 
@@ -904,7 +904,7 @@ class _AdaptivePool2dFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("adaptive_pool", (input,), call)
+        self.kernel = self.kernel_for("adaptive_pool", call)
         return self.kernel(input)
 
 

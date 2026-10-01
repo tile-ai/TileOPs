@@ -93,5 +93,5 @@ class INT4QuantPerGroupFwdOp(Op):
             dtype=w.dtype,
             group_size=self.group_size,
         )
-        kernel = self.kernel_for("int4_quant_per_group_fwd", (w,), call)
+        kernel = self.kernel_for("int4_quant_per_group_fwd", call)
         return kernel(w)

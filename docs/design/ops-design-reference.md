@@ -36,7 +36,7 @@ Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching
 
 | Method                                   | Purpose                                                                                                                                                       |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_for(interface, inputs, call)`    | The in-tree entry serving this call, resolved once per call spec. The only way an op's in-tree implementation reaches a kernel; a target serves the whole op  |
+| `kernel_for(interface, call)`            | The in-tree entry serving this call, resolved once per call spec. The only way an op's in-tree implementation reaches a kernel; a target serves the whole op  |
 | `select_implementation(interface, call)` | The key of the interface's implementation that serves the call. Introspection and tests; `kernel_for` asks it on a miss                                       |
 | `built_kernels(name)`                    | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                      |
 | `delegate_for(stage, key, ...)`          | The sub-op held for a stage and identity, built once on a miss with the op's execution policy. The only way an op holds a sub-op                              |

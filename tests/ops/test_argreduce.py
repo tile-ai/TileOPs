@@ -661,7 +661,7 @@ def test_argreduce_tuning_space_matches_its_kernel(shape: tuple, axes: tuple, ke
     op = ArgmaxFwdOp(dim=axes[0])
     call = ArgreduceCall(device=torch.device("cuda"), shape=shape, axes=axes, dtype=torch.float16)
     assert op.select_implementation("reduce", call) == key
-    kernel = op.kernel_for("reduce", (), call)
+    kernel = op.kernel_for("reduce", call)
     accepted = set(kernel.kernel.signature.parameters)
     assert set(kernel.default_config) <= accepted
     for candidate in kernel.autotune_configs:

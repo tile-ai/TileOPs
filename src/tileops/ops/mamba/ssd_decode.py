@@ -101,7 +101,7 @@ class SSDDecodeFwdOp(Op):
             dtype=x.dtype,
             device=x.device,
         )
-        kernel = self.kernel_for("ssd_decode", (A, dt, x, B_in, C_in, state), call)
+        kernel = self.kernel_for("ssd_decode", call)
         return kernel(
             A.contiguous(),
             dt.contiguous(),

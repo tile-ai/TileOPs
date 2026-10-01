@@ -87,7 +87,7 @@ class CBProducerFwdOp(Op):
             dtype=C_mat.dtype,
             device=C_mat.device,
         )
-        kernel = self.kernel_for("cb_producer", (C_mat, B_mat), call)
+        kernel = self.kernel_for("cb_producer", call)
         return kernel(C_mat, B_mat)
 
     def compute_roof(self) -> str:

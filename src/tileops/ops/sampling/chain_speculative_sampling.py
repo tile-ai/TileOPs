@@ -113,5 +113,5 @@ class ChainSpeculativeSamplingFwdOp(Op):
             num_draft=num_draft,
         )
         inputs = (draft_probs, draft_token_ids, target_probs, seed, offset)
-        kernel = self.kernel_for("chain_speculative_sampling", inputs, call)
+        kernel = self.kernel_for("chain_speculative_sampling", call)
         return kernel(*inputs)

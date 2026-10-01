@@ -103,7 +103,7 @@ class _ScaleOp(Op):
         return x
 
     def entry(self, n: int):
-        return self.kernel_for("scale", (), _Call(device=torch.device("cpu"), n=n))
+        return self.kernel_for("scale", _Call(device=torch.device("cpu"), n=n))
 
 
 def _selected(op: Op, *ns: int) -> dict:
@@ -192,7 +192,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(op, "_resolve_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
-    assert op.kernel_for("scale", (), call) is first
+    assert op.kernel_for("scale", call) is first
     assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
 
 
@@ -279,7 +279,7 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
         (_Call(device=cpu, n=5, smem_budget=1), "states \\['smem_budget'\\]"),
     ):
         with pytest.raises(TypeError, match=match):
-            op.kernel_for("scale", (), call)
+            op.kernel_for("scale", call)
 
 
 def test_a_record_reads_no_device_fact_where_the_process_has_no_cuda_device() -> None:
@@ -333,7 +333,7 @@ def test_device_facts_come_from_the_calls_device(monkeypatch: pytest.MonkeyPatch
     op = _CudaOp()
     torch.cuda.set_device(0)
     for index in (1, 0, 1):
-        op.kernel_for("scale", (), _Call(device=torch.device("cuda", index), n=1))
+        op.kernel_for("scale", _Call(device=torch.device("cuda", index), n=1))
     assert asked == [1, 0]
     assert [device.index for device, _ in seen] == [1, 0]
     assert seen[0][1] == torch.cuda.get_device_properties(1).multi_processor_count

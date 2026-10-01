@@ -104,4 +104,4 @@ class GLADecodeFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("gla_decode", (q, k, v, gk, state), call)(q, k, v, gk, state)
+        return self.kernel_for("gla_decode", call)(q, k, v, gk, state)

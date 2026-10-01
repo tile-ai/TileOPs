@@ -71,6 +71,6 @@ class AlibiFwdOp(Op):
             num_heads=self.num_heads,
             dtype=self.out_dtype,
         )
-        kernel = self.kernel_for("alibi", (), call)
+        kernel = self.kernel_for("alibi", call)
         out = kernel()
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

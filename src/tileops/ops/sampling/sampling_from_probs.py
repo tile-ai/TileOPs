@@ -83,5 +83,5 @@ class SamplingFromProbsFwdOp(Op):
         offset = offset.contiguous()
         batch, vocab = probs.shape
         call = SamplingCall(device=probs.device, batch=batch, vocab=vocab, dtype=probs.dtype)
-        kernel = self.kernel_for("sampling_from_probs", (probs, seed, offset), call)
+        kernel = self.kernel_for("sampling_from_probs", call)
         return kernel(probs, seed, offset)

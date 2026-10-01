@@ -374,7 +374,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         )
-        return self.kernel_for("gqa_dense", inputs, self.dense_call(inputs))(*inputs)
+        return self.kernel_for("gqa_dense", self.dense_call(inputs))(*inputs)
 
 
 class GroupedQueryAttentionVarlenFwdOp(Op):
@@ -483,7 +483,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
-        return self.kernel_for("gqa_varlen", inputs, self.varlen_call(inputs))
+        return self.kernel_for("gqa_varlen", self.varlen_call(inputs))
 
     def _check_offsets(
         self,
@@ -747,7 +747,7 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         )
         call = self.paged_call(q, k_pages, page_table, cu_seqlens_q)
         inputs = (q, k_pages.flatten(0, 1), v_pages.flatten(0, 1), cache_seqlens, page_table)
-        return self.kernel_for("gqa_paged", inputs, call)(*inputs)
+        return self.kernel_for("gqa_paged", call)(*inputs)
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
@@ -1014,7 +1014,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cache_seqlens,
             block_table,
         )
-        kernel = self.kernel_for("gqa_prefill_paged", (*inputs, cos_table, sin_table), call)
+        kernel = self.kernel_for("gqa_prefill_paged", call)
         return kernel(*inputs, self.max_seqlen_q, cos_table, sin_table)
 
     @property
@@ -1127,9 +1127,9 @@ class GroupedQueryAttentionBwdOp(Op):
         """
         do = do.contiguous()
         call = self._attention_call(q, k)
-        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", (o, do), call)(o, do)
+        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(o, do)
         inputs = (q, k, v, do, lse, delta, dq_accum)
-        return self.kernel_for("gqa_bwd", inputs, call)(*inputs)
+        return self.kernel_for("gqa_bwd", call)(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

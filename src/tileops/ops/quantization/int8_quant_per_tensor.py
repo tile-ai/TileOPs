@@ -75,5 +75,5 @@ class INT8QuantPerTensorFwdOp(Op):
             cols=x.shape[1],
             dtype=x.dtype,
         )
-        kernel = self.kernel_for("int8_quant_per_tensor_fwd", (x,), call)
+        kernel = self.kernel_for("int8_quant_per_tensor_fwd", call)
         return kernel(x)

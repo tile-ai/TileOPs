@@ -77,7 +77,7 @@ class CumulativeOp(Op):
             op_kind=self._op_kind,
             dtype=x.dtype,
         )
-        return self.kernel_for("cumulative_fwd", (x,), call)(x)
+        return self.kernel_for("cumulative_fwd", call)(x)
 
 
 class CumsumFwdOp(CumulativeOp):

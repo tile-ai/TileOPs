@@ -74,7 +74,7 @@ class ClampFwdOp(Op):
             has_min=min is not None,
             has_max=max is not None,
         )
-        return self.kernel_for(ELEMENTWISE, (input, min, max), call)(input, min, max)
+        return self.kernel_for(ELEMENTWISE, call)(input, min, max)
 
     def forward(
         self,

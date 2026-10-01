@@ -131,7 +131,7 @@ class GroupedGemmFwdOp(Op):
             transpose_b=self.transpose_b,
             device=a.device,
         )
-        return self.kernel_for("grouped_gemm", inputs, call)(*inputs)
+        return self.kernel_for("grouped_gemm", call)(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

@@ -69,5 +69,5 @@ class TopKMaskFwdOp(Op):
         k = k.contiguous()
         batch, vocab = logits.shape
         call = SamplingCall(device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype)
-        kernel = self.kernel_for("top_k_mask_fwd", (logits, k), call)
+        kernel = self.kernel_for("top_k_mask_fwd", call)
         return kernel(logits, k)

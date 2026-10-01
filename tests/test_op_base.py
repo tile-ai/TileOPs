@@ -161,7 +161,7 @@ class _SlottedOp(Op):
         return None
 
     def build(self, role: str, key, name: str):
-        return self.kernel_for(role, (), _Call(device=_CPU, key=key, name=name))
+        return self.kernel_for(role, _Call(device=_CPU, key=key, name=name))
 
 
 class TestGetOrBuildKernel:

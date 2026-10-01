@@ -110,4 +110,4 @@ class DeltaNetInferenceFwdOp(Op):
             varlen=cu_seqlens is not None,
             device=q.device,
         )
-        return self.kernel_for("deltanet_inference", inputs, call)(*inputs)
+        return self.kernel_for("deltanet_inference", call)(*inputs)

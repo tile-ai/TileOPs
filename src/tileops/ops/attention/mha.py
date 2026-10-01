@@ -130,9 +130,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, k, v, real_seqlen_kv, block_table)
-        kernel = self.kernel_for(
-            "mha_decode_paged", inputs, self._attention_call(q, k, block_table)
-        )
+        kernel = self.kernel_for("mha_decode_paged", self._attention_call(q, k, block_table))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

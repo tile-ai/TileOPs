@@ -118,7 +118,7 @@ class _SoftmaxBaseOp(Op):
             dtype=x.dtype,
             out_dtype=out_dtype,
         )
-        return self.kernel_for("softmax", (x,), call)(x)
+        return self.kernel_for("softmax", call)(x)
 
 
 class SoftmaxFwdOp(_SoftmaxBaseOp):

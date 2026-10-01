@@ -95,7 +95,7 @@ class BmmFwdOp(Op):
         batch, m, k = a.shape
         call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
         # Expose the active kernel so autotune()/introspection can find it.
-        self.kernel = self.kernel_for("bmm", (a, b), call)
+        self.kernel = self.kernel_for("bmm", call)
         return self.kernel(a, b)
 
     def compute_roof(self) -> str:
@@ -211,7 +211,7 @@ class BmmFp8FwdOp(Op):
             out_dtype=self.out_dtype,
             device=a.device,
         )
-        self.kernel = self.kernel_for("bmm_fp8", (a, b, scale_a, scale_b), call)
+        self.kernel = self.kernel_for("bmm_fp8", call)
         return self.kernel(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
@@ -248,7 +248,7 @@ class BmmFp8FwdOp(Op):
                     stacklevel=2,
                 )
             transpose = BmmFp8TransposeCall(batch=batch, rows=k, cols=n, dtype=dtype, device=device)
-            kernel = self.kernel_for("bmm_fp8_transpose", (b,), transpose)
+            kernel = self.kernel_for("bmm_fp8_transpose", transpose)
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()
 

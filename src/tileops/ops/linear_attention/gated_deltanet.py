@@ -171,4 +171,4 @@ class GatedDeltaNetFwdOp(Op):
             allow_neg_eigval=self.allow_neg_eigval,
             device=q.device,
         )
-        return self.kernel_for("gated_deltanet", inputs, call)(*inputs)
+        return self.kernel_for("gated_deltanet", call)(*inputs)

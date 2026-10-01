@@ -81,5 +81,5 @@ class SmoothQuantFwdOp(Op):
             cols=x.shape[1],
             dtype=x.dtype,
         )
-        kernel = self.kernel_for("smooth_quant_fwd", (x, smooth), call)
+        kernel = self.kernel_for("smooth_quant_fwd", call)
         return kernel(x, smooth)

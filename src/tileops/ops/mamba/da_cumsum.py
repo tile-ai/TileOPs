@@ -105,5 +105,5 @@ class DaCumsumFwdOp(Op):
             out_dtype=self.out_dtype,
             device=dt.device,
         )
-        kernel = self.kernel_for("da_cumsum_fwd", (dt, A, dt_bias), call)
+        kernel = self.kernel_for("da_cumsum_fwd", call)
         return kernel(dt, A, dt_bias)

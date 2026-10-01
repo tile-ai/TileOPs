@@ -128,7 +128,7 @@ class NSATopkVarlenFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("nsa_topk_varlen_kernel", tensors, call)(*tensors)
+        return self.kernel_for("nsa_topk_varlen_kernel", call)(*tensors)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -246,7 +246,7 @@ class NSAVarlenFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("nsa_fwd_varlen_kernel", tensors, call)(*tensors)
+        return self.kernel_for("nsa_fwd_varlen_kernel", call)(*tensors)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -356,7 +356,7 @@ class NSACmpVarlenFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("nsa_cmp_fwd_varlen_kernel", tensors, call)(*tensors)
+        return self.kernel_for("nsa_cmp_fwd_varlen_kernel", call)(*tensors)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

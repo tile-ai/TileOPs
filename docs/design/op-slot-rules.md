@@ -151,17 +151,19 @@ design, calling conventions — live in
   normalize parameter-dependent axes with the manifest's axis rule
   (`dim = normalize_axis(self.dim, x.ndim)`, which maps `0` and `-1` to the scalar axis at rank 0); (b) make contiguous
   each input the kernel needs contiguous, never a `mutated` input, which is written in place; (c)
-  `self.kernel_for(<interface>, <tensors>, <call>)`, handing over every tensor the kernel reads or
-  writes, output buffers included, and `None` for an absent optional one; (d) call the kernel.
+  `self.kernel_for(<interface>, <call>)`; (d) call what it returned with the parameters the
+  interface's abstract `forward` declares, in that order — output buffers included, `None` for an
+  absent optional one.
   An op registered for `fullgraph=True` compilation keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
   scaffold's scope, see
   [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
 - **Derivation.** The first argument is a key of `interfaces`; the call is that interface's
-  call spec. A specialization that implies more than a dtype — a compute dtype differing from the
-  semantic one, an output dtype no input supplies — makes the entry one frozen record rather than a
-  bare kernel, and those fields never live in `self.*`
-  ([Forward keying](./ops-design-reference.md#base-class-protocol)).
+  call spec. The interface's abstract `forward` states what the kernel is handed, so the op passes
+  those parameters and neither restates nor reorders them. A specialization that implies more than
+  a dtype — a compute dtype differing from the semantic one, an output dtype no input supplies —
+  makes the entry one frozen record rather than a bare kernel, and those fields never live in
+  `self.*` ([Forward keying](./ops-design-reference.md#base-class-protocol)).
 - **What the op does not do.** It states no device requirement — the kernel it fetched does that —
   and it does not reshape for the kernel: rank reduction, padding and their inverses belong to the
   kernel's own call wrapper, so a backend is handed the shapes the manifest declares.
@@ -173,11 +175,12 @@ design, calling conventions — live in
       call = ExampleCumsumCall(
           device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype
       )
-      return self.kernel_for("example_cumsum_fwd", (x,), call)(x)
+      return self.kernel_for("example_cumsum_fwd", call)(x)
   ```
 - **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
-  dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; repeating a check the
-  signature states; reshaping before the fetch; passing an already-built kernel where
+  dtype reuses the first dtype's kernel; calling the returned kernel with arguments the interface's
+  `forward` does not declare, or out of its order; a `.is_cuda` check in the op; repeating a check
+  the signature states; reshaping before the fetch; passing an already-built kernel where
   a factory is expected, which rebuilds on every call; fetching a kernel under two interfaces in one
   op where one entry holding both would do; an op-level `entry_for`, where the implementation
   states its own.

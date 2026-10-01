@@ -83,5 +83,5 @@ class INT8QuantPerBlockFwdOp(Op):
             cols=x.shape[1],
             dtype=x.dtype,
         )
-        kernel = self.kernel_for("int8_quant_per_block_fwd", (x,), call)
+        kernel = self.kernel_for("int8_quant_per_block_fwd", call)
         return kernel(x)

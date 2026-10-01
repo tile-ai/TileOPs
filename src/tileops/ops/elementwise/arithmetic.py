@@ -301,7 +301,7 @@ class LerpTensorFwdOp(Op):
         end = end.contiguous()
         weight = weight.contiguous()
         call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, (input, end, weight), call)
+        kernel = self.kernel_for(ELEMENTWISE, call)
         return kernel(input, end, weight)
 
     def forward(

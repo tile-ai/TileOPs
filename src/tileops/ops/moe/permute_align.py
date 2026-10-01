@@ -84,4 +84,4 @@ class MoePermuteAlignFwdOp(Op):
             block_size=self.block_size,
             device=topk_ids.device,
         )
-        return self.kernel_for("permute_align", (topk_ids,), call)(topk_ids)
+        return self.kernel_for("permute_align", call)(topk_ids)

@@ -196,9 +196,8 @@ def __init__(
         # The generated signature checks have run: dtype, shape, dim range.
         dim = normalize_axis(self.dim, x.ndim)
         x = x.contiguous()          # handed over as the manifest declares it
-        # The tensors the kernel will be handed, then the call spec.
         call = ExampleCumsumCall(device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype)
-        return self.kernel_for("example_cumsum_fwd", (x,), call)(x)
+        return self.kernel_for("example_cumsum_fwd", call)(x)
 ```
 
 **Validation.**

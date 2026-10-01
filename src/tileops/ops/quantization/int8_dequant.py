@@ -87,7 +87,7 @@ class INT8DequantPerTensorFwdOp(Op):
             out_dtype=self.out_dtype,
             device=q.device,
         )
-        return self.kernel_for("dequant", (q, scale), call)(q, scale)
+        return self.kernel_for("dequant", call)(q, scale)
 
 
 class INT8DequantPerChannelFwdOp(Op):
@@ -150,7 +150,7 @@ class INT8DequantPerChannelFwdOp(Op):
             out_dtype=self.out_dtype,
             device=q.device,
         )
-        return self.kernel_for("dequant", (q, scale), call)(q, scale)
+        return self.kernel_for("dequant", call)(q, scale)
 
 
 class INT8DequantPerBlockFwdOp(Op):
@@ -215,4 +215,4 @@ class INT8DequantPerBlockFwdOp(Op):
             out_dtype=self.out_dtype,
             device=q.device,
         )
-        return self.kernel_for("dequant", (q, scale), call)(q, scale)
+        return self.kernel_for("dequant", call)(q, scale)

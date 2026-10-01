@@ -101,5 +101,5 @@ class TopkSelectorFwdOp(Op):
             out_dtype=self.out_dtype,
             device=index_score.device,
         )
-        self.kernel = self.kernel_for("topk_selector", (index_score, starts, ends), call)
+        self.kernel = self.kernel_for("topk_selector", call)
         return self.kernel(index_score, starts, ends)

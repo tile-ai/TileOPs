@@ -48,7 +48,7 @@ def _built_kernel(op, inputs):
     """The kernel *op* selects and builds for *inputs*."""
     q, k_pages, _, page_table, _, cu_seqlens_q = inputs[:6]
     call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
-    return op.kernel_for("gqa_paged", inputs, call)
+    return op.kernel_for("gqa_paged", call)
 
 
 class GroupedQueryAttentionPagedDecodeFixture(FixtureBase):

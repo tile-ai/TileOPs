@@ -178,7 +178,7 @@ class Conv1dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv1d", (input, weight, bias), call)
+        self.kernel = self.kernel_for("conv1d", call)
         return self.kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
@@ -292,7 +292,7 @@ class Conv2dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv2d", (input, weight, bias), call)
+        self.kernel = self.kernel_for("conv2d", call)
         return self.kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
@@ -414,7 +414,7 @@ class Conv3dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv3d", (input, weight, bias), call)
+        self.kernel = self.kernel_for("conv3d", call)
         return self.kernel(input, weight, bias)
 
     def compute_roof(self) -> str:

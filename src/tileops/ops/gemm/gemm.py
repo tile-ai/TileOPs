@@ -114,7 +114,7 @@ class GemmFwdOp(Op):
             trans_b=self.trans_b,
             device=a.device,
         )
-        return self.kernel_for("gemm", (a, b), call)(a, b)
+        return self.kernel_for("gemm", call)(a, b)
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.last_call.ix["T"])
@@ -219,7 +219,7 @@ class GemmFp8FwdOp(Op):
             has_bias=bias is not None,
             device=a.device,
         )
-        self.kernel = self.kernel_for("gemm_fp8", (a, b, scale_a, scale_b, bias), call)
+        self.kernel = self.kernel_for("gemm_fp8", call)
         return self.kernel(a, b, scale_a, scale_b, bias)
 
     def compute_roof(self) -> str:
@@ -317,7 +317,7 @@ class GemmW4A16FwdOp(Op):
             )
         packed_weight = packed_weight.contiguous()
         call = W4A16RepackCall(n=n, packed_k=packed_k, device=packed_weight.device)
-        return self.kernel_for("w4a16_repack", (packed_weight,), call)(packed_weight)
+        return self.kernel_for("w4a16_repack", call)(packed_weight)
 
     def forward(
         self,
@@ -372,7 +372,7 @@ class GemmW4A16FwdOp(Op):
             group_size=self.group_size,
             device=activation.device,
         )
-        self.kernel = self.kernel_for("gemm_w4a16", inputs, call)
+        self.kernel = self.kernel_for("gemm_w4a16", call)
         return self.kernel(*inputs)
 
     def compute_roof(self) -> str:

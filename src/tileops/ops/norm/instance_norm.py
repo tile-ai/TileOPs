@@ -173,7 +173,7 @@ class InstanceNormFwdOp(Op):
             # The training kernel writes the running statistics in place, so a strided
             # buffer is served through a contiguous copy that is written back.
             stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-            kernel = self.kernel_for(interface, (view, *stats, weight, bias), call)
+            kernel = self.kernel_for(interface, call)
             self.kernel = kernel
             y = kernel(view, *stats, weight, bias)
             if self.use_input_stats:
@@ -187,6 +187,6 @@ class InstanceNormFwdOp(Op):
         # Row m of the (N*C, spatial_size) view is channel m % C throughout, so the affine
         # kernel applies the per-channel affine itself.
         rows = x.view(batch * channels, spatial)
-        kernel = self.kernel_for("instance_norm", (rows, weight, bias), call)
+        kernel = self.kernel_for("instance_norm", call)
         self.kernel = kernel
         return kernel(rows, running_mean, running_var, weight, bias).view(x.shape)

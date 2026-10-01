@@ -96,4 +96,4 @@ class LayerNormFwdOp(Op):
         bias = affine_or_constant(bias, ns, 0.0, x.dtype, x.device)
         x = x.contiguous()
         call = LayerNormCall(device=x.device, n=math.prod(ns), eps=self.eps, dtype=x.dtype)
-        return self.kernel_for("layer_norm", (x, weight, bias), call)(x, weight, bias)
+        return self.kernel_for("layer_norm", call)(x, weight, bias)
