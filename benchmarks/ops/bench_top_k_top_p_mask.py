@@ -8,7 +8,13 @@ byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    assert_output_spec,
+    compiled_reference,
+    vllm_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.sampling import TopKTopPMaskFwdOp
 from workloads.sampling import TopKTopPMaskWorkload, top_k_mask
@@ -30,6 +36,7 @@ def test_top_k_top_p_mask_bench(call) -> None:
     workload = TopKTopPMaskWorkload(call)
     logits, k, p = workload.gen_inputs()
     reference = workload.ref_program(logits, k, p)
+    spec = call.specs["masked_logits"]
 
     op = TopKTopPMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -44,15 +51,20 @@ def test_top_k_top_p_mask_bench(call) -> None:
     # ``top_k_top_p_sampling_from_logits``, which draws a token, so no row carries a
     # FlashInfer tag. A row vLLM cannot take in the manifest's dtype carries no vLLM tag.
     if logits.shape[0] < _VLLM_TRITON_ROWS or logits.dtype is torch.float32:
-        # vLLM masks its argument in place and is not idempotent: a second pass renormalizes
-        # over the tokens the first left and cuts further, so it gets a copy per call. A k
-        # above V has no meaning to it and is clamped.
+        # vLLM masks its argument in place; it reaches nothing else of its caller's, and a k
+        # above V has no meaning to it, so it takes a clamped k and a private logits buffer
+        # refilled per call. It is not idempotent either: a second pass renormalizes over the
+        # tokens the first left and cuts further. ``count_copies`` stays false at the
+        # comparison below, so the refill is excluded from ``device_busy_ms``.
         apply_top_k_top_p = vllm_op("apply_top_k_top_p", "v1.sample.ops.topk_topp_sampler")
         vllm_k = k.clamp(max=call.ix["V"])
+        vllm_logits = torch.empty_like(logits)
 
         def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-            return apply_top_k_top_p(logits.clone(), vllm_k, p)
+            return apply_top_k_top_p(vllm_logits.copy_(logits), vllm_k, p)
 
+        # Hand-written rather than ``assert_matches_reference``: the helper compares every
+        # entry, and the two legitimately disagree inside the tied run at the cut.
         got = vllm_mask(logits, k, p)
         kept = reference != -float("inf")
         taken = got != -float("inf")
@@ -61,5 +73,8 @@ def test_top_k_top_p_mask_bench(call) -> None:
         assert ((probs / lowest - 1).abs()[taken ^ kept] <= _MARGIN).all()
         assert torch.equal(got[taken & kept], reference[taken & kept])
         functors[VLLM_TAG] = vllm_mask
+
+    for tag, functor in functors.items():
+        assert_output_spec(functor(logits, k, p), spec, tag)
 
     bm.compare(functors, logits, k, p)

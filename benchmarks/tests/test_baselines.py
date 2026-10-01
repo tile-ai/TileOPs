@@ -7,6 +7,7 @@ abort that no ``except`` here would survive.
 import subprocess
 import sys
 from importlib.util import find_spec
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,6 +15,8 @@ import torch
 from benchmarks.baselines import (
     _FlagGemsImportOrder,
     assert_matches_reference,
+    assert_output_spec,
+    compiled_reference,
     flaggems_op,
     reference_tolerance,
     vllm_op,
@@ -121,3 +124,33 @@ def test_assert_matches_reference_compares_every_output_the_reference_returns():
     # Returning fewer outputs than the reference is a mismatch, not a pass.
     with pytest.raises(AssertionError, match="output"):
         assert_matches_reference(one_output, two_outputs, value)
+
+
+def test_compiled_reference_refuses_a_reference_dynamo_splits():
+    """A row tagged torch-compile fails rather than time part of itself eager."""
+
+    def one_graph(x):
+        return x * 2 + 1
+
+    def data_dependent(x):
+        # A branch on a value dynamo cannot know at trace time splits the graph.
+        if x.sum() > 0:
+            return x * 2
+        return x * 3
+
+    value = torch.ones(4)
+    assert torch.equal(compiled_reference(one_graph)(value), one_graph(value))
+    with pytest.raises(AssertionError, match="graph"):
+        compiled_reference(data_dependent)(value)
+
+
+def test_assert_output_spec_rejects_another_dtype_or_shape():
+    spec = SimpleNamespace(shape=(2, 3), dtype="float16")
+
+    assert_output_spec(torch.zeros(2, 3, dtype=torch.float16), spec, "tag")
+    with pytest.raises(AssertionError, match="float32"):
+        assert_output_spec(torch.zeros(2, 3), spec, "tag")
+    with pytest.raises(AssertionError, match=r"\(3, 3\)"):
+        assert_output_spec(torch.zeros(3, 3, dtype=torch.float16), spec, "tag")
+    with pytest.raises(AssertionError, match="not a tensor"):
+        assert_output_spec((torch.zeros(2, 3, dtype=torch.float16),), spec, "tag")

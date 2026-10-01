@@ -62,14 +62,10 @@ def test_engram_gate_conv_bwd_bench(call):
     def ref_with_grad(*args):
         return workload.ref_program(*args)
 
-    bm.compare(
-        {
-            "tileops": op,
-            "torch": ref_with_grad,
-            TORCH_COMPILE_TAG: compiled_reference(ref_with_grad),
-        },
-        *inputs,
-    )
+    # No torch-compile tag: the reference calls ``requires_grad_()`` on the intermediates it
+    # returns gradients for and runs ``backward`` over them, which dynamo splits into seven
+    # graphs, so the row would time six eager segments under a tag that says compiled.
+    bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(EngramDecodeFwdOp))
