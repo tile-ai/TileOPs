@@ -18,6 +18,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
+from tileops.kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefillFwdKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -30,7 +31,7 @@ class GLAInferenceFwdOp(Op):
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call is
     equal-length prefill, packed-varlen prefill, or single-token decode. An absent
     ``initial_state`` starts from zero; every call returns ``(o, final_state)``. The
-    in-tree kernels serve dense prefill and decode; packed varlen is not implemented.
+    in-tree kernels serve equal-length prefill, packed-varlen prefill and decode.
     """
 
     compile_boundary: ClassVar[bool] = True
@@ -39,6 +40,7 @@ class GLAInferenceFwdOp(Op):
         "gla_dense_decode": GLADenseDecodeFwdKernel,
         "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
         "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
+        "gla_varlen_prefill": GLAVarlenPrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_inference": GLAInferenceFwdInterface
@@ -111,6 +113,7 @@ class GLAInferenceFwdOp(Op):
             dtype=q.dtype,
             scale=self.scale if self.scale is not None else dim_k**-0.5,
             varlen=cu_seqlens is not None,
+            num_sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
             device=q.device,
         )
         return self.kernel_for("gla_inference", call)(*inputs)

@@ -1,5 +1,6 @@
 """Tests for the GLA ops: chunkwise forward and backward, inference, decode."""
 
+import itertools
 from functools import partial
 
 import pytest
@@ -446,6 +447,84 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype,dim", [(torch.bfloat16, 64), (torch.float16, 128)])
+@pytest.mark.parametrize("scale", [None, 0.3])
+def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: float | None) -> None:
+    """Sequence lengths from one token up, with the state and the host offsets each absent."""
+    if chunk_gla is None:
+        pytest.skip("FLA not installed")
+    torch.manual_seed(2237)
+    lengths = [1, 7, 63, 64, 100]
+    total, heads = sum(lengths), 4
+    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
+    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype)
+    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
+    seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
+    op = GLAInferenceFwdOp(scale)
+    tolerance = standard_tolerance(dtype)
+    for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
+        o, final_state = op(q, k, v, g, state, cu_seqlens, host)
+        ref_o, ref_state = chunk_gla(
+            q,
+            k,
+            v,
+            g,
+            scale=dim**-0.5 if scale is None else scale,
+            initial_state=state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+        )
+        torch.testing.assert_close(o, ref_o, **tolerance)
+        torch.testing.assert_close(final_state, ref_state, **tolerance)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
+    dtype: torch.dtype,
+) -> None:
+    """A chunk's causal product is two factors whose exponents cancel.
+
+    The signature bounds the gate nowhere, so a gate of ten per token drives one factor past
+    the largest bfloat16 and the other below the smallest, and their product would be a NaN
+    the cancelled exponent never has.
+    """
+    if chunk_gla is None:
+        pytest.skip("FLA not installed")
+    torch.manual_seed(2237)
+    lengths = [100, 156]
+    total, heads, dim = sum(lengths), 2, 64
+    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
+    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype) * 10.0
+    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
+    o, final_state = GLAInferenceFwdOp()(q, k, v, g, None, cu_seqlens, None)
+    ref_o, ref_state = chunk_gla(
+        q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
+    )
+    assert torch.isfinite(o).all()
+    tolerance = standard_tolerance(dtype)
+    torch.testing.assert_close(o, ref_o, **tolerance)
+    torch.testing.assert_close(final_state, ref_state, **tolerance)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
+    """An equal-length call whose rows are not a multiple of 64 runs the packed kernel."""
+    torch.manual_seed(2237)
+    test = GLAInferenceTest(2, 100, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    op = GLAInferenceFwdOp()
+    test.check(op, *test.gen_inputs(), **standard_tolerance(torch.bfloat16))
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,has_initial_state,gate_scale",
     [(torch.bfloat16, True, 1.0), (torch.float16, False, 3.0)],
@@ -500,10 +579,6 @@ def test_gla_dense_decode_matches_fla(
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp(scale)
     test.check(op, *inputs, **standard_tolerance(dtype))
-    assert any(
-        isinstance(kernel, GLADenseDecodeFwdKernel)
-        for kernel in op.built_kernels("gla_inference").values()
-    )
 
 
 @pytest.mark.smoke

@@ -8,7 +8,7 @@ four names and one entry point::
 
     register_detector(target="acme", detect=lambda device: device.type == "acme")
 
-    def build_rms_norm(x: TensorSpec, weight: TensorSpec, *, normalized_shape, eps):
+    def build_rms_norm(x: TensorSpec, weight: TensorSpec | None, *, normalized_shape, eps):
         return AcmeRMSNorm(normalized_shape, eps, x.dtype)
 
     register_kernel_builder(op="RMSNormFwdOp", target="acme", build_kernel=build_rms_norm)

@@ -370,9 +370,8 @@ DeltaNetBwdOp:
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
-  # The in-tree kernels currently cover Hopper dense prefill and decode.
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     types:
       State:
@@ -404,6 +403,9 @@ GLAInferenceFwdOp:
   - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-4k}
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
   - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-16k}
+  - {B: 1, S: 4096, H: 4, K: 64, V: 64, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
+  - {B: 1, S: 4096, H: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: float16}], label: varlen-ragged}
+  - {B: 2, S: 3000, H: 4, K: 64, V: 64, scale: 0.125, dtype_cases: [{T: bfloat16}], label: prefill-3000}
   - {B: 1, S: 1, H: 32, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b1-d64}
   - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b8-d128}
   - {B: 3, S: 1, H: 24, K: 128, V: 128, dtype_cases: [{T: float16}], label: decode-first-token}

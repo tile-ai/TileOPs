@@ -12,7 +12,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
-    dense_entry,
+    build_entry,
     serves_dense,
 )
 
@@ -89,7 +89,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        return dense_entry(
+        return build_entry(
             cls, call, batch=call.batch, heads=call.heads, dim_k=call.dim_k, dim_v=call.dim_v
         )
 

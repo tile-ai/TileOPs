@@ -6,12 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.kernel_base import Entry
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
-    dense_entry,
+    build_entry,
     serves_dense,
 )
 from tileops.kernels.linear_attention.gla.gla_fwd import (
@@ -33,7 +33,14 @@ def gla_fwd_a_kernel(
     dtype: str,
     gate_dtype: str = "float32",
 ):
-    """Use tensor-core products between 16-token blocks; keep diagonal exact."""
+    """Contract 16-token blocks on tensor cores, and keep the diagonal exact where it must be.
+
+    A block below the diagonal anchors both exponents on the query block's first row, where
+    the causal pairing makes both nonpositive, so neither factor can overflow. The diagonal
+    block's key exponent is positive and the two factors together span the block's whole gate
+    decay; it takes the same product where that span is representable and the exact per-pair
+    form where it is not.
+    """
     num_chunks = seq_len // chunk_size
     block_c = 16
     num_subchunks = chunk_size // block_c
@@ -65,9 +72,16 @@ def gla_fwd_a_kernel(
                 g_q = T.alloc_shared([block_c, dim_k], "float32")
                 g_k = T.alloc_shared([block_c, dim_k], "float32")
                 a_s = T.alloc_shared([block_c, block_c], dtype)
-                q_gated = T.alloc_shared([block_c, dim_k], dtype)
-                k_gated = T.alloc_shared([block_c, dim_k], dtype)
+                # The gate-scaled operands are staged in bfloat16 whatever the activations
+                # are: it is the wider exponent of the two, and the diagonal block needs every
+                # bit of it. Where even bfloat16 is too narrow the block takes the exact form.
+                q_gated = T.alloc_shared([block_c, dim_k], "bfloat16")
+                k_gated = T.alloc_shared([block_c, dim_k], "bfloat16")
+                spans = T.alloc_fragment([dim_k], "float32")
+                span = T.alloc_fragment([1], "float32")
 
+                # Only the diagonal block reads a span, and it is the one that measures it.
+                span[0] = 0.0
                 if bj <= bi:
                     T.copy(
                         q[i_b, start + bi * block_c : start + (bi + 1) * block_c, i_h, :],
@@ -90,42 +104,46 @@ def gla_fwd_a_kernel(
                         disable_tma=True,
                     )
 
-                    if bj < bi:
-                        # The first query row is a stable anchor: both
-                        # exponents are nonpositive for causal pairs.
+                    if bj == bi:
+                        for d in T.Parallel(dim_k):
+                            spans[d] = (g_q[0, d] - g_k[block_c - 1, d]) * LOG2E
+                        T.reduce_max(spans, span, dim=0)
+
+                if bj < bi or (bj == bi and span[0] < BF16_SPLIT_EXP2_SPAN):
+                    # Below the diagonal the query block's first row makes both exponents
+                    # nonpositive, so neither factor can overflow.
+                    for i, d in T.Parallel(block_c, dim_k):
+                        q_gated[i, d] = T.cast(
+                            T.cast(q_s[i, d], "float32")
+                            * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
+                            * scale,
+                            "bfloat16",
+                        )
+                    for j, d in T.Parallel(block_c, dim_k):
+                        k_gated[j, d] = T.cast(
+                            T.cast(k_s[j, d], "float32") * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
+                            "bfloat16",
+                        )
+                    product = T.alloc_fragment([block_c, block_c], "float32")
+                    T.fill(product, 0.0)
+                    T.gemm(q_gated, k_gated, product, transpose_B=True)
+                    for i, j in T.Parallel(block_c, block_c):
+                        a_s[i, j] = T.cast(
+                            T.if_then_else(bj < bi or j <= i, product[i, j], 0.0), dtype
+                        )
+                elif bj == bi:
+                    products = T.alloc_fragment([block_c, dim_k], "float32")
+                    sums = T.alloc_fragment([block_c], "float32")
+                    for j in T.Serial(block_c):
                         for i, d in T.Parallel(block_c, dim_k):
-                            q_gated[i, d] = T.cast(
+                            products[i, d] = (
                                 T.cast(q_s[i, d], "float32")
-                                * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
-                                * scale,
-                                dtype,
+                                * T.cast(k_s[j, d], "float32")
+                                * T.exp2((g_q[i, d] - g_k[j, d]) * LOG2E)
                             )
-                        for j, d in T.Parallel(block_c, dim_k):
-                            k_gated[j, d] = T.cast(
-                                T.cast(k_s[j, d], "float32")
-                                * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
-                                dtype,
-                            )
-                        product = T.alloc_fragment([block_c, block_c], "float32")
-                        T.fill(product, 0.0)
-                        T.gemm(q_gated, k_gated, product, transpose_B=True)
-                        for i, j in T.Parallel(block_c, block_c):
-                            a_s[i, j] = T.cast(product[i, j], dtype)
-                    else:
-                        products = T.alloc_fragment([block_c, dim_k], "float32")
-                        sums = T.alloc_fragment([block_c], "float32")
-                        for j in T.Serial(block_c):
-                            for i, d in T.Parallel(block_c, dim_k):
-                                products[i, d] = (
-                                    T.cast(q_s[i, d], "float32")
-                                    * T.cast(k_s[j, d], "float32")
-                                    * T.exp2((g_q[i, d] - g_k[j, d]) * LOG2E)
-                                )
-                            T.reduce_sum(products, sums, dim=1)
-                            for i in T.Parallel(block_c):
-                                a_s[i, j] = T.cast(
-                                    T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype
-                                )
+                        T.reduce_sum(products, sums, dim=1)
+                        for i in T.Parallel(block_c):
+                            a_s[i, j] = T.cast(T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype)
                 else:
                     for i, j in T.Parallel(block_c, block_c):
                         a_s[i, j] = 0.0
@@ -224,7 +242,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterfac
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        return dense_entry(
+        return build_entry(
             cls,
             call,
             batch=call.batch,

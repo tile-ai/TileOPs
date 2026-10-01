@@ -779,6 +779,7 @@ for _op_cls in (
     GLAFwdOp,
     GLABwdOp,
     GLADecodeFwdOp,
+    GLAInferenceFwdOp,
     DeltaNetFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,

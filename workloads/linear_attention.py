@@ -566,14 +566,14 @@ class GLAInferenceCall(CallWorkload):
         from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
         scale = self.call.ix["scale"]
-        reference = fused_recurrent_gla if q.shape[1] == 1 else chunk_gla
-        return reference(
-            q,
-            k,
-            v,
-            g,
+        arguments = dict(
             scale=q.shape[-1] ** -0.5 if scale is None else scale,
             initial_state=initial_state,
             output_final_state=True,
             cu_seqlens=cu_seqlens,
         )
+        if q.shape[1] == 1:
+            return fused_recurrent_gla(q, k, v, g, **arguments)
+        # chunk_gla builds its chunk index on the host, and the host copy of the offsets
+        # is what spares it a device-to-host synchronization for them.
+        return chunk_gla(q, k, v, g, cu_seqlens_cpu=cu_seqlens_cpu, **arguments)
