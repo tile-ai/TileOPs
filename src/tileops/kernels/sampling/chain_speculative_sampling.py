@@ -83,13 +83,14 @@ def _chain_speculative_sampling_kernel(
             dst[0] = held[slot, 0]
 
         @T.macro
-        def locate(src, n, span, frac, base, lane, pick, edge, acc, idx):
+        def locate(src, n, span, frac, base, lane, pick, prefix, total, left, acc, idx):
             """Leave in ``pick[0]`` the entry of ``src[0:n]`` the draw lands on and in
-            ``edge[0]`` how much of the draw point is left inside that entry.
+            ``left[0]`` how much of the draw point is left inside that entry.
 
             Lane ``l`` of warp 0 owns ``src[l * span : (l + 1) * span)`` and sums it into
-            ``lane[l]``; lane 0 turns those sums into the exclusive prefixes ``edge[1:]``;
-            every lane then walks its own entries against a draw point of
+            ``lane[l]``; lane 0 turns those sums into the exclusive prefixes ``prefix``, which
+            the descent reads by lane and so stays one buffer; every lane then walks its own
+            entries against a draw point of
             ``frac * total + base``. The entry taken is the first whose inclusive prefix
             passes that point and whose own value is positive, and the last positive entry
             when none does. A zero-weight entry is therefore never taken, and a point that
@@ -106,17 +107,16 @@ def _chain_speculative_sampling_kernel(
             if tx == 0:
                 acc[0] = T.cast(0, "float64")
                 for l in T.serial(WARP_LANES):
-                    edge[l + 1] = acc[0]
+                    prefix[l] = acc[0]
                     acc[0] = acc[0] + lane[l]
-                edge[0] = acc[0]
+                total[0] = acc[0]
             T.sync_threads()
             if tx < WARP_LANES:
-                acc[0] = edge[tx + 1]
-                # The point never sits below zero. The prefix that placed this level was
-                # summed in another order than the entries here, so subtracting it can leave
-                # a negative remainder, and every entry would then pass the point, a
-                # zero-weight one first.
-                acc[1] = T.max(frac * edge[0] + base, T.cast(0, "float64"))
+                acc[0] = prefix[tx]
+                # The prefix that placed this level was summed in another order than these
+                # entries, so the remainder can come out negative, and every entry would then
+                # pass the point, a zero-weight one first.
+                acc[1] = T.max(frac * total[0] + base, T.cast(0, "float64"))
                 idx[0] = n
                 idx[1] = -1
                 for i in T.serial(span):
@@ -134,12 +134,12 @@ def _chain_speculative_sampling_kernel(
                     pick[0] = T.if_then_else(idx[0] < n, idx[0], T.max(idx[1], 0))
             T.sync_threads()
             if tx == 0:
-                acc[1] = T.max(frac * edge[0] + base, T.cast(0, "float64"))
-                acc[0] = edge[pick[0] // span + 1]
+                acc[1] = T.max(frac * total[0] + base, T.cast(0, "float64"))
+                acc[0] = prefix[pick[0] // span]
                 for i in T.serial(span):
                     if (pick[0] // span) * span + i < pick[0]:
                         acc[0] = acc[0] + src[(pick[0] // span) * span + i]
-                edge[0] = acc[1] - acc[0]
+                left[0] = acc[1] - acc[0]
             T.sync_threads()
 
         @T.prim_func
@@ -159,18 +159,17 @@ def _chain_speculative_sampling_kernel(
                 chunks = T.alloc_shared((parts,), "float64")
                 tail = T.alloc_shared((WARP_LANES,), "float64")
                 lane = T.alloc_shared((WARP_LANES,), "float64")
-                # 0 the total of the entries a descent walks, then what is left of the draw
-                # point inside the entry it chose; 1 on, one exclusive prefix per lane.
-                edge = T.alloc_shared((WARP_LANES + 1,), "float64")
+                # The exclusive prefix of each lane's entries, read by a computed lane, so
+                # it stays one buffer.
+                prefix = T.alloc_shared((WARP_LANES,), "float64")
+                total = T.alloc_shared((1,), "float64")
+                left = T.alloc_shared((1,), "float64")
                 pick = T.alloc_shared((1,), "int32")
-                # Per draft, the chain position it rejects at, or ``num_draft`` when it is
-                # accepted; the least of them is the accepted prefix length.
+                # Per draft, the chain position it rejects at, or ``num_draft`` when accepted.
                 verdict = T.alloc_shared((max(num_draft, 1),), "int32")
-                # The row's own uniform, drawn after the chain's, broadcast to every thread.
-                shared_draw = T.alloc_shared((1,), "float32")
-                # The block of the row that owns the draw, and the element the winning warp
-                # starts at, both read after ``pick`` has moved on to the next level.
-                owner = T.alloc_shared((2,), "int32")
+                token_uniform = T.alloc_shared((1,), "float32")
+                owner_part = T.alloc_shared((1,), "int32")
+                warp_at = T.alloc_shared((1,), "int32")
                 held = T.alloc_local((pace, vec), "float32")
                 other = T.alloc_local((pace, vec), "float32")
                 warp = T.alloc_local((1,), "float32")
@@ -179,28 +178,26 @@ def _chain_speculative_sampling_kernel(
                 counter = T.alloc_local((4,), "uint32")
                 bump = T.alloc_local((2,), "uint32")
                 key = T.alloc_local((2,), "uint32")
-                spot = T.alloc_local((2,), "int32")
-                # 0 what is left of the draw point inside the entry the level above chose,
-                # 1 the row's uniform while the first level still has to scale it by a total.
-                aim = T.alloc_local((2,), "float64")
-                # The accepted prefix length, and the base element of the target and draft
-                # rows the residual is formed from.
-                stop = T.alloc_local((3,), "int32")
+                draw_index = T.alloc_local((1,), "int32")
+                element = T.alloc_local((1,), "int32")
+                token = T.alloc_local((1,), "int32")
+                remainder = T.alloc_local((1,), "float64")
+                uniform = T.alloc_local((1,), "float64")
+                accepted = T.alloc_local((1,), "int32")
+                target_at = T.alloc_local((1,), "int32")
+                draft_at = T.alloc_local((1,), "int32")
 
                 line = bx // parts
                 head = bx % parts * chunk
 
-                # Draw the row's ``num_draft + 1`` uniforms, one per thread and a chain
-                # longer than the block over several rounds: draw ``j`` tests draft ``j`` and
-                # the last places the token. Philox4x32-10 keyed by the seed and counted by
-                # the draw and the row alone, so a uniform is the same value however the
-                # launch splits the row.
+                # Philox4x32-10 keyed by the seed and counted by the draw and the row
+                # alone, so a uniform is the same value however the launch splits the row.
                 for d in T.serial(draw_rounds):
-                    spot[0] = d * threads + tx
-                    if spot[0] < num_draft + 1:
+                    draw_index[0] = d * threads + tx
+                    if draw_index[0] < num_draft + 1:
                         key[0] = T.cast(seed[0] & T.int64(0xFFFFFFFF), "uint32")
                         key[1] = T.cast((seed[0] >> T.int64(32)) & T.int64(0xFFFFFFFF), "uint32")
-                        counter[0] = T.cast(spot[0], "uint32")
+                        counter[0] = T.cast(draw_index[0], "uint32")
                         counter[1] = T.cast(line, "uint32")
                         counter[2] = T.cast(offset[0] & T.int64(0xFFFFFFFF), "uint32")
                         counter[3] = T.cast(
@@ -227,42 +224,43 @@ def _chain_speculative_sampling_kernel(
                         warp[0] = T.cast(
                             counter[0] >> T.uint32(32 - uniform_bits), "float32"
                         ) * T.float32(2.0**-uniform_bits)
-                        if spot[0] == num_draft:
-                            shared_draw[0] = warp[0]
+                        if draw_index[0] == num_draft:
+                            token_uniform[0] = warp[0]
                         else:
-                            # Draft ``spot[0]`` is accepted while ``u * draft < target`` at its id.
-                            idx[0] = draft_token_ids[line * num_draft + spot[0]]
-                            verdict[spot[0]] = T.if_then_else(
-                                warp[0] * draft_probs[(line * num_draft + spot[0]) * vocab + idx[0]]
-                                < target_probs[(line * (num_draft + 1) + spot[0]) * vocab + idx[0]],
+                            # A draft is accepted while ``u * draft < target`` at its id.
+                            idx[0] = draft_token_ids[line * num_draft + draw_index[0]]
+                            verdict[draw_index[0]] = T.if_then_else(
+                                warp[0]
+                                * draft_probs[(line * num_draft + draw_index[0]) * vocab + idx[0]]
+                                < target_probs[
+                                    (line * (num_draft + 1) + draw_index[0]) * vocab + idx[0]
+                                ],
                                 num_draft,
-                                spot[0],
+                                draw_index[0],
                             )
                 T.sync_threads()
 
-                stop[0] = num_draft
+                accepted[0] = num_draft
                 for j in T.serial(num_draft):
-                    stop[0] = T.min(stop[0], verdict[j])
+                    accepted[0] = T.min(accepted[0], verdict[j])
                 # The bonus position has no draft row, so its residual is the target row.
-                stop[1] = (line * (num_draft + 1) + stop[0]) * vocab
-                stop[2] = (line * num_draft + T.min(stop[0], num_draft - 1)) * vocab
-                aim[1] = T.cast(shared_draw[0], "float64")
+                target_at[0] = (line * (num_draft + 1) + accepted[0]) * vocab
+                draft_at[0] = (line * num_draft + T.min(accepted[0], num_draft - 1)) * vocab
+                uniform[0] = T.cast(token_uniform[0], "float64")
 
-                # A round stages ``pace`` vectors of each row before folding any of them, so
-                # that many loads are in flight while the folds and their warp reductions run.
                 for r in T.serial(rounds):
                     for j in T.unroll(pace):
-                        spot[0] = ((head + r * pace + j) * threads + tx) * vec
+                        element[0] = ((head + r * pace + j) * threads + tx) * vec
                         stage(
                             held,
                             other,
                             target_probs,
                             draft_probs,
                             j,
-                            stop[1] + spot[0],
-                            stop[2] + spot[0],
-                            (r * pace + j < chunk) & (spot[0] < full * vec),
-                            stop[0] < num_draft,
+                            target_at[0] + element[0],
+                            draft_at[0] + element[0],
+                            (r * pace + j < chunk) & (element[0] < full * vec),
+                            accepted[0] < num_draft,
                         )
                     for j in T.unroll(pace):
                         fold(warp, held, other, j)
@@ -277,8 +275,8 @@ def _chain_speculative_sampling_kernel(
 
                 if parts == 1:
                     if tx == 0:
-                        owner[0] = 0
-                    aim[0] = T.cast(0, "float64")
+                        owner_part[0] = 0
+                    remainder[0] = T.cast(0, "float64")
                 else:
                     # The chunk total, summed exactly as ``locate`` sums the same entries,
                     # so the prefix a block takes from the barrier and the prefix it then
@@ -304,40 +302,55 @@ def _chain_speculative_sampling_kernel(
                         chunks,
                         parts,
                         part_span,
-                        aim[1],
+                        uniform[0],
                         T.cast(0, "float64"),
                         lane,
                         pick,
-                        edge,
+                        prefix,
+                        total,
+                        left,
                         acc,
                         idx,
                     )
                     if tx == 0:
-                        owner[0] = pick[0]
-                    aim[0] = edge[0]
-                    aim[1] = T.cast(0, "float64")
+                        owner_part[0] = pick[0]
+                    remainder[0] = left[0]
+                    uniform[0] = T.cast(0, "float64")
                 T.sync_threads()
 
-                if owner[0] == bx % parts:
-                    locate(seg, leaves, leaf_span, aim[1], aim[0], lane, pick, edge, acc, idx)
-                    aim[0] = edge[0]
+                if owner_part[0] == bx % parts:
+                    locate(
+                        seg,
+                        leaves,
+                        leaf_span,
+                        uniform[0],
+                        remainder[0],
+                        lane,
+                        pick,
+                        prefix,
+                        total,
+                        left,
+                        acc,
+                        idx,
+                    )
+                    remainder[0] = left[0]
                     if tx == 0:
-                        owner[1] = (
+                        warp_at[0] = (
                             (head + pick[0] // warps) * threads + pick[0] % warps * WARP_LANES
                         ) * vec
                     T.sync_threads()
                     if tx < WARP_LANES:
-                        spot[0] = owner[1] + tx * vec
+                        element[0] = warp_at[0] + tx * vec
                         stage(
                             held,
                             other,
                             target_probs,
                             draft_probs,
                             0,
-                            stop[1] + spot[0],
-                            stop[2] + spot[0],
-                            spot[0] < full * vec,
-                            stop[0] < num_draft,
+                            target_at[0] + element[0],
+                            draft_at[0] + element[0],
+                            element[0] < full * vec,
+                            accepted[0] < num_draft,
                         )
                         fold(warp, held, other, 0)
                         tail[tx] = T.cast(warp[0], "float64")
@@ -347,28 +360,30 @@ def _chain_speculative_sampling_kernel(
                         WARP_LANES,
                         1,
                         T.cast(0, "float64"),
-                        aim[0],
+                        remainder[0],
                         lane,
                         pick,
-                        edge,
+                        prefix,
+                        total,
+                        left,
                         acc,
                         idx,
                     )
                     if tx == 0:
                         # The chosen lane's weights, walked in index order: the token is the
                         # first whose weight passes what is left of the draw point.
-                        spot[0] = owner[1] + pick[0] * vec
-                        acc[0] = edge[0]
+                        element[0] = warp_at[0] + pick[0] * vec
+                        acc[0] = left[0]
                         idx[0] = -1
                         idx[1] = 0
                         for c in T.serial(vec):
-                            if spot[0] + c < full * vec:
+                            if element[0] + c < full * vec:
                                 acc[1] = T.cast(
                                     T.max(
-                                        target_probs[stop[1] + spot[0] + c]
+                                        target_probs[target_at[0] + element[0] + c]
                                         - T.if_then_else(
-                                            stop[0] < num_draft,
-                                            draft_probs[stop[2] + spot[0] + c],
+                                            accepted[0] < num_draft,
+                                            draft_probs[draft_at[0] + element[0] + c],
                                             T.float32(0),
                                         ),
                                         T.float32(0),
@@ -380,15 +395,14 @@ def _chain_speculative_sampling_kernel(
                                     if (idx[0] < 0) & (acc[1] > acc[0]):
                                         idx[0] = c
                                 acc[0] = acc[0] - acc[1]
-                        spot[1] = spot[0] + T.if_then_else(idx[0] >= 0, idx[0], idx[1])
-                        # The accepted drafts, the drawn token, then -1.
+                        token[0] = element[0] + T.if_then_else(idx[0] >= 0, idx[0], idx[1])
                         for j in T.serial(num_draft + 1):
                             output_token_ids[line * (num_draft + 1) + j] = T.if_then_else(
-                                j < stop[0],
+                                j < accepted[0],
                                 draft_token_ids[line * num_draft + T.min(j, num_draft - 1)],
-                                T.if_then_else(j == stop[0], spot[1], -1),
+                                T.if_then_else(j == accepted[0], token[0], -1),
                             )
-                        num_accepted[line] = stop[0]
+                        num_accepted[line] = accepted[0]
 
         return _chain_speculative_sampling_main
 
