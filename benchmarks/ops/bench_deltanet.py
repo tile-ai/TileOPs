@@ -38,7 +38,7 @@ def _to_fla_layout(q, k, v, beta):
 
 
 @pytest.mark.parametrize("call", manifest_calls(DeltaNetInferenceFwdOp))
-def test_deltanet_dense_prefill_bench(call) -> None:
+def test_deltanet_inference_bench(call) -> None:
     workload = DeltaNetInferenceCall(call)
     inputs = workload.gen_inputs()
     op = DeltaNetInferenceFwdOp(**workload.arguments())

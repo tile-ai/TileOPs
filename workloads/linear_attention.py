@@ -124,7 +124,7 @@ class GLADecodeWorkload(WorkloadBase):
 
 
 class DeltaNetInferenceWorkload(WorkloadBase):
-    """Equal-length BTHD ungated DeltaNet prefill with recurrent state."""
+    """Equal-length BTHD ungated DeltaNet prefill or single-token decode with recurrent state."""
 
     def __init__(self, batch: int, seq_len: int, heads: int, dim: int, dtype: torch.dtype) -> None:
         self.batch = batch
@@ -155,9 +155,10 @@ class DeltaNetInferenceWorkload(WorkloadBase):
         beta: torch.Tensor,
         initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        from fla.ops.delta_rule import chunk_delta_rule
+        from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 
-        return chunk_delta_rule(q, k, v, beta, initial_state=initial_state, output_final_state=True)
+        fla_kernel = fused_recurrent_delta_rule if self.seq_len == 1 else chunk_delta_rule
+        return fla_kernel(q, k, v, beta, initial_state=initial_state, output_final_state=True)
 
 
 class GatedDeltaNetFwdWorkload(WorkloadBase):
@@ -494,7 +495,12 @@ class GLAChunkwiseCall(CallWorkload):
 
 
 class DeltaNetInferenceCall(CallWorkload):
-    """A manifest call of DeltaNetInferenceFwdOp; FLA's chunk_delta_rule is the reference."""
+    """A manifest call of DeltaNetInferenceFwdOp.
+
+    FLA's ``chunk_delta_rule`` is the reference for a prefill call and its
+    ``fused_recurrent_delta_rule`` for a single-token one, which is the kernel FLA
+    supplies for decode.
+    """
 
     def gen_inputs(self):
         q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu = super().gen_inputs()
@@ -509,9 +515,10 @@ class DeltaNetInferenceCall(CallWorkload):
         )
 
     def ref_program(self, q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu):
-        from fla.ops.delta_rule import chunk_delta_rule
+        from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 
-        return chunk_delta_rule(
+        fla_kernel = fused_recurrent_delta_rule if q.shape[1] == 1 else chunk_delta_rule
+        return fla_kernel(
             q,
             k,
             v,

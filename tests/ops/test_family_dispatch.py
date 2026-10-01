@@ -252,8 +252,8 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
         seq_len=seq_len,
         heads=16,
         value_heads=16,
-        dim_k=128,
-        dim_v=128,
+        dim_k=facts.pop("dim_k", 128),
+        dim_v=facts.pop("dim_v", 128),
         dtype=torch.bfloat16,
         scale=0.088,
         has_initial_state=has_initial_state,
@@ -269,6 +269,11 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
         pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
         pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
         pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
+        pytest.param(
+            _gated_call(64, True, dim_k=64, dim_v=64),
+            "gated_deltanet_dense_prefill",
+            id="prefill-narrow-state",
+        ),
     ],
 )
 def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None:
@@ -281,7 +286,11 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
     ("call", "reason"),
     [
         pytest.param(_gated_call(1, False), "decode without initial_state", id="decode-no-state"),
-        pytest.param(_gated_call(64, True), "prefill with initial_state", id="prefill-with-state"),
+        pytest.param(
+            _gated_call(1, True, dim_k=64, dim_v=64),
+            "K and V other than 128",
+            id="decode-narrow-state",
+        ),
         pytest.param(_gated_call(63, False), "positive multiple of 64", id="prefill-ragged"),
         pytest.param(_gated_call(64, False, varlen=True), "packed varlen", id="varlen"),
         pytest.param(_gated_call(64, False, l2norm=True), "l2norm", id="l2norm"),
@@ -292,7 +301,8 @@ def test_gated_deltanet_refuses_what_no_kernel_serves(call: GatedDeltaNetCall, r
         GatedDeltaNetFwdOp().select_implementation("gated_deltanet", call)
 
 
-# --- DeltaNet inference: the dense prefill kernel states what it does not serve.
+# --- DeltaNet inference: whole chunks of 64 are prefill and one token is decode, and
+# each kernel states what it does not serve.
 
 
 def _inference_call(**facts: object) -> DeltaNetInferenceCall:
@@ -316,6 +326,9 @@ def test_deltanet_inference_dispatch() -> None:
 
     assert op.select_implementation("deltanet_inference", _inference_call()) == (
         "deltanet_dense_prefill"
+    )
+    assert op.select_implementation("deltanet_inference", _inference_call(seq_len=1)) == (
+        "deltanet_dense_decode"
     )
 
 

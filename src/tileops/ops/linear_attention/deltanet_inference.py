@@ -1,4 +1,4 @@
-"""Inference-facing DeltaNet forward contract and dense-prefill dispatch."""
+"""Inference-facing DeltaNet forward contract, and its dense prefill and decode dispatch."""
 
 from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
@@ -7,6 +7,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
+    DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
     DeltaNetInferenceCall,
     DeltaNetInferenceFwdInterface,
@@ -23,9 +24,10 @@ class DeltaNetInferenceFwdOp(Op):
     The input layout is ``[B, T, H, D]``. One call covers equal-length
     prefill, packed-varlen prefill, and single-token decode. The recurrent
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
-    while ``(o, final_state)`` is always returned. The in-tree implementation
-    currently supports SM90 dense prefill; packed varlen and decode remain
-    part of the public contract for external targets and future kernels.
+    while ``(o, final_state)`` is always returned. The in-tree implementations
+    cover SM90 equal-length prefill and SM90 single-token decode over a
+    128-wide square state; packed varlen remains part of the public contract
+    for external targets and future kernels.
 
     ``beta`` contains the already-transformed update strength. This Op does
     not apply a sigmoid or another beta transform.
@@ -34,7 +36,8 @@ class DeltaNetInferenceFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel
+        "deltanet_dense_decode": DeltaNetDenseDecodeFwdKernel,
+        "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "deltanet_inference": DeltaNetInferenceFwdInterface

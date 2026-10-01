@@ -373,6 +373,22 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
 @pytest.mark.cuda_only
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
+    """One token continues a caller-owned state, and starts from zero without one."""
+    torch.manual_seed(2163)
+    test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
+    inputs = test.gen_inputs()
+    op = DeltaNetInferenceFwdOp()
+    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs[:4], atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_registry")
+@pytest.mark.sm90
+@pytest.mark.cuda_only
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)

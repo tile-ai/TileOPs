@@ -463,7 +463,7 @@ def _linear_attention_cases():
         )
 
     def gated_deltanet():
-        # The in-tree kernel serves a 128-wide head only.
+        # A 128-wide head, which both the in-tree prefill and decode kernels serve.
         k = torch.nn.functional.normalize(_x(_B, _S, _H, 128, dtype=torch.float32), dim=-1)
         return GatedDeltaNetFwdOp(), (
             _x(_B, _S, _H, 128) * 0.1,

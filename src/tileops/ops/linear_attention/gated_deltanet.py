@@ -41,10 +41,11 @@ class GatedDeltaNetFwdOp(Op):
     the current inputs; in particular, ``T == 1`` is decode rather than a
     separate public Op.
 
-    The in-tree implementation currently covers equal-length SM90 prefill
-    with zero initial state, matching recurrent head counts, 128-wide state,
-    and precomputed gate and beta values. Other regions still require an
-    external target implementation while their retained kernels are migrated.
+    The in-tree implementations currently cover equal-length SM90 prefill over
+    a 64- or 128-wide square state and single-token SM90 decode over a
+    128-wide one, both with matching recurrent head counts and precomputed
+    gate and beta values. Other regions still require an external target
+    implementation while their retained kernels are migrated.
     """
 
     compile_boundary: ClassVar[bool] = True
