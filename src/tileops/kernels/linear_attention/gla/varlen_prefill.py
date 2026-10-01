@@ -105,6 +105,10 @@ def gla_varlen_state_kernel(
 
     The walk's trip count is the sequence's own chunk count, so a short sequence's block
     retires early rather than stepping over the longest sequence's chunks.
+
+    The published states carry the activation dtype: they exist only for the output pass,
+    which contracts them on tensor cores and so casts them anyway. The state the caller is
+    returned stays float32, which is the dtype the recurrence carries.
     """
     tiling = GroupTiling(num_seqs, CHUNK_TOKENS)
     num_chunks = tiling.tile_upper_bound(total_tokens)
@@ -126,7 +130,7 @@ def gla_varlen_state_kernel(
             g_cumsum: T.Tensor([1, total_tokens, heads, dim_k], "float32"),
             initial_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
-            chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], "float32"),
+            chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], dtype),
             final_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
         ):
             with T.Kernel(num_seqs * num_partitions, heads, threads=threads) as (bx, i_h):
@@ -157,9 +161,9 @@ def gla_varlen_state_kernel(
                 for i_c in T.Pipelined(T.ceildiv(end - start, CHUNK_TOKENS), num_stages=num_stages):
                     first = start + i_c * CHUNK_TOKENS
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        chunk_state[base + i_c, i_h, k_offset + i_k, v_offset + i_v] = state[
-                            i_k, i_v
-                        ]
+                        chunk_state[base + i_c, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
+                            state[i_k, i_v], dtype
+                        )
                     # A chunk inside the sequence is copied as a tile, which is what the
                     # prefetch above pipelines; only the last chunk of a sequence takes the
                     # predicated path, where a token past the end reads as a zero key and
@@ -242,9 +246,10 @@ def gla_varlen_causal_kernel(
 ):
     """Form the causal query-key product of one chunk, one 16-token sub-block at a time.
 
-    An off-diagonal sub-block anchors both exponents on the query block's first row, where
-    the causal pairing makes them nonpositive, and runs on tensor cores; the diagonal
-    sub-block keeps the exact per-pair form.
+    Every pair anchors both exponents on the query sub-block's first row and runs on tensor
+    cores, the diagonal one included: within one sub-block the two exponents travel at most
+    its own 16 tokens of gate, which float32 holds, and the causal mask is applied to the
+    product rather than to the operands.
     """
     # The sub-block the chunk's causal product is tiled by. It bounds how far the two
     # exponents around one anchor row can travel, which is what keeps them representable.
@@ -285,8 +290,6 @@ def gla_varlen_causal_kernel(
                 q_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], dtype)
                 k_gated = T.alloc_shared([SUBCHUNK_TOKENS, dim_k], dtype)
                 product = T.alloc_fragment([SUBCHUNK_TOKENS, SUBCHUNK_TOKENS], "float32")
-                terms = T.alloc_fragment([SUBCHUNK_TOKENS, dim_k], "float32")
-                sums = T.alloc_fragment([SUBCHUNK_TOKENS], "float32")
 
                 tiling.cumsum_offsets(cu_seqlens, tile_cum)
                 if chunk < tile_cum[num_seqs]:
@@ -308,37 +311,25 @@ def gla_varlen_causal_kernel(
                             )
                             g_k[j, d] = g_cumsum[0, T.min(col + j, end - 1), i_h, d]
 
-                        if bj < bi:
-                            for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
-                                q_gated[i, d] = T.cast(
-                                    T.cast(queries[i, d], "float32")
-                                    * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
-                                    * scale,
-                                    dtype,
-                                )
-                            for j, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
-                                k_gated[j, d] = T.cast(
-                                    T.cast(keys[j, d], "float32")
-                                    * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
-                                    dtype,
-                                )
-                            T.fill(product, 0.0)
-                            T.gemm(q_gated, k_gated, product, transpose_B=True)
-                            for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
-                                block[i, j] = T.cast(product[i, j], dtype)
-                        else:
-                            for j in T.Serial(SUBCHUNK_TOKENS):
-                                for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
-                                    terms[i, d] = (
-                                        T.cast(queries[i, d], "float32")
-                                        * T.cast(keys[j, d], "float32")
-                                        * T.exp2((g_q[i, d] - g_k[j, d]) * LOG2E)
-                                    )
-                                T.reduce_sum(terms, sums, dim=1)
-                                for i in T.Parallel(SUBCHUNK_TOKENS):
-                                    block[i, j] = T.cast(
-                                        T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype
-                                    )
+                        for i, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
+                            q_gated[i, d] = T.cast(
+                                T.cast(queries[i, d], "float32")
+                                * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
+                                * scale,
+                                dtype,
+                            )
+                        for j, d in T.Parallel(SUBCHUNK_TOKENS, dim_k):
+                            k_gated[j, d] = T.cast(
+                                T.cast(keys[j, d], "float32")
+                                * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
+                                dtype,
+                            )
+                        T.fill(product, 0.0)
+                        T.gemm(q_gated, k_gated, product, transpose_B=True)
+                        for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
+                            block[i, j] = T.cast(
+                                T.if_then_else(bj < bi or j <= i, product[i, j], 0.0), dtype
+                            )
                     else:
                         for i, j in T.Parallel(SUBCHUNK_TOKENS, SUBCHUNK_TOKENS):
                             block[i, j] = T.cast(0, dtype)
@@ -373,7 +364,7 @@ def gla_varlen_output_kernel(
             q: T.Tensor([1, total_tokens, heads, dim_k], dtype),
             v: T.Tensor([1, total_tokens, heads, dim_v], dtype),
             g_cumsum: T.Tensor([1, total_tokens, heads, dim_k], "float32"),
-            chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], "float32"),
+            chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], dtype),
             causal: T.Tensor([1, total_tokens, heads, CHUNK_TOKENS], dtype),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             o: T.Tensor([1, total_tokens, heads, dim_v], dtype),
@@ -406,7 +397,7 @@ def gla_varlen_output_kernel(
                     for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
                         weights[i, j] = causal[0, T.min(start + i, end - 1), i_h, j]
                     for d, j in T.Parallel(dim_k, dim_v):
-                        state[d, j] = T.cast(chunk_state[chunk, i_h, d, j], dtype)
+                        state[d, j] = chunk_state[chunk, i_h, d, j]
                     for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
                         q_gated[i, d] = T.cast(
                             T.cast(queries[i, d], "float32") * T.exp2(gate[i, d] * LOG2E), dtype

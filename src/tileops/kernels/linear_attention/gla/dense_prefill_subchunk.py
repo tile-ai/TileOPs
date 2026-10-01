@@ -90,42 +90,30 @@ def gla_fwd_a_kernel(
                         disable_tma=True,
                     )
 
-                    if bj < bi:
-                        # The first query row is a stable anchor: both
-                        # exponents are nonpositive for causal pairs.
-                        for i, d in T.Parallel(block_c, dim_k):
-                            q_gated[i, d] = T.cast(
-                                T.cast(q_s[i, d], "float32")
-                                * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
-                                * scale,
-                                dtype,
-                            )
-                        for j, d in T.Parallel(block_c, dim_k):
-                            k_gated[j, d] = T.cast(
-                                T.cast(k_s[j, d], "float32")
-                                * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
-                                dtype,
-                            )
-                        product = T.alloc_fragment([block_c, block_c], "float32")
-                        T.fill(product, 0.0)
-                        T.gemm(q_gated, k_gated, product, transpose_B=True)
-                        for i, j in T.Parallel(block_c, block_c):
-                            a_s[i, j] = T.cast(product[i, j], dtype)
-                    else:
-                        products = T.alloc_fragment([block_c, dim_k], "float32")
-                        sums = T.alloc_fragment([block_c], "float32")
-                        for j in T.Serial(block_c):
-                            for i, d in T.Parallel(block_c, dim_k):
-                                products[i, d] = (
-                                    T.cast(q_s[i, d], "float32")
-                                    * T.cast(k_s[j, d], "float32")
-                                    * T.exp2((g_q[i, d] - g_k[j, d]) * LOG2E)
-                                )
-                            T.reduce_sum(products, sums, dim=1)
-                            for i in T.Parallel(block_c):
-                                a_s[i, j] = T.cast(
-                                    T.if_then_else(j <= i, sums[i] * scale, 0.0), dtype
-                                )
+                    # The query block's first row anchors both exponents. Below the
+                    # diagonal the causal pairing makes them nonpositive; on it they
+                    # travel at most the block's own 16 tokens of gate, which float32
+                    # holds, so the diagonal takes the same tensor-core product and the
+                    # causal mask is applied to it rather than to the operands.
+                    for i, d in T.Parallel(block_c, dim_k):
+                        q_gated[i, d] = T.cast(
+                            T.cast(q_s[i, d], "float32")
+                            * T.exp2((g_q[i, d] - g_q[0, d]) * LOG2E)
+                            * scale,
+                            dtype,
+                        )
+                    for j, d in T.Parallel(block_c, dim_k):
+                        k_gated[j, d] = T.cast(
+                            T.cast(k_s[j, d], "float32") * T.exp2((g_q[0, d] - g_k[j, d]) * LOG2E),
+                            dtype,
+                        )
+                    product = T.alloc_fragment([block_c, block_c], "float32")
+                    T.fill(product, 0.0)
+                    T.gemm(q_gated, k_gated, product, transpose_B=True)
+                    for i, j in T.Parallel(block_c, block_c):
+                        a_s[i, j] = T.cast(
+                            T.if_then_else(bj < bi or j <= i, product[i, j], 0.0), dtype
+                        )
                 else:
                     for i, j in T.Parallel(block_c, block_c):
                         a_s[i, j] = 0.0
