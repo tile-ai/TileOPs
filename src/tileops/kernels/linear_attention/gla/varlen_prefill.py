@@ -145,6 +145,11 @@ def gla_varlen_state_kernel(
                 keys = T.alloc_shared([CHUNK_TOKENS, dim_k_part], dtype)
                 values = T.alloc_shared([CHUNK_TOKENS, dim_v_part], dtype)
                 gate = T.alloc_shared([CHUNK_TOKENS, dim_k_part], "float32")
+                # The sequence's last chunk stages into its own tiles: the pipelined loop
+                # multi-buffers the ones it reads, and one buffer cannot carry both layouts.
+                tail_keys = T.alloc_shared([CHUNK_TOKENS, dim_k_part], dtype)
+                tail_values = T.alloc_shared([CHUNK_TOKENS, dim_v_part], dtype)
+                tail_gate = T.alloc_shared([CHUNK_TOKENS, dim_k_part], "float32")
                 decayed = T.alloc_fragment([CHUNK_TOKENS, dim_k_part], dtype)
                 last = T.alloc_fragment([dim_k_part], "float32")
 
@@ -156,64 +161,37 @@ def gla_varlen_state_kernel(
                 for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                     state[i_k, i_v] = initial_state[seq, i_h, k_offset + i_k, v_offset + i_v]
 
-                # The trip count comes from the offsets rather than from ``tile_cum``: a
-                # shared-memory read cannot stand in a loop extent.
-                for i_c in T.Pipelined(T.ceildiv(end - start, CHUNK_TOKENS), num_stages=num_stages):
+                # The chunks that lie whole inside the sequence are the pipelined walk, and
+                # the body holds no branch, which is what lets the loads for the chunks ahead
+                # issue while this one's product runs. The trip count comes from the offsets
+                # rather than from ``tile_cum``: a shared-memory read cannot stand in a loop
+                # extent.
+                whole = (end - start) // CHUNK_TOKENS
+                for i_c in T.Pipelined(whole, num_stages=num_stages):
                     first = start + i_c * CHUNK_TOKENS
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         chunk_state[base + i_c, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
                             state[i_k, i_v], dtype
                         )
-                    # A chunk inside the sequence is copied as a tile, which is what the
-                    # prefetch above pipelines; only the last chunk of a sequence takes the
-                    # predicated path, where a token past the end reads as a zero key and
-                    # value and repeats the last accumulated gate.
-                    if first + CHUNK_TOKENS <= end:
-                        T.copy(
-                            k[
-                                0,
-                                first : first + CHUNK_TOKENS,
-                                i_h,
-                                k_offset : k_offset + dim_k_part,
-                            ],
-                            keys,
-                            disable_tma=True,
-                        )
-                        T.copy(
-                            v[
-                                0,
-                                first : first + CHUNK_TOKENS,
-                                i_h,
-                                v_offset : v_offset + dim_v_part,
-                            ],
-                            values,
-                            disable_tma=True,
-                        )
-                        T.copy(
-                            g_cumsum[
-                                0,
-                                first : first + CHUNK_TOKENS,
-                                i_h,
-                                k_offset : k_offset + dim_k_part,
-                            ],
-                            gate,
-                            disable_tma=True,
-                        )
-                    else:
-                        for i, d in T.Parallel(CHUNK_TOKENS, dim_k_part):
-                            gate[i, d] = g_cumsum[0, T.min(first + i, end - 1), i_h, k_offset + d]
-                            keys[i, d] = T.if_then_else(
-                                first + i < end,
-                                k[0, T.min(first + i, end - 1), i_h, k_offset + d],
-                                T.cast(0, dtype),
-                            )
-                        for i, d in T.Parallel(CHUNK_TOKENS, dim_v_part):
-                            values[i, d] = T.if_then_else(
-                                first + i < end,
-                                v[0, T.min(first + i, end - 1), i_h, v_offset + d],
-                                T.cast(0, dtype),
-                            )
-
+                    T.copy(
+                        k[0, first : first + CHUNK_TOKENS, i_h, k_offset : k_offset + dim_k_part],
+                        keys,
+                        disable_tma=True,
+                    )
+                    T.copy(
+                        v[0, first : first + CHUNK_TOKENS, i_h, v_offset : v_offset + dim_v_part],
+                        values,
+                        disable_tma=True,
+                    )
+                    T.copy(
+                        g_cumsum[
+                            0, first : first + CHUNK_TOKENS, i_h, k_offset : k_offset + dim_k_part
+                        ],
+                        gate,
+                        disable_tma=True,
+                    )
+                    # The chunk decays the state by its own last accumulated gate, then adds the
+                    # keys it decays by the distance back to that row, contracted with the values.
                     for d in T.Parallel(dim_k_part):
                         last[d] = gate[CHUNK_TOKENS - 1, d]
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
@@ -225,6 +203,47 @@ def gla_varlen_state_kernel(
                         )
                     T.gemm(
                         decayed, values, state, transpose_A=True, policy=T.GemmWarpPolicy.FullRow
+                    )
+
+                # The sequence's last chunk, where a token past the end reads as a zero key
+                # and value and repeats the last accumulated gate.
+                if start + whole * CHUNK_TOKENS < end:
+                    first = start + whole * CHUNK_TOKENS
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        chunk_state[base + whole, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
+                            state[i_k, i_v], dtype
+                        )
+                    for i, d in T.Parallel(CHUNK_TOKENS, dim_k_part):
+                        tail_gate[i, d] = g_cumsum[0, T.min(first + i, end - 1), i_h, k_offset + d]
+                        tail_keys[i, d] = T.if_then_else(
+                            first + i < end,
+                            k[0, T.min(first + i, end - 1), i_h, k_offset + d],
+                            T.cast(0, dtype),
+                        )
+                    for i, d in T.Parallel(CHUNK_TOKENS, dim_v_part):
+                        tail_values[i, d] = T.if_then_else(
+                            first + i < end,
+                            v[0, T.min(first + i, end - 1), i_h, v_offset + d],
+                            T.cast(0, dtype),
+                        )
+                    # The chunk decays the state by its own last accumulated gate, then adds the
+                    # keys it decays by the distance back to that row, contracted with the values.
+                    for d in T.Parallel(dim_k_part):
+                        last[d] = tail_gate[CHUNK_TOKENS - 1, d]
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        state[i_k, i_v] = state[i_k, i_v] * T.exp2(last[i_k] * LOG2E)
+                    for i, d in T.Parallel(CHUNK_TOKENS, dim_k_part):
+                        decayed[i, d] = T.cast(
+                            T.cast(tail_keys[i, d], "float32")
+                            * T.exp2((last[d] - tail_gate[i, d]) * LOG2E),
+                            dtype,
+                        )
+                    T.gemm(
+                        decayed,
+                        tail_values,
+                        state,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullRow,
                     )
 
                 for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
@@ -433,10 +452,11 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
     _state_threads = 64
     _wide_threads = 256
 
-    # Stages the state walk prefetches a chunk's operands over. The walk is serial, so
-    # without them every chunk's GEMM waits on its own loads. Re-fit with the manifest rows
-    # over 1 to 4; more stages cost shared memory the state tile also needs.
-    _state_stages = 2
+    # Chunks the state walk prefetches ahead. The walk is serial, so without them every
+    # chunk's product waits on its own loads; the depth only pays once the loop body holds
+    # no branch, which is why the sequence's last chunk is taken outside it. Re-fit with the
+    # manifest rows over 2 to 6; more stages cost shared memory the state tile also needs.
+    _state_stages = 4
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
