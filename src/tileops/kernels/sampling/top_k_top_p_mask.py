@@ -12,9 +12,17 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
+from tileops.kernels.sampling.radix_select import (
+    BRACKET_SIGMAS,
+    BRACKET_SLACK,
+    cluster_plan,
+    merge_counts,
+    rank_in_bins,
+    widest_row,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["TopKTopPMaskFwdKernel"]
@@ -56,12 +64,6 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     # bins, 205.7 over 512 and 235.0 over 1024, and at bfloat16 249.2, 262.6 and 321.7.
     walk_bins = 512
     walk_bits = walk_bins.bit_length() - 1
-    # How far the bracket taken from the samples reaches around the expected sample rank of
-    # the k-th key: this many standard deviations of a binomial count, plus a constant that
-    # covers the ranks whose expected count is a handful. A bracket that misses costs one more
-    # pass and changes no result, so the two trade retries against keys counted. Re-fit by
-    # timing the manifest rows over sigmas in {2, 3, 4, 6} and slack in {1, 3, 8}.
-    sigmas, slack = 4.0, 3.0
 
     @tilelang.jit(
         compile_flags=[
@@ -77,7 +79,6 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
         held = slots * words
         warps = threads // WARP_LANES
         assert threads % WARP_LANES == 0 and bins % WARP_LANES == 0
-        span = bins // WARP_LANES
         walk_span = walk_bins // WARP_LANES
         # The threads whose first element is inside the row are the ones that sample it, and
         # their count is the population a sample rank stands for.
@@ -144,29 +145,6 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                                 dst[at + element(j, c, h)] = T.reinterpret(word[c], dtype)
 
         @T.macro
-        def merge(hist, total, sum32, q, tx):
-            """Sum slab ``q`` of every CTA of the cluster into ``total``."""
-            if cluster == 1:
-                T.sync_threads()
-                for i in T.serial(-(-slabs // threads)):
-                    if i * threads + tx < slabs:
-                        total[i * threads + tx] = hist[q * slabs + i * threads + tx]
-            else:
-                T.cluster_sync()
-                for i in T.serial(-(-slabs // threads)):
-                    if i * threads + tx < slabs:
-                        sum32[0] = T.uint32(0)
-                        for c in T.serial(cluster):
-                            sum32[0] = sum32[0] + T.call_extern(
-                                "uint32",
-                                "tl::tileops_cluster_load_u32",
-                                T.address_of(hist[q * slabs + i * threads + tx]),
-                                c,
-                            )
-                        total[i * threads + tx] = sum32[0]
-            T.sync_threads()
-
-        @T.macro
         def merge_weights(wbins, wtot, weight, q, tx):
             """Sum bin table ``q`` of every CTA of the cluster into ``wtot``, in float32: a
             remote word arrives as its bits and is added as the weight it stands for."""
@@ -192,34 +170,6 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                             )
                         wtot[i * threads + tx] = weight[0]
             T.sync_threads()
-
-        @T.macro
-        def rank_in_bins(total, target, acc, tx):
-            """Warp 0: into ``acc``, the bin of ``total`` holding rank ``target`` counted from
-            the largest, that rank inside it, and the bin's count.
-
-            ``acc[0]`` stays -1 when the bins hold fewer than ``target`` keys.
-            """
-            acc[0] = -1
-            acc[3] = 0
-            for i in T.serial(span):
-                acc[3] = acc[3] + T.cast(total[tx * span + i], "int32")
-            acc[1] = acc[3]
-            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                up = T.shfl_down(acc[1], 1 << stage, width=WARP_LANES)
-                if tx + (1 << stage) < WARP_LANES:
-                    acc[1] = acc[1] + up
-            # This lane's bins hold the ranks in (acc[1] - acc[3], acc[1]].
-            acc[2] = acc[1] - acc[3]
-            if (acc[2] < target) & (target <= acc[1]):
-                for i in T.serial(span):
-                    b = tx * span + span - 1 - i
-                    count = T.cast(total[b], "int32")
-                    if (acc[2] < target) & (target <= acc[2] + count):
-                        acc[0] = b
-                        acc[1] = target - acc[2]
-                        acc[3] = count
-                    acc[2] = acc[2] + count
 
         @T.macro
         def bin_holding_weight(wtot, target, hit, outside, lane, upward, running, tx):
@@ -412,14 +362,26 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                         hist[T.cast(sample >> T.uint32(bits - radix_bits), "int32")],
                         T.uint32(1),
                     )
-                merge(hist, total, sum32, 0, tx)
+                merge_counts(hist, total, sum32, 0, tx, cluster, slabs, threads)
                 if tx < WARP_LANES:
                     expected = T.cast(kk, "float32") * T.float32(sampled / vocab)
-                    spread = T.float32(sigmas) * T.sqrt(expected) + T.float32(slack)
-                    rank_in_bins(total, T.cast(T.floor(expected - spread), "int32"), acc, tx)
+                    spread = T.float32(BRACKET_SIGMAS) * T.sqrt(expected) + T.float32(BRACKET_SLACK)
+                    rank_in_bins(
+                        total,
+                        T.cast(T.floor(expected - spread), "int32"),
+                        acc,
+                        tx,
+                        bins // WARP_LANES,
+                    )
                     if acc[0] >= 0:
                         st[7] = acc[0]
-                    rank_in_bins(total, T.cast(T.ceil(expected + spread), "int32"), acc, tx)
+                    rank_in_bins(
+                        total,
+                        T.cast(T.ceil(expected + spread), "int32"),
+                        acc,
+                        tx,
+                        bins // WARP_LANES,
+                    )
                     if acc[0] >= 0:
                         st[6] = acc[0]
                 if tx == 0:
@@ -472,13 +434,19 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                             for w in T.serial(warps):
                                 acc[0] = acc[0] + red[w]
                             hist[slab * slabs + bins] = T.cast(acc[0], "uint32")
-                        merge(hist, total, sum32, slab, tx)
+                        merge_counts(hist, total, sum32, slab, tx, cluster, slabs, threads)
                         if tx < WARP_LANES:
                             # The keys above the counted digits already outrank the
                             # target, so the counted bins hold what is left of it.
                             acc[0] = -1
                             if T.cast(total[bins], "int32") < st[0]:
-                                rank_in_bins(total, st[0] - T.cast(total[bins], "int32"), acc, tx)
+                                rank_in_bins(
+                                    total,
+                                    st[0] - T.cast(total[bins], "int32"),
+                                    acc,
+                                    tx,
+                                    bins // WARP_LANES,
+                                )
                             if acc[0] >= 0:
                                 st[2] = acc[0]
                                 st[3] = acc[1]
@@ -708,20 +676,10 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
             return reason
         if call.batch * call.vocab > 2**31 - 1:
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
-        widest = cls._widest_row(call.dtype)
+        widest = widest_row(call.dtype, cls._THREADS, cls._MAX_SLOTS)
         if call.vocab > widest:
             return f"holds a row of at most {widest} values in registers, and V = {call.vocab}"
         return None
-
-    @classmethod
-    def _widest_row(cls, dtype: torch.dtype) -> int:
-        """The longest row the launch policy holds without spilling a thread's registers."""
-        return (
-            MAX_PORTABLE_CLUSTER_BLOCKS
-            * cls._THREADS
-            * (VECTOR_ACCESS_BYTES // dtype.itemsize)
-            * cls._MAX_SLOTS
-        )
 
     def __init__(self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False):
         super().__init__(device_index=call.device.index if call.device is not None else None)
@@ -732,26 +690,7 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """As many CTAs per row as it takes to fill the device, each holding an equal run.
-
-        A cluster costs a barrier across its CTAs on every pass, so a batch that already
-        fills the device puts one CTA on each row and only a batch short of it spreads a row
-        wider; a row too long to hold in ``_MAX_SLOTS`` per thread spreads wider still. The
-        run is then exactly the row's share, since a slot no key lands in is a register the
-        passes scan for nothing.
-        """
-        vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
-        cluster = 1
-        while (
-            cluster < MAX_PORTABLE_CLUSTER_BLOCKS
-            and 2 * cluster * self.call.batch <= self.call.sm_count
-        ):
-            cluster *= 2
-        slots = -(-self.call.vocab // (cluster * self._THREADS * vec))
-        while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and slots > self._MAX_SLOTS:
-            cluster *= 2
-            slots = -(-self.call.vocab // (cluster * self._THREADS * vec))
-        return {"threads": self._THREADS, "cluster": cluster, "slots": slots}
+        return cluster_plan(self.call, self._THREADS, self._MAX_SLOTS)
 
     def forward(self, logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         self._require_cuda(logits=logits, k=k, p=p)

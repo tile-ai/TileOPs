@@ -150,7 +150,7 @@ ChainSpeculativeSamplingFwdOp:
   # normalized, and each draft token of positive draft probability, is the caller's
   # obligation.
   family: sampling
-  status: spec-only
+  status: implemented
   signature:
     forall: {B: Dim, N: Dim, V: Dim}
     inputs:
@@ -170,6 +170,8 @@ ChainSpeculativeSamplingFwdOp:
   - {B: 64, N: 1, V: 129280, label: ds-v3-mtp-n1}
   - {B: 64, N: 3, V: 129280, label: ds-v3-mtp-n3}
   - {B: 32, N: 5, V: 151936, label: qwen3-235b-eagle-n5}
+  - {B: 17, N: 8, V: 128256, label: llama-8b-b17-n8}
+  - {B: 256, N: 1, V: 32000, label: llama2-7b-b256-n1}
   roofline:
     # The work depends on where the chain stops, which the random draws decide, so both
     # counts are the cheaper of the two extreme outcomes. All accepted: N ratio tests (a

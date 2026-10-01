@@ -11,6 +11,7 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "ChainSpeculativeSamplingFwdInterface",
     "MinPMaskFwdInterface",
     "SamplingCall",
     "SamplingFromProbsFwdInterface",
@@ -127,4 +128,37 @@ class SamplingFromProbsFwdInterface(KernelInterface):
 
         Returns:
             A new ``[call.batch]`` ``int32`` tensor of drawn indices.
+        """
+
+
+class ChainSpeculativeSamplingFwdInterface(KernelInterface):
+    """Chain speculative verification: accept a prefix of a draft chain and draw the next token."""
+
+    request = SamplingCall
+
+    @abstractmethod
+    def forward(
+        self,
+        draft_probs: torch.Tensor,
+        draft_token_ids: torch.Tensor,
+        target_probs: torch.Tensor,
+        seed: torch.Tensor,
+        offset: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Verify each of the ``call.batch`` chains of ``call.num_draft`` drafts.
+
+        Args:
+            draft_probs: ``[call.batch, call.num_draft, call.vocab]``, contiguous, ``float32``
+                on ``call.device``, every row finite, non-negative and normalized.
+            draft_token_ids: ``[call.batch, call.num_draft]`` ``int32`` in ``[0, call.vocab)``,
+                each of positive draft probability, on ``call.device``.
+            target_probs: ``[call.batch, call.num_draft + 1, call.vocab]``, contiguous,
+                ``float32`` on ``call.device``, every row finite, non-negative and normalized.
+            seed: ``[1]`` ``int64`` Philox seed, on ``call.device``.
+            offset: ``[1]`` ``int64`` Philox offset, on ``call.device``.
+
+        Returns:
+            ``output_token_ids``, a new ``[call.batch, call.num_draft + 1]`` ``int32`` tensor
+            of the accepted drafts, the drawn token, then ``-1``; and ``num_accepted``, a new
+            ``[call.batch]`` ``int32`` tensor of accepted prefix lengths.
         """
