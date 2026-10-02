@@ -764,10 +764,16 @@ def _build_correct_h0_kernel(
     seqlen_dtype,
     mask_dtype,
     use_raw_h0,
+    state_v_first: bool = False,
     block_DV: int = 32,
 ):
     cp_batch_size = T.dynamic("cp_batch_size")
     raw_batch_size = T.dynamic("raw_batch_size")
+    # Under a value-major state this accumulator holds the transpose, like the recurrence's.
+    # The warmup pass writes ht_buffer and mt_buffer key-major either way, so a value-major
+    # build transposes ht_buffer as it stages it.
+    state_axes = (DV, DK) if state_v_first else (DK, DV)
+    state_rows, state_cols = (block_DV, DK) if state_v_first else (DK, block_DV)
 
     @T.macro
     def kernel_body(
@@ -785,7 +791,7 @@ def _build_correct_h0_kernel(
         h_fragment,
     ):
         h_shared = T.alloc_shared((DK, block_DV), dtype=buffer_dtype)
-        hd_shared = T.alloc_shared((DK, block_DV), dtype=buffer_dtype)
+        hd_shared = T.alloc_shared((state_rows, state_cols), dtype=buffer_dtype)
         m_shared = T.alloc_shared((DK, DK), dtype=buffer_dtype)
 
         for i_s in T.Pipelined(num_iters - 1, num_stages=2):
@@ -795,30 +801,48 @@ def _build_correct_h0_kernel(
                 ht_buffer[seq_start_idx + i_s, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
                 h_shared,
             )
-            T.copy(h_shared, h_fragment)
+            if state_v_first:
+                for iv, ik in T.Parallel(block_DV, DK):
+                    h_fragment[iv, ik] = h_shared[ik, iv]
+            else:
+                T.copy(h_shared, h_fragment)
             if fallback_mask[seq_start_idx + i_s, bh]:
                 T.copy(mt_buffer[seq_start_idx + i_s, bh, 0:DK, 0:DK], m_shared)
-                T.gemm(m_shared, hd_shared, h_fragment, clear_accum=False)
-            T.copy(
-                h_fragment,
-                cp_h0[
-                    seq_start_idx + i_s + 1,
-                    bh,
-                    0:DK,
-                    bv * block_DV : (bv + 1) * block_DV,
-                ],
-            )
+                if state_v_first:
+                    T.gemm(hd_shared, m_shared, h_fragment, transpose_B=True, clear_accum=False)
+                else:
+                    T.gemm(m_shared, hd_shared, h_fragment, clear_accum=False)
+            if state_v_first:
+                T.copy(
+                    h_fragment,
+                    cp_h0[
+                        seq_start_idx + i_s + 1,
+                        bh,
+                        bv * block_DV : (bv + 1) * block_DV,
+                        0:DK,
+                    ],
+                )
+            else:
+                T.copy(
+                    h_fragment,
+                    cp_h0[
+                        seq_start_idx + i_s + 1,
+                        bh,
+                        0:DK,
+                        bv * block_DV : (bv + 1) * block_DV,
+                    ],
+                )
 
     if use_raw_h0:
 
         @T.prim_func
         def correct_h0_kernel(
-            raw_h0: T.Tensor([raw_batch_size, H, DK, DV], dtype=res_dtype),
+            raw_h0: T.Tensor([raw_batch_size, H, *state_axes], dtype=res_dtype),
             ht_buffer: T.Tensor([cp_batch_size, H, DK, DV], dtype=buffer_dtype),
             mt_buffer: T.Tensor([cp_batch_size, H, DK, DK], dtype=buffer_dtype),
             fallback_mask: T.Tensor([cp_batch_size, H], dtype=mask_dtype),
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
-            cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
+            cp_h0: T.Tensor([cp_batch_size, H, *state_axes], dtype=res_dtype),
         ):
             with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
@@ -831,18 +855,28 @@ def _build_correct_h0_kernel(
                 seq_end_idx = seq_map_r2c[bb + 1]
                 num_iters = seq_end_idx - seq_start_idx
 
-                h_fragment = T.alloc_fragment((DK, block_DV), dtype=accum_dtype)
-                T.copy(
-                    raw_h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
-                    h_fragment,
-                )
+                h_fragment = T.alloc_fragment((state_rows, state_cols), dtype=accum_dtype)
                 # The loop never writes the partition a sequence starts on, and a
                 # fragment-to-global T.copy before it is dropped — the fragment's
                 # layout comes from how the loop consumes it. Hence a plain store.
-                for ik, iv in T.Parallel(DK, block_DV):
-                    cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = raw_h0[
-                        bb, bh, ik, bv * block_DV + iv
-                    ]
+                if state_v_first:
+                    T.copy(
+                        raw_h0[bb, bh, bv * block_DV : (bv + 1) * block_DV, 0:DK],
+                        h_fragment,
+                    )
+                    for iv, ik in T.Parallel(block_DV, DK):
+                        cp_h0[seq_start_idx, bh, bv * block_DV + iv, ik] = raw_h0[
+                            bb, bh, bv * block_DV + iv, ik
+                        ]
+                else:
+                    T.copy(
+                        raw_h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
+                        h_fragment,
+                    )
+                    for ik, iv in T.Parallel(DK, block_DV):
+                        cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = raw_h0[
+                            bb, bh, ik, bv * block_DV + iv
+                        ]
 
                 kernel_body(
                     bb,
@@ -867,7 +901,7 @@ def _build_correct_h0_kernel(
             mt_buffer: T.Tensor([cp_batch_size, H, DK, DK], dtype=buffer_dtype),
             fallback_mask: T.Tensor([cp_batch_size, H], dtype=mask_dtype),
             seq_map_r2c: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
-            cp_h0: T.Tensor([cp_batch_size, H, DK, DV], dtype=res_dtype),
+            cp_h0: T.Tensor([cp_batch_size, H, *state_axes], dtype=res_dtype),
         ):
             with T.Kernel(T.ceildiv(DV, block_DV) * H * raw_batch_size, threads=128) as (bbhv,):
                 bbh, bv = (
@@ -880,11 +914,15 @@ def _build_correct_h0_kernel(
                 seq_end_idx = seq_map_r2c[bb + 1]
                 num_iters = seq_end_idx - seq_start_idx
 
-                h_fragment = T.alloc_fragment((DK, block_DV), dtype=accum_dtype)
+                h_fragment = T.alloc_fragment((state_rows, state_cols), dtype=accum_dtype)
                 T.clear(h_fragment)
                 # See the raw_h0 branch.
-                for ik, iv in T.Parallel(DK, block_DV):
-                    cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = 0.0
+                if state_v_first:
+                    for iv, ik in T.Parallel(block_DV, DK):
+                        cp_h0[seq_start_idx, bh, bv * block_DV + iv, ik] = 0.0
+                else:
+                    for ik, iv in T.Parallel(DK, block_DV):
+                        cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = 0.0
 
                 kernel_body(
                     bb,
@@ -910,6 +948,7 @@ def correct_initial_states(
     mt_buffer: torch.Tensor,  # [cp_batch_size, num_v_heads, k_head_dim, k_head_dim]
     fallback_mask: torch.Tensor,  # [cp_batch_size, num_v_heads]
     seq_map_r2c: torch.Tensor,  # [raw_batch_size + 1]
+    state_v_first: bool = False,
 ):
     cp_batch_size = fallback_mask.shape[0]
     _, num_heads, k_head_dim, v_head_dim = ht_buffer.shape
@@ -932,9 +971,11 @@ def correct_initial_states(
         seqlen_dtype=seq_map_r2c.dtype,
         mask_dtype=fallback_mask.dtype,
         use_raw_h0=use_raw_h0,
+        state_v_first=state_v_first,
     )
+    state_axes = (v_head_dim, k_head_dim) if state_v_first else (k_head_dim, v_head_dim)
     cp_h0 = torch.empty(
-        (cp_batch_size, num_heads, k_head_dim, v_head_dim),
+        (cp_batch_size, num_heads, *state_axes),
         dtype=res_dtype,
         device=ht_buffer.device,
     )

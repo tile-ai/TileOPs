@@ -44,11 +44,10 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
-        packed, with a row that is not a whole chunk, with grouped value heads, and with
-        the Q/K normalization, the gate and the beta transform taken in kernel.
+        packed, with a row that is not a whole chunk, with grouped value heads, with the
+        state key-major or value-major, and with the Q/K normalization, the gate and the
+        beta transform taken in kernel.
         """
-        if call.state_v_first:
-            return "does not support state_v_first=True"
         if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
             return "does not support K and V other than matching 64 or 128"
         if call.seq_len < 1 or (call.seq_len == 1 and not call.varlen):
@@ -68,6 +67,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
+            state_v_first=call.state_v_first,
             l2norm=call.l2norm,
             gate_in_kernel=call.gate_in_kernel,
             beta_sigmoid=call.beta_sigmoid,
@@ -87,6 +87,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        state_v_first: bool = False,
         l2norm: bool = False,
         gate_in_kernel: bool = False,
         beta_sigmoid: bool = False,
@@ -107,6 +108,9 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         self.dim = dim
         self.scale = scale
         self.dtype = dtype
+        # The layout decides which axis the recurrence accumulates along, so it belongs to
+        # the build identity.
+        self.state_v_first = state_v_first
         # Each transform the op left to the kernel changes what every stage is built to
         # read, so all four belong to the build identity rather than to a launch argument.
         self.l2norm = l2norm
@@ -257,6 +261,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             mt_buffer=mt,
             fallback_mask=fallback_mask,
             seq_map_r2c=seq_map_r2c_t,
+            state_v_first=self.state_v_first,
         )
         return cp_h0, cp_cu_seqlens_t, seq_map_c2r_t, raw_cu_seqlens
 
@@ -350,6 +355,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             chunk_size=chunk_size,
             state_head_first=False,
             chunks_per_sequence=0,
+            state_v_first=self.state_v_first,
             k_rnorm=k_rnorm,
             l2norm=self.l2norm,
             beta_sigmoid=self.beta_sigmoid,

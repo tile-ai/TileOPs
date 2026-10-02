@@ -349,6 +349,11 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
             "gated_deltanet_dense_prefill",
             id="prefill-input-transforms",
         ),
+        pytest.param(
+            _gated_call(64, True, state_v_first=True),
+            "gated_deltanet_dense_prefill",
+            id="prefill-value-major-state",
+        ),
     ],
 )
 def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None:
@@ -364,9 +369,6 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
             _gated_call(1, True, dim_k=256, dim_v=256),
             "K and V other than matching 64 or 128",
             id="decode-wide-state",
-        ),
-        pytest.param(
-            _gated_call(64, False, state_v_first=True), "state_v_first", id="prefill-state-v-first"
         ),
     ],
 )

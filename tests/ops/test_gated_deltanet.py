@@ -47,6 +47,44 @@ def test_gated_deltanet_dense_prefill_continues_an_initial_state() -> None:
 
 
 @pytest.mark.sm90
+def test_gated_deltanet_dense_prefill_carries_a_value_major_state() -> None:
+    """The caller's state is ``[N, HV, V, K]`` at both ends of the recurrence."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1, 64, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
+    )
+    op = GatedDeltaNetFwdOp(state_v_first=True)
+    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_gated_deltanet_partitioned_prefill_carries_a_value_major_state() -> None:
+    """The partition correction reads and writes the caller's layout, not the recurrence's."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1, 512, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
+    )
+    # 8 chunks split into partitions of 4.
+    kernel = GatedDeltaNetDensePrefillFwdKernel(
+        1,
+        2,
+        2,
+        512,
+        1,
+        False,
+        128,
+        128**-0.5,
+        torch.bfloat16,
+        state_v_first=True,
+        config={"max_local_chunks": 4},
+    )
+    q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
+    # A gentle decay, so the state carried across partitions still reaches the output.
+    test.check(kernel, q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
 def test_gated_deltanet_dense_prefill_runs_a_64_wide_state() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 64, 2, 64, torch.bfloat16)
