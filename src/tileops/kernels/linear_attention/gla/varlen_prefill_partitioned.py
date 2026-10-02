@@ -105,8 +105,7 @@ def gla_varlen_local_state_kernel(
                 part = bx // num_slices
                 k_offset = (bx % num_slices) // num_v_partitions * dim_k_part
                 v_offset = (bx % num_slices) % num_v_partitions * dim_v_part
-                # The gate a chunk is reached at is one vector per key channel, so only the
-                # first value slice of a key slice writes it.
+                # ``chunk_reach`` has no value axis: one value slice of a key slice writes it.
                 leads = (bx % num_slices) % num_v_partitions == 0
 
                 part_cum = T.alloc_shared([num_seqs + 1], "int32")
@@ -114,14 +113,14 @@ def gla_varlen_local_state_kernel(
                 hi = T.alloc_local([1], "int32")
                 seq = T.alloc_local([1], "int32")
                 first = T.alloc_local([1], "int32")
-                # The state is the GEMM's own accumulator: decaying it and adding the
-                # chunk's update in place keeps it off shared memory between chunks.
+                # The state is the GEMM's own accumulator, so no chunk lands it in shared
+                # memory.
                 state = T.alloc_fragment([dim_k_part, dim_v_part], "float32")
                 reach = T.alloc_fragment([dim_k_part], "float32")
                 keys = T.alloc_shared([CHUNK_TOKENS, dim_k_part], dtype)
                 values = T.alloc_shared([CHUNK_TOKENS, dim_v_part], dtype)
                 gate = T.alloc_shared([CHUNK_TOKENS, dim_k_part], "float32")
-                # The partition's last chunk stages into its own tiles: the pipelined loop
+                # The partition's last chunk needs its own tiles: the pipelined loop
                 # multi-buffers the ones it reads, and one buffer cannot carry both layouts.
                 tail_keys = T.alloc_shared([CHUNK_TOKENS, dim_k_part], dtype)
                 tail_values = T.alloc_shared([CHUNK_TOKENS, dim_v_part], dtype)
@@ -135,8 +134,8 @@ def gla_varlen_local_state_kernel(
                     part_tiling.decode(part, part_cum, lo, hi, seq, first)
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
-                    # The chunk this partition starts at, counted over the sequences before
-                    # it so the block holds one prefix array rather than two.
+                    # The global index of this partition's first chunk, counted here rather
+                    # than from a second prefix array the block would also hold.
                     chunks[0] = first[0] // CHUNK_TOKENS
                     for g in T.serial(num_seqs):
                         if g < seq[0]:
@@ -147,11 +146,10 @@ def gla_varlen_local_state_kernel(
                     T.fill(state, 0.0)
                     T.fill(reach, 0.0)
 
-                    # The chunks that lie whole inside both the partition and the sequence
-                    # are the pipelined walk, and the body holds no branch, which is what
-                    # lets the loads for the chunks ahead issue while this one's product
-                    # runs. The trip count comes from the offsets rather than from
-                    # a prefix array: a shared-memory read cannot stand in a loop extent.
+                    # Only the chunks lying whole inside both the partition and the sequence
+                    # enter the pipelined loop, so its body holds no branch. The trip count
+                    # comes from the offsets: a shared-memory read cannot stand in a loop
+                    # extent.
                     whole = T.min(end - start, partition_chunks * CHUNK_TOKENS) // CHUNK_TOKENS
                     for i_c in T.Pipelined(whole, num_stages=num_stages):
                         token = start + i_c * CHUNK_TOKENS
@@ -192,9 +190,6 @@ def gla_varlen_local_state_kernel(
                             gate,
                             disable_tma=True,
                         )
-                        # The chunk decays the state by its own last accumulated gate, then adds
-                        # the keys it decays by the distance back to that row, contracted with
-                        # the values.
                         for d in T.Parallel(dim_k_part):
                             last[d] = gate[CHUNK_TOKENS - 1, d]
                         for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
@@ -215,9 +210,9 @@ def gla_varlen_local_state_kernel(
                             policy=T.GemmWarpPolicy.FullRow,
                         )
 
-                    # The sequence's last chunk, where a token past the end reads as a zero key
-                    # and value and repeats the last accumulated gate. It falls in this partition
-                    # only while the partition has chunks left.
+                    # The sequence's last chunk, which falls in this partition only while the
+                    # partition has chunks left. A token past the end reads a zero key and
+                    # value and repeats the last accumulated gate.
                     if whole < partition_chunks and start + whole * CHUNK_TOKENS < end:
                         token = start + whole * CHUNK_TOKENS
                         for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
@@ -335,8 +330,8 @@ def gla_varlen_scan_kernel(
                     ],
                     state,
                 )
-                # Only the running state carries from one partition to the next, so the
-                # summaries ahead are loaded while this one is composed.
+                # Only the running state carries between partitions, so the summaries ahead
+                # load while this one is composed.
                 for i_p in T.Pipelined(count, num_stages=num_stages):
                     for i_k, i_v in T.Parallel(block_k, block_v):
                         start_state[base + i_p, i_h, k_offset + i_k, v_offset + i_v] = state[
@@ -425,8 +420,8 @@ def gla_varlen_partitioned_output_kernel(
                     tiling.decode(chunk, tile_cum, lo, hi, seq, first)
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
-                    # The partition this chunk lies in, counted over the sequences before it
-                    # so the block holds one prefix array rather than two.
+                    # The partition this chunk lies in, counted here rather than from a second
+                    # prefix array the block would also hold.
                     partitions[0] = first[0] // partition_tokens
                     for g in T.serial(num_seqs):
                         if g < seq[0]:
@@ -434,9 +429,8 @@ def gla_varlen_partitioned_output_kernel(
                             partitions[0] += (size + partition_tokens - 1) // partition_tokens
                     part = partitions[0]
 
-                    # The query and its gate are read into the gated query and not staged:
-                    # each is read once, and the two tiles they would occupy are what holds
-                    # this block's shared footprint to one that keeps three blocks resident.
+                    # The query and its gate are each read once, so neither is staged: the
+                    # two tiles they would occupy bound this block's shared footprint.
                     for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
                         q_gated[i, d] = T.cast(
                             T.cast(q[0, T.min(start + i, end - 1), i_h, d], "float32")
@@ -483,32 +477,27 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
     supported_archs = [90]
     preferred_over = frozenset({"gla_varlen_prefill"})
 
-    # Threads per block. The causal product runs two warps: its GEMM tiles a 16-wide
-    # operand, which a wider block cannot partition into whole warps. The gate accumulation
-    # and the output contractions run eight, which is what their full-width tiles fill, and
-    # the state walk and the scan run four, which is what the state tile's key extent splits
-    # into whole GEMM tiles. Re-fit by timing the packed manifest rows at 64, 128 and 256.
+    # Threads per block. The causal product's GEMM tiles a 16-wide operand, which more than
+    # two warps cannot split into whole tiles; the walk's key extent bounds its block the same
+    # way. Re-fit by timing the packed manifest rows at 64, 128 and 256.
     _causal_threads = 64
     _state_threads = 128
     _wide_threads = 256
 
-    # Chunks the walk inside a partition prefetches ahead. The walk is serial, so without
-    # them every chunk's product waits on its own loads. Re-fit with the packed manifest
-    # rows over 2 to 6; more stages cost shared memory the state tile also needs.
+    # Chunks the walk inside a partition prefetches ahead. Re-fit with the packed manifest
+    # rows over 2 to 6; a stage costs shared memory the state tile also needs.
     _state_stages = 2
 
-    # Key and value channels of the state tile one block of the walk holds. The tile is the
-    # GEMM's accumulator, so the key extent bounds its register cost and the warps it can be
-    # split over; a value slice re-reads the keys and the float32 gate, so the value extent
-    # stays as wide as the head. Re-fit by timing the packed manifest rows at 16, 32 and 64
-    # for the key extent and 64 and 128 for the value one.
+    # Key and value channels of the state tile one block of the walk holds. A key slice reads
+    # only its own key channels and its own slice of the float32 gate; a value slice reads the
+    # keys and the gate again, which is why the value extent stays as wide as the head. Re-fit
+    # by timing the packed manifest rows at 16, 32 and 64 against 64 and 128.
     _state_tile_k = 32
     _state_tile_v = 128
 
-    # State tile one block of the scan holds, and the partitions it prefetches. The scan's
-    # chain is dependent and its loads are not, so the prefetch is what keeps it off the
-    # critical path; the tile is what gives a call with few sequences and heads enough
-    # blocks. Re-fit by timing the packed manifest rows.
+    # State tile one block of the scan holds, and the partitions it prefetches. The tile is
+    # what gives a call with few sequences and heads enough blocks. Re-fit by timing the
+    # packed manifest rows.
     _scan_tile_k = 32
     _scan_tile_v = 32
     _scan_stages = 2
@@ -517,9 +506,8 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
     # summaries and so less traffic; a shorter one gives the device more independent blocks.
     _partition_lengths = (16, 8, 4, 2)
 
-    # Blocks per multiprocessor a walk is sized to launch, both for choosing the partition
-    # length and for reading whether a per-sequence walk would have to oversubscribe the
-    # device. Re-fit by timing the packed manifest rows over the lengths above.
+    # Blocks per multiprocessor a walk is sized to launch. Re-fit by timing the packed
+    # manifest rows over the lengths above.
     _blocks_per_sm = 1
 
     @classmethod
@@ -547,10 +535,6 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        # The state tile is split along its key axis alone. A key slice reads only its own
-        # key channels and its own slice of the float32 gate and re-reads nothing, while a
-        # value slice reads the keys and the gate again; the parallelism a value slice would
-        # buy comes from the partitions, which cost no re-read at all.
         k_partitions = max(1, call.dim_k // cls._state_tile_k)
         v_partitions = max(1, call.dim_v // cls._state_tile_v)
         # The longest partition whose blocks still cover the device.
