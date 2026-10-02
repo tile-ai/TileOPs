@@ -12,6 +12,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+    L2NORM_EPS,
     prepare_chunk_offsets,
     step_size,
 )
@@ -150,8 +151,6 @@ def _prefill_blocksolve_A_bthd_tl(
     block_k = 64
     accum_dtype = "float32"
     solve_dtype = dtype
-    # What the comparator's L2 normalization adds under the square root.
-    l2norm_eps = 1e-6
     # A build that does not normalize never writes this tensor, and the host hands it one
     # token so the allocation carries no cost.
     rnorm_tokens = total_tokens if l2norm else 1
@@ -310,10 +309,10 @@ def _prefill_blocksolve_A_bthd_tl(
                     # product of the two rows' reciprocal norms.
                     for i, j in T.Parallel(block_c, block_c):
                         if i == j:
-                            rnorm_s[i] = T.rsqrt(G00[i, j] + l2norm_eps)
-                            rnorm_s[block_c + i] = T.rsqrt(G11[i, j] + l2norm_eps)
-                            rnorm_s[2 * block_c + i] = T.rsqrt(G22[i, j] + l2norm_eps)
-                            rnorm_s[3 * block_c + i] = T.rsqrt(G33[i, j] + l2norm_eps)
+                            rnorm_s[i] = T.rsqrt(G00[i, j] + L2NORM_EPS)
+                            rnorm_s[block_c + i] = T.rsqrt(G11[i, j] + L2NORM_EPS)
+                            rnorm_s[2 * block_c + i] = T.rsqrt(G22[i, j] + L2NORM_EPS)
+                            rnorm_s[3 * block_c + i] = T.rsqrt(G33[i, j] + L2NORM_EPS)
                     T.sync_threads()
                     # The two later passes stage this key again and cannot reach its Gram
                     # matrix, so the norm they would each reduce for themselves is handed

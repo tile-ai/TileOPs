@@ -122,6 +122,12 @@ def prepare_chunk_offsets(
     return chunk_offsets
 
 
+# What the comparator's L2 normalization adds under the square root before taking the
+# reciprocal, from `fla.modules.l2norm.l2norm_fwd`. The block solve and the forward both
+# form a reciprocal norm and must add the same thing.
+L2NORM_EPS: float = 1e-6
+
+
 def step_size(raw, beta_sigmoid: bool, allow_neg_eigval: bool):
     """The delta-rule step size, from what the op handed the kernel.
 

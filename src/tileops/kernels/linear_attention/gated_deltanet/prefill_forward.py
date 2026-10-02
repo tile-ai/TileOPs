@@ -11,6 +11,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+    L2NORM_EPS,
     prepare_chunk_offsets,
     step_size,
 )
@@ -61,10 +62,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     # A build that does not normalize never reads this tensor, and the host hands it one
     # token so the allocation carries no cost.
     rnorm_tokens = num_tokens if l2norm else 1
-    # What the comparator's L2 normalization adds under the square root.
-    l2norm_eps = 1e-6
-    # Key columns one pass of the row reduction holds. Narrower than the key keeps the
-    # square off the register budget the warp group's own fragments already fill.
+    # Key columns one pass of the query's row reduction holds, which bounds the squares
+    # it keeps in registers beside the warp group's own fragments. Re-fit it by sweeping
+    # it against the Gated DeltaNet prefill benchmark's `prefill-raw-4k` row; 16, 32, 64
+    # and the full key width all measured within 0.3 us of each other there.
     l2norm_reduce_width = 32
 
     if is_varlen:
@@ -280,7 +281,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                                 square_fragment[j_s, j_k] *= square_fragment[j_s, j_k]
                             T.reduce_sum(square_fragment, sumsq_fragment, dim=1, clear=False)
                         for j_s in T.Parallel(block_S):
-                            q_rnorm_shared[j_s] = T.rsqrt(sumsq_fragment[j_s] + l2norm_eps)
+                            q_rnorm_shared[j_s] = T.rsqrt(sumsq_fragment[j_s] + L2NORM_EPS)
                     # Precompute g, g_last/g
                     for j_s in T.Parallel(block_S):
                         g_exp_shared[j_s] = T.exp2(g_shared[i_s % 2, j_s] * LOG2E)
