@@ -32,6 +32,7 @@ from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import IMPLEMENTATIONS, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops._signature_codegen import check_result
 from tileops.ops.compile_boundary import register_instance
 
 # Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
@@ -115,6 +116,8 @@ class Op(ABC):
     _given_kernel_map: Optional[dict[str, Kernel]] = None
     # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_built_entries``.
     _delegates: dict[str, dict[Hashable, "Op"]]
+    # Which stage holds each sub-op, by its ``id``, grown as ``delegate_for`` builds them.
+    _delegate_stages: dict[int, str]
     dtype: Optional[torch.dtype] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
     # that offer one, and what ``autotune()`` sets; a factory reads it when it
@@ -611,16 +614,24 @@ class Op(ABC):
         }
         return inputs, writes
 
-    def _check_signature(
+    def _named_tensors(
         self, inputs: "tuple[torch.Tensor | None, ...]", writes: "dict[str, torch.Tensor]"
-    ) -> object:
+    ) -> "dict[str, torch.Tensor | None]":
+        """Every tensor a call passes, by signature name: what the generated checks read.
+
+        One call builds it once and hands the same mapping to the check and to the result
+        check; the two see identical arguments by construction.
+        """
+        sig = type(self)._signature.sig
+        return {**dict(zip(sig.inputs, inputs, strict=True)), **writes}
+
+    def _check_signature(self, tensors: "dict[str, torch.Tensor | None]") -> object:
         """Run the checks generated from the entry's signature."""
-        plan = type(self)._signature
         self._open_call()
-        return plan.check(self, {**dict(zip(plan.sig.inputs, inputs, strict=True)), **writes})
+        return type(self)._signature.check(self, tensors)
 
     def _complete_signature(
-        self, call: object, result: object, inputs: tuple, writes: "dict[str, torch.Tensor]"
+        self, call: object, result: object, tensors: "dict[str, torch.Tensor | None]"
     ) -> None:
         """Hold what the implementation returned to the checked call, then keep the call.
 
@@ -628,14 +639,12 @@ class Op(ABC):
         """
         if call is None:
             return
-        from tileops.ops._signature_codegen import check_result
-
         sig = type(self)._signature.sig
         check_result(
             sig,
             call,
             result,
-            {**dict(zip(sig.inputs, inputs, strict=True)), **writes},
+            tensors,
             tuple(getattr(self, t, None) for t in sig.ctor_tensors),
         )
         if torch.compiler.is_compiling():
@@ -653,20 +662,31 @@ class Op(ABC):
         if calls and calls[-1][0] is self:
             calls.pop()
 
+    @classmethod
+    @functools.cache
+    def _no_stages(cls) -> "Mapping[str, tuple]":
+        """The stage mapping of a call that collected nothing: every declared stage, empty."""
+        return MappingProxyType({stage: () for stage in cls.delegate_types})
+
     def _keep_call(self, call: object) -> None:
         """Keep *call* as the last completed one, with the checked calls its sub-ops completed
         during it, by stage and in completion order (docs/design/roofline.md §2.2), and report
         it to the call this one ran inside."""
         calls = _open_calls()
         collected = calls.pop()[1] if calls and calls[-1][0] is self else []
-        held = getattr(self, "_delegates", None) or {}
-        stage_of = {id(op): stage for stage, ops in held.items() for op in ops.values()}
-        stages = {stage: [] for stage in self.delegate_types}
-        for op, done in collected:
-            if id(op) in stage_of:
-                stages[stage_of[id(op)]].append(done)
-        call = dataclasses.replace(call, stages={k: tuple(v) for k, v in stages.items()})
-        self._signature_call = call
+        if collected:
+            stage_of = getattr(self, "_delegate_stages", None) or {}
+            stages = {stage: [] for stage in self.delegate_types}
+            for op, done in collected:
+                stage = stage_of.get(id(op))
+                if stage is not None:
+                    stages[stage].append(done)
+            stages = {k: tuple(v) for k, v in stages.items()}
+        else:
+            # An op that holds no sub-op, or whose sub-ops completed no call, maps every
+            # declared stage to the same empty tuple on every call.
+            stages = self._no_stages()
+        self._signature_call = call = call.with_stages(stages)
         if calls:
             calls[-1][1].append((self, call))
 
@@ -701,7 +721,8 @@ class Op(ABC):
         """
         settled_here = self._builder is _UNRESOLVED
         try:
-            call = self._check_signature(inputs, writes)
+            tensors = self._named_tensors(inputs, writes)
+            call = self._check_signature(tensors)
             # An empty call runs no implementation, so none has to be available for it.
             empty = self._writes_nothing(call)
             if settled_here and not empty:
@@ -712,7 +733,7 @@ class Op(ABC):
                 result = self._call_target(inputs, writes, _written, _execution)
             else:
                 result = self._eager_forward(*inputs, **writes, **(_execution or {}))
-            self._complete_signature(call, result, inputs, writes)
+            self._complete_signature(call, result, tensors)
             return result
         except Exception:
             self._drop_call()
@@ -848,7 +869,7 @@ class Op(ABC):
         held = getattr(self, "_delegates", None)
         if held is None:
             held = {}
-            self._delegates = held
+            self._delegates, self._delegate_stages = held, {}
         entries = held.setdefault(stage, {})
         if key not in entries:
             entries[key] = (
@@ -858,6 +879,8 @@ class Op(ABC):
                     **params, target=self.target, kernel_map=self._given_kernel_map, tune=self.tune
                 )
             )
+            # Which stage holds each sub-op, extended here rather than rebuilt per call.
+            self._delegate_stages[id(entries[key])] = stage
         return entries[key]
 
     def kernel_delegates(self) -> Sequence["Op"]:
@@ -1023,11 +1046,12 @@ class Op(ABC):
         """
         settled_here = self._builder is _UNRESOLVED and not self.compile_op_names
         try:
-            call, bound = None, None
+            call, bound, tensors = None, None, None
             # An op without a compile boundary claims no traced contract.
             if not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
-                call = self._check_signature(*bound)
+                tensors = self._named_tensors(*bound)
+                call = self._check_signature(tensors)
                 if settled_here and not self._writes_nothing(call):
                     # The generated checks decide the call device, `device: cpu` tensors aside.
                     self._resolve_builder(args, kwargs, call.device)
@@ -1041,7 +1065,7 @@ class Op(ABC):
             else:
                 result = self.forward(*args, **kwargs)
             if call is not None:
-                self._complete_signature(call, result, *bound)
+                self._complete_signature(call, result, tensors)
         except Exception:
             self._drop_call()
             if settled_here:

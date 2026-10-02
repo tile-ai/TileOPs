@@ -422,6 +422,41 @@ def test_an_output_present_with_out_has_its_own_operator():
     assert aux.tolist() == [2, 2]
 
 
+def test_one_instance_takes_its_own_branch_per_presence():
+    """An effect branch is a function of what the call passed, not of the instance. One
+    instance that first omits two optional inputs, then passes them, takes the branch that
+    writes one and emits the output the other gates, and takes the first branch again when
+    the next call omits them."""
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {
+            "x": {"dtype": "T", "shape": "[M]"},
+            "bias": {"dtype": "T", "shape": "[M]", "optional": True},
+            "acc": {"dtype": "T", "shape": "[M]", "optional": True, "mutated": "present(acc)"},
+        },
+        "outputs": {
+            "y": {"dtype": "T", "shape": "[M]"},
+            "aux": {"dtype": "T", "shape": "[M]", "nullable": "present(bias)"},
+        },
+    }
+
+    def eager(self, x, bias=None, acc=None):
+        if acc is not None:
+            acc.add_(x)
+        return x + (1 if bias is None else bias), (None if bias is None else bias + 1)
+
+    op = _probe("ProbeBranchPerPresenceFwdOp", signature, eager, boundary=True)()
+    x = torch.ones(2, dtype=torch.float16)
+    bias = torch.full((2,), 3, dtype=torch.float16)
+    acc = torch.zeros(2, dtype=torch.float16)
+    y, aux = op(x)
+    assert y.tolist() == [2, 2] and aux is None and acc.tolist() == [0, 0]
+    y, aux = op(x, bias, acc)
+    assert y.tolist() == [4, 4] and aux.tolist() == [4, 4] and acc.tolist() == [1, 1]
+    y, aux = op(x)
+    assert y.tolist() == [2, 2] and aux is None and acc.tolist() == [1, 1]
+
+
 def test_a_cpu_construction_tensor_takes_its_declared_dtype():
     signature = {
         **_VEC,
