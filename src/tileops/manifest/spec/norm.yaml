@@ -153,6 +153,49 @@ FusedAddRMSNormFwdOp:
   roofline:
     flops: "5 * prod(B) * N"
 
+FusedAddRmsNormPerTokenQuantFwdOp:
+  # Residual add, RMSNorm and dynamic per-token quantization in one pass. `residual_out`
+  # is the sum before normalization, in the input dtype.
+  family: norm
+  status: spec-only
+  signature:
+    forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
+    params:
+      quant_dtype: {type: "float8_e4m3fn | int8", default: float8_e4m3fn}
+      eps: {type: float, default: 1.0e-6}
+      scale_ub: {type: "float | None", default: null}
+    inputs:
+      x: {dtype: T, shape: "[*B, N]"}
+      residual: {dtype: T, shape: "[*B, N]"}
+      weight: {dtype: T, shape: "[N]"}
+    outputs:
+      q: {dtype: quant_dtype, shape: "[*B, N]"}
+      # amax(|normalized|) over the row, divided by the quant dtype's max magnitude, and
+      # clamped above by `scale_ub` when the caller gives one.
+      scale: {dtype: float32, shape: "[*B, 1]"}
+      residual_out: {dtype: T, shape: "[*B, N]"}
+    shape_rules:
+    - "N > 0"
+    - "eps > 0"
+    - "not present(scale_ub) or scale_ub.value > 0"
+  workloads:
+  - {B: [4096], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill}
+  - {B: [4096], N: 4096, quant_dtype: int8, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill-i8}
+  - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode-b1}
+  - {B: [64], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode-b64}
+  - {B: [256], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode-b256}
+  - {B: [4096], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-prefill}
+  - {B: [4096], N: 8192, quant_dtype: int8, dtype_cases: [{T: float16}], label: llama-70b-prefill-i8}
+  - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b1}
+  - {B: [64], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b64}
+  - {B: [256], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b256}
+  - {B: [4096], N: 4096, scale_ub: 1200.0, dtype_cases: [{T: bfloat16}], label: clamped-amax}
+  roofline:
+    # The residual add, the square, the row sum, the reciprocal root and the weight
+    # multiply; then the quantizer, which the INT8 family counts at one more FLOP per
+    # element than the FP8 one for its explicit clamp.
+    flops: "prod(B) * N * (9 + (1 if quant_dtype == 'int8' else 0))"
+
 BatchNormFwdOp:
   ref_api: torch.nn.functional.batch_norm
   family: norm
