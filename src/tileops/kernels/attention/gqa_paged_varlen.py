@@ -28,7 +28,7 @@ from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin
@@ -57,11 +57,9 @@ def _make_tile_parts(
     Both run the same scan over one row tile; they differ only in which part of the key
     range one CTA walks, so the load, the mask and the softmax step are built once.
     """
-    # A tile starts at a multiple of block_N, so a page at least that long holds one
-    # whole. That is the only case a contiguous copy serves: a tile spanning several
-    # pages lands on rows the table scatters, and copying each page into its slice of the
-    # tile costs more per page than gathering the whole tile by row. FlashAttention-3
-    # draws the same line, taking its TMA path only for page_size % kBlockN == 0.
+    # A tile starts at a multiple of block_N, so only a page at least that long holds one
+    # whole, and only then is it contiguous. A tile spanning several pages is gathered row by
+    # row, not copied per page: FlashAttention-3 draws the same line at page_size % kBlockN.
     one_page_holds_tile = page_size % block_N == 0
 
     @T.macro
@@ -136,8 +134,8 @@ def _gqa_paged_varlen_kernel(
     """Build the paged packed-query attention program for one fixed set of call facts."""
     accum_dtype = "float"
     group = heads // heads_kv
-    # A zero score scale makes every score zero. The scores are zeroed before the mask and a
-    # unit exp2 factor applied, so a masked key stays at -inf instead of -inf * 0.
+    # Under a zero score scale the scores are zeroed before the mask and the exp2 factor is
+    # one, so a masked key stays at -inf rather than becoming -inf * 0.
     zero_scores = softcap <= 0.0 and sm_scale == 0.0
     softmax_scale = LOG2E if softcap > 0.0 or zero_scores else sm_scale * LOG2E
 
@@ -219,8 +217,7 @@ def _gqa_paged_varlen_kernel(
                     q_len = cu_seqlens_q[request + 1] - q_start
                     kv_len = cache_seqlens[request]
                     rows = q_len * group
-                    # Queries sit at the end of the cache, so position i of the request is
-                    # key index i + kv_len - q_len.
+                    # Queries sit at the end of the cache: position i is key kv_len - q_len + i.
                     align = kv_len - q_len
 
                     for i, d in T.Parallel(block_M, dim):
@@ -279,8 +276,7 @@ def _gqa_paged_varlen_kernel(
                         rescale(acc_o, scores_scale)
                         T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-                    # One reciprocal per row: a per-element divide by a row scalar is read
-                    # as a divide by a varying value.
+                    # One reciprocal a row: a per-element divide by a row scalar is not.
                     for i in T.Parallel(block_M):
                         row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
                     for i, d in T.Parallel(block_M, dim):
@@ -508,7 +504,6 @@ def _gqa_paged_varlen_split_kernel(
                                     o_accum[d] += partial[bx, by, k, i, d] * w
                             r = row0 + i
                             for d in T.Parallel(dim):
-                                # A row no chunk saw a key for outputs zeros.
                                 Output[q_start + r // group, by * group + r % group, d] = (
                                     T.if_then_else(
                                         lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
@@ -629,6 +624,8 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.rows_fill_tile = rows_fill_tile
+        # Read once: reading it per call costs more than the kernel does on a short row.
+        self._processors = torch.cuda.get_device_properties(device_index).multi_processor_count
         self._builder_args = (
             batch,
             heads,
@@ -669,10 +666,24 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         page = self.page_size
         held = [n for n in (128, 64, 48, 32) if page % n == 0]
         block_n = held[0] if held else 64
+        # A key tile below one WGMMA's rows leaves the score accumulator small enough that
+        # the wide query tile still compiles to two consumer warpgroups, which is half again
+        # the warp slots; above it the tile gets one warpgroup and is only padding.
+        wide = self.rows_fill_tile or block_n < WGMMA_ROWS
         tile = (
-            {"block_M": 128, "block_N": block_n, "num_stages": 3, "threads": 256}
-            if self.rows_fill_tile
-            else {"block_M": 64, "block_N": block_n, "num_stages": 2, "threads": 128}
+            {
+                "block_M": 2 * WGMMA_ROWS,
+                "block_N": block_n,
+                "num_stages": 3,
+                "threads": 2 * WARPGROUP_THREADS,
+            }
+            if wide
+            else {
+                "block_M": WGMMA_ROWS,
+                "block_N": block_n,
+                "num_stages": 2,
+                "threads": WARPGROUP_THREADS,
+            }
         )
         # Zero reads the chunk count from the launch geometry; a positive value pins it.
         tile["num_split"] = 0
@@ -692,7 +703,7 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # A warpgroup owns 64 rows of the score tile, so 256 threads need 128 of them.
+        # A warpgroup owns WGMMA_ROWS rows of the score tile, so a second one needs twice that.
         cap = get_shared_memory_optin(self.device_index)
         page = self.page_size
         configs = [
@@ -703,8 +714,11 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
                 "threads": threads,
                 "num_split": 0,
             }
-            for block_m, threads in ((64, 128), (128, 128), (128, 256))
-            # A key tile the page neither holds nor fills is read row by row.
+            for block_m, threads in (
+                (WGMMA_ROWS, WARPGROUP_THREADS),
+                (2 * WGMMA_ROWS, WARPGROUP_THREADS),
+                (2 * WGMMA_ROWS, 2 * WARPGROUP_THREADS),
+            )
             for block_n in (16, 32, 48, 64, 96, 128)
             if block_n % 16 == 0 and (page % block_n == 0 or block_n % page == 0 or block_n == 64)
             for stages in (1, 2, 3, 4)
@@ -720,8 +734,8 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         """
         batch, width, page_size = self.batch, self.max_pages_per_req, self.page_size
         heads, heads_kv, dim, dtype = self.heads, self.heads_kv, self.dim, self.dtype
-        # One row tile of query tokens per request, against the cache its table spans. A
-        # synthetic tuning point, not a claim that one config is best for every packing.
+        # One row tile of query tokens a request, against the cache its table spans: a
+        # synthetic tuning point, not a claim about any packing.
         tokens_per_request = 8
         cache_len = width * page_size
 
@@ -791,7 +805,7 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         are fewer than the multiprocessors, one of each loading form.
         """
         resident = tiles * self.heads_kv
-        processors = torch.cuda.get_device_properties(self.device_index).multi_processor_count
+        processors = self._processors
         if self.page_size % block_n == 0:
             return max(1, processors // resident)
         return max(1, -(-processors // resident))
