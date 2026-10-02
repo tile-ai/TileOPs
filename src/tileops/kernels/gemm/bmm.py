@@ -36,11 +36,11 @@ __all__ = [
 
 @functools.lru_cache(maxsize=64)
 def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> Callable:
-    """Pipelined batched GEMM for SM90.
+    """Pipelined batched GEMM.
 
     Launches a 3D grid ``(ceildiv(n, block_n), ceildiv(m, block_m), batch)``.
     Each block loads its per-batch A/B tiles into SMEM through a ``T.Pipelined``
-    K-loop and issues WGMMA into a fp32 accumulator; the epilogue guards the
+    K-loop and issues WGMMA (MMA below SM90) into a fp32 accumulator; the epilogue guards the
     M/N tails so ``m``/``n`` need not be multiples of the block sizes.
 
     Args:
@@ -645,7 +645,7 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
 
 
 class BmmKernel(Kernel, BmmFwdInterface):
-    """Batched dense GEMM kernel (SM90).
+    """Batched dense GEMM kernel.
 
     Computes ``C[b] = A[b] @ B[b]`` for ``b in [0, batch)`` where
     ``A: [batch, m, k]``, ``B: [batch, k, n]``, ``C: [batch, m, n]``.
@@ -653,7 +653,7 @@ class BmmKernel(Kernel, BmmFwdInterface):
     ``blockIdx.z`` so all batches run in a single kernel launch.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
     @classmethod

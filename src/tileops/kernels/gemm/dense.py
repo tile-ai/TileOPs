@@ -3061,8 +3061,6 @@ def _gemm_basic_kernel(
     (K, N) contraction (cf. the WGMMA version, which forwards them to WGMMA).
     """
     accum_dtype = "float"
-    a_shape = (k, m) if trans_a else (m, k)
-    b_shape = (n, k) if trans_b else (k, n)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -3077,6 +3075,9 @@ def _gemm_basic_kernel(
         threads: int = 128,
         split_k: int = 1,
     ) -> Callable:
+        # Built here, not closed over: the autotuner refuses a closure that holds a tuple.
+        a_shape = (k, m) if trans_a else (m, k)
+        b_shape = (n, k) if trans_b else (k, n)
         # SMEM tile shapes follow the storage layout; the T.gemm transpose
         # flags reconcile them with the logical (M,K) x (K,N) contraction.
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)

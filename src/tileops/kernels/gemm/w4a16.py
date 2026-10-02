@@ -1,6 +1,7 @@
 """W4A16 GEMM over the weight layout produced by ``W4A16RepackKernel``."""
 
 import functools
+import itertools
 import operator
 import warnings
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import GemmW4A16Call, GemmW4A16FwdInterface
 from tileops.kernels.gemm.dense import splitk_reduce_kernel
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import device_calibration, get_sm_count
+from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_count
 
 GROUP_SIZE = 128
 
@@ -81,7 +82,7 @@ _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
 _CONFIG_SPACE = _ConfigSpace()
 
-__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "W4A16Layout"]
+__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MmaKernel", "W4A16Layout"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -852,8 +853,10 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     # ``packed_weight`` and ``weight_zero`` are uint8 payloads, not extents.
     autotune_accepts_random_int_inputs: bool = True
 
-    # WGMMA, warp specialization and `setmaxnreg`; there is no pre-Hopper path.
+    # WGMMA, warp specialization and `setmaxnreg`; `GemmW4A16MmaKernel` serves below SM90.
     supported_archs: list[int] = [90]
+    # Where both run, a caller's replacement of this key wins over the MMA kernel.
+    preferred_over = frozenset({"gemm_w4a16_mma"})
 
     # The generic tuner measures one JIT launch, while this kernel's config also
     # decides the M padding and whether a reduction launch follows.
@@ -987,3 +990,130 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
             out = activation.new_empty((self.m_pad, self.n))
             self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
         return out[: self.m] if self.m_pad != self.m else out
+
+
+def _mma_shared_bytes(block_m: int, block_n: int, num_stages: int) -> int:
+    """Staged activation and packed weight tiles plus one dequantized weight tile."""
+    step_k = W4A16_LAYOUT.mma_step_k
+    return num_stages * (block_m * step_k * 2 + block_n * step_k // 2) + block_n * step_k * 2
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_w4a16_mma_kernel(m: int, n: int, k: int, dtype: str) -> Callable:
+    """Within a K step, byte ``b`` of a row-major weight row (K ``2b`` in its low nibble) sits
+    in word ``(b % lanes) * words_per_lane + b // 16`` at bit ``4 * (b % 16 // 4)``, its
+    high nibble 16 bits above, as ``W4A16RepackKernel`` writes it.
+    """
+    accum_dtype = "float"
+    step_k = W4A16_LAYOUT.mma_step_k
+    words = step_k // 8
+    words_per_lane = words // W4A16_LAYOUT.lanes
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _gemm_w4a16_mma_func(block_m: int, block_n: int, num_stages: int, threads: int):
+        @T.prim_func
+        def _gemm_w4a16_mma_main(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            scale: T.Tensor((n, k // step_k), dtype),  # type: ignore
+            zero: T.Tensor((n, k // step_k), "uint8"),  # type: ignore
+            out: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+                bx,
+                by,
+            ):
+                a_s = T.alloc_shared((block_m, step_k), dtype)
+                w_s = T.alloc_shared((block_n, words), "uint32")
+                b_s = T.alloc_shared((block_n, step_k), dtype)
+                acc = T.alloc_fragment((block_m, block_n), accum_dtype)
+                m0 = by * block_m
+                n0 = bx * block_n
+                T.clear(acc)
+                for s in T.Pipelined(k // step_k, num_stages=num_stages):
+                    T.copy(activation[m0 : m0 + block_m, s * step_k : (s + 1) * step_k], a_s)
+                    T.copy(packed[n0 : n0 + block_n, s * words : (s + 1) * words], w_s)
+                    for j, kk in T.Parallel(block_n, step_k):
+                        byte = kk // 2
+                        word = byte % W4A16_LAYOUT.lanes * words_per_lane + byte // 16
+                        shift = 4 * (byte % 16 // 4) + 16 * (kk % 2)
+                        q = T.cast((w_s[j, word] >> shift) & T.uint32(0xF), accum_dtype)
+                        if n0 + j < n:
+                            b_s[j, kk] = T.cast(
+                                (q - T.cast(zero[n0 + j, s], accum_dtype))
+                                * T.cast(scale[n0 + j, s], accum_dtype),
+                                dtype,
+                            )
+                        else:
+                            b_s[j, kk] = T.cast(0, dtype)
+                    T.gemm(a_s, b_s, acc, transpose_B=True)
+                T.copy(acc, out[m0 : m0 + block_m, n0 : n0 + block_n])
+
+        return _gemm_w4a16_mma_main
+
+    return _gemm_w4a16_mma_func
+
+
+class GemmW4A16MmaKernel(GemmW4A16Kernel):
+    """The same GEMM on MMA tiles, for GPUs without WGMMA; the weight is dequantized in
+    shared memory one 128-wide group at a time."""
+
+    supported_archs: list[int] = [80, 86, 89]
+    preferred_over = frozenset()
+    autotune = Kernel.autotune
+
+    @staticmethod
+    def _region_refusal(call: GemmW4A16Call) -> Optional[str]:
+        if call.group_size != GROUP_SIZE:
+            return f"requires group_size {GROUP_SIZE}"
+        if call.k % GROUP_SIZE:
+            return f"requires k a multiple of {GROUP_SIZE}, got {call.k}"
+        return None
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        group_size: int = GROUP_SIZE,
+        device_index: Optional[int] = None,
+    ) -> None:
+        Kernel.__init__(self, device_index=device_index)
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.group_size = group_size
+        self.kernel = _gemm_w4a16_mma_kernel(m, n, k, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 16 if self.m <= 16 else 64,
+            "block_n": 128,
+            "num_stages": 2,
+            "threads": 128,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        limit = get_shared_memory_optin(self.device_index)
+        return [
+            {"block_m": bm, "block_n": bn, "num_stages": s, "threads": 128}
+            for bm, bn, s in itertools.product([16, 64], [64, 128], [2, 3])
+            if _mma_shared_bytes(bm, bn, s) <= limit
+        ]
+
+    def forward(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> torch.Tensor:
+        compiled = self.kernel(**self.config)
+        return compiled(activation, packed_weight.view(torch.uint32), weight_scale, weight_zero)

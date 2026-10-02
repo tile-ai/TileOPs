@@ -589,8 +589,17 @@ class GemmW4A16Fixture(FixtureBase):
 
 @GemmFixture
 def test_gemm(
-    m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool, tune: bool
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype,
+    trans_a: bool,
+    trans_b: bool,
+    tune: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
     if dtype == torch.float16:
@@ -948,6 +957,7 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
         GemmTmaKernel(256, 512, 1001, bf, trans_a=False, trans_b=True)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_stages, stage_n", [(3, 0), (4, 128)])
@@ -1101,6 +1111,13 @@ def test_dense_splitk_interfaces_match_reference() -> None:
     actual = GemmCpAsyncKernel(m, n, k, torch.bfloat16, basic_config, trans_b=True)(a, b)
     torch.testing.assert_close(actual.float(), a.float() @ b.float().T, rtol=2e-2, atol=1e-1)
 
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_dense_splitk_gated_tma_matches_reference() -> None:
+    m, n, k = 32, 112, 512
+    a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
     gated_b = torch.randn(2 * n, k, dtype=torch.bfloat16, device="cuda")
     gated_config = {
         "block_m": 64,
@@ -1142,6 +1159,7 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
@@ -1157,6 +1175,7 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
@@ -1179,6 +1198,7 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
@@ -1186,6 +1206,7 @@ def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
     assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("split_k", [2, 8])
@@ -1209,6 +1230,7 @@ def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
@@ -1248,6 +1270,7 @@ def test_gemm_w4a16_select_config_streams_only_the_underfilled_grid() -> None:
     assert _select_config(128, 4096, 14336, GROUP_SIZE, sms=132)["stream_ctas"] == 0
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
@@ -1257,6 +1280,7 @@ def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
     kernel.kernel(**kernel.config)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
