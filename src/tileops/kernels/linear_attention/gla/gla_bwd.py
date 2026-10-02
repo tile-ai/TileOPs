@@ -73,7 +73,6 @@ def _gla_bwd_dh_kernel(
         },
     )
     def _dh_func(num_stages, threads=128):
-        # ``do_s`` reaches T.gemm as the B operand, so the thread count bounds the split.
         if dim_v_part < min_gemm_n(threads):
             raise ValueError(
                 f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) "

@@ -64,7 +64,6 @@ def _bwd_parallel_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads=256):
-        # The V extent is a gemm B operand here, which the thread count bounds.
         if dim_v < min_gemm_n(threads):
             raise ValueError(
                 f"dim_v ({dim_v}) is below the minimum T.gemm N extent "
@@ -248,7 +247,6 @@ def _dh_recurrence_bwd_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=256):
-        # The V extent is a gemm B operand here, which the thread count bounds.
         if dim_v < min_gemm_n(threads):
             raise ValueError(
                 f"dim_v ({dim_v}) is below the minimum T.gemm N extent "
@@ -490,7 +488,6 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
     @property
     def default_config(self) -> dict:
         threads = 256 if self.chunk_size >= 64 else 128
-        # Both builders feed dim_v to a gemm as the B operand, so it caps the thread count.
         while threads > 64 and self.dim_v < min_gemm_n(threads):
             threads //= 2
         return {
@@ -549,8 +546,6 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
 
-        # Both gemm-bearing sub-kernels take dim_v as a B operand, so the sweep offers
-        # only the thread counts that extent admits.
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
         parallel_configs = [{"threads": t} for t in thread_options]
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")

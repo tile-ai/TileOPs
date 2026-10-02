@@ -125,7 +125,6 @@ def gla_fwd_h_kernel(
         },
     )
     def _h_func(num_stages, threads=128):
-        # The V partition is the recurrence gemm's B operand, which the thread count bounds.
         if dim_v_part < min_gemm_n(threads):
             raise ValueError(
                 f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) "

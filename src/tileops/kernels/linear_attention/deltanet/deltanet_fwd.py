@@ -72,7 +72,6 @@ def _h_recurrence_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=128):
-        # ``u`` reaches T.gemm as the B operand, so the thread count bounds the V tile.
         if min_gemm_n(threads) > BV:
             raise ValueError(
                 f"V-tile width {BV} (dim_v={dim_v}, block_v={block_v}) is below the "
