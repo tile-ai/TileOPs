@@ -814,10 +814,13 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         )
         if self.pos_encoding_mode != "rope":
             return q, k, v, cu_seqlens_q, cu_seqlens_k
-        angles = (
-            torch.randn(max(max(self.seqlens_k), 1), self.rotary_dim // 2, device=run_device())
-            * 0.1
-        )
+        # Angles span a whole turn. A narrow draw puts every cosine near one and every sine
+        # near zero, which makes the rotation near-identity: a kernel that skips it, pairs
+        # the wrong channels, or rotates the channels a partial width should leave alone
+        # then lands inside the tolerance and the row proves nothing.
+        angles = torch.rand(
+            max(max(self.seqlens_k), 1), self.rotary_dim // 2, device=run_device()
+        ) * (2 * math.pi)
         cos, sin = angles.cos().to(self.dtype), angles.sin().to(self.dtype)
         return q, k, v, cu_seqlens_q, cu_seqlens_k, None, None, None, cos, sin
 
