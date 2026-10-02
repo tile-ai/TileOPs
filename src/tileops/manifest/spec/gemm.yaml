@@ -49,7 +49,9 @@ GemmFwdOp:
   - {M: 2, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m2-qkv-a}
 
   roofline:
-    flops: "2 * M * N * K"
+    # The contraction; one multiply per weight for the group scale; and the epilogue,
+    # which scales each result by its channel and its token scale.
+    flops: "2 * M * N * K + N * K + 2 * M * N"
 
 GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"
@@ -103,7 +105,9 @@ GemmFp8FwdOp:
   - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-blk}
 
   roofline:
-    flops: "2 * M * N * K"
+    # The contraction; one multiply per weight for the group scale; and the epilogue,
+    # which scales each result by its channel and its token scale.
+    flops: "2 * M * N * K + N * K + 2 * M * N"
 
 GemmW4A16FwdOp:
   family: gemm
@@ -209,7 +213,9 @@ GroupedGemmFwdOp:
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
 
   roofline:
-    flops: "2 * M * N * K"
+    # The contraction; one multiply per weight for the group scale; and the epilogue,
+    # which scales each result by its channel and its token scale.
+    flops: "2 * M * N * K + N * K + 2 * M * N"
 GemmInt8W8A8FwdOp:
   family: gemm
   status: spec-only
@@ -236,7 +242,9 @@ GemmInt8W8A8FwdOp:
       - "SA == (1, 1) or SA == (M, 1)"
       - "SB == (1, 1) or SB == (1, N)"
   roofline:
-    flops: "2 * M * N * K"
+    # The contraction; one multiply per weight for the group scale; and the epilogue,
+    # which scales each result by its channel and its token scale.
+    flops: "2 * M * N * K + N * K + 2 * M * N"
   workloads:
     - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama3-8b-decode-qkv}
     - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
@@ -244,3 +252,52 @@ GemmInt8W8A8FwdOp:
     - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama3-8b-prefill-down}
     - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama3-70b-dec-qkv-tsr}
     - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama3-70b-prefill-down}
+
+GemmW4A8FwdOp:
+  # Dequantization is affine in two steps: a group scale along K, then a per-channel
+  # scale along N. The activation carries a per-token scale. The packing order is the
+  # implementation's, held between its `repack` and its GEMM, so it is not in the
+  # signature.
+  family: gemm
+  status: spec-only
+
+  signature:
+    forall: {M: Dim, N: Dim, K: Dim}
+    params:
+      group_size: {type: int, default: 128}
+    inputs:
+      activation: {dtype: float8_e4m3fn, shape: "[M, K]"}
+      # Two INT4 weights per byte, in the order this op's `repack` produces.
+      packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
+      weight_group_scale: {dtype: bfloat16, shape: "[N, K // group_size]"}
+      weight_channel_scale: {dtype: float32, shape: "[N]"}
+      activation_scale: {dtype: float32, shape: "[M]"}
+    outputs:
+      output: {dtype: bfloat16, shape: "[M, N]"}
+    shape_rules:
+    - "M > 0 and N > 0"
+    - "group_size > 0"
+    # The packing order is defined per 128-element K step, as in GemmW4A16FwdOp.
+    - "K % 128 == 0 and K % group_size == 0"
+
+  workloads:
+  # DeepSeek-R1: hidden 7168, MLP intermediate 18432. Both directions, since the down
+  # projection contracts over the intermediate axis and the up projection over the hidden.
+  - {M: 1, N: 7168, K: 18432, label: ds-r1-down-b1}
+  - {M: 64, N: 7168, K: 18432, label: ds-r1-down-b64}
+  - {M: 4096, N: 7168, K: 18432, label: ds-r1-down-4k}
+  - {M: 1, N: 18432, K: 7168, label: ds-r1-up-b1}
+  - {M: 64, N: 18432, K: 7168, label: ds-r1-up-b64}
+  - {M: 4096, N: 18432, K: 7168, label: ds-r1-up-4k}
+  # Llama-3 70B: hidden 8192, MLP intermediate 28672.
+  - {M: 1, N: 8192, K: 28672, label: llama-70b-down-b1}
+  - {M: 64, N: 8192, K: 28672, label: llama-70b-down-b64}
+  - {M: 4096, N: 8192, K: 28672, label: llama-70b-down-4k}
+  - {M: 1, N: 28672, K: 8192, label: llama-70b-up-b1}
+  - {M: 64, N: 28672, K: 8192, label: llama-70b-up-b64}
+  - {M: 4096, N: 28672, K: 8192, label: llama-70b-up-4k}
+
+  roofline:
+    # The contraction; one multiply per weight for the group scale; and the epilogue,
+    # which scales each result by its channel and its token scale.
+    flops: "2 * M * N * K + N * K + 2 * M * N"

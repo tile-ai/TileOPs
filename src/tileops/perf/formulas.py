@@ -27,6 +27,7 @@ __all__ = [
     "dsa_paged_fwd_roofline",
     "dsa_selected_keys",
     "fft_c2c_roofline",
+    "hadamard_roofline",
     "fp8_lightning_indexer_roofline",
     "fused_moe_fwd_roofline",
     "fused_moe_shared_expert_fwd_roofline",
@@ -256,6 +257,21 @@ def moe_expert_mlp_roofline(call: "CallView") -> tuple[int, int]:
     f, h = call.ix["F"], call.ix["H"]
     flops = moe_layout_rows(call) * (6 * f * h + _GATED_ACTIVATION * f)
     return flops, _active_weight_bytes(call, "w_gate_up", "w_down")
+
+
+def hadamard_roofline(call: "CallView") -> tuple[int, int]:
+    """Fast Walsh-Hadamard transform along the last axis.
+
+    The radix-2 stages are one add or subtract per element each, and there are
+    ``log2(n // base_order)`` of them. A ``base_order`` above 1 ends with one dense
+    ``base_order x base_order`` Hadamard product per group, two FLOPs per element-column.
+    The ``1 / sqrt(n)`` scaling is one multiply per element. Each tensor moves once.
+    """
+    ix = call.ix
+    n, order = ix["n"], ix["base_order"]
+    radix2 = (n // order).bit_length() - 1
+    flops = prod(ix["B"]) * n * (radix2 + 1 + (2 * order if order > 1 else 0))
+    return flops, sum(call.bytes(t) for t in call.tensors)
 
 
 def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:

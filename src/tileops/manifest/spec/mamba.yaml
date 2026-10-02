@@ -317,3 +317,56 @@ CausalConv1dUpdateFwdOp:
     - {B: 64, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b64}
     - {B: 256, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b256}
     - {B: 64, D: 8192, W: 4, dtype_cases: [{T: float16}], label: qwen3-next-decode-b64}
+
+SelectiveScanFwdOp:
+  # Mamba-1 S6 selective scan: a first-order recurrence whose decay and input gates are
+  # functions of the input, discretized per channel. The SSD entries above carry one
+  # scalar decay per head; this one does not reduce to their chunked matmul.
+  #
+  # Index names, which differ from the SSD stages above:
+  #   D d_inner   N d_state   G n_groups
+  family: mamba
+  status: spec-only
+  signature:
+    forall: {B: Dim, S: Dim, D: Dim, N: Dim, G: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    params:
+      delta_softplus: {type: bool, default: true}
+    inputs:
+      u: {dtype: T, shape: "[B, D, S]"}
+      delta: {dtype: T, shape: "[B, D, S]"}
+      A: {dtype: float32, shape: "[D, N]"}
+      B_in: {dtype: T, shape: "[B, G, N, S]"}
+      C_in: {dtype: T, shape: "[B, G, N, S]"}
+      # The skip term `D * u`, and the gate `u * silu(z)`.
+      D_in: {dtype: float32, shape: "[D]", optional: true}
+      z: {dtype: T, shape: "[B, D, S]", optional: true}
+      delta_bias: {dtype: float32, shape: "[D]", optional: true}
+      # Packed sequences: the id each token belongs to, as the SSD stages take it. A
+      # token whose id differs from its predecessor's restarts the recurrence.
+      seq_idx: {dtype: int32, shape: "[B, S]", optional: true}
+      initial_states: {dtype: float32, shape: "[B, D, N]", optional: true}
+    outputs:
+      y: {dtype: T, shape: "[B, D, S]"}
+      final_states: {dtype: float32, shape: "[B, D, N]"}
+    shape_rules:
+    - "B > 0 and S > 0 and D > 0 and N > 0 and G > 0"
+    - "D % G == 0"
+    # A packed batch starts from zero: a carried state names one sequence per batch row.
+    - "not present(seq_idx) or not present(initial_states)"
+  workloads:
+  # Mamba-1 model sizes: 130M D=1536, 1.4B D=4096, 2.8B D=5120; N=16, G=1.
+  - {B: 1, S: 4096, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias], dtype_cases: [{T: bfloat16}, {T: float16}], label: mamba-2.8b-prefill}
+  - {B: 1, S: 1, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias, initial_states], dtype_cases: [{T: bfloat16}], label: mamba-2.8b-decode}
+  - {B: 64, S: 1, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias, initial_states], dtype_cases: [{T: bfloat16}], label: mamba-2.8b-decode-b64}
+  - {B: 1, S: 4096, D: 4096, N: 16, G: 1, some: [D_in, z, delta_bias], dtype_cases: [{T: bfloat16}], label: mamba-1.4b-prefill}
+  - {B: 1, S: 4096, D: 1536, N: 16, G: 1, some: [D_in, delta_bias], dtype_cases: [{T: float32}], label: mamba-130m-no-gate}
+  - {B: 1, S: 4096, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias, seq_idx], dtype_cases: [{T: bfloat16}], label: mamba-2.8b-packed}
+  - {B: 8, S: 2048, D: 4096, N: 32, G: 8, some: [D_in, z, delta_bias], dtype_cases: [{T: bfloat16}], label: grouped-state}
+  roofline:
+    # Per (element, state): the discretized decay exp(delta * A), the state update against
+    # delta * B * u, and the C readout. Per element: the optional bias and softplus on
+    # delta, the optional D skip, and the optional silu gate.
+    flops: >-
+      B * D * S * (6 * N + (1 if present(delta_bias) else 0)
+      + (4 if delta_softplus else 0) + (2 if present(D_in) else 0)
+      + (5 if present(z) else 0))

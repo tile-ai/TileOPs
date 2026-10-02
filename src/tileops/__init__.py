@@ -34,6 +34,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         rope,
         sampling,
         sequence_modeling,
+        transform,
     )
     from tileops.backend import (
         BUILTIN,
@@ -58,6 +59,7 @@ _FAMILIES = (
     "pool",
     "convolution",
     "fft",
+    "transform",
     "moe",
     "sampling",
     "rope",
