@@ -210,3 +210,37 @@ GroupedGemmFwdOp:
 
   roofline:
     flops: "2 * M * N * K"
+GemmInt8W8A8FwdOp:
+  family: gemm
+  status: spec-only
+  signature:
+    forall:
+      M: Dim
+      N: Dim
+      K: Dim
+      SA: Shape
+      SB: Shape
+    params:
+      out_dtype: {type: "bfloat16 | float16", default: bfloat16}
+    inputs:
+      a: {dtype: int8, shape: "[M, K]"}
+      b: {dtype: int8, shape: "[N, K]"}
+      scale_a: {dtype: float32, shape: "[*SA]"}
+      scale_b: {dtype: float32, shape: "[*SB]"}
+      bias: {dtype: out_dtype, shape: "[N]", optional: true}
+    outputs:
+      d: {dtype: out_dtype, shape: "[M, N]"}
+    shape_rules:
+      # The two sides choose their granularity independently: either operand may carry one
+      # scale for the whole tensor or one per row of the output.
+      - "SA == (1, 1) or SA == (M, 1)"
+      - "SB == (1, 1) or SB == (1, N)"
+  roofline:
+    flops: "2 * M * N * K"
+  workloads:
+    - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama3-8b-decode-qkv}
+    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
+    - {M: 4096, N: 6144, K: 4096, SA: [4096, 1], SB: [1, 6144], label: llama3-8b-prefill-qkv}
+    - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama3-8b-prefill-down}
+    - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama3-70b-dec-qkv-tsr}
+    - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama3-70b-prefill-down}

@@ -251,3 +251,69 @@ Mamba2FwdOp:
     - {name: chunk_state, op: SSDChunkStateFwdOp}
     - {name: state_passing, op: SSDStatePassingFwdOp}
     - {name: chunk_scan, op: SSDChunkScanFwdOp}
+CausalConv1dFwdOp:
+  family: mamba
+  status: spec-only
+  signature:
+    forall:
+      B: Dim
+      D: Dim
+      W: Dim
+      Tt: Dim
+      T: "DType[float16 | bfloat16]"
+      seq_lens: "Seq[Int]"
+    params:
+      activation: {type: "'silu' | None", default: silu}
+    inputs:
+      # Channel-major with the token axis last, the layout the Mamba block's input
+      # projection already produces.
+      x: {dtype: T, shape: "[D, Tt]"}
+      weight: {dtype: T, shape: "[D, W]"}
+      bias: {dtype: T, shape: "[D]", optional: true}
+      # The W-1 tokens preceding each sequence. Read for a sequence whose
+      # has_initial_state is true, and overwritten with that sequence's own tail.
+      conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
+      cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
+      has_initial_state: {dtype: bool, shape: "[B]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[D, Tt]"}
+    shape_rules:
+      - "B > 0 and D > 0 and Tt > 0"
+      - "W >= 2 and W <= 4"
+  roofline:
+    flops: "2 * D * Tt * W"
+  workloads:
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-4k}
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-pf4k-nost}
+    - {D: 5376, W: 4, Tt: 32768, seq_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-32k}
+    - {D: 8192, W: 4, Tt: 8192, seq_lens: [4096, 4096], dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-8k}
+
+CausalConv1dUpdateFwdOp:
+  family: mamba
+  status: spec-only
+  signature:
+    forall:
+      B: Dim
+      D: Dim
+      W: Dim
+      T: "DType[float16 | bfloat16]"
+    params:
+      activation: {type: "'silu' | None", default: silu}
+    inputs:
+      x: {dtype: T, shape: "[B, D]"}
+      weight: {dtype: T, shape: "[D, W]"}
+      bias: {dtype: T, shape: "[D]", optional: true}
+      # The W most recent tokens per sequence. Advanced by one position in place.
+      conv_state: {dtype: T, shape: "[B, D, W]", mutated: true, contiguous: true}
+    outputs:
+      output: {dtype: T, shape: "[B, D]"}
+    shape_rules:
+      - "B > 0 and D > 0"
+      - "W >= 2 and W <= 4"
+  roofline:
+    flops: "2 * B * D * W"
+  workloads:
+    - {B: 1, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b1}
+    - {B: 64, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b64}
+    - {B: 256, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b256}
+    - {B: 64, D: 8192, W: 4, dtype_cases: [{T: float16}], label: qwen3-next-decode-b64}

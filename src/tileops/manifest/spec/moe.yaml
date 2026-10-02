@@ -481,3 +481,56 @@ FusedMoeSharedExpertFwdOp:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
+MoeGroupedGemmFp8FwdOp:
+  family: moe
+  status: spec-only
+  signature:
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+          - {when: {contiguous: "_"}, is: "[P, C]"}
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall:
+      P: Dim
+      K: Dim
+      N: Dim
+      E: Dim
+    params:
+      layout: {type: MGroupedLayout}
+    inputs:
+      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, P, K]", contiguous: true}
+      a_scale: {dtype: float32, shape: "Rows[layout, E, P, ceil_div(K, 128)]"}
+      b: {dtype: float8_e4m3fn, shape: "[E, N, K]", contiguous: true}
+      b_scale: {dtype: float32, shape: "[E, ceil_div(N, 128), ceil_div(K, 128)]"}
+      layout_metadata:
+        dtype: int32
+        shape: "LayoutMetadata[layout, E, P]"
+        contiguous: true
+        values: "moe.layout_metadata(layout, R, E)"
+        requires: ["moe.layout_valid(layout, R, E)"]
+    let:
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    shape_rules:
+      - "E > 0"
+      # The scales tile the operands in exact 128-element blocks; a ragged final block has
+      # no representation on either side.
+      - "K % 128 == 0"
+      - "N % 128 == 0"
+    outputs:
+      output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]"}
+  roofline:
+    func: tileops.perf.formulas.moe_grouped_gemm_fp8_roofline
+  workloads:
+    - {P: 1024, N: 4096, K: 7168, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-up}
+    - {P: 1024, N: 7168, K: 2048, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-down}
+    - {N: 4096, K: 7168, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-up-masked}
+    - {N: 7168, K: 2048, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-down-masked}
