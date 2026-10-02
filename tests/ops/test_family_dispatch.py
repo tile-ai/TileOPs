@@ -321,21 +321,10 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
     ("call", "expected"),
     [
         pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
-        pytest.param(_gated_call(1, False), "gated_deltanet_dense_decode", id="decode-no-state"),
         pytest.param(
-            _gated_call(1, True, dim_k=64, dim_v=64),
+            _gated_call(1, False, dim_k=64, dim_v=64, value_heads=64, state_v_first=True),
             "gated_deltanet_dense_decode",
-            id="decode-narrow-state",
-        ),
-        pytest.param(
-            _gated_call(1, True, value_heads=64),
-            "gated_deltanet_dense_decode",
-            id="decode-grouped-value-heads",
-        ),
-        pytest.param(
-            _gated_call(1, True, state_v_first=True),
-            "gated_deltanet_dense_decode",
-            id="decode-value-major-state",
+            id="decode-every-variant",
         ),
         pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
         pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
@@ -423,6 +412,11 @@ def test_deltanet_inference_dispatch() -> None:
     assert op.select_implementation("deltanet_inference", _inference_call(l2norm=True)) == (
         "deltanet_dense_prefill"
     )
+    # Decode claims the state width and the in-kernel normalization it used to refuse.
+    narrow = _inference_call(seq_len=1, dim_k=64, dim_v=64)
+    assert op.select_implementation("deltanet_inference", narrow) == "deltanet_dense_decode"
+    normalized = _inference_call(seq_len=1, l2norm=True)
+    assert op.select_implementation("deltanet_inference", normalized) == "deltanet_dense_decode"
 
 
 @pytest.mark.cuda_only

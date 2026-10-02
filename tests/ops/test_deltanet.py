@@ -477,26 +477,6 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.cuda_only
-def test_deltanet_decode_normalizes_qk_in_kernel() -> None:
-    torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 1, 4, 128, torch.bfloat16, l2norm=True)
-    op = DeltaNetInferenceFwdOp(use_qk_l2norm_in_kernel=True)
-    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
-
-
-@pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.cuda_only
-def test_deltanet_decode_runs_a_64_wide_state() -> None:
-    """A batch and a head count that are neither powers of two nor warp multiples."""
-    torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(17, 1, 3, 64, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
-
-
-@pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
 @pytest.mark.cuda_only

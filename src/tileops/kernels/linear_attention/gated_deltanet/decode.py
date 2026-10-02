@@ -134,8 +134,7 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        # The program declares the float32 parameters this build leaves unread one element
-        # wide, so the call hands them one tensor instead of a state-sized dead buffer.
+        # The float32 parameters this build leaves unread are declared one element wide.
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
 
     @property

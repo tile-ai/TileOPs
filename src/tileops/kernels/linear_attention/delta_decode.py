@@ -24,15 +24,15 @@ def decode_launch(
 ) -> dict:
     """The block shape the decode program runs this call in.
 
-    ``threads // lane_group`` state columns are what one block owns, and the lane group is
-    what reads the key dimension of one of them. Over a value-major state the key dimension
-    is the contiguous one, so the group has to be wide and the block is eight warps. Over a
-    key-major state the column is the contiguous one instead, so one lane takes a whole
-    column and a warp's load of a state row is 32 consecutive float32; splitting the key
-    dimension over a second warp doubles the warps in flight at half that segment length,
-    and only pays off where the grid does not already fill the device. Re-fit the
-    crossover, and both block shapes, by sweeping them against the decode workload rows of
-    `benchmarks/ops/bench_deltanet.py` and `benchmarks/ops/bench_gated_deltanet.py`.
+    One block owns ``threads // lane_group`` state columns and its lane group reads the key
+    dimension of one of them, so the group is sized by whichever state axis is contiguous:
+    one lane per column over a key-major state, a wide group over a value-major one. A
+    key-major grid holding fewer than ``blocks_per_sm`` blocks per SM takes a second warp
+    and splits the key dimension across it instead.
+
+    Re-fit ``blocks_per_sm`` and either block shape by sweeping ``threads`` and
+    ``lane_group`` against the decode workload rows of `benchmarks/ops/bench_deltanet.py`
+    and `benchmarks/ops/bench_gated_deltanet.py`.
     """
     if state_v_first:
         return {"threads": 8 * WARP_LANES, "lane_group": WARP_LANES // 2}
@@ -42,9 +42,8 @@ def decode_launch(
     return {"threads": 2 * WARP_LANES, "lane_group": 2}
 
 
-# The flag space is nine booleans and two state widths over two dtypes, so a process that
-# exercises several recurrence variants at several shapes keeps more than the 32 entries a
-# single-variant builder needs.
+# Seven recurrence flags and a block shape over two state widths and two dtypes: a process
+# that exercises several variants at several shapes outgrows the 32 entries one variant needs.
 @functools.lru_cache(maxsize=64)
 def delta_decode_sm90_tl(
     batch: int,
@@ -109,14 +108,14 @@ def delta_decode_sm90_tl(
     lane_group_stages = lane_group.bit_length() - 1
     beta_gain = 2.0 if allow_neg_eigval else 1.0
     l2norm_eps = 1e-6
-    # Above this the softplus is its own argument to within float32, and the exponential
-    # below it would overflow. torch and FLA take the same guard at the same point.
+    # Above this `softplus(x)` is `x` to within float32, which is also what keeps `exp(x)`
+    # from overflowing. torch and FLA take the same guard.
     softplus_linear_above = 20.0
 
     @tilelang.jit(out_idx=[-2, -1], compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"])
     def _decode():
-        # A parameter the flags leave unread still shapes the signature, so it is declared
-        # one element wide and the kernel hands it a placeholder.
+        # A parameter the flags leave unread is declared one element wide; the kernel hands
+        # it a placeholder rather than a buffer of the shape it would otherwise carry.
         unread = [1]
         gate_shape = [batch, 1, value_heads] if gated else unread
         gate_param_shape = [value_heads] if gate_in_kernel else unread
@@ -149,9 +148,9 @@ def delta_decode_sm90_tl(
                 value_lane = tx // lane_group
                 k_rank = tx - value_lane * lane_group
                 value_idx = value_tile * v_tile + value_lane
-                # Consecutive lanes read consecutive elements of whichever state axis is
-                # contiguous: the value columns a lane owns under the key-major layout, and
-                # the key positions a lane group splits under the value-major one.
+                # Consecutive lanes must land on consecutive elements of whichever state
+                # axis is contiguous: the value columns under the key-major layout, the key
+                # positions under the value-major one.
                 k_begin = k_rank if state_v_first else k_rank * k_chunk
                 k_step = lane_group if state_v_first else 1
 
@@ -172,8 +171,8 @@ def delta_decode_sm90_tl(
                 T.sync_threads()
 
                 if l2norm:
-                    # Every warp folds the whole row, so the butterfly below leaves the two
-                    # norms in every thread without a second trip through shared memory.
+                    # Every warp folds the whole row, so the butterfly leaves both norms in
+                    # every thread of a multi-warp block with no second pass over shared.
                     lane = tx - tx // WARP_LANES * WARP_LANES
                     for i in T.serial(T.ceildiv(dim, WARP_LANES)):
                         kk = lane + i * WARP_LANES
@@ -216,8 +215,6 @@ def delta_decode_sm90_tl(
                         state_local[ii] = decayed_state
                         old_partial += decayed_state * k_shared[kk]
 
-                    # A butterfly leaves the group's whole sum in every lane, so the step
-                    # size needs no broadcast back from the lane that formed it.
                     for stage in T.unroll(lane_group_stages):
                         old_partial += T.shfl_xor(old_partial, 1 << stage, width=lane_group)
 

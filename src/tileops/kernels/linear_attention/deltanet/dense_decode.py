@@ -116,8 +116,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        # The program declares the parameters an ungated build leaves unread one element
-        # wide, so the call hands them one tensor instead of a state-sized dead buffer.
+        # The parameters an ungated build leaves unread are declared one element wide.
         self._unread_gate = torch.empty(1, dtype=dtype, device=device)
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
 
