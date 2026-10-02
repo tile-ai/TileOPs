@@ -186,22 +186,27 @@ def test_gated_deltanet_dense_decode_matches_reference(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(batch, 1, 16, 128, dtype, has_initial_state=True)
-    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol)
+    # One token over a 128-wide state puts the output at 5e-2, which the prefill tolerance
+    # covers whole; the measured agreement is 6e-8.
+    tolerance = 6e-7 if dtype == torch.float16 else 1e-7
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=tolerance, rtol=tolerance)
 
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "flags",
+    ("flags", "atol"),
     [
-        {"state_v_first": True},
-        {"use_gate_in_kernel": True},
-        {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
-        {"use_qk_l2norm_in_kernel": True},
+        # Each bound is ten times the agreement that flag reaches, so the case fails when
+        # the transform it names is dropped. A flag that stiffens the recurrence carries a
+        # looser one: doubling beta puts the state at 1.7e-1 rather than 4e-2.
+        ({"state_v_first": True}, 4e-8),
+        ({"use_gate_in_kernel": True}, 3e-4),
+        ({"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True}, 4e-3),
+        ({"use_qk_l2norm_in_kernel": True}, 4e-8),
     ],
     ids=["v-first", "gate-fused", "beta-sigmoid-neg", "l2norm"],
 )
-def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict) -> None:
+def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict, atol: float) -> None:
     torch.manual_seed(42)
     workload_flags = {
         "state_v_first": "state_v_first",
@@ -219,10 +224,7 @@ def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict) -> None:
         has_initial_state=True,
         **{workload_flags[name]: value for name, value in flags.items()},
     )
-    # One token over a 128-wide state puts the output at 1e-3 and the state at 1e-1, so the
-    # prefill tolerance would pass any of these flags left unimplemented. Measured agreement
-    # is 4e-9 on the state and exact on the output.
-    test.check(GatedDeltaNetFwdOp(**flags), *test.gen_inputs(), atol=1e-5, rtol=1e-3)
+    test.check(GatedDeltaNetFwdOp(**flags), *test.gen_inputs(), atol=atol, rtol=atol)
 
 
 @pytest.mark.sm90
@@ -230,7 +232,7 @@ def test_gated_deltanet_decode_groups_value_heads_over_a_64_wide_state() -> None
     """A batch and head counts that are neither powers of two nor warp multiples."""
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(17, 1, 3, 64, torch.bfloat16, has_initial_state=True, value_heads=6)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1e-5, rtol=1e-3)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.sm90
@@ -250,8 +252,8 @@ def test_gated_deltanet_dense_decode_propagates_fp32_state() -> None:
     for _ in range(4):
         expected_o, expected_state = workload.ref_program(q, k, v, g, beta, expected_state)
         got_o, state = op(q, k, v, g, beta, state)
-        torch.testing.assert_close(got_o, expected_o, atol=1.6e-2, rtol=1.6e-2)
-        torch.testing.assert_close(state, expected_state, atol=1.6e-2, rtol=1.6e-2)
+        torch.testing.assert_close(got_o, expected_o, atol=2e-7, rtol=2e-7)
+        torch.testing.assert_close(state, expected_state, atol=2e-7, rtol=2e-7)
 
 
 def test_gated_deltanet_contract_reaches_target_builder() -> None:

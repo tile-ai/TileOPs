@@ -424,9 +424,6 @@ def test_deltanet_inference_dispatch() -> None:
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(
-            _inference_call(seq_len=1, l2norm=True), "L2 normalization", id="decode-l2norm"
-        ),
         pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
         pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],
