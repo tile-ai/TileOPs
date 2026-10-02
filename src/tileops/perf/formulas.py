@@ -242,6 +242,14 @@ def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _active_weight_bytes(call, "b")
 
 
+def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
+    """Grouped expert GEMM over the valid rows, with no fused activation; an expert with no
+    valid row reads neither its weight nor that weight's scale."""
+    ix = call.ix
+    flops = 2 * moe_layout_rows(call) * ix["N"] * ix["K"]
+    return flops, _active_weight_bytes(call, "b", "b_scale")
+
+
 def moe_expert_mlp_roofline(call: "CallView") -> tuple[int, int]:
     """Expert MLP over the valid rows: the gate/up and down GEMMs and the gated activation; an
     expert with no valid row reads no weight, every other tensor moves once."""
