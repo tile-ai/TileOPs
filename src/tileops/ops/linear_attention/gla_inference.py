@@ -117,6 +117,7 @@ class GLAInferenceFwdOp(Op):
             dtype=q.dtype,
             scale=self.scale if self.scale is not None else dim_k**-0.5,
             varlen=cu_seqlens is not None,
+            has_initial_state=initial_state is not None,
             num_sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
             device=q.device,
         )
