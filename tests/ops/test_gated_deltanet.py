@@ -191,6 +191,53 @@ def test_gated_deltanet_dense_decode_matches_reference(
 
 
 @pytest.mark.sm90
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"state_v_first": True},
+        {"use_gate_in_kernel": True},
+        {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
+        {"use_qk_l2norm_in_kernel": True},
+    ],
+    ids=["v-first", "gate-fused", "beta-sigmoid-neg", "l2norm"],
+)
+def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict) -> None:
+    torch.manual_seed(42)
+    workload_flags = {
+        "state_v_first": "state_v_first",
+        "use_gate_in_kernel": "gate_in_kernel",
+        "use_beta_sigmoid_in_kernel": "beta_sigmoid",
+        "allow_neg_eigval": "allow_neg_eigval",
+        "use_qk_l2norm_in_kernel": "l2norm",
+    }
+    test = GatedDeltaNetFwdTest(
+        2,
+        1,
+        4,
+        128,
+        torch.bfloat16,
+        has_initial_state=True,
+        **{workload_flags[name]: value for name, value in flags.items()},
+    )
+    test.check(GatedDeltaNetFwdOp(**flags), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_decode_starts_from_a_zero_state() -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(8, 1, 32, 128, torch.bfloat16)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_decode_groups_value_heads_over_a_64_wide_state() -> None:
+    """A batch and head counts that are neither powers of two nor warp multiples."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(17, 1, 3, 64, torch.bfloat16, has_initial_state=True, value_heads=6)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
 def test_gated_deltanet_dense_decode_propagates_fp32_state() -> None:
     torch.manual_seed(42)
     workload = GatedDeltaNetFwdWorkload(

@@ -321,6 +321,22 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
     ("call", "expected"),
     [
         pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
+        pytest.param(_gated_call(1, False), "gated_deltanet_dense_decode", id="decode-no-state"),
+        pytest.param(
+            _gated_call(1, True, dim_k=64, dim_v=64),
+            "gated_deltanet_dense_decode",
+            id="decode-narrow-state",
+        ),
+        pytest.param(
+            _gated_call(1, True, value_heads=64),
+            "gated_deltanet_dense_decode",
+            id="decode-grouped-value-heads",
+        ),
+        pytest.param(
+            _gated_call(1, True, state_v_first=True),
+            "gated_deltanet_dense_decode",
+            id="decode-value-major-state",
+        ),
         pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
         pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
         pytest.param(
@@ -355,28 +371,13 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_gated_call(1, False), "decode without initial_state", id="decode-no-state"),
         pytest.param(
-            _gated_call(1, True, dim_k=64, dim_v=64),
-            "K and V other than 128",
-            id="decode-narrow-state",
+            _gated_call(1, True, dim_k=256, dim_v=256),
+            "K and V other than matching 64 or 128",
+            id="decode-wide-state",
         ),
         pytest.param(
-            _gated_call(1, True, value_heads=64), "one key head per value head", id="decode-grouped"
-        ),
-        pytest.param(
-            _gated_call(1, True, l2norm=True), "Q and K already normalized", id="decode-l2norm"
-        ),
-        pytest.param(
-            _gated_call(1, True, gate_in_kernel=True), "g already in log space", id="decode-gate"
-        ),
-        pytest.param(
-            _gated_call(1, True, beta_sigmoid=True),
-            "beta already transformed",
-            id="decode-beta-sigmoid",
-        ),
-        pytest.param(
-            _gated_call(64, False, state_v_first=True), "state_v_first", id="state-v-first"
+            _gated_call(64, False, state_v_first=True), "state_v_first", id="prefill-state-v-first"
         ),
     ],
 )

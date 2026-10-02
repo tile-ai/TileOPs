@@ -116,6 +116,7 @@ class DeltaNetInferenceFwdOp(Op):
             scale=self.scale if self.scale is not None else dim_k**-0.5,
             l2norm=self.use_qk_l2norm_in_kernel,
             varlen=cu_seqlens is not None,
+            has_initial_state=initial_state is not None,
             num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
             device=q.device,
         )

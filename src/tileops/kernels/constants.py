@@ -44,6 +44,9 @@ SM_RESIDENT_BLOCKS: dict[int, int] = {
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 
+# ln(2), to recover log(x) from the single-instruction log2(x): log(x) = log2(x) * LN2.
+LN2: float = 0.6931471805599453
+
 # Widest exponent gap a pair of bfloat16 factors can carry between them. A product written
 # as exp(a) * exp(-a) holds only while both factors are representable, and bfloat16 runs to
 # 2**127; the margin leaves room for the operands the factors scale.

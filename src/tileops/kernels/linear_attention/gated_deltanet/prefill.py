@@ -47,9 +47,8 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         packed, with a row that is not a whole chunk, with grouped value heads, and with
         the Q/K normalization, the gate and the beta transform taken in kernel.
         """
-        variant = call.recurrence_refusal
-        if variant is not None:
-            return variant
+        if call.state_v_first:
+            return "does not support state_v_first=True"
         if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
             return "does not support K and V other than matching 64 or 128"
         if call.seq_len < 1 or (call.seq_len == 1 and not call.varlen):
