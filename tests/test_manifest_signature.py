@@ -126,6 +126,9 @@ _EDITS = [
     (_edit("GemmFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
     (_edit("GemmFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
     (_edit("GemmFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
+    # Input order is the generated signature's parameter order, so a required input after an
+    # optional one emits a parameter without a default after one with a default.
+    (_edit("GemmFwdOp", _set(("inputs", "a", "optional"), True)), "may not follow the optional"),
     (
         _edit(
             "MoePrePermuteFwdOp",
