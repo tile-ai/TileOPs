@@ -21,12 +21,14 @@ __all__ = [
     "DEEPGEMM_TAG",
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
+    "FLA_TAG",
     "TORCH_COMPILE_TAG",
     "VLLM_TAG",
     "assert_matches_reference",
     "assert_output_spec",
     "compiled_reference",
     "deepgemm_op",
+    "fla_op",
     "flaggems_dims",
     "flaggems_group_norm",
     "flaggems_op",
@@ -48,6 +50,7 @@ DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
+FLA_TAG = "fla"
 VLLM_TAG = "vllm"
 
 
@@ -216,6 +219,11 @@ def deepgemm_op(name: str) -> Callable:
 def flashinfer_op(name: str) -> Callable:
     """Return the ``flashinfer`` entry point *name*, dots allowed for submodules."""
     return _resolve("flashinfer", name, "flashinfer")
+
+
+def fla_op(name: str) -> Callable:
+    """Return the ``fla`` entry point *name*, dots allowed for submodules."""
+    return _resolve("fla", name, "fla")
 
 
 def vllm_op(name: str, module: str = "_custom_ops") -> Callable:
