@@ -269,11 +269,11 @@ CausalConv1dFwdOp:
       # projection already produces.
       x: {dtype: T, shape: "[D, Tt]"}
       weight: {dtype: T, shape: "[D, W]"}
-      bias: {dtype: T, shape: "[D]", optional: true}
       # The W-1 tokens preceding each sequence. Read for a sequence whose
       # has_initial_state is true, and overwritten with that sequence's own tail.
       conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
+      bias: {dtype: T, shape: "[D]", optional: true}
       has_initial_state: {dtype: bool, shape: "[B]", optional: true}
     outputs:
       output: {dtype: T, shape: "[D, Tt]"}
@@ -302,9 +302,9 @@ CausalConv1dUpdateFwdOp:
     inputs:
       x: {dtype: T, shape: "[B, D]"}
       weight: {dtype: T, shape: "[D, W]"}
-      bias: {dtype: T, shape: "[D]", optional: true}
       # The W most recent tokens per sequence. Advanced by one position in place.
       conv_state: {dtype: T, shape: "[B, D, W]", mutated: true, contiguous: true}
+      bias: {dtype: T, shape: "[D]", optional: true}
     outputs:
       output: {dtype: T, shape: "[B, D]"}
     shape_rules:
