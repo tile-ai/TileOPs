@@ -81,14 +81,36 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         # head of its KV group, so it is rotated once here rather than inside the scan.
         self.key_rope = (
             VarlenKeyRoPE(
-                batch, heads_kv, dim, max_position, rotary_dim, rope_layout, self.dtype_str
-            )
+                batch,
+                heads_kv,
+                dim,
+                max_position,
+                rotary_dim,
+                rope_layout,
+                self.rotated_dtype_str,
+                self.rope_table_dtype_str,
+            )  # fmt: skip
             if fuse_rope
             else None
         )
         self.kernel = self._make_kernel()
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    @property
+    def rotated_dtype_str(self) -> str:
+        """Element type of the Q and K the rotation reads and writes.
+
+        It is this kernel's element type unless a subclass attends over narrower inputs
+        than it emits, as an FP8 kernel does.
+        """
+        return self.dtype_str
+
+    @property
+    def rope_table_dtype_str(self) -> str:
+        """Element type of the ``cos`` and ``sin`` tables, which the manifest ties to the
+        output rather than to the rotated tensor."""
+        return self.dtype_str
 
     def _make_kernel(self) -> Callable:
         """Return the dynamic TileLang program factory owned by this kernel."""

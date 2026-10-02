@@ -59,6 +59,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     max_position: int = 1,
     rotary_dim: int = 0,
     rope_layout: str = "neox",
+    rope_dtype: str = "",
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -95,7 +96,9 @@ def _gqa_prefill_varlen_fwd_kernel(
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
         rotate_query_tile = (
-            make_varlen_query_rope(block_m, rotary_dim, rope_layout, max_position, dtype)
+            make_varlen_query_rope(
+                block_m, rotary_dim, rope_layout, max_position, dtype, rope_dtype
+            )
             if fuse_rope
             else None
         )
@@ -283,6 +286,7 @@ def _gqa_prefill_varlen_fwd_kernel(
 
         if fuse_rope:
             half = rotary_dim // 2
+            table_dtype = rope_dtype or dtype
 
             @T.prim_func
             def _gqa_prefill_varlen_rope_fwd_main(
@@ -291,8 +295,8 @@ def _gqa_prefill_varlen_fwd_kernel(
                 v: T.Tensor(kv_shape, dtype),  # type: ignore
                 cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
                 cu_seqlens_kv: T.Tensor([batch + 1], T.int32),  # type: ignore
-                rope_cos: T.Tensor([max_position, half], dtype),  # type: ignore
-                rope_sin: T.Tensor([max_position, half], dtype),  # type: ignore
+                rope_cos: T.Tensor([max_position, half], table_dtype),  # type: ignore
+                rope_sin: T.Tensor([max_position, half], table_dtype),  # type: ignore
                 output: T.Tensor(q_shape, dtype),  # type: ignore
             ) -> None:
                 with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
@@ -346,6 +350,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             self.max_position,
             self.rotary_dim,
             self.rope_layout,
+            self.rope_table_dtype_str,
         )
 
     @property

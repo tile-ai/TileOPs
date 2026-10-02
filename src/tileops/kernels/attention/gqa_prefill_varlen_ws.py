@@ -39,7 +39,7 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 )
 def _gqa_prefill_varlen_ws_kernel(
     batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas,
-    fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox",
+    fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
     score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
@@ -55,8 +55,11 @@ def _gqa_prefill_varlen_ws_kernel(
     total_kv = T.dynamic("total_kv")
     q_tiling = GroupTiling(batch, block_m)
     rope_half = rotary_dim // 2
+    table_dtype = rope_dtype or dtype
     rotate_query_tile = (
-        make_varlen_query_rope(half, rotary_dim, rope_layout, max_position, dtype, tile_axes=2)
+        make_varlen_query_rope(
+            half, rotary_dim, rope_layout, max_position, dtype, rope_dtype, tile_axes=2
+        )
         if fuse_rope
         else None
     )
@@ -432,8 +435,8 @@ def _gqa_prefill_varlen_ws_kernel(
             V: T.Tensor([total_kv, heads_kv, dim], dtype),
             CuQ: T.Tensor([batch + 1], "int32"),
             CuKV: T.Tensor([batch + 1], "int32"),
-            RopeCos: T.Tensor([max_position, rope_half], dtype),
-            RopeSin: T.Tensor([max_position, rope_half], dtype),
+            RopeCos: T.Tensor([max_position, rope_half], table_dtype),
+            RopeSin: T.Tensor([max_position, rope_half], table_dtype),
             O: T.Tensor([total_q, heads, dim], dtype),
             Sched: T.Tensor([2], "int32"),
         ):
@@ -503,6 +506,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self.max_position,
             self.rotary_dim,
             self.rope_layout,
+            self.rope_table_dtype_str,
         )
 
     @property

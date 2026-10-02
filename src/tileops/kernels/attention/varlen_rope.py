@@ -41,6 +41,7 @@ def make_varlen_query_rope(
     rope_layout: str,
     max_position: int,
     dtype: str,
+    rope_dtype: str = "",
     tile_axes: int = 0,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
@@ -53,7 +54,10 @@ def make_varlen_query_rope(
         rotary_dim: Rotated width; the channels past it are left alone.
         rope_layout: ``"neox"`` or ``"interleaved"``.
         max_position: Rows of the table, which bounds the position an index may take.
-        dtype: Element type of the tile and of the table.
+        dtype: Element type of the tile, which the widest vectorized access over it
+            divides into the frequencies one thread takes.
+        rope_dtype: Element type of the table, which an FP8 call carries at 16 bits while
+            the tile it rotates is 8. Empty means the tile's.
         tile_axes: Axes in front of the tile's own two. A warp-specialized kernel holds
             its query tiles in a double-buffered, per-warpgroup array and passes 2, with
             the slot and the warpgroup as the two leading arguments of the macro; a
@@ -101,6 +105,7 @@ def _varlen_rope_keys_kernel(
     rotary_dim: int,
     rope_layout: str,
     dtype: str,
+    rope_dtype: str,
     block_t: int,
     threads: int,
 ) -> Callable:
@@ -124,8 +129,8 @@ def _varlen_rope_keys_kernel(
         def _varlen_rope_keys_main(
             k: T.Tensor(kv_shape, dtype),  # type: ignore
             cu_seqlens_kv: T.Tensor([batch + 1], T.int32),  # type: ignore
-            rope_cos: T.Tensor([max_position, half], dtype),  # type: ignore
-            rope_sin: T.Tensor([max_position, half], dtype),  # type: ignore
+            rope_cos: T.Tensor([max_position, half], rope_dtype),  # type: ignore
+            rope_sin: T.Tensor([max_position, half], rope_dtype),  # type: ignore
             k_rot: T.Tensor(kv_shape, dtype),  # type: ignore
         ) -> None:
             with T.Kernel(num_tiles, heads_kv, threads=threads) as (row_tile, head):
@@ -202,6 +207,7 @@ class VarlenKeyRoPE:
         rotary_dim: int,
         rope_layout: str,
         dtype: str,
+        rope_dtype: str = "",
     ) -> None:
         self.kernel = _varlen_rope_keys_kernel(
             batch,
@@ -211,6 +217,7 @@ class VarlenKeyRoPE:
             rotary_dim,
             rope_layout,
             dtype,
+            rope_dtype or dtype,
             self._KEY_ROWS_PER_CTA,
             self._thread_count(rotary_dim, dtype),
         )
