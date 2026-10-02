@@ -1,70 +1,43 @@
 # Rotary position embedding (RoPE) operators, exported by the `rope` module.
 
-RopeNeoxFwdOp:
+RopeFwdOp:
+  # `neox` rotates the two halves of a head against each other, `interleaved` rotates each
+  # adjacent pair. The frequency table is the same, so only the pairing differs.
   family: rope
   status: implemented
 
   signature:
     types:
       RopeX:
-        params: {layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
-        match: layout
+        params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
+        match: input_layout
         cases:
         - {when: 1d, is: "[S, D]"}
         - {when: 2d, is: "[B, S, H, D]"}
     forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      layout: {type: "'1d' | '2d'", default: 1d}
+      rope_layout: {type: "'neox' | 'interleaved'", default: neox}
+      input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
     inputs:
-      x: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
 
   workloads:
-  - {layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}, {T: float32}], label: 1d-2k}
-  - {layout: 1d, S: 4096, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-4k}
-  - {layout: 2d, B: 2, S: 2048, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-2k}
+  - {rope_layout: neox, input_layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}, {T: float32}], label: neox-1d-2k}
+  - {rope_layout: neox, input_layout: 1d, S: 4096, D: 128, dtype_cases: [{T: bfloat16}], label: neox-1d-4k}
+  - {rope_layout: neox, input_layout: 2d, B: 2, S: 2048, H: 32, D: 128, dtype_cases: [{T: float16}], label: neox-2d-2k}
+  - {rope_layout: interleaved, input_layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}], label: interleaved-1d-2k}
+  - {rope_layout: interleaved, input_layout: 2d, B: 2, S: 2048, H: 32, D: 128, dtype_cases: [{T: bfloat16}], label: interleaved-2d-2k}
+  - {rope_layout: interleaved, input_layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: interleaved-1d-5k}
 
   roofline:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
-    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
-
-RopeNonNeoxFwdOp:
-  family: rope
-  status: implemented
-
-  signature:
-    types:
-      RopeX:
-        params: {layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
-        match: layout
-        cases:
-        - {when: 1d, is: "[S, D]"}
-        - {when: 2d, is: "[B, S, H, D]"}
-    forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]"}
-    params:
-      layout: {type: "'1d' | '2d'", default: 1d}
-      base: {type: float, default: 10000.0}
-    inputs:
-      x: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
-    outputs:
-      output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
-    shape_rules:
-    - "D > 0 and D % 2 == 0"
-    - "base > 0"
-
-  workloads:
-  - {layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}], label: 1d-2k}
-  - {layout: 2d, B: 2, S: 2048, H: 32, D: 128, dtype_cases: [{T: bfloat16}], label: 2d-2k}
-  - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
-
-  roofline:
-    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
-    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
+    flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
 RopeLlama31FwdOp:
   family: rope
@@ -73,23 +46,23 @@ RopeLlama31FwdOp:
   signature:
     types:
       RopeX:
-        params: {layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
-        match: layout
+        params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
+        match: input_layout
         cases:
         - {when: 1d, is: "[S, D]"}
         - {when: 2d, is: "[B, S, H, D]"}
     forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      layout: {type: "'1d' | '2d'", default: 1d}
+      input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
       scale_factor: {type: float, default: 8.0}
       low_freq_factor: {type: float, default: 1.0}
       high_freq_factor: {type: float, default: 4.0}
       original_max_position: {type: int, default: 8192}
     inputs:
-      x: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
@@ -98,13 +71,13 @@ RopeLlama31FwdOp:
     - "low_freq_factor != high_freq_factor"
 
   workloads:
-  - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
-  - {layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
-  - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
+  - {input_layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
+  - {input_layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
+  - {input_layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
 
   roofline:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
-    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
+    flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
 RopeYarnFwdOp:
   family: rope
@@ -113,14 +86,14 @@ RopeYarnFwdOp:
   signature:
     types:
       RopeX:
-        params: {layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
-        match: layout
+        params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
+        match: input_layout
         cases:
         - {when: 1d, is: "[S, D]"}
         - {when: 2d, is: "[B, S, H, D]"}
     forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      layout: {type: "'1d' | '2d'", default: 1d}
+      input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
       scale: {type: float, default: 16.0}
       original_max_position: {type: int, default: 4096}
@@ -128,9 +101,9 @@ RopeYarnFwdOp:
       beta_slow: {type: float, default: 1.0}
       attn_factor: {type: float, default: 1.0}
     inputs:
-      x: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     # The correction range divides by log(base) and takes log(original_max_position / beta).
@@ -138,13 +111,13 @@ RopeYarnFwdOp:
     - "original_max_position > 0 and 0 < beta_fast < inf and 0 < beta_slow < inf"
 
   workloads:
-  - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
-  - {layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
-  - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
+  - {input_layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
+  - {input_layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
+  - {input_layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
 
   roofline:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
-    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
+    flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
 RopeLongRopeFwdOp:
   family: rope
@@ -153,22 +126,22 @@ RopeLongRopeFwdOp:
   signature:
     types:
       RopeX:
-        params: {layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
-        match: layout
+        params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
+        match: input_layout
         cases:
         - {when: 1d, is: "[S, D]"}
         - {when: 2d, is: "[B, S, H, D]"}
     forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]", R: "DType[float32 | float16 | bfloat16]"}
     params:
-      layout: {type: "'1d' | '2d'", default: 1d}
+      input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
       rescale_factors: {dtype: R, shape: "[D // 2]", optional: true}
       max_position_embeddings: {type: int, default: 4096}
       original_max_position_embeddings: {type: int, default: 4096}
     inputs:
-      x: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
@@ -177,14 +150,14 @@ RopeLongRopeFwdOp:
     - "max_position_embeddings <= original_max_position_embeddings or original_max_position_embeddings > 1"
 
   workloads:
-  - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
-  - {layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
-  - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
-  - {layout: 1d, S: 8192, D: 128, some: [rescale_factors], dtype_cases: [{T: bfloat16, R: float32}, {T: bfloat16, R: float16}, {T: bfloat16, R: bfloat16}], label: 1d-8k-rescaled}
+  - {input_layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
+  - {input_layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
+  - {input_layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
+  - {input_layout: 1d, S: 8192, D: 128, some: [rescale_factors], dtype_cases: [{T: bfloat16, R: float32}, {T: bfloat16, R: float16}, {T: bfloat16, R: bfloat16}], label: 1d-8k-rescaled}
 
   roofline:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
-    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
+    flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
 RopeNeoxPositionIdsFwdOp:
   # Packed [tokens, heads, head_dim] input with one position per token; the first

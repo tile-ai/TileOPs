@@ -404,7 +404,7 @@ entries:
       expect_fail: true
       dtype_cases:
       - T: float32
-  InfNormFwdOp:
+  VectorNormFwdOp:
     signature:
       forall:
         S: Shape
@@ -412,7 +412,7 @@ entries:
       params:
         ord:
           type: float
-          default: .inf
+          default: 2.0
         dim:
           type: int | list[int] | None
           default: null
@@ -428,22 +428,38 @@ entries:
           dtype: T
           shape: '[*reduced(S, dim, keepdim, ''full'')]'
       shape_rules:
-      - ord == inf
+      - ord == 1 or ord == 2 or ord == inf
       - valid_axes(dim, len(S)) and unique_axes(dim, len(S))
     workloads:
-    - label: infnorm-0
+    - label: vectornorm-inf
+      S:
+      - 1024
+      - 4096
+      dim: -1
+      ord: .inf
+      dtype_cases:
+      - T: bfloat16
+    - label: vectornorm-l1
+      S:
+      - 1024
+      - 4096
+      dim: -1
+      ord: 1
+      dtype_cases:
+      - T: bfloat16
+    - label: vectornorm-l2
       S:
       - 1024
       - 4096
       dim: -1
       dtype_cases:
       - T: bfloat16
-    - label: infnorm-1
+    - label: vectornorm-unsupported-order
       S:
       - 1024
       - 4096
       dim: -1
-      ord: 2.0
+      ord: 3.0
       expect_fail: true
       dtype_cases:
       - T: bfloat16

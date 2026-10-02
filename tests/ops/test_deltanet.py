@@ -1,4 +1,4 @@
-"""Tests for the DeltaNet ops: chunkwise forward, backward and autograd, inference, decode."""
+"""Tests for the DeltaNet ops: chunkwise forward and backward, inference, decode."""
 
 from functools import partial
 
@@ -15,7 +15,6 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.linear_attention import (
-    DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetFwdOp,
 )
@@ -233,40 +232,6 @@ def test_deltanet_bwd(
             **tols,
             msg=lambda m, n=name: f"{n}: {m}",
         )
-
-
-# The autograd wrapper owes only the wiring: its forward is the forward op's ``o``, and its
-# backward produces what the backward op produces from the saved tensors. The numbers are
-# checked by the forward and backward op tests.
-B, H, S, DK, DV, BC = 1, 2, 256, 64, 64, 64
-
-
-def _inputs(dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
-    torch.manual_seed(42)
-    scale = 0.1
-    q = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * scale
-    k = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * scale
-    v = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * scale
-    beta = torch.rand(B, H, S, device=run_device(), dtype=dtype) * 0.5
-    return q, k, v, beta
-
-
-@pytest.mark.smoke
-def test_deltanet_autograd_matches_the_ops_it_wraps() -> None:
-    dtype = torch.float16
-    q, k, v, beta = _inputs(dtype)
-    do = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
-
-    o_ref, s, aw, au, w, u = DeltaNetFwdOp(chunk_size=BC).forward(q, k, v, beta)
-    grads_ref = DeltaNetBwdOp(chunk_size=BC).forward(do, q, k, v, beta, s, aw, au, w, u)
-
-    leaves = [t.detach().clone().requires_grad_(True) for t in (q, k, v, beta)]
-    o = DeltaNetAutogradFwdOp(chunk_size=BC)(*leaves)
-    o.backward(do)
-
-    torch.testing.assert_close(o, o_ref)
-    for name, leaf, ref in zip(("dq", "dk", "dv", "dbeta"), leaves, grads_ref, strict=True):
-        torch.testing.assert_close(leaf.grad, ref, msg=lambda m, n=name: f"{n}: {m}")
 
 
 @pytest.mark.smoke

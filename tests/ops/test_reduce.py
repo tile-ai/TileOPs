@@ -767,13 +767,13 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
 def test_dtype_casts_the_input_before_reducing(name, in_dtype, out_dtype) -> None:
     """``dtype`` casts the input first and is the output's, as in torch."""
     from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
-    from tileops.ops.reduction.vector_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     op, ref_fn = {
         "sum": (SumFwdOp(dim=-1, dtype=out_dtype), lambda x: torch.sum(x, -1, dtype=out_dtype)),
         "prod": (ProdFwdOp(-1, dtype=out_dtype), lambda x: torch.prod(x, -1, dtype=out_dtype)),
         "l2": (
-            L2NormFwdOp(dim=-1, dtype=out_dtype),
+            VectorNormFwdOp(2, dim=-1, dtype=out_dtype),
             lambda x: torch.linalg.vector_norm(x, 2, -1, dtype=out_dtype),
         ),
     }[name]

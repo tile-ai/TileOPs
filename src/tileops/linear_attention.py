@@ -1,7 +1,6 @@
 """The linear attention ops, at the public path ``tileops.linear_attention``."""
 
 from tileops.ops.linear_attention import (
-    DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
     DeltaNetFwdOp,
@@ -14,7 +13,6 @@ from tileops.ops.linear_attention import (
 )
 
 __all__ = [
-    "DeltaNetAutogradFwdOp",
     "DeltaNetFwdOp",
     "DeltaNetInferenceFwdOp",
     "DeltaNetBwdOp",

@@ -66,11 +66,10 @@ from tileops.ops.quantization import (
     SmoothQuantFwdOp,
 )
 from tileops.ops.rope import (
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
-    RopeNeoxFwdOp,
     RopeNeoxPositionIdsFwdOp,
-    RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
 from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
@@ -693,10 +692,10 @@ def _rope_cases():
         return torch.randn(*shape, dtype=_DTYPE, device=run_device())
 
     def one_d(op_cls):
-        return lambda: (op_cls(layout="1d"), (_x(_SEQ_LEN, _D),))
+        return lambda: (op_cls(input_layout="1d"), (_x(_SEQ_LEN, _D),))
 
     def two_d(op_cls):
-        return lambda: (op_cls(layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
+        return lambda: (op_cls(input_layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
 
     def longrope():
         rescale = torch.linspace(1.0, 2.0, _D // 2, device=run_device())
@@ -708,8 +707,14 @@ def _rope_cases():
         return op, (_x(_SEQ_LEN, _HEADS, _D), positions)
 
     return (
-        ("rope-neox", one_d(RopeNeoxFwdOp)),
-        ("rope-non-neox", two_d(RopeNonNeoxFwdOp)),
+        ("rope-neox", one_d(RopeFwdOp)),
+        (
+            "rope-interleaved",
+            lambda: (
+                RopeFwdOp(rope_layout="interleaved", input_layout="2d"),
+                (_x(2, _SEQ_LEN, _HEADS, _D),),
+            ),
+        ),
         ("rope-llama31", one_d(RopeLlama31FwdOp)),
         ("rope-yarn", two_d(RopeYarnFwdOp)),
         ("rope-longrope", longrope),
@@ -806,8 +811,7 @@ for _op_cls in (
     EngramDecodeFwdOp,
     MHCPreFwdOp,
     MHCPostFwdOp,
-    RopeNeoxFwdOp,
-    RopeNonNeoxFwdOp,
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeYarnFwdOp,
     RopeLongRopeFwdOp,

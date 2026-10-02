@@ -10,7 +10,7 @@ class RopeWorkload(WorkloadBase):
     def __init__(
         self,
         variant: str,
-        layout: str,
+        input_layout: str,
         batch: int,
         seq_len: int,
         num_heads: int,
@@ -19,7 +19,7 @@ class RopeWorkload(WorkloadBase):
         extra_kwargs: dict | None = None,
     ):
         self.variant = variant
-        self.layout = layout
+        self.input_layout = input_layout
         self.batch = batch
         self.seq_len = seq_len
         self.num_heads = num_heads
@@ -29,7 +29,7 @@ class RopeWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         """Generate only x; cos/sin are computed by the op internally."""
-        if self.layout == "1d":
+        if self.input_layout == "1d":
             x = torch.randn(self.seq_len, self.head_dim, device=run_device(), dtype=self.dtype)
         else:
             x = torch.randn(

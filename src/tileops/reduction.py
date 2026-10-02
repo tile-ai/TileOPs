@@ -10,9 +10,6 @@ from tileops.ops.reduction import (
     CountNonzeroFwdOp,
     CumprodFwdOp,
     CumsumFwdOp,
-    InfNormFwdOp,
-    L1NormFwdOp,
-    L2NormFwdOp,
     LogSoftmaxFwdOp,
     LogSumExpFwdOp,
     MeanFwdOp,
@@ -22,6 +19,7 @@ from tileops.ops.reduction import (
     SumFwdOp,
     VarFwdOp,
     VarMeanFwdOp,
+    VectorNormFwdOp,
 )
 
 __all__ = [
@@ -38,9 +36,7 @@ __all__ = [
     "SoftmaxFwdOp",
     "LogSoftmaxFwdOp",
     "LogSumExpFwdOp",
-    "L1NormFwdOp",
-    "L2NormFwdOp",
-    "InfNormFwdOp",
+    "VectorNormFwdOp",
     "CumsumFwdOp",
     "CumprodFwdOp",
     "AllFwdOp",
