@@ -877,5 +877,7 @@ class TestCoverageLevels:
         missing = sorted(set(HAND_WRITTEN) - _RECOUNTED)
         assert not missing, (
             f"declared level two with no _ledger case above: {missing}; a case that "
-            "sums anonymous tuples cannot be checked against the signature"
+            "sums anonymous tuples cannot be checked against the signature. A case "
+            "another xdist worker ran is not recorded here: run this file in one "
+            "process, or pass --dist loadfile"
         )
