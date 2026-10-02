@@ -9,7 +9,7 @@
     <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
     <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
     <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
-    <!-- <a href="https://pypi.org/project/src/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version"></a> -->
+    <!-- Uncomment with the first release. <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a> -->
   </p>
 
 <p>
@@ -63,7 +63,7 @@ whether it supports `torch.compile(fullgraph=True)`.
 ## How it works
 
 Each operator is declared before it is implemented, as an entry in
-[`src/tileops/manifest/spec/`](src/tileops/manifest/spec/), one file per family. The entry drives
+[`src/tileops/manifest/spec/`](https://github.com/tile-ai/TileOPs/tree/main/src/tileops/manifest/spec/), one file per family. The entry drives
 code generation, testing, and benchmarking. Abridged from `gemm.yaml`:
 
 ```yaml
@@ -90,7 +90,7 @@ stay in step.
 
 Each operator has two layers: the **Op** (L2), the Python entry point that owns the caller-facing
 contract, and the **Kernel** (L1), the TileLang implementation.
-[architecture.md](docs/design/architecture.md#two-layer-separation-m2) defines the boundary
+[architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md#two-layer-separation-m2) defines the boundary
 between them.
 
 ## Installation
@@ -105,7 +105,7 @@ CUDA-capable GPU is required.
 - CUDA Toolkit 13.2
 - A GPU of compute capability 9.0 (SM90), tested on H200
 - [TileLang](https://github.com/tile-ai/tilelang) 0.1.12; a source checkout instead runs the
-  pinned main snapshot — see [development.md](docs/development.md#dev-docker-image)
+  pinned main snapshot — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
@@ -117,20 +117,20 @@ python -m pytest -q tests -m smoke           # verify; requires a CUDA GPU
 ```
 
 A prebuilt Docker image carries the whole stack and is the environment CI runs in — see
-[development.md](docs/development.md#dev-docker-image), along with test tiers, benchmarks, and
+[development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image), along with test tiers, benchmarks, and
 build troubleshooting.
 
 ## Documentation
 
-|                                                        |                                                                 |
-| ------------------------------------------------------ | --------------------------------------------------------------- |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                     | Naming, PR shape, what a review checks                          |
-| [development.md](docs/development.md)                  | Build, test, benchmark, dev image                               |
-| [architecture.md](docs/design/architecture.md)         | Module map and the agent production loop                        |
-| [manifest.md](docs/design/manifest.md)                 | The spec format every operator starts from                      |
-| [ops-design.md](docs/design/ops-design.md)             | Adding an operator, step by step                                |
-| [roofline.md](docs/design/roofline.md)                 | How performance is scored against Speed-of-Light                |
-| [layer-boundaries.md](docs/design/layer-boundaries.md) | What each layer owns, and the interfaces layers compose through |
+|                                                                                                     |                                                                 |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [CONTRIBUTING.md](https://github.com/tile-ai/TileOPs/blob/main/CONTRIBUTING.md)                     | Naming, PR shape, what a review checks                          |
+| [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md)                  | Build, test, benchmark, dev image                               |
+| [architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md)         | Module map and the agent production loop                        |
+| [manifest.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/manifest.md)                 | The spec format every operator starts from                      |
+| [ops-design.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/ops-design.md)             | Adding an operator, step by step                                |
+| [roofline.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/roofline.md)                 | How performance is scored against Speed-of-Light                |
+| [layer-boundaries.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/layer-boundaries.md) | What each layer owns, and the interfaces layers compose through |
 
 The rendered site carries what this table cannot: the
 [API reference](https://tile-ai.github.io/TileOPs.github.io/api/) generated from the operator
@@ -139,9 +139,9 @@ from the nightly run, each operator against the tuned libraries it competes with
 
 ## Contributing
 
-Operators are added through the loop above — start from [ops-design.md](docs/design/ops-design.md),
+Operators are added through the loop above — start from [ops-design.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/ops-design.md),
 which walks the path from a manifest entry to a merged kernel.
 
 ## License
 
-TileOPs is released under the [MIT License](LICENSE).
+TileOPs is released under the [MIT License](https://github.com/tile-ai/TileOPs/blob/main/LICENSE).
