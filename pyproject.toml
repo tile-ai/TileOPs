@@ -27,6 +27,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/tile-ai/TileOPs"
 Repository = "https://github.com/tile-ai/TileOPs"
+Documentation = "https://tile-ai.github.io/TileOPs.github.io/"
 Issues = "https://github.com/tile-ai/TileOPs/issues"
 
 [project.optional-dependencies]
