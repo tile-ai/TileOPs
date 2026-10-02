@@ -31,6 +31,7 @@ class GLAInferenceCallSpec(CallSpec):
     dtype: Optional[torch.dtype] = None
     scale: float = 0.0
     varlen: bool = False
+    has_initial_state: bool = False
     num_sequences: int = 0
 
 
@@ -84,8 +85,8 @@ def serves_extents(call: GLAInferenceCallSpec) -> bool:
     )
 
 
-def build_entry(cls: type, call: GLAInferenceCallSpec, **extents: int) -> Entry:
-    """Build *cls* from the call's scale, dtype and device plus the *extents* it compiles."""
+def build_entry(cls: type, call: GLAInferenceCallSpec, **build_arguments: int | bool) -> Entry:
+    """Build *cls* from the call's scale, dtype and device plus the *build_arguments* it compiles."""
     device_index = call.device.index if call.device is not None else None
-    arguments = dict(extents, scale=call.scale, dtype=call.dtype, device_index=device_index)
+    arguments = dict(build_arguments, scale=call.scale, dtype=call.dtype, device_index=device_index)
     return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)

@@ -592,6 +592,22 @@ def test_gla_dense_decode_matches_fla(
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
+def test_gla_dense_decode_builds_one_kernel_per_state_presence() -> None:
+    """State presence changes what the build emits, so the two calls do not share a kernel."""
+    torch.manual_seed(2174)
+    test = GLAInferenceTest(2, 1, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
+    q, k, v, g, state = test.gen_inputs()
+    op = GLAInferenceFwdOp()
+    op(q, k, v, g, state)
+    op(q, k, v, g)
+    built = op.built_kernels("gla_inference").values()
+    assert {kernel.has_initial_state for kernel in built} == {False, True}
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     """Feeding each step's final_state back matches one recurrence over all the steps."""
     torch.manual_seed(2174)
