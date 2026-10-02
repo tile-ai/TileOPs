@@ -543,9 +543,8 @@ jobs:
           # tileops install doesn't bring this; pin via constraints.txt so the install is
           # deterministic (the runner image should bake it and drop this install — follow-up).
           python3 -m pip install -q -c constraints.txt pytest-timeout pytest-xdist
-          # Eight workers share the job's one GPU. `loadfile` keeps a file on one worker: some
-          # files assert over what their other cases recorded in the process.
-          XDIST=(-n 8 --dist loadfile)
+          # Eight workers share the job's one GPU. The scheduler comes from conftest.py.
+          XDIST=(-n 8)
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"

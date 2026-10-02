@@ -9,6 +9,38 @@ from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_t
 from workloads.device import run_device, set_run_device
 
 
+def _wants_loadfile(*, has_xdist: bool, numprocesses: object, dist: str, distload: bool) -> bool:
+    """Whether a run should take the file-grouped scheduler.
+
+    Args:
+        has_xdist: Whether the xdist plugin is loaded.
+        numprocesses: ``-n``, before xdist resolves ``auto``.
+        dist: ``--dist``, before xdist derives one from ``-n``.
+        distload: Whether ``-d`` was passed.
+    """
+    return has_xdist and bool(numprocesses) and dist == "no" and not distload
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_cmdline_main(config: pytest.Config):
+    """Keep a file's cases on one worker, unless the caller names a scheduler.
+
+    A suite file may assert over what its own other cases recorded in the process.
+    A wrapper, because xdist's ``pytest_cmdline_main`` derives ``--dist load`` from
+    ``-n`` before any plain implementation runs, after which the default and an
+    explicit ``--dist load`` are the same value.
+    """
+    option = config.option
+    if _wants_loadfile(
+        has_xdist=config.pluginmanager.hasplugin("xdist"),
+        numprocesses=getattr(option, "numprocesses", None),
+        dist=getattr(option, "dist", "no"),
+        distload=getattr(option, "distload", False),
+    ):
+        option.dist = "loadfile"
+    return (yield)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register the target and the device a run uses."""
     parser.addoption(
