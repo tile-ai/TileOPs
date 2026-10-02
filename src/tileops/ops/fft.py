@@ -19,12 +19,13 @@ class FFTC2CFwdOp(Op):
     """1D Complex-to-Complex Fast Fourier Transform (FFT), equivalent to ``torch.fft.fft``.
 
     Transforms the last axis; leading dimensions are batched. Every power-of-two
-    length from 1 to 2**28 is served in complex64 and complex128 on sm_80 and
-    sm_90. sm_86 and sm_89 (99 KB of shared memory per block) refuse 8192
-    (complex128), 16384 (complex64), 2**22 through 2**24, and 2**27 (complex128).
+    length from 1 to 2**28 is served in complex64 and complex128 on sm_80, sm_86,
+    sm_89, and sm_90.
 
     * ``n = 1`` returns a copy of the input.
-    * Up to 16384 (8192 at complex128), one launch holds a whole transform.
+    * Up to 16384 (8192 at complex128), one launch holds a whole transform. With
+      99 KB of shared memory per block (sm_86, sm_89), 8192 (complex128) and
+      16384 (complex64) take the two-launch decomposition instead.
     * Longer lengths are a four-step decomposition: two launches up to 2**24,
       three above. Each call allocates one intermediate buffer the size of the
       input.

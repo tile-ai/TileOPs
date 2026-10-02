@@ -1,5 +1,8 @@
 """Power-of-two complex-to-complex FFT kernels, one plan per (length, dtype) in ``FFT_PLANS``.
 
+Where a plan does not fit an architecture's block shared memory, ``FFT_NARROW_PLANS`` holds
+a decomposition that does, for that architecture only.
+
 Code that needs a distinct Python constant per register slot is macro recursion
 (``_each``): a traced ``for`` is a runtime loop, and a runtime register index spills.
 """
@@ -17,6 +20,7 @@ import torch
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.utils import get_sm_version
 
 __all__ = [
     "FFTC2CCall",
@@ -106,6 +110,18 @@ _FOUR_STEP_TILE = {
     (1 << 27, "complex128"): (32, 4, 4),
     (1 << 28, "complex64"): (16, 16, 8),
     (1 << 28, "complex128"): (4, 4, 4),
+}
+# (n, dtype) -> (factors, transforms per CTA) of each FFT_NARROW_PLANS record.
+_NARROW_PLAN = {
+    (1 << 13, "complex128"): ((128, 64), (4, 8)),
+    (1 << 14, "complex64"): ((256, 64), (16, 16)),
+    (1 << 22, "complex64"): ((2048, 2048), (4, 4)),
+    (1 << 22, "complex128"): ((2048, 2048), (2, 2)),
+    (1 << 23, "complex64"): ((2048, 4096), (4, 2)),
+    (1 << 23, "complex128"): ((2048, 4096), (2, 1)),
+    (1 << 24, "complex64"): ((4096, 4096), (2, 2)),
+    (1 << 24, "complex128"): ((4096, 4096), (1, 1)),
+    (1 << 27, "complex128"): ((256, 512, 1024), (16, 4, 4)),
 }
 
 
@@ -1049,6 +1065,11 @@ def _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw: int, row: int, g
     T.sync_threads()
 
 
+def _split_block(bi, nx: int, ny: int) -> tuple:
+    """grid.y and grid.z stop at 65535 blocks, so the batch shares grid.x with the tiles."""
+    return bi % nx, bi // nx % ny, bi // (nx * ny)
+
+
 def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
     """Column kernel *level* of a four-step plan: length-n1 transforms, twiddle, T[k_b][j_a]."""
     total = math.prod(factors)
@@ -1226,6 +1247,7 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
 
         batch = T.dynamic("batch")
         geom = (tw, row, grp, rowlen, n1, n2, real_dtype)
+        nx = n2 // tw
 
         if passes == 2:
 
@@ -1236,12 +1258,9 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
                 twlut: T.Tensor((twrows, n2, 2), real_dtype),
                 t_pair: T.Tensor((batch, total, 2), real_dtype),
             ):
-                if outer == 1:
-                    with T.Kernel(n2 // tw, batch, threads=tw * lanes) as (bx, bb):
-                        _four_step_a_body(x_pair, w1lut, w1lut, twlut, t_pair, bx, 0, bb, *geom)
-                else:
-                    with T.Kernel(n2 // tw, outer, batch, threads=tw * lanes) as (bx, by, bb):
-                        _four_step_a_body(x_pair, w1lut, w1lut, twlut, t_pair, bx, by, bb, *geom)
+                with T.Kernel(nx * outer * batch, threads=tw * lanes) as bi:
+                    bx, by, bb = _split_block(bi, nx, outer)
+                    _four_step_a_body(x_pair, w1lut, w1lut, twlut, t_pair, bx, by, bb, *geom)
 
         else:
 
@@ -1253,12 +1272,9 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
                 twlut: T.Tensor((twrows, n2, 2), real_dtype),
                 t_pair: T.Tensor((batch, total, 2), real_dtype),
             ):
-                if outer == 1:
-                    with T.Kernel(n2 // tw, batch, threads=tw * lanes) as (bx, bb):
-                        _four_step_a_body(x_pair, w1lut, w2lut, twlut, t_pair, bx, 0, bb, *geom)
-                else:
-                    with T.Kernel(n2 // tw, outer, batch, threads=tw * lanes) as (bx, by, bb):
-                        _four_step_a_body(x_pair, w1lut, w2lut, twlut, t_pair, bx, by, bb, *geom)
+                with T.Kernel(nx * outer * batch, threads=tw * lanes) as bi:
+                    bx, by, bb = _split_block(bi, nx, outer)
+                    _four_step_a_body(x_pair, w1lut, w2lut, twlut, t_pair, bx, by, bb, *geom)
 
         return main
 
@@ -1370,6 +1386,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
 
         batch = T.dynamic("batch")
         geom = (tw, row, grp, nf, tiled, row_stride, out_stride, real_dtype)
+        nx = tiled // tw
 
         if passes == 2:
 
@@ -1379,12 +1396,9 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
                 w1lut: T.Tensor((nf, 2), real_dtype),
                 y_pair: T.Tensor((batch, total, 2), real_dtype),
             ):
-                if mid == 1:
-                    with T.Kernel(tiled // tw, batch, threads=tw * lanes) as (bx, bb):
-                        _four_step_b_body(t_pair, w1lut, w1lut, y_pair, bx, 0, bb, *geom)
-                else:
-                    with T.Kernel(tiled // tw, mid, batch, threads=tw * lanes) as (bx, by, bb):
-                        _four_step_b_body(t_pair, w1lut, w1lut, y_pair, bx, by, bb, *geom)
+                with T.Kernel(nx * mid * batch, threads=tw * lanes) as bi:
+                    bx, by, bb = _split_block(bi, nx, mid)
+                    _four_step_b_body(t_pair, w1lut, w1lut, y_pair, bx, by, bb, *geom)
 
         else:
 
@@ -1395,16 +1409,36 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
                 w2lut: T.Tensor((_factor_radix(nf), 2), real_dtype),
                 y_pair: T.Tensor((batch, total, 2), real_dtype),
             ):
-                if mid == 1:
-                    with T.Kernel(tiled // tw, batch, threads=tw * lanes) as (bx, bb):
-                        _four_step_b_body(t_pair, w1lut, w2lut, y_pair, bx, 0, bb, *geom)
-                else:
-                    with T.Kernel(tiled // tw, mid, batch, threads=tw * lanes) as (bx, by, bb):
-                        _four_step_b_body(t_pair, w1lut, w2lut, y_pair, bx, by, bb, *geom)
+                with T.Kernel(nx * mid * batch, threads=tw * lanes) as bi:
+                    bx, by, bb = _split_block(bi, nx, mid)
+                    _four_step_b_body(t_pair, w1lut, w2lut, y_pair, bx, by, bb, *geom)
 
         return main
 
     return _func
+
+
+def _four_step_record(factors: tuple, tile: tuple, dtype: str) -> _FFTPlan:
+    """A decomposed plan's record; its caller sets ``archs``."""
+    columns = tuple(
+        functools.partial(_build_four_step_a, factors, level) for level in range(1, len(factors))
+    )
+    return _FFTPlan(
+        factors=factors,
+        radix=tuple(
+            (16, _factor_radix(f)) if _factor_passes(f) == 2 else (16, 16, _factor_radix(f))
+            for f in factors
+        ),
+        tile=tile,
+        # Odd strides keep s[idx*tw + col] conflict-free.
+        pad=tuple(
+            (f // 16 + 1,) if _factor_passes(f) == 2 else (f // 16 + 1, f // 256 + 1)
+            for f in factors
+        ),
+        twiddle_exp=tuple(_twiddle_exps(f) for f in factors[:-1]),
+        builders=columns + (functools.partial(_build_four_step_b, factors),),
+        itemsize=4 if dtype == "complex64" else 8,
+    )
 
 
 def _plan_table() -> Dict[tuple, _FFTPlan]:
@@ -1448,26 +1482,7 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
                 itemsize=4 if dtype == "complex64" else 8,
             )
     for (n, dtype), factors in _FOUR_STEP_PLAN.items():
-        columns = tuple(
-            functools.partial(_build_four_step_a, factors, level)
-            for level in range(1, len(factors))
-        )
-        records[n, dtype] = _FFTPlan(
-            factors=factors,
-            radix=tuple(
-                (16, _factor_radix(f)) if _factor_passes(f) == 2 else (16, 16, _factor_radix(f))
-                for f in factors
-            ),
-            tile=_FOUR_STEP_TILE[n, dtype],
-            # Odd strides keep s[idx*tw + col] conflict-free.
-            pad=tuple(
-                (f // 16 + 1,) if _factor_passes(f) == 2 else (f // 16 + 1, f // 256 + 1)
-                for f in factors
-            ),
-            twiddle_exp=tuple(_twiddle_exps(f) for f in factors[:-1]),
-            builders=columns + (functools.partial(_build_four_step_b, factors),),
-            itemsize=4 if dtype == "complex64" else 8,
-        )
+        records[n, dtype] = _four_step_record(factors, _FOUR_STEP_TILE[n, dtype], dtype)
     records = {
         key: dataclasses.replace(
             plan,
@@ -1482,15 +1497,37 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
     return dict(sorted(records.items(), key=lambda kv: (kv[0][0], kv[0][1] != "complex64")))
 
 
+def _narrow_plan_table() -> Dict[tuple, _FFTPlan]:
+    records = {}
+    for (n, dtype), (factors, tile) in _NARROW_PLAN.items():
+        plan = _four_step_record(factors, tile, dtype)
+        records[n, dtype] = dataclasses.replace(
+            plan,
+            archs=tuple(
+                arch
+                for arch, cap in BLOCK_SHARED_BYTES_OPT_IN.items()
+                if arch not in FFT_PLANS[n, dtype].archs and plan.default_smem_bytes <= cap
+            ),
+        )
+    return records
+
+
 FFT_PLANS: Dict[tuple, _FFTPlan] = _plan_table()
+FFT_NARROW_PLANS: Dict[tuple, _FFTPlan] = _narrow_plan_table()
 
 
-# Bounded by FFT_PLANS, one entry per record.
-@functools.lru_cache(maxsize=64)
-def _fft_builders(n: int, dtype: str) -> tuple:
-    """One JIT builder per kernel of the plan for (n, dtype), in launch order."""
-    real = "float32" if dtype == "complex64" else "float64"
-    return tuple(build(real) for build in FFT_PLANS[n, dtype].builders)
+def _plan_for(n: int, dtype: str, arch: int) -> Optional[_FFTPlan]:
+    narrow = FFT_NARROW_PLANS.get((n, dtype))
+    if narrow is not None and arch in narrow.archs:
+        return narrow
+    return FFT_PLANS.get((n, dtype))
+
+
+@functools.lru_cache(maxsize=len(FFT_PLANS) + len(FFT_NARROW_PLANS))
+def _fft_builders(plan: _FFTPlan) -> tuple:
+    """One JIT builder per kernel of *plan*, in launch order."""
+    real = "float32" if plan.itemsize == 4 else "float64"
+    return tuple(build(real) for build in plan.builders)
 
 
 def _pass_tables(n: int, dtype: torch.dtype, device: torch.device) -> tuple:
@@ -1529,7 +1566,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
     @classmethod
     def applies(cls, call: FFTC2CCall) -> bool:
         """True where the call's plan is one a single CTA runs in one launch."""
-        plan = FFT_PLANS.get((call.n, cls.dtype_to_str(call.dtype)))
+        plan = _plan_for(call.n, cls.dtype_to_str(call.dtype), call.arch)
         return plan is not None and not plan.decomposed and call.arch in plan.archs
 
     @classmethod
@@ -1553,7 +1590,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         self.plan = FFT_PLANS[n, self.dtype_str]
         if config is not None:
             self._check_config(config)
-        (self.kernel,) = _fft_builders(n, self.dtype_str)
+        (self.kernel,) = _fft_builders(self.plan)
         self._tables: dict = {}
         self.init_config(config, tune)
 
@@ -1656,7 +1693,7 @@ class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
     @classmethod
     def applies(cls, call: FFTC2CCall) -> bool:
         """True where the call's plan names more than one factor."""
-        plan = FFT_PLANS.get((call.n, cls.dtype_to_str(call.dtype)))
+        plan = _plan_for(call.n, cls.dtype_to_str(call.dtype), call.arch)
         return plan is not None and plan.decomposed and call.arch in plan.archs
 
     @classmethod
@@ -1677,10 +1714,10 @@ class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = FFT_PLANS[n, self.dtype_str]
+        self.plan = _plan_for(n, self.dtype_str, get_sm_version(device_index))
         if config is not None:
             self._check_config(config)
-        self.kernel = _fft_builders(n, self.dtype_str)
+        self.kernel = _fft_builders(self.plan)
         self._tables: dict = {}
         self.init_config(config, tune)
 
