@@ -1,7 +1,9 @@
+from functools import partial
+
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.test_base import TestBase, allclose_compare
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
@@ -117,10 +119,21 @@ def test_gated_deltanet_prefill_takes_each_input_transform(
         use_beta_sigmoid_in_kernel=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
     )
-    # The transforms move the output's last bits: one element of 16384 reaches 1.03e-3
-    # at float16, which the dtype's usual 1e-3 bound does not cover.
-    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    if dtype == torch.float16:
+        # Measured against the reference: the output reaches 1.03e-3 and the float32
+        # final state 4.3e-3. Both are chunk-decomposition differences the activation
+        # dtype's own 1e-3 bound does not describe, the state's the larger because the
+        # recurrence carries it to the end of the row.
+        test.check(
+            op,
+            *test.gen_inputs(),
+            compare=[
+                partial(allclose_compare, atol=2e-3, rtol=1e-3),
+                partial(allclose_compare, atol=6e-3, rtol=1e-3),
+            ],
+        )
+        return
+    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.sm90
