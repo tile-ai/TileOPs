@@ -31,6 +31,7 @@ class GLAInferenceCallSpec(CallSpec):
     dtype: Optional[torch.dtype] = None
     scale: float = 0.0
     varlen: bool = False
+    # Whether the call supplies initial_state, rather than starting the recurrence from zero.
     has_initial_state: bool = False
     num_sequences: int = 0
 

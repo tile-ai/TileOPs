@@ -44,7 +44,7 @@ def _gla_dense_decode_tl(
     Args:
         batch: Sequences in the call.
         heads: Query, key, value and state heads.
-        dim_k: The key dimension one block walks.
+        dim_k: The key dimension, split across the block's lane groups.
         dim_v: The value dimension, split into warp-wide column tiles.
         dtype: TileLang name of the token dtype.
         scale: Query scale.
@@ -68,8 +68,8 @@ def _gla_dense_decode_tl(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def decode():
-        # A parameter this build leaves unread is declared one element wide; the kernel
-        # hands it a placeholder rather than a buffer of the shape it would otherwise carry.
+        # A parameter this build leaves unread is declared one element wide, and the kernel
+        # hands it a one-element placeholder.
         unread = [1]
         gate_shape = [batch, 1, heads, dim_k] if has_initial_state else unread
         state_shape = [batch, heads, dim_k, dim_v] if has_initial_state else unread
