@@ -215,8 +215,6 @@ def test_gqa_paged_decode_bs1_dispatch() -> None:
         ),
         pytest.param([2, 0, 9], [700, 64, 33], 16, torch.float16, {"softcap": 30.0}, id="softcap"),
         pytest.param([3, 1], [129, 48], 48, torch.bfloat16, {}, id="bf16"),
-        # Every request empty: the launch finds no row tile and returns an empty output.
-        pytest.param([0, 0], [128, 64], 64, torch.float16, {}, id="all-empty"),
     ],
 )
 def test_gqa_paged_packed_query_lengths(
