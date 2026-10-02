@@ -25,12 +25,12 @@ PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
 
 ## Dev Docker image
 
-The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.13 (cu132), the TileLang commit CI validates, and the benchmark baselines — so nothing needs resolving locally:
+The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.13 (cu132), the TileLang release TileOPs declares, and the benchmark baselines — so nothing needs resolving locally:
 
 ```bash
 docker run --rm -it --gpus all \
   -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-afcebed1-dev
+  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-0.1.12-dev
 
 # inside the container
 pip install -e . --no-deps
@@ -39,9 +39,9 @@ python -m pytest -q tests -m smoke
 
 `--no-deps` is deliberate: the image already carries the pinned stack, and letting pip resolve dependencies would replace it.
 
-Tags follow `<tilelang-sha>-torch<version>-dev`. The `-dev` tag tracks the TileLang commit CI validates; pull the one matching the Prerequisites line in the README rather than a floating tag. The image is also what the self-hosted CI runners use, so a green run inside it is the same environment CI reports on.
+Tags follow `cu<cuda-minor>-torch<major.minor>-tl-<tilelang>[-dev]`, where `<tilelang>` is the release [Prerequisites](../README.md#prerequisites) names; pull that one rather than a floating tag. The `-dev` suffix drops the CI runner agent and nothing else, so a green run inside it is the same environment CI reports on.
 
-To build the image, roll out a new one, or bump the TileLang commit, see [`.github/runner/README.md`](../.github/runner/README.md).
+To build the image, roll out a new one, or bump TileLang, see [`.github/runner/README.md`](../.github/runner/README.md).
 
 ## Tests
 
