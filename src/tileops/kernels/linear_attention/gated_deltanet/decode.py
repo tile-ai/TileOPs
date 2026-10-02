@@ -146,11 +146,18 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        One token continuing a 128-wide square state the caller owns.
+        One token continuing a 128-wide square state the caller owns, with the gate, the
+        step size and the Q/K normalization settled before the call.
         """
         variant = call.recurrence_refusal
         if variant is not None:
             return variant
+        if call.l2norm:
+            return "takes Q and K already normalized"
+        if call.gate_in_kernel:
+            return "takes g already in log space"
+        if call.beta_sigmoid:
+            return "takes beta already transformed"
         if call.varlen:
             return "serves a single token of an equal-length call"
         if call.value_heads != call.heads:

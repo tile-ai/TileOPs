@@ -140,19 +140,11 @@ class GatedDeltaNetCall(CallSpec):
 
         The recurrence variants the in-tree pair does not implement, whatever the sequence
         length or head counts. Both implementations ask it first, then state the shapes
-        they serve themselves.
+        and the input transforms they serve themselves.
         """
-        unsupported = [
-            name
-            for name, present in (
-                ("state_v_first=True", self.state_v_first),
-                ("use_qk_l2norm_in_kernel=True", self.l2norm),
-                ("use_gate_in_kernel=True", self.gate_in_kernel),
-                ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
-            )
-            if present
-        ]
-        return "does not support " + ", ".join(unsupported) if unsupported else None
+        if self.state_v_first:
+            return "does not support state_v_first=True"
+        return None
 
 
 class DeltaNetFwdInterface(KernelInterface):

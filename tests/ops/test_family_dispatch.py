@@ -339,6 +339,11 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
             "gated_deltanet_dense_prefill",
             id="prefill-grouped-value-heads",
         ),
+        pytest.param(
+            _gated_call(64, False, l2norm=True, gate_in_kernel=True, beta_sigmoid=True),
+            "gated_deltanet_dense_prefill",
+            id="prefill-input-transforms",
+        ),
     ],
 )
 def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None:
@@ -359,7 +364,20 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
         pytest.param(
             _gated_call(1, True, value_heads=64), "one key head per value head", id="decode-grouped"
         ),
-        pytest.param(_gated_call(64, False, l2norm=True), "l2norm", id="l2norm"),
+        pytest.param(
+            _gated_call(1, True, l2norm=True), "Q and K already normalized", id="decode-l2norm"
+        ),
+        pytest.param(
+            _gated_call(1, True, gate_in_kernel=True), "g already in log space", id="decode-gate"
+        ),
+        pytest.param(
+            _gated_call(1, True, beta_sigmoid=True),
+            "beta already transformed",
+            id="decode-beta-sigmoid",
+        ),
+        pytest.param(
+            _gated_call(64, False, state_v_first=True), "state_v_first", id="state-v-first"
+        ),
     ],
 )
 def test_gated_deltanet_refuses_what_no_kernel_serves(call: GatedDeltaNetCall, reason: str) -> None:
@@ -401,6 +419,9 @@ def test_deltanet_inference_dispatch() -> None:
     assert op.select_implementation("deltanet_inference", _inference_call(seq_len=63)) == (
         "deltanet_dense_prefill"
     )
+    assert op.select_implementation("deltanet_inference", _inference_call(l2norm=True)) == (
+        "deltanet_dense_prefill"
+    )
 
 
 @pytest.mark.cuda_only
@@ -408,7 +429,9 @@ def test_deltanet_inference_dispatch() -> None:
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_inference_call(l2norm=True), "L2 normalization", id="l2norm"),
+        pytest.param(
+            _inference_call(seq_len=1, l2norm=True), "L2 normalization", id="decode-l2norm"
+        ),
         pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
         pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],

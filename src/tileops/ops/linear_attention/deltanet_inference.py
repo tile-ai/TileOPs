@@ -26,8 +26,9 @@ class DeltaNetInferenceFwdOp(Op):
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
     while ``(o, final_state)`` is always returned. The in-tree implementations
     cover SM90 prefill over a 64- or 128-wide square state, equal-length or
-    packed and with a sequence that is not a whole number of 64-token chunks,
-    and SM90 single-token decode over a 128-wide one.
+    packed, with a sequence that is not a whole number of 64-token chunks and
+    with or without ``use_qk_l2norm_in_kernel``, and SM90 single-token decode
+    over a 128-wide one with Q and K already normalized.
 
     ``beta`` contains the already-transformed update strength. This Op does
     not apply a sigmoid or another beta transform.

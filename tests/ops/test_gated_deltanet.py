@@ -76,6 +76,77 @@ def test_gated_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
 
 
 @pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("l2norm", "raw_gate", "beta_sigmoid", "allow_neg_eigval", "dtype"),
+    [
+        (True, False, False, False, torch.bfloat16),
+        (False, True, False, False, torch.bfloat16),
+        (False, False, True, False, torch.bfloat16),
+        (False, False, True, True, torch.bfloat16),
+        (True, True, True, True, torch.bfloat16),
+        (True, True, True, True, torch.float16),
+    ],
+    ids=[
+        "l2norm",
+        "raw-gate",
+        "beta-sigmoid",
+        "beta-sigmoid-negative",
+        "every-transform",
+        "every-transform-fp16",
+    ],
+)
+def test_gated_deltanet_prefill_takes_each_input_transform(
+    l2norm: bool, raw_gate: bool, beta_sigmoid: bool, allow_neg_eigval: bool, dtype: torch.dtype
+) -> None:
+    """Each transform the op may leave to the kernel, alone and all together."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1,
+        128,
+        2,
+        64,
+        dtype,
+        l2norm=l2norm,
+        raw_gate=raw_gate,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+    op = GatedDeltaNetFwdOp(
+        use_qk_l2norm_in_kernel=l2norm,
+        use_gate_in_kernel=raw_gate,
+        use_beta_sigmoid_in_kernel=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+    # The transforms move the output's last bits: one element of 16384 reaches 1.03e-3
+    # at float16, which the dtype's usual 1e-3 bound does not cover.
+    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_gated_deltanet_partitioned_prefill_normalizes_the_key_it_stages() -> None:
+    """The warmup pass stages the key itself, so partitioning normalizes it a second time."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16, l2norm=True)
+    kernel = GatedDeltaNetDensePrefillFwdKernel(
+        1,
+        2,
+        2,
+        512,
+        1,
+        False,
+        128,
+        128**-0.5,
+        torch.bfloat16,
+        l2norm=True,
+        config={"max_local_chunks": 4},
+    )
+    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    test.check(kernel, q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize("has_initial_state", [False, True], ids=["from-zero", "continued"])
 def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
