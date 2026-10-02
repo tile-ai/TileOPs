@@ -23,7 +23,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import GLABwdInterface, GLAChunkCall
 from tileops.kernels.linear_attention.gla.gla_fwd import gla_precompute_g_kernel
-from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
+from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops.utils import get_sm_version
 
 __all__ = ["GLABwdKernel"]
@@ -53,12 +53,15 @@ def _gla_bwd_dh_kernel(
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
+    if dim_v % num_v_partitions:
+        raise ValueError(
+            f"dim_v ({dim_v}) is not divisible by num_v_partitions ({num_v_partitions})"
+        )
     dim_v_part = dim_v // num_v_partitions
     if dim_v_part < GEMM_MIN_N:
         raise ValueError(
-            f"dim_v ({dim_v}) split across num_v_partitions "
-            f"({num_v_partitions}) gives a {dim_v_part}-column T.gemm B "
-            f"operand, below the minimum N extent ({GEMM_MIN_N})"
+            f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) gives a "
+            f"{dim_v_part}-column T.gemm B operand, below the minimum N extent ({GEMM_MIN_N})"
         )
 
     @tilelang.jit(
@@ -70,6 +73,12 @@ def _gla_bwd_dh_kernel(
         },
     )
     def _dh_func(num_stages, threads=128):
+        if dim_v_part < min_gemm_n(threads):
+            raise ValueError(
+                f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) "
+                f"gives a {dim_v_part}-column T.gemm B operand, below the minimum N "
+                f"extent ({min_gemm_n(threads)}) at {threads} threads"
+            )
         q_shape = [batch, seq_len, heads, dim_k]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
         do_shape = [batch, seq_len, heads, dim_v]
@@ -636,9 +645,20 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             )
         return None
 
+    def _v_partitions(self, threads_seq: int, candidates: list[int]) -> list[int]:
+        """Return the candidates the dh kernel can build at *threads_seq*, widest first."""
+        floor = max(GEMM_MIN_N, min_gemm_n(threads_seq))
+        return [n for n in candidates if self.dim_v % n == 0 and self.dim_v // n >= floor]
+
     @property
     def default_config(self) -> dict:
-        return {"num_stages": 1, "threads_par": 128, "threads_seq": 256, "num_v_partitions": 4}
+        threads_seq = 256
+        return {
+            "num_stages": 1,
+            "threads_par": 128,
+            "threads_seq": threads_seq,
+            "num_v_partitions": self._v_partitions(threads_seq, [4, 2, 1])[0],
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -646,7 +666,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         for ns in [1, 2, 3]:
             for t_par in [64, 128, 256]:
                 for t_seq in [64, 128, 256]:
-                    for nvp in [2, 4, 8]:
+                    for nvp in self._v_partitions(t_seq, [1, 2, 4, 8]):
                         configs.append(
                             {
                                 "num_stages": ns,

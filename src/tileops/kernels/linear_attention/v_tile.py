@@ -1,15 +1,27 @@
 """V-tile width resolution for kernels feeding ``[*, BV]`` tiles into ``T.gemm``.
 
-WGMMA requires the gemm N extent (columns of the B operand) to be at least
-16 and tilelang rejects narrower B operands at compile time, so a narrower
-resolved V-tile is a configuration error to reject eagerly, not to clamp.
+A V tile below what the gemm accepts is a configuration error to reject
+eagerly, not to clamp.
 """
 
-__all__ = ["GEMM_MIN_N", "resolve_block_v"]
+__all__ = ["GEMM_MIN_N", "min_gemm_n", "resolve_block_v"]
 
-# tilelang's WGMMA lowering rejects B operands narrower than 16 (verified at
-# tilelang afcebed1 and c7fabc4). Re-check when bumping tilelang.
+# Narrowest N extent one warp group can take.
 GEMM_MIN_N = 16
+
+
+def min_gemm_n(threads: int) -> int:
+    """Return the N extent WGMMA needs from a ``FullRow`` gemm's B operand at *threads*.
+
+    Each warp group of 128 threads takes a share of the extent, and a share below
+    ``GEMM_MIN_N`` has no legal layout. Under one whole warp group the gemm does not
+    reach WGMMA and this returns 0; a kernel with a floor of its own keeps it, and a
+    kernel that assigns warp roles itself is not bound by this at all.
+
+    Args:
+        threads: Thread count the kernel launches with.
+    """
+    return GEMM_MIN_N * (threads // 128)
 
 
 def resolve_block_v(dim_v: int, block_v: int) -> int:

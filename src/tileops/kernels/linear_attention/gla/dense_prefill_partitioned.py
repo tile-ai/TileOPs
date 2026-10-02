@@ -253,7 +253,7 @@ def _gla_fwd_partitioned_replay_kernel(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
+        compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _replay_func(threads=512):
         qk_shape = [batch, seq_len, heads, dim_k]
