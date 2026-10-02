@@ -205,7 +205,7 @@ def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict) -> None:
     torch.manual_seed(42)
     workload_flags = {
         "state_v_first": "state_v_first",
-        "use_gate_in_kernel": "gate_in_kernel",
+        "use_gate_in_kernel": "raw_gate",
         "use_beta_sigmoid_in_kernel": "beta_sigmoid",
         "allow_neg_eigval": "allow_neg_eigval",
         "use_qk_l2norm_in_kernel": "l2norm",
