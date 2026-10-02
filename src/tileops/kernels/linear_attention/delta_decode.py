@@ -13,7 +13,7 @@ from typing import Callable
 import tilelang
 import tilelang.language as T
 
-from tileops.kernels.constants import LN2, LOG2E, MAX_BLOCK_THREADS
+from tileops.kernels.constants import LOG2E, MAX_BLOCK_THREADS
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_sm_count
 
 __all__ = ["decode_launch", "delta_decode_sm90_tl"]
@@ -106,33 +106,38 @@ def delta_decode_sm90_tl(
     total_blocks = batch * value_heads * value_tiles
     k_chunk = dim // lane_group
     heads_ratio = value_heads // heads
-    # A parameter the flags leave unread still shapes the signature, so it is declared one
-    # element wide and the kernel hands it a placeholder.
-    unread = [1]
-    gate_shape = [batch, 1, value_heads] if gated else unread
-    gate_param_shape = [value_heads] if gate_in_kernel else unread
-    state_shape = [batch, value_heads, dim, dim] if has_initial_state else unread
     lane_group_stages = lane_group.bit_length() - 1
     beta_gain = 2.0 if allow_neg_eigval else 1.0
     l2norm_eps = 1e-6
-    # Above this the softplus is its own argument to within float32, which is the guard
-    # FLA's inline-PTX softplus takes.
+    # Above this the softplus is its own argument to within float32, and the exponential
+    # below it would overflow. torch and FLA take the same guard at the same point.
     softplus_linear_above = 20.0
 
     @tilelang.jit(out_idx=[-2, -1], compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"])
     def _decode():
+        # A parameter the flags leave unread still shapes the signature, so it is declared
+        # one element wide and the kernel hands it a placeholder.
+        unread = [1]
+        gate_shape = [batch, 1, value_heads] if gated else unread
+        gate_param_shape = [value_heads] if gate_in_kernel else unread
+        state_shape = [batch, value_heads, dim, dim] if has_initial_state else unread
+        token_shape = [batch, 1, heads, dim]
+        value_shape = [batch, 1, value_heads, dim]
+        head_shape = [batch, 1, value_heads]
+        full_state_shape = [batch, value_heads, dim, dim]
+
         @T.prim_func
         def delta_decode_sm90(
-            q: T.Tensor([batch, 1, heads, dim], dtype),
-            k: T.Tensor([batch, 1, heads, dim], dtype),
-            v: T.Tensor([batch, 1, value_heads, dim], dtype),
+            q: T.Tensor(token_shape, dtype),
+            k: T.Tensor(token_shape, dtype),
+            v: T.Tensor(value_shape, dtype),
             g: T.Tensor(gate_shape, dtype),
-            beta: T.Tensor([batch, 1, value_heads], dtype),
+            beta: T.Tensor(head_shape, dtype),
             A_log: T.Tensor(gate_param_shape, "float32"),
             dt_bias: T.Tensor(gate_param_shape, "float32"),
             state: T.Tensor(state_shape, "float32"),
-            o: T.Tensor([batch, 1, value_heads, dim], dtype),
-            final_state: T.Tensor([batch, value_heads, dim, dim], "float32"),
+            o: T.Tensor(value_shape, dtype),
+            final_state: T.Tensor(full_state_shape, "float32"),
         ):
             with T.Kernel(total_blocks, threads=threads) as (block,):
                 tx = T.get_thread_binding()
@@ -195,9 +200,8 @@ def delta_decode_sm90_tl(
                     log_decay = T.cast(g[batch_idx, 0, head_idx], "float32")
                     if gate_in_kernel:
                         shifted = log_decay + dt_bias[head_idx]
-                        softplus = T.log2(T.exp2(shifted * LOG2E) + 1.0) * LN2
                         log_decay = -T.exp2(A_log[head_idx] * LOG2E) * T.if_then_else(
-                            shifted > softplus_linear_above, shifted, softplus
+                            shifted > softplus_linear_above, shifted, T.log1p(T.exp(shifted))
                         )
                     decay = T.exp2(log_decay * LOG2E)
 
