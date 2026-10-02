@@ -1498,6 +1498,7 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
 
 
 def _narrow_plan_table() -> Dict[tuple, _FFTPlan]:
+    """One decomposed record per ``_NARROW_PLAN`` key, naming the architectures it alone serves."""
     records = {}
     for (n, dtype), (factors, tile) in _NARROW_PLAN.items():
         plan = _four_step_record(factors, tile, dtype)
@@ -1516,11 +1517,28 @@ FFT_PLANS: Dict[tuple, _FFTPlan] = _plan_table()
 FFT_NARROW_PLANS: Dict[tuple, _FFTPlan] = _narrow_plan_table()
 
 
-def _plan_for(n: int, dtype: str, arch: int) -> Optional[_FFTPlan]:
+def _plan_for(n: int, dtype: str, arch: int, decomposed: bool) -> Optional[_FFTPlan]:
+    """The record serving (n, dtype) on *arch* with *decomposed* launches, if one does."""
     narrow = FFT_NARROW_PLANS.get((n, dtype))
-    if narrow is not None and arch in narrow.archs:
-        return narrow
-    return FFT_PLANS.get((n, dtype))
+    plan = narrow if narrow is not None and arch in narrow.archs else FFT_PLANS.get((n, dtype))
+    if plan is None or arch not in plan.archs or plan.decomposed != decomposed:
+        return None
+    return plan
+
+
+def _plan_on_device(n: int, dtype: str, device_index: Optional[int], decomposed: bool) -> _FFTPlan:
+    """The record a kernel built for *device_index* runs, by :func:`_plan_for`'s rules.
+
+    Raises:
+        ValueError: No such record, so construction refuses rather than building a kernel the
+            device cannot launch.
+    """
+    arch = get_sm_version(device_index)
+    plan = _plan_for(n, dtype, arch, decomposed)
+    if plan is None:
+        kind = "decomposed" if decomposed else "one-CTA"
+        raise ValueError(f"no {kind} FFT plan serves n = {n} in {dtype} on sm_{arch}")
+    return plan
 
 
 @functools.lru_cache(maxsize=len(FFT_PLANS) + len(FFT_NARROW_PLANS))
@@ -1566,8 +1584,8 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
     @classmethod
     def applies(cls, call: FFTC2CCall) -> bool:
         """True where the call's plan is one a single CTA runs in one launch."""
-        plan = _plan_for(call.n, cls.dtype_to_str(call.dtype), call.arch)
-        return plan is not None and not plan.decomposed and call.arch in plan.archs
+        dtype = cls.dtype_to_str(call.dtype)
+        return _plan_for(call.n, dtype, call.arch, decomposed=False) is not None
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:
@@ -1587,7 +1605,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = FFT_PLANS[n, self.dtype_str]
+        self.plan = _plan_on_device(n, self.dtype_str, device_index, decomposed=False)
         if config is not None:
             self._check_config(config)
         (self.kernel,) = _fft_builders(self.plan)
@@ -1693,8 +1711,8 @@ class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
     @classmethod
     def applies(cls, call: FFTC2CCall) -> bool:
         """True where the call's plan names more than one factor."""
-        plan = _plan_for(call.n, cls.dtype_to_str(call.dtype), call.arch)
-        return plan is not None and plan.decomposed and call.arch in plan.archs
+        dtype = cls.dtype_to_str(call.dtype)
+        return _plan_for(call.n, dtype, call.arch, decomposed=True) is not None
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:
@@ -1714,7 +1732,7 @@ class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = _plan_for(n, self.dtype_str, get_sm_version(device_index))
+        self.plan = _plan_on_device(n, self.dtype_str, device_index, decomposed=True)
         if config is not None:
             self._check_config(config)
         self.kernel = _fft_builders(self.plan)
