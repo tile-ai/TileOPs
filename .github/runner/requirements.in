@@ -1,5 +1,5 @@
-# Direct requirements of the runner image. The source-built packages (tilelang, FA2, FA3,
-# mamba-ssm, DeepGEMM) are absent: no wheel to resolve, and they go in with --no-deps.
+# Direct requirements of the runner image. The source-built packages (FA2, FA3, mamba-ssm,
+# DeepGEMM) are absent: no wheel to resolve, and they go in with --no-deps.
 # flag_gems is absent too: its numpy pin does not resolve here, so it also goes in with --no-deps.
 # Compile with the command in constraints-runner-lock.txt's header.
 --index-url https://download.pytorch.org/whl/cu132
@@ -42,5 +42,6 @@ flash-linear-attention
 vllm
 cupti-python
 nvmath-python
+tilelang
 # For flag_gems, which cannot be listed here.
 sqlalchemy

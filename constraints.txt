@@ -9,8 +9,11 @@ torchvision==0.28.0
 torchaudio==2.11.0
 # What torch 2.13.0 requires. Follow torch; never pick independently.
 triton==3.7.1
-# ABI-coupled to the baked tilelang wheel: MUST sit inside the range tilelang's metadata declares
-# for the pinned commit (verify_runtime_stack.py checks it). Re-confirm on every TILELANG_GIT_SHA.
+# The release pyproject.toml declares; the runner image installs it unless built from a
+# TILELANG_GIT_SHA. vllm 0.27.1 pins the same version.
+tilelang==0.1.12
+# ABI-coupled to tilelang: MUST sit inside the range tilelang's metadata declares
+# (verify_runtime_stack.py checks it). Re-confirm on every tilelang change.
 apache-tvm-ffi==0.1.11
 cloudpickle==3.1.2
 ml_dtypes==0.5.4
