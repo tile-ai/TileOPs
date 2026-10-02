@@ -23,7 +23,6 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops.kernels.attention.gqa_decode_paged import gqa_decode_paged_block_ns
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
@@ -86,10 +85,11 @@ def _gqa_paged_varlen_kernel(
         )
         rescale = make_rescale(block_M, dim)
 
-        # A tile starts at a multiple of block_N. A page longer than the tile holds it whole;
-        # a page shorter than it, dividing it, splits it into that many whole pages. Either
-        # way the tile is a run of contiguous copies and the gather below is not needed.
-        pages_per_tile = block_N // page_size if block_N % page_size == 0 else 0
+        # A tile starts at a multiple of block_N, so a page at least that long holds one
+        # whole. That is the only case a contiguous copy serves: a tile spanning several
+        # pages lands on rows the table scatters, and copying each page into its slice of the
+        # tile costs more per page than gathering the whole tile by row. FlashAttention-3
+        # draws the same line, taking its TMA path only for page_size % kBlockN == 0.
         one_page_holds_tile = page_size % block_N == 0
 
         @T.macro
@@ -105,14 +105,6 @@ def _gqa_paged_varlen_kernel(
                 base = page_table[request, key0 // page_size] * page_size + key0 % page_size
                 T.copy(K[base : base + block_N, kv_head, :], k_shared)
                 T.copy(V[base : base + block_N, kv_head, :], v_shared)
-            elif pages_per_tile:
-                last_page = (kv_len - 1) // page_size
-                for p in T.serial(pages_per_tile):
-                    page = T.min(key0 // page_size + p, last_page)
-                    base = page_table[request, page] * page_size
-                    rows = slice(p * page_size, (p + 1) * page_size)
-                    T.copy(K[base : base + page_size, kv_head, :], k_shared[rows, :])
-                    T.copy(V[base : base + page_size, kv_head, :], v_shared[rows, :])
             else:
                 for j, d in T.Parallel(block_N, dim):
                     key = T.min(key0 + j, kv_len - 1)
@@ -276,9 +268,9 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside.
 
-        It serves a 16-bit cache of the query's dtype for a call whose requests carry a
-        query length other than one, query lengths that differ between requests, a restricted
-        score window, or a page no key tile fits inside.
+        It serves every call whose query and cache are float16 or bfloat16 of the same dtype:
+        any mix of per-request query lengths, any positive page size, both window bounds,
+        causal and bidirectional. An FP8 tensor and a fused rotation are refused.
         """
         if call.dtype not in ATTENTION_DTYPES:
             return "requires float16 or bfloat16 Q"
@@ -292,31 +284,7 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive page size"
         if call.tensor_core_dim_refusal is not None:
             return call.tensor_core_dim_refusal
-        serves = (
-            not call.is_uniform
-            or call.max_seqlen_q != 1
-            or call.uses_sliding_window
-            or cls.crosses_pages(call.page_size)
-        )
-        if not serves:
-            return (
-                "serves a query length other than one, lengths that differ between "
-                "requests, a restricted window, or a page no key tile fits inside"
-            )
         return None
-
-    @staticmethod
-    def crosses_pages(page_size: int) -> bool:
-        """Whether no key tile fits inside one page of *page_size* rows.
-
-        This kernel gathers its key tile row by row, so a tile crossing a page costs it
-        nothing; a page no tile fits inside is therefore a shape only it serves.
-        """
-        try:
-            gqa_decode_paged_block_ns(page_size)
-        except ValueError:
-            return True
-        return False
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -416,8 +384,8 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         contiguous form. Re-fit by sweeping ``autotune_configs`` on those rows.
         """
         page = self.page_size
-        contiguous = [n for n in (64, 48, 32, 16) if page % n == 0 or n % page == 0]
-        block_n = contiguous[0] if contiguous else 64
+        held = [n for n in (128, 64, 48, 32) if page % n == 0]
+        block_n = held[0] if held else 64
         tile = (
             {"block_M": 128, "block_N": block_n, "num_stages": 3, "threads": 256}
             if self.rows_fill_tile

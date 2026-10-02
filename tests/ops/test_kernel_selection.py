@@ -33,19 +33,22 @@ def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         pytest.param(
             {}, torch.float16, "GQADecodePagedBs1Kernel", id="bs1-fp16", marks=pytest.mark.sm90
         ),
-        pytest.param({}, torch.bfloat16, "GQADecodePagedKernel", id="bf16-falls-back"),
-        pytest.param({"batch": 2}, torch.float16, "GQADecodePagedKernel", id="batched"),
-        pytest.param({"dim": 64}, torch.float16, "GQADecodePagedKernel", id="head-dim"),
+        pytest.param({}, torch.bfloat16, "GQAPagedVarlenFwdKernel", id="bf16"),
+        pytest.param({"batch": 2}, torch.float16, "GQAPagedVarlenFwdKernel", id="batched"),
+        pytest.param({"dim": 64}, torch.float16, "GQAPagedVarlenFwdKernel", id="head-dim"),
         pytest.param(
-            {"page_size": 16, "pages": 512}, torch.float16, "GQADecodePagedKernel", id="small-page"
+            {"page_size": 16, "pages": 512},
+            torch.float16,
+            "GQAPagedVarlenFwdKernel",
+            id="small-page",
         ),
         pytest.param(
             {"page_size": 192, "pages": 42},
             torch.float16,
-            "GQADecodePagedKernel",
+            "GQAPagedVarlenFwdKernel",
             id="page-tile",
         ),
-        pytest.param({"softcap": 2.0}, torch.float16, "GQADecodePagedKernel", id="softcap"),
+        pytest.param({"softcap": 2.0}, torch.float16, "GQAPagedVarlenFwdKernel", id="softcap"),
         pytest.param(
             {"batch": 2, "q_lens": [0, 2]},
             torch.float16,
@@ -63,9 +66,8 @@ def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ),
     ],
 )
-def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
-    """Each paged region selects its own implementation: the batch-1 fast path, the
-    page-contained decode tiling, and the packed kernel that gathers its key tile."""
+def test_paged_dispatch_regions(ctor: dict, dtype: torch.dtype, expected: str) -> None:
+    """The packed kernel serves the 16-bit contract; the batch-1 kernel wins its own shape."""
     extents = {
         "batch": 1,
         "pages": 32,

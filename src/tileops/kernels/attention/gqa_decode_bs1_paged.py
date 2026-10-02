@@ -137,6 +137,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
     """
 
     supported_archs: list[int] = [90]
+    # The batch-1 shape, inside what the packed kernel also serves.
+    preferred_over = frozenset({"gqa_paged_varlen_kernel"})
 
     @classmethod
     def applies(cls, call) -> bool:

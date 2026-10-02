@@ -125,15 +125,12 @@ def test_gqa_paged_decode_pool_is_independent_of_table_width(batch: int) -> None
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("page_size", [192, 96, 48])
-def test_gqa_paged_decode_non_divisible_128_page_split(page_size: int) -> None:
-    """A page no 128-token tile divides uses a narrower tile without skipping page tails."""
+def test_gqa_paged_reversed_page_table(page_size: int) -> None:
+    """A page table that permutes the pool is read through, for pages of any length."""
     workload = _decode(1, 16, 4, [page_size * 16], 128, page_size)
     inputs = list(workload.gen_inputs())
     inputs[3] = inputs[3].flip(-1).contiguous()
-    op = GroupedQueryAttentionPagedFwdOp()
-    kernel = _built_kernel(op, inputs)
-    assert all(page_size % config["block_N"] == 0 for config in kernel.autotune_configs)
-    _check(op, workload, inputs)
+    _check(GroupedQueryAttentionPagedFwdOp(), workload, inputs)
 
 
 @pytest.mark.smoke
