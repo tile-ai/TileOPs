@@ -124,28 +124,51 @@ class GLADecodeWorkload(WorkloadBase):
 
 
 class DeltaNetInferenceWorkload(WorkloadBase):
-    """Equal-length BTHD ungated DeltaNet prefill or single-token decode with recurrent state."""
+    """BTHD ungated DeltaNet prefill or single-token decode with recurrent state.
 
-    def __init__(self, batch: int, seq_len: int, heads: int, dim: int, dtype: torch.dtype) -> None:
+    ``sequence_lengths`` packs the rows into one ``B = 1`` token axis and makes the call
+    carry ``cu_seqlens``.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        dtype: torch.dtype,
+        sequence_lengths: tuple[int, ...] | None = None,
+    ) -> None:
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim = dim
         self.dtype = dtype
+        self.sequence_lengths = sequence_lengths
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        shape = (self.batch, self.seq_len, self.heads, self.dim)
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        rows = (
+            (self.batch, self.seq_len)
+            if self.sequence_lengths is None
+            else (1, sum(self.sequence_lengths))
+        )
+        shape = (*rows, self.heads, self.dim)
         q = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
         k = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
         v = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
         beta = torch.rand(shape[:3], device=run_device(), dtype=self.dtype) * 0.5
+        sequences = self.batch if self.sequence_lengths is None else len(self.sequence_lengths)
         initial_state = (
             torch.randn(
-                self.batch, self.heads, self.dim, self.dim, device=run_device(), dtype=torch.float32
+                sequences, self.heads, self.dim, self.dim, device=run_device(), dtype=torch.float32
             )
             * 0.01
         )
-        return q, k, v, beta, initial_state
+        if self.sequence_lengths is None:
+            return q, k, v, beta, initial_state
+        offsets = torch.zeros(sequences + 1, dtype=torch.int64)
+        offsets[1:] = torch.tensor(self.sequence_lengths, dtype=torch.int64).cumsum(0)
+        return q, k, v, beta, initial_state, offsets.to(run_device()), offsets
 
     def ref_program(
         self,
@@ -154,15 +177,31 @@ class DeltaNetInferenceWorkload(WorkloadBase):
         v: torch.Tensor,
         beta: torch.Tensor,
         initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 
+        del cu_seqlens_cpu
         fla_kernel = fused_recurrent_delta_rule if self.seq_len == 1 else chunk_delta_rule
-        return fla_kernel(q, k, v, beta, initial_state=initial_state, output_final_state=True)
+        return fla_kernel(
+            q,
+            k,
+            v,
+            beta,
+            initial_state=initial_state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+        )
 
 
 class GatedDeltaNetFwdWorkload(WorkloadBase):
-    """Equal-length BTHD Gated DeltaNet inference prefill or decode."""
+    """BTHD Gated DeltaNet inference prefill or decode, equal-length or packed.
+
+    ``sequence_lengths`` packs the rows into one ``B = 1`` token axis and makes the call
+    carry ``cu_seqlens``; ``value_heads`` gives the recurrence more heads than the key
+    carries, with key head ``h // (value_heads // heads)`` serving value head ``h``.
+    """
 
     def __init__(
         self,
@@ -173,6 +212,8 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         dtype: torch.dtype,
         scale: float | None = None,
         has_initial_state: bool = False,
+        value_heads: int | None = None,
+        sequence_lengths: tuple[int, ...] | None = None,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
@@ -181,28 +222,51 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         self.dtype = dtype
         self.scale = scale
         self.has_initial_state = has_initial_state
+        self.value_heads = heads if value_heads is None else value_heads
+        self.sequence_lengths = sequence_lengths
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        shape = (self.batch, self.seq_len, self.heads, self.dim)
-        q = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
-        k = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+    @property
+    def _spans(self) -> tuple[tuple[int, int], ...]:
+        """The ``(start, end)`` token span of every sequence in the call."""
+        lengths = (
+            (self.seq_len,) * self.batch if self.sequence_lengths is None else self.sequence_lengths
+        )
+        spans, start = [], 0
+        for length in lengths:
+            spans.append((start, start + length))
+            start += length
+        return tuple(spans)
+
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        packed = self.sequence_lengths is not None
+        rows = (1, sum(self.sequence_lengths)) if packed else (self.batch, self.seq_len)
+        q = torch.randn((*rows, self.heads, self.dim), device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn((*rows, self.heads, self.dim), device=run_device(), dtype=self.dtype) * 0.1
+        shape = (*rows, self.value_heads, self.dim)
         v = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
         g = -torch.rand(shape[:3], device=run_device(), dtype=self.dtype)
         beta = torch.rand(shape[:3], device=run_device(), dtype=self.dtype) * 0.5
-        if not self.has_initial_state:
-            return q, k, v, g, beta
         initial_state = (
             torch.randn(
-                self.batch,
-                self.heads,
+                len(self._spans),
+                self.value_heads,
                 self.dim,
                 self.dim,
                 device=run_device(),
                 dtype=torch.float32,
             )
             * 0.01
+            if self.has_initial_state
+            else None
         )
-        return q, k, v, g, beta, initial_state
+        if not packed:
+            return (
+                (q, k, v, g, beta) if initial_state is None else (q, k, v, g, beta, initial_state)
+            )
+        offsets = torch.tensor(
+            [0, *(end for _, end in self._spans)], dtype=torch.int64, device=run_device()
+        )
+        return q, k, v, g, beta, initial_state, offsets, offsets.cpu()
 
     def ref_program(
         self,
@@ -212,32 +276,38 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         g: torch.Tensor,
         beta: torch.Tensor,
         initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        del cu_seqlens, cu_seqlens_cpu
         scale = self.dim**-0.5 if self.scale is None else self.scale
-        state = (
-            torch.zeros(
-                self.batch,
-                self.heads,
-                self.dim,
-                self.dim,
-                dtype=torch.float32,
-                device=q.device,
+        group = self.value_heads // self.heads
+        spans = self._spans
+        states, output = [], torch.empty_like(v)
+        for sequence, (first, last) in enumerate(spans):
+            state = (
+                torch.zeros(
+                    self.value_heads, self.dim, self.dim, dtype=torch.float32, device=q.device
+                )
+                if initial_state is None
+                else initial_state[sequence].float()
             )
-            if initial_state is None
-            else initial_state.float()
-        )
-        outputs = []
-        for token in range(self.seq_len):
-            q_t = q[:, token].float() * scale
-            k_t = k[:, token].float()
-            v_t = v[:, token].float()
-            decay = g[:, token].float().exp()
-            beta_t = beta[:, token].float()
-            old_value = torch.einsum("bhkv,bhk->bhv", state, k_t)
-            value = beta_t.unsqueeze(-1) * (v_t - decay.unsqueeze(-1) * old_value)
-            state = decay[..., None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
-            outputs.append(torch.einsum("bhk,bhkv->bhv", q_t, state))
-        return torch.stack(outputs, dim=1).to(q.dtype), state
+            for token in range(last - first):
+                index = (
+                    (0, first + token) if self.sequence_lengths is not None else (sequence, token)
+                )
+                # Value head h reads the key head its group shares.
+                q_t = q[index].float().repeat_interleave(group, dim=0) * scale
+                k_t = k[index].float().repeat_interleave(group, dim=0)
+                v_t = v[index].float()
+                decay = g[index].float().exp()
+                beta_t = beta[index].float()
+                old_value = torch.einsum("hkv,hk->hv", state, k_t)
+                value = beta_t.unsqueeze(-1) * (v_t - decay.unsqueeze(-1) * old_value)
+                state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
+                output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
+            states.append(state)
+        return output, torch.stack(states)
 
 
 class GLAChunkwiseWorkload(WorkloadBase):
@@ -532,7 +602,12 @@ class DeltaNetInferenceCall(CallWorkload):
 
 
 class GatedDeltaNetFwdCall(CallWorkload):
-    """A manifest call of GatedDeltaNetFwdOp."""
+    """A manifest call of GatedDeltaNetFwdOp.
+
+    FLA's ``chunk_gated_delta_rule`` is the reference for a prefill call and its
+    ``fused_recurrent_gated_delta_rule`` for a single-token one, which is the kernel FLA
+    supplies for decode.
+    """
 
     def gen_inputs(self):
         q, k, v, g, beta, initial_state, *rest = super().gen_inputs()
@@ -544,6 +619,29 @@ class GatedDeltaNetFwdCall(CallWorkload):
             _step_sizes(beta),
             _small(initial_state, 0.01),
             *rest,
+        )
+
+    def ref_program(self, q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, *rest):
+        from fla.ops.gated_delta_rule import (
+            chunk_gated_delta_rule,
+            fused_recurrent_gated_delta_rule,
+        )
+
+        del rest
+        scale = self.call.ix["scale"]
+        arguments = dict(
+            scale=q.shape[-1] ** -0.5 if scale is None else scale,
+            initial_state=initial_state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+            use_qk_l2norm_in_kernel=self.call.ix["use_qk_l2norm_in_kernel"],
+        )
+        if q.shape[1] == 1:
+            return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)
+        # chunk_gated_delta_rule builds its chunk index on the host, and the host copy of
+        # the offsets is what spares it a device-to-host synchronization for them.
+        return chunk_gated_delta_rule(
+            q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_seqlens_cpu, **arguments
         )
 
 

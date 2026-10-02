@@ -558,9 +558,9 @@ def fused_gdr_fwd(
         is_varlen = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        chunk_offsets, num_chunks = prepare_chunk_offsets(cu_seqlens, chunk_size)
-        chunk_offsets = chunk_offsets.to(cu_seqlens.dtype)
-        num_chunks = num_chunks if output_h else 0
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, chunk_size).to(cu_seqlens.dtype)
+        # Only a per-chunk buffer needs the count, and reading it synchronizes the device.
+        num_chunks = int(chunk_offsets[-1].item()) if output_h else 0
         seqlen_dtype = cu_seqlens.dtype
         is_varlen = True
 

@@ -104,9 +104,14 @@ def _build_prepare_chunk_offsets_kernel(
 
 @_tensor_cache
 def prepare_chunk_offsets(
-    cu_seqlens: torch.LongTensor,
+    cu_seqlens: torch.Tensor,
     chunk_size: int,
-) -> torch.LongTensor:
+) -> torch.Tensor:
+    """The per-sequence prefix sum of chunk counts, on the device.
+
+    The chunk count itself stays on the device: reading it costs a device-to-host
+    synchronization, and only a caller that allocates a per-chunk buffer needs it.
+    """
     chunk_offsets = torch.empty_like(cu_seqlens)
     prepare_chunk_offsets_kernel = _build_prepare_chunk_offsets_kernel(
         chunk_size=chunk_size,
@@ -114,4 +119,4 @@ def prepare_chunk_offsets(
         dtype=cu_seqlens.dtype,
     )
     prepare_chunk_offsets_kernel(cu_seqlens, chunk_offsets)
-    return chunk_offsets, chunk_offsets[-1].item()
+    return chunk_offsets

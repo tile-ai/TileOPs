@@ -25,9 +25,9 @@ class DeltaNetInferenceFwdOp(Op):
     prefill, packed-varlen prefill, and single-token decode. The recurrent
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
     while ``(o, final_state)`` is always returned. The in-tree implementations
-    cover SM90 equal-length prefill and SM90 single-token decode over a
-    128-wide square state; packed varlen remains part of the public contract
-    for external targets and future kernels.
+    cover SM90 prefill over a 64- or 128-wide square state, equal-length or
+    packed and with a sequence that is not a whole number of 64-token chunks,
+    and SM90 single-token decode over a 128-wide one.
 
     ``beta`` contains the already-transformed update strength. This Op does
     not apply a sigmoid or another beta transform.
@@ -111,6 +111,7 @@ class DeltaNetInferenceFwdOp(Op):
             scale=self.scale if self.scale is not None else dim_k**-0.5,
             l2norm=self.use_qk_l2norm_in_kernel,
             varlen=cu_seqlens is not None,
+            num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
             device=q.device,
         )
         return self.kernel_for("deltanet_inference", call)(*inputs)

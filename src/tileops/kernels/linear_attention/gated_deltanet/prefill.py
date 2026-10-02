@@ -43,36 +43,43 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        Equal-length prefill in chunks of 64 tokens over a 64- or 128-wide square state.
+        Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
+        packed, with a row that is not a whole chunk and with grouped value heads.
         """
-        dense = call.dense_refusal
-        if dense is not None:
-            return dense
+        variant = call.recurrence_refusal
+        if variant is not None:
+            return variant
         if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
             return "does not support K and V other than matching 64 or 128"
-        if call.seq_len < 64 or call.seq_len % 64 != 0:
-            return "requires a prefill T that is a positive multiple of 64"
+        if call.seq_len < 1 or (call.seq_len == 1 and not call.varlen):
+            return "serves prefill, which is more than one token per sequence"
         return None
 
     @classmethod
     def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        identity = (call.batch, call.heads, call.seq_len, call.dim_k, call.scale, call.dtype, index)
-        return identity, lambda: cls(
+        arguments = dict(
             batch=call.batch,
             heads=call.heads,
+            value_heads=call.value_heads,
             seq_len=call.seq_len,
+            num_sequences=call.num_sequences,
+            varlen=call.varlen,
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
             device_index=index,
         )
+        return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)
 
     def __init__(
         self,
         batch: int,
         heads: int,
+        value_heads: int,
         seq_len: int,
+        num_sequences: int,
+        varlen: bool,
         dim: int,
         scale: float,
         dtype: torch.dtype,
@@ -83,7 +90,12 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
+        self.value_heads = value_heads
         self.seq_len = seq_len
+        self.num_sequences = num_sequences
+        # A packed call reads the caller's int64 offsets and an equal-length one the
+        # int32 offsets this kernel builds, so the two compile different programs.
+        self.varlen = varlen
         self.dim = dim
         self.scale = scale
         self.dtype = dtype
@@ -119,7 +131,6 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         )
         if not use_partition:
             return raw_cu_seqlens, None, None, None, None
-
         cp_cu_seqlens = []
         ht_mask = []
         seq_map_c2r = []
@@ -165,20 +176,30 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         chunk_size: int,
         max_local_chunks: int,
         initial_state: torch.Tensor | None,
-        raw_sequence_lengths: tuple[int, ...] | None = None,
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        batch, num_tokens, num_heads, _ = k.shape
-        assert batch == 1
-        if raw_sequence_lengths is None:
-            raw_sequence_lengths = (num_tokens,)
-        if any(length <= 0 or length % chunk_size != 0 for length in raw_sequence_lengths):
-            raise ValueError("raw sequence lengths must be positive multiples of chunk_size")
-        if sum(raw_sequence_lengths) != num_tokens:
-            raise ValueError("raw sequence lengths must sum to the flattened token count")
+        cu_seqlens: torch.Tensor,
+        sequence_lengths: tuple[int, ...] | None,
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        """The state each partition starts from, and the offsets the recurrence walks.
+
+        Partitioning splits a long sequence at a chunk boundary and replays each piece from
+        a corrected state, which asks for every length on the host. A packed call that
+        passes no host copy of the offsets keeps its sequences whole instead.
+
+        A sequence that is not a whole number of chunks still partitions: every split lands
+        on a chunk boundary by construction, so only a sequence's last partition is short,
+        and the warmup pass that floors a partition's chunk count is the one pass that
+        skips a last partition.
+        """
+        num_tokens = k.shape[1]
+        if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
+            return initial_state, cu_seqlens, None, cu_seqlens
+        num_heads = v.shape[2]
         num_chunks = tilelang.cdiv(num_tokens, chunk_size)
         use_partition = num_chunks > max_local_chunks and (
             num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
         )
+        if not use_partition:
+            return initial_state, cu_seqlens, None, cu_seqlens
         (
             raw_cu_seqlens,
             cp_cu_seqlens_t,
@@ -186,20 +207,13 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             seq_map_r2c_t,
             ht_mask_t,
         ) = cls._partition_metadata(
-            raw_sequence_lengths,
+            sequence_lengths,
             num_heads,
             chunk_size,
             max_local_chunks,
-            use_partition,
+            True,
             k.device.index,
         )
-        if not use_partition:
-            return initial_state, raw_cu_seqlens, None, raw_cu_seqlens
-        assert cp_cu_seqlens_t is not None
-        assert seq_map_c2r_t is not None
-        assert seq_map_r2c_t is not None
-        assert ht_mask_t is not None
-
         num_warmup_chunks, fallback_mask = get_warmup_chunks(
             g=g,
             cu_seqlens=cp_cu_seqlens_t,
@@ -231,7 +245,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     @property
     def default_config(self) -> Dict[str, Any]:
         # A partition holds at most this many 64-token chunks; a longer sequence is split.
-        num_chunks = self.batch * self.seq_len // 64
+        num_chunks = tilelang.cdiv(self.batch * self.seq_len, 64)
         return {
             "max_local_chunks": self._auto_local_chunks(num_chunks, self.heads, self.device_index)
         }
@@ -249,20 +263,36 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
+        del A_log, dt_bias
         self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
-        batch, seq_len, head = q.shape[:3]
-        g = prefill_chunk_local_cumsum_bthd_tl(
-            batch, head, seq_len, chunk_size, str(q.dtype).split(".")[-1]
-        )(g)
-        inverse = prefill_blocksolve_A_bthd(k, g, beta, chunk_size, use_gate=False)
-        if batch > 1:
-            q, k, v, g, beta, inverse = (
-                tensor.reshape(1, batch * seq_len, *tensor.shape[2:])
-                for tensor in (q, k, v, g, beta, inverse)
+        batch, seq_len = q.shape[:2]
+        value_heads, dim_v = v.shape[2:]
+        q, k, v, g, beta = (
+            tensor.reshape(1, batch * seq_len, *tensor.shape[2:]) for tensor in (q, k, v, g, beta)
+        )
+        lengths: tuple[int, ...] | None
+        if cu_seqlens is None:
+            # An equal-length call is a packed call whose offsets step by the row length:
+            # the bytes are the same, so one set of kernels serves both.
+            cu_seqlens = torch.arange(
+                0, (batch + 1) * seq_len, seq_len, dtype=torch.int32, device=q.device
             )
-        initial, cu_seqlens, cp_seq_map, raw_cu_seqlens = self._partitioned_initial_state(
+            lengths = (seq_len,) * batch
+        elif cu_seqlens_cpu is not None:
+            lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
+        else:
+            lengths = None
+        g = prefill_chunk_local_cumsum_bthd_tl(
+            batch * seq_len,
+            self.num_sequences,
+            value_heads,
+            chunk_size,
+            str(q.dtype).split(".")[-1],
+            str(cu_seqlens.dtype).split(".")[-1],
+        )(g, cu_seqlens)
+        inverse = prefill_blocksolve_A_bthd(k, g, beta, cu_seqlens, chunk_size, use_gate=False)
+        initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
             v,
             inverse,
@@ -271,7 +301,8 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             chunk_size,
             self.config["max_local_chunks"],
             initial_state,
-            raw_sequence_lengths=None if batch == 1 else (seq_len,) * batch,
+            cu_seqlens,
+            lengths,
         )
         o, _states, final_state = fused_gdr_fwd(
             q,
@@ -283,11 +314,11 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             scale=self.scale,
             initial_state=initial,
             output_h=False,
-            cu_seqlens=cu_seqlens,
+            cu_seqlens=offsets,
             cp_seq_map=cp_seq_map,
-            raw_cu_seqlens=raw_cu_seqlens,
+            raw_cu_seqlens=raw_offsets,
             chunk_size=chunk_size,
             state_head_first=False,
             chunks_per_sequence=0,
         )
-        return o.reshape(batch, seq_len, head, v.shape[-1]), final_state
+        return o.reshape(batch, seq_len, value_heads, dim_v), final_state

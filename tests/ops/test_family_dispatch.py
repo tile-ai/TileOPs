@@ -289,7 +289,7 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
         batch=1,
         seq_len=seq_len,
         heads=16,
-        value_heads=16,
+        value_heads=facts.pop("value_heads", 16),
         dim_k=facts.pop("dim_k", 128),
         dim_v=facts.pop("dim_v", 128),
         dtype=torch.bfloat16,
@@ -312,6 +312,17 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
             "gated_deltanet_dense_prefill",
             id="prefill-narrow-state",
         ),
+        pytest.param(
+            _gated_call(4096, False, varlen=True, num_sequences=4),
+            "gated_deltanet_dense_prefill",
+            id="prefill-varlen",
+        ),
+        pytest.param(_gated_call(63, False), "gated_deltanet_dense_prefill", id="prefill-ragged"),
+        pytest.param(
+            _gated_call(64, False, value_heads=64),
+            "gated_deltanet_dense_prefill",
+            id="prefill-grouped-value-heads",
+        ),
     ],
 )
 def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None:
@@ -329,8 +340,9 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
             "K and V other than 128",
             id="decode-narrow-state",
         ),
-        pytest.param(_gated_call(63, False), "positive multiple of 64", id="prefill-ragged"),
-        pytest.param(_gated_call(64, False, varlen=True), "packed varlen", id="varlen"),
+        pytest.param(
+            _gated_call(1, True, value_heads=64), "one key head per value head", id="decode-grouped"
+        ),
         pytest.param(_gated_call(64, False, l2norm=True), "l2norm", id="l2norm"),
     ],
 )
@@ -368,6 +380,11 @@ def test_deltanet_inference_dispatch() -> None:
     assert op.select_implementation("deltanet_inference", _inference_call(seq_len=1)) == (
         "deltanet_dense_decode"
     )
+    packed = _inference_call(seq_len=4096, varlen=True, num_sequences=4)
+    assert op.select_implementation("deltanet_inference", packed) == "deltanet_dense_prefill"
+    assert op.select_implementation("deltanet_inference", _inference_call(seq_len=63)) == (
+        "deltanet_dense_prefill"
+    )
 
 
 @pytest.mark.cuda_only
@@ -376,8 +393,6 @@ def test_deltanet_inference_dispatch() -> None:
     ("call", "reason"),
     [
         pytest.param(_inference_call(l2norm=True), "L2 normalization", id="l2norm"),
-        pytest.param(_inference_call(varlen=True), "packed varlen", id="varlen"),
-        pytest.param(_inference_call(seq_len=63), "divisible by 64", id="ragged"),
         pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
         pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],
