@@ -328,13 +328,22 @@ def _gqa_varlen_fp8_ws_kernel(
     # it is one more than either compute warpgroup needs, which is what lets one of
     # them be a tile ahead of the other.
     stages = 3
+    # A tile holds the group's query heads side by side, so it spans this many query
+    # positions and its causal bound advances once every ``groups`` rows. The tiling
+    # therefore counts positions, not rows: FlashAttention-3's ``PackGQA`` traversal.
+    positions_per_tile = block_m // groups
+    positions_per_half = half_m // groups
+    # The output store walks the same packed rows, so it takes the span as a template
+    # argument rather than a uniform row stride.
+    packed_store = f"tl::fp8_fa3_o_smem_store_global_packed_64x128<{positions_per_half}>"
+    packed_store_tail = f"tl::fp8_fa3_o_smem_store_global_packed_64x128_tail<{positions_per_half}>"
     attention_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = attention_scale * LOG2E
     use_softcap = softcap > 0.0
     capped_softmax_scale = softcap * LOG2E
     has_left = window_size_left >= 0
     has_right = window_size_right >= 0
-    q_tiling = GroupTiling(batch, block_m)
+    q_tiling = GroupTiling(batch, positions_per_tile)
     # The program always takes the tables so one body serves both calls; a call without
     # rotation hands it a one-entry placeholder it never reads.
     rope_half = rotary_dim // 2 if fuse_rope else _ROPE_PLACEHOLDER_WIDTH
@@ -342,7 +351,13 @@ def _gqa_varlen_fp8_ws_kernel(
     # were rotated in their own launch, because every query tile of a request reads them.
     rotate_query_tile = (
         make_varlen_query_rope(
-            half_m, rotary_dim, rope_layout, max_position, _FP8_DTYPE, rope_dtype
+            half_m,
+            rotary_dim,
+            rope_layout,
+            max_position,
+            _FP8_DTYPE,
+            rope_dtype,
+            positions=positions_per_half,
         )
         if fuse_rope
         else None
@@ -415,12 +430,14 @@ def _gqa_varlen_fp8_ws_kernel(
 
         @T.macro
         def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta):
-            """Fill meta for item *work*: head, packed offsets, lengths, first row, key tiles."""
+            """Fill meta for item *work*: KV head, offsets, lengths, first position, key tiles."""
             # Query tiles are walked from the last one of the call: under the causal
             # mask a later tile scans more keys, so the longest items start first and
             # the closing wave carries the short ones.
-            q_tiling.decode(tile_cum[batch] - 1 - work // heads, tile_cum, lo, hi, request, q_row)
-            meta[0] = work % heads
+            q_tiling.decode(
+                tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row
+            )
+            meta[0] = work % heads_kv
             meta[1] = CuQ[request[0]] + q_row[0]
             meta[2] = CuKV[request[0]]
             meta[3] = CuQ[request[0] + 1] - CuQ[request[0]]
@@ -434,12 +451,15 @@ def _gqa_varlen_fp8_ws_kernel(
             if is_causal:
                 last = T.min(
                     T.ceildiv(meta[4], block_n),
-                    T.ceildiv(meta[5] + block_m + meta[4] - meta[3], block_n),
+                    T.ceildiv(meta[5] + positions_per_tile + meta[4] - meta[3], block_n),
                 )
             elif has_right:
                 last = T.min(
                     T.ceildiv(meta[4], block_n),
-                    T.ceildiv(meta[5] + block_m + meta[4] - meta[3] + window_size_right, block_n),
+                    T.ceildiv(
+                        meta[5] + positions_per_tile + meta[4] - meta[3] + window_size_right,
+                        block_n,
+                    ),
                 )
             else:
                 last = T.ceildiv(meta[4], block_n)
@@ -491,8 +511,6 @@ def _gqa_varlen_fp8_ws_kernel(
                 v_raw_full = T.alloc_barrier([WARPGROUP_THREADS] * stages)
                 v_full = T.alloc_barrier([WARPGROUP_THREADS] * stages)
                 v_empty = T.alloc_barrier([compute_threads] * stages)
-                q_full_1 = T.alloc_barrier(arrive_count=128)
-                q_full_2 = T.alloc_barrier(arrive_count=128)
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
                 q_row = T.alloc_local([1], "int32")
@@ -529,9 +547,9 @@ def _gqa_varlen_fp8_ws_kernel(
                     issued = T.alloc_var("int32", init=0)
                     folded = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=bx)
-                    while work < tile_cum[batch] * heads:
+                    while work < tile_cum[batch] * heads_kv:
                         locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
-                        head_kv = meta[0] // groups
+                        head_kv = meta[0]
                         kv_start = meta[2]
                         first = meta[8]
                         for n_idx in T.Pipelined(meta[6], num_stages=0):
@@ -610,34 +628,44 @@ def _gqa_varlen_fp8_ws_kernel(
                         folded = folded + 1
                 elif tx < 256:
                     T.inc_max_nreg(240)
-                    gi_q = T.alloc_var("int32", init=0)
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=bx)
-                    while work < tile_cum[batch] * heads:
+                    while work < tile_cum[batch] * heads_kv:
                         locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
-                        head = meta[0]
+                        head_kv = meta[0]
+                        head_base = head_kv * groups
                         q_at = meta[1] + 0
                         kv_start = meta[2]
                         q_len = meta[3]
                         kv_len = meta[4]
-                        row_base = meta[5] + 0
+                        pos_base = meta[5] + 0
                         eff = meta[6]
                         first = meta[8]
                         causal_offset = kv_len - q_len
-                        head_kv = head // groups
                         qk_descale = T.alloc_var(
                             accum_dtype, init=QD[meta[7], head_kv] * KD[meta[7], head_kv]
                         )
                         value_descale = T.alloc_var(accum_dtype, init=VD[meta[7], head_kv])
-                        T.tma_copy(Q[q_at : q_at + half_m, head, :], q_shared_1, barrier=q_full_1)
-                        T.barrier_arrive(q_full_1)
-                        T.barrier_wait(q_full_1, gi_q % 2)
-                        gi_q = gi_q + 1
+                        # The packed tile is a gather, so it is staged with ``cp.async``
+                        # rather than one bulk transfer. Its rows run head by head: a head's
+                        # rows are then one contiguous run of the request's tokens, which is
+                        # the widest region one transfer can carry. Rows past the call's last
+                        # token are predicated away and never stored.
+                        for g in T.serial(groups):
+                            T.async_copy(
+                                Q[q_at : q_at + positions_per_half, head_base + g, :],
+                                q_shared_1[
+                                    g * positions_per_half : (g + 1) * positions_per_half, :
+                                ],
+                            )
+                        T.ptx_wait_group(0)
+                        T.sync_threads(barrier_id=3, arrive_count=128)
+                        T.fence_proxy_async()
                         if fuse_rope:
                             # Query token i of a request sits at position kv_len - q_len + i.
                             rotate_query_tile(
-                                q_shared_1, RopeCos, RopeSin, causal_offset + row_base
+                                q_shared_1, RopeCos, RopeSin, causal_offset + pos_base
                             )
                         T.clear(acc_o_1)
                         T.clear(ls_1)
@@ -679,20 +707,23 @@ def _gqa_varlen_fp8_ws_kernel(
                             tile_end = (first + n_idx + 1) * block_n
                             cut = tile_end > kv_len
                             if is_causal:
-                                cut = cut | (tile_end > causal_offset + row_base + 1)
+                                cut = cut | (tile_end > causal_offset + pos_base + 1)
                             elif has_right:
                                 cut = cut | (
-                                    tile_end > causal_offset + row_base + window_size_right + 1
+                                    tile_end > causal_offset + pos_base + window_size_right + 1
                                 )
                             if has_left:
                                 cut = cut | (
                                     (first + n_idx) * block_n
-                                    < causal_offset + row_base + half_m - window_size_left
+                                    < causal_offset
+                                    + pos_base
+                                    + positions_per_half
+                                    - window_size_left
                                 )
                             if cut:
                                 for i, j in T.Parallel(half_m, block_n):
                                     kv_pos = (first + n_idx) * block_n + fa3_qk_acc_column(j)
-                                    limit = causal_offset + row_base + i
+                                    limit = causal_offset + pos_base + i % positions_per_half
                                     if is_causal:
                                         visible = (kv_pos < kv_len) & (kv_pos <= limit)
                                     elif has_right:
@@ -741,58 +772,68 @@ def _gqa_varlen_fp8_ws_kernel(
                             o_shared_1.access_ptr("w"),
                         )
                         T.fence_proxy_async()
-                        T.sync_threads(barrier_id=3 + 0 // half_m, arrive_count=128)
-                        if row_base + half_m <= q_len:
+                        T.sync_threads(barrier_id=3, arrive_count=128)
+                        if pos_base + positions_per_half <= q_len:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_o_smem_store_global_cute_64x128",
+                                packed_store,
                                 o_shared_1.access_ptr("r"),
-                                T.address_of(O[q_at, head, 0]),
+                                T.address_of(O[q_at, head_base, 0]),
                                 heads * dim,
                             )
-                        elif row_base < q_len:
+                        elif pos_base < q_len:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_o_smem_store_global_cute_64x128_tail",
+                                packed_store_tail,
                                 o_shared_1.access_ptr("r"),
-                                T.address_of(O[q_at, head, 0]),
+                                T.address_of(O[q_at, head_base, 0]),
                                 heads * dim,
-                                q_len - row_base,
+                                q_len - pos_base,
                             )
                         work = work + num_ctas
                 else:
                     T.inc_max_nreg(240)
-                    gi_q = T.alloc_var("int32", init=0)
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=bx)
                     T.named_barrier_arrive(
                         1, compute_threads
                     )  # let warpgroup 0 take the first turn
-                    while work < tile_cum[batch] * heads:
+                    while work < tile_cum[batch] * heads_kv:
                         locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
-                        head = meta[0]
-                        q_at = meta[1] + half_m
+                        head_kv = meta[0]
+                        head_base = head_kv * groups
+                        q_at = meta[1] + positions_per_half
                         kv_start = meta[2]
                         q_len = meta[3]
                         kv_len = meta[4]
-                        row_base = meta[5] + half_m
+                        pos_base = meta[5] + positions_per_half
                         eff = meta[6]
                         first = meta[8]
                         causal_offset = kv_len - q_len
-                        head_kv = head // groups
                         qk_descale = T.alloc_var(
                             accum_dtype, init=QD[meta[7], head_kv] * KD[meta[7], head_kv]
                         )
                         value_descale = T.alloc_var(accum_dtype, init=VD[meta[7], head_kv])
-                        T.tma_copy(Q[q_at : q_at + half_m, head, :], q_shared_2, barrier=q_full_2)
-                        T.barrier_arrive(q_full_2)
-                        T.barrier_wait(q_full_2, gi_q % 2)
-                        gi_q = gi_q + 1
+                        # The packed tile is a gather, so it is staged with ``cp.async``
+                        # rather than one bulk transfer. Its rows run head by head: a head's
+                        # rows are then one contiguous run of the request's tokens, which is
+                        # the widest region one transfer can carry. Rows past the call's last
+                        # token are predicated away and never stored.
+                        for g in T.serial(groups):
+                            T.async_copy(
+                                Q[q_at : q_at + positions_per_half, head_base + g, :],
+                                q_shared_2[
+                                    g * positions_per_half : (g + 1) * positions_per_half, :
+                                ],
+                            )
+                        T.ptx_wait_group(0)
+                        T.sync_threads(barrier_id=4, arrive_count=128)
+                        T.fence_proxy_async()
                         if fuse_rope:
                             # Query token i of a request sits at position kv_len - q_len + i.
                             rotate_query_tile(
-                                q_shared_2, RopeCos, RopeSin, causal_offset + row_base
+                                q_shared_2, RopeCos, RopeSin, causal_offset + pos_base
                             )
                         T.clear(acc_o_2)
                         T.clear(ls_2)
@@ -834,20 +875,23 @@ def _gqa_varlen_fp8_ws_kernel(
                             tile_end = (first + n_idx + 1) * block_n
                             cut = tile_end > kv_len
                             if is_causal:
-                                cut = cut | (tile_end > causal_offset + row_base + 1)
+                                cut = cut | (tile_end > causal_offset + pos_base + 1)
                             elif has_right:
                                 cut = cut | (
-                                    tile_end > causal_offset + row_base + window_size_right + 1
+                                    tile_end > causal_offset + pos_base + window_size_right + 1
                                 )
                             if has_left:
                                 cut = cut | (
                                     (first + n_idx) * block_n
-                                    < causal_offset + row_base + half_m - window_size_left
+                                    < causal_offset
+                                    + pos_base
+                                    + positions_per_half
+                                    - window_size_left
                                 )
                             if cut:
                                 for i, j in T.Parallel(half_m, block_n):
                                     kv_pos = (first + n_idx) * block_n + fa3_qk_acc_column(j)
-                                    limit = causal_offset + row_base + i
+                                    limit = causal_offset + pos_base + i % positions_per_half
                                     if is_causal:
                                         visible = (kv_pos < kv_len) & (kv_pos <= limit)
                                     elif has_right:
@@ -896,23 +940,23 @@ def _gqa_varlen_fp8_ws_kernel(
                             o_shared_2.access_ptr("w"),
                         )
                         T.fence_proxy_async()
-                        T.sync_threads(barrier_id=3 + half_m // half_m, arrive_count=128)
-                        if row_base + half_m <= q_len:
+                        T.sync_threads(barrier_id=4, arrive_count=128)
+                        if pos_base + positions_per_half <= q_len:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_o_smem_store_global_cute_64x128",
+                                packed_store,
                                 o_shared_2.access_ptr("r"),
-                                T.address_of(O[q_at, head, 0]),
+                                T.address_of(O[q_at, head_base, 0]),
                                 heads * dim,
                             )
-                        elif row_base < q_len:
+                        elif pos_base < q_len:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_o_smem_store_global_cute_64x128_tail",
+                                packed_store_tail,
                                 o_shared_2.access_ptr("r"),
-                                T.address_of(O[q_at, head, 0]),
+                                T.address_of(O[q_at, head_base, 0]),
                                 heads * dim,
-                                q_len - row_base,
+                                q_len - pos_base,
                             )
                         work = work + num_ctas
 
@@ -1149,6 +1193,11 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             return base
         if call.empty_kv:
             return "requires a key in at least one request"
+        if WGMMA_ROWS % (call.heads // call.heads_kv):
+            return (
+                "packs a KV group's query heads into one tile, so the group must divide "
+                f"the {WGMMA_ROWS} rows a warpgroup holds"
+            )
         if call.batch > cls._MAX_BATCH:
             return (
                 f"holds the per-request tile prefix in shared memory, so batch <= {cls._MAX_BATCH}"
