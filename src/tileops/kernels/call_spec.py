@@ -94,6 +94,16 @@ class CallSpec:
         facts.setdefault("_sm_count", sm_count)
         facts.setdefault("_smem_budget", smem_budget)
 
+    def on_device(self, device: torch.device) -> "CallSpec":
+        """The same call on *device*; the device facts it did not state come from *device*."""
+        fields = {
+            f.name: getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if f.init and f.name not in (*_DEVICE_FACTS, "device")
+        }
+        stated = {name: getattr(self, name) for name in self.stated_device_facts}
+        return type(self)(**fields, **stated, device=device)
+
     def refuse_unkeyable(self) -> None:
         """Raise unless every compared field is an immutable value.
 

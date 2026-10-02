@@ -158,6 +158,8 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
             call.out_dtype,
             device_index=index,
             b_scale_rows=128 if cls.block_scale_grid(call) == "1d2d" else 1,
+            arch=call.arch,
+            sm_count=call.sm_count,
         )
 
     def __init__(
@@ -171,6 +173,8 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         tune: bool = False,
         device_index: Optional[int] = None,
         b_scale_rows: int = 1,
+        arch: Optional[int] = None,
+        sm_count: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.b_scale_rows = b_scale_rows
@@ -179,8 +183,9 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.sm_count = get_sm_count(self.device_index)
-        self.ws_refusal = self._ws_refusal(m, n, k, dtype, get_sm_version(self.device_index))
+        self.sm_count = get_sm_count(self.device_index) if sm_count is None else sm_count
+        arch = get_sm_version(self.device_index) if arch is None else arch
+        self.ws_refusal = self._ws_refusal(m, n, k, dtype, arch)
         self.kernel = self._builder()
         self.init_config(config, tune)
         self._unused_bias: Optional[torch.Tensor] = None

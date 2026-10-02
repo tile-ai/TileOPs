@@ -508,6 +508,9 @@ class Op(ABC):
                 f"so it needs a target that registers one; known targets for this "
                 f"op: {registered_targets(type(self).__name__)}"
             )
+        if isinstance(call, CallSpec) and call.device is None and torch.cuda.is_available():
+            # A call without a device runs on the current one, which the cache key must name.
+            call = call.on_device(torch.device("cuda", torch.cuda.current_device()))
         dispatched = getattr(self, "_dispatched", None)
         if dispatched is None:
             dispatched = {}

@@ -13,6 +13,7 @@ from tileops.kernels.gemm import (
 from tileops.kernels.gemm.call_spec import GemmCall, GemmFp8Call
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
+    GemmFp8TensorScaleKernel,
     _b_eviction,
     _bandwidth_autotune_grid,
 )
@@ -790,6 +791,34 @@ def test_gemm_fp8_serves_sm89_by_scale_grid() -> None:
             out_dtype=torch.bfloat16,
         )
         assert GemmFp8FwdOp().select_implementation("gemm_fp8", call) == expected
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("arch", [89, 90])
+def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
+    from tileops.utils import get_sm_version
+
+    device = torch.device(run_device())
+    # Construction still checks the call's device, whatever arch the call states.
+    if get_sm_version(device.index) not in GemmFp8TensorScaleKernel.supported_archs:
+        pytest.skip("the FP8 kernel is built only on SM89 and SM90")
+    call = GemmFp8Call(
+        arch=arch,
+        sm_count=1,
+        m=128,
+        n=256,
+        k=512,
+        dtype=torch.float8_e4m3fn,
+        scale_a_shape=(1, 1),
+        scale_b_shape=(1, 1),
+        out_dtype=torch.bfloat16,
+        device=device,
+    )
+    _identity, build = GemmFp8TensorScaleKernel.entry_for(call)
+    kernel = build()
+    assert (kernel.ws_refusal is None) == (arch == 90)
+    assert kernel.sm_count == 1
 
 
 @pytest.mark.sm90
