@@ -450,12 +450,18 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
 @pytest.mark.parametrize("dtype,dim", [(torch.bfloat16, 64), (torch.float16, 128)])
 @pytest.mark.parametrize("scale", [None, 0.3])
 def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: float | None) -> None:
-    """Sequence lengths from one token up, with the state and the host offsets each absent."""
+    """Sequence lengths from one token up, with the state and the host offsets each absent.
+
+    Two heads is the fewest at which a per-sequence state walk oversubscribes the device at
+    width 128 and not at width 64, so the float16 case runs the partitioned walk and the
+    bfloat16 case the per-sequence one. The longest row spans several partitions, so the
+    state a chunk is read with is one the scan composed.
+    """
     if chunk_gla is None:
         pytest.skip("FLA not installed")
     torch.manual_seed(2237)
-    lengths = [1, 7, 63, 64, 100]
-    total, heads = sum(lengths), 4
+    lengths = [1, 7, 63, 64, 100, 600]
+    total, heads = sum(lengths), 2
     q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
     v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
     g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype)

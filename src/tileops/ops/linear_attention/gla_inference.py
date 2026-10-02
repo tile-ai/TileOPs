@@ -19,6 +19,9 @@ from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
 from tileops.kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefillFwdKernel
+from tileops.kernels.linear_attention.gla.varlen_prefill_partitioned import (
+    GLAVarlenPrefillPartitionedFwdKernel,
+)
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -41,6 +44,7 @@ class GLAInferenceFwdOp(Op):
         "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
         "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
         "gla_varlen_prefill": GLAVarlenPrefillFwdKernel,
+        "gla_varlen_prefill_partitioned": GLAVarlenPrefillPartitionedFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_inference": GLAInferenceFwdInterface
