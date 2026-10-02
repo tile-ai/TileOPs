@@ -8,11 +8,7 @@ import torch
 from tilelang.autotuner import autotune
 
 from tileops.kernels.attention.call_spec import SparseMlaCall, SparseMLADecodeFwdInterface
-from tileops.kernels.constants import (
-    BLOCK_SHARED_BYTES_OPT_IN,
-    LOG2E,
-    SHARED_BUFFER_ALIGN_BYTES,
-)
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
@@ -585,7 +581,9 @@ def _sparse_mla_basic_kernel(
             "-DNDEBUG",
         ],
     )
-    def _sparse_mla_basic_fwd_func(block_i: int, threads: int, num_stages: int = 2) -> None:
+    def _sparse_mla_basic_fwd_func(
+        block_i: int, threads: int, num_stages: int = 2, block_h: int = 64
+    ) -> None:
         if topk % block_i != 0:
             raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
         i_block = block_i
@@ -595,11 +593,13 @@ def _sparse_mla_basic_kernel(
         d_tail = tail_dim
         stride_kv = kv_stride
 
-        replicate_h = head_kv // 64 if head_kv > 64 else 1
+        # A group wider than block_h is covered by several blocks; loads past the heads read
+        # zero and stores there are dropped.
+        replicate_h = tilelang.cdiv(head_kv, block_h) if head_kv > block_h else 1
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
-        h_per_block = SparseMlaBasicKernel.heads_per_block(head_kv)
+        h_per_block = SparseMlaBasicKernel.heads_per_block(head_kv, block_h)
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -650,7 +650,7 @@ def _sparse_mla_basic_kernel(
                 # top-k slot must not address kv past its last row.
                 max_kv_i = T.min((q_i + 1 - stride_kv) // stride_kv, seq_len_kv - 1)
 
-                h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * 64)
+                h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * block_h)
                 h1 = h0 + h_per_block
 
                 T.copy(q[b_i, s_i, h0:h1, :d], q_shared)
@@ -769,11 +769,19 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         limit = BLOCK_SHARED_BYTES_OPT_IN.get(call.arch)
         if reason is not None or limit is None:
             return reason
+        head_kv = call.heads // call.kv_group
+        itemsize = call.dtype.itemsize
+        config = cls._default_config_for(
+            call.arch, head_kv, call.dim, call.tail_dim, itemsize, call.topk
+        )
         need = cls._shared_bytes(
-            cls.heads_per_block(call.heads // call.kv_group),
+            cls.heads_per_block(head_kv, config["block_h"]),
             call.dim,
-            call.dtype.itemsize,
-            cls._default_config_on(call.arch)["block_i"],
+            call.tail_dim,
+            itemsize,
+            config["block_i"],
+            config["threads"],
+            call.topk,
         )
         if need > limit:
             return (
@@ -783,33 +791,57 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         return None
 
     @staticmethod
-    def heads_per_block(head_kv: int) -> int:
-        """Query heads one block holds: the padded group, at most 64; its builder asks too."""
-        return 64 if head_kv > 64 else max(tilelang.math.next_power_of_2(head_kv), 16)
+    def heads_per_block(head_kv: int, block_h: int) -> int:
+        """Query heads a block holds: the padded group, at most *block_h*; the builder asks too."""
+        return block_h if head_kv > block_h else max(tilelang.math.next_power_of_2(head_kv), 16)
 
-    @staticmethod
-    def _default_config_on(arch: int) -> dict:
+    @classmethod
+    def _default_config_for(
+        cls, arch: int, head_kv: int, dim: int, tail_dim: int, itemsize: int, topk: int
+    ) -> dict:
         """The config this kernel builds on *arch*, which its region is sized for."""
-        return {"block_i": 64 if arch >= 90 else 32, "threads": 128, "num_stages": 2}
+        block_i = 64 if arch >= 90 else 32
+        threads = 128
+        limit = BLOCK_SHARED_BYTES_OPT_IN.get(arch)
+        block_h = next(
+            (
+                h
+                for h in (64, 32)
+                if limit is None
+                or cls._shared_bytes(
+                    cls.heads_per_block(head_kv, h),
+                    dim,
+                    tail_dim,
+                    itemsize,
+                    block_i,
+                    threads,
+                    topk,
+                )
+                <= limit
+            ),
+            16,
+        )
+        return {"block_i": block_i, "threads": threads, "num_stages": 2, "block_h": block_h}
 
     @staticmethod
-    def _shared_bytes(h_per_block: int, dim: int, itemsize: int, block_i: int) -> int:
-        """A lower bound on the shared memory one block allocates.
-
-        Only ``q``, ``kv`` and ``s``, which the main loop holds at once, each aligned as
-        TileLang places them. TileLang may place the tail buffers and the reduction
-        workspace in space whose lifetime does not overlap theirs, so a refusal on this bound
-        never refuses a call that fits; a call it admits can still exceed the limit by those
-        buffers. The KV gather runs under a serial loop, so ``T.Pipelined`` does not
-        multi-buffer it and ``num_stages`` adds nothing.
-        """
-        buffers = (
-            h_per_block * dim * itemsize,  # q
-            block_i * dim * itemsize,  # kv
-            h_per_block * block_i * itemsize,  # s
-        )
-        align = SHARED_BUFFER_ALIGN_BYTES
-        return sum(-(-b // align) * align for b in buffers)
+    def _shared_bytes(
+        h_per_block: int,
+        dim: int,
+        tail_dim: int,
+        itemsize: int,
+        block_i: int,
+        threads: int,
+        topk: int,
+    ) -> int:
+        """Shared memory TileLang gives one block; the serial KV gather adds no stage buffers.
+        Over several KV tiles q, kv, their tails, s and the two reductions' workspaces each keep
+        their own space; over one, only q and its tail, kv, and the larger of kv's tail and s."""
+        q = h_per_block * (dim + tail_dim) * itemsize
+        kv = block_i * dim * itemsize
+        kv_tail, s = block_i * tail_dim * itemsize, h_per_block * block_i * itemsize
+        if topk <= block_i:
+            return q + kv + max(kv_tail, s)
+        return q + kv + kv_tail + s + 2 * threads * 4
 
     def __init__(
         self,
@@ -872,9 +904,16 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         # layout and MLADecodeKernel's sm89 best config. The WGMMA version
         # instead spreads acc_o across two 128-thread consumer warpgroups.
         # Below SM90, block_i=32 keeps the KV tiles small enough for the
-        # per-block shared-memory limit; ``refusal`` rejects a shape where
-        # even that does not fit.
-        return self._default_config_on(get_sm_version(self.device_index))
+        # per-block shared-memory limit, and fewer heads a block where 64
+        # still do not fit; ``refusal`` rejects a shape where even 16 do not.
+        return self._default_config_for(
+            get_sm_version(self.device_index),
+            self.heads // self.kv_group,
+            self.dim,
+            self.tail_dim,
+            self.dtype.itemsize,
+            self.topk,
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -890,8 +929,9 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         """
         # threads=256 is kept for targets that support it; the autotuner
         # prunes configs that fail to compile.
+        block_h = self.default_config["block_h"]
         return [
-            {"block_i": block_i, "threads": threads, "num_stages": 2}
+            {"block_i": block_i, "threads": threads, "num_stages": 2, "block_h": block_h}
             for block_i, threads in itertools.product((32, 64), (128, 256))
         ]
 
@@ -922,7 +962,12 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
             self.is_causal,
             self.cp0,
             self.dtype_str,
-        )(self.config["block_i"], self.config["threads"], self.config["num_stages"])(q, kv, indices)
+        )(
+            self.config["block_i"],
+            self.config["threads"],
+            self.config["num_stages"],
+            self.config["block_h"],
+        )(q, kv, indices)
 
     @property
     def autotune_supply_prog(self) -> Optional[Callable]:

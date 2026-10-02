@@ -4,6 +4,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
+    MLADecodeMmaKernel,
     MLADecodeWsKernel,
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
@@ -28,7 +29,10 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mla_decode_kernel": MLADecodeWsKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "mla_decode_kernel": MLADecodeWsKernel,
+        "mla_decode_mma_kernel": MLADecodeMmaKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "mla_decode_kernel": MLADecodeFwdInterface
     }

@@ -31,11 +31,24 @@ from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
+from tileops.kernels.constants import (
+    LOG2E,
+    SHARED_BUFFER_ALIGN_BYTES,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
+)
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
 __all__ = ["MLAVarlenPrefillFwdKernel"]
+
+_CANDIDATES = (
+    {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256},
+    {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256},
+    {"block_m": 64, "block_n": 64, "num_stages": 2, "threads": 128},
+)
+_NARROW = _CANDIDATES[-1]
 
 
 def _stages_score_tile(block_m: int, threads: int) -> bool:
@@ -295,6 +308,14 @@ class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
                 "every head dimension is contracted in 16-wide steps, got "
                 f"{call.dim_nope}, {call.dim_pe}, {call.dim_v}"
             )
+        need = cls._shared_bytes(
+            call.batch, call.dim_nope, call.dim_pe, call.dim_v, call.dtype.itemsize, _NARROW
+        )
+        if call.smem_budget and need > call.smem_budget:
+            return (
+                f"needs {need} bytes of shared memory per block at its narrowest tile, over "
+                f"the {call.smem_budget} bytes the device allows"
+            )
         return None
 
     @classmethod
@@ -404,9 +425,40 @@ class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
     def autotune_supply_prog(self) -> Callable:
         return self._supply_prog
 
+    @staticmethod
+    def _shared_bytes(
+        batch: int, dim_nope: int, dim_pe: int, dim_v: int, itemsize: int, config: dict
+    ) -> int:
+        """Shared memory *config* allocates, buffer by buffer as TileLang aligns them; the K and
+        V loads do not multi-buffer, so ``num_stages`` adds nothing."""
+        block_m, block_n = config["block_m"], config["block_n"]
+        buffers = [
+            block_m * dim_nope * itemsize,
+            block_m * dim_pe * itemsize,
+            block_n * dim_nope * itemsize,
+            block_n * dim_pe * itemsize,
+            block_n * dim_v * itemsize,
+            4 * (batch + 1),
+        ]
+        if _stages_score_tile(block_m, config["threads"]):
+            buffers.append(block_m * block_n * itemsize)
+        align = SHARED_BUFFER_ALIGN_BYTES
+        return sum(-(-b // align) * align for b in buffers)
+
     @property
     def default_config(self) -> dict:
-        return {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
+        cap = get_shared_memory_optin(self.device_index)
+        return next(
+            (
+                c
+                for c in _CANDIDATES
+                if self._shared_bytes(
+                    self.batch, self.dim_nope, self.dim_pe, self.dim_v, self.dtype.itemsize, c
+                )
+                <= cap
+            ),
+            _NARROW,
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:

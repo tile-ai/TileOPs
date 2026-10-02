@@ -162,7 +162,7 @@ def _nsa_fwd_varlen_kernel(
 
 
 class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: NSACall) -> Entry:

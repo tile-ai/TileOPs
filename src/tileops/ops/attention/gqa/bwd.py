@@ -5,6 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
+    GQABwdMmaKernel,
     GQABwdWgmmaPipelinedKernel,
     MHABwdWsKernel,
 )
@@ -28,6 +29,7 @@ class GroupedQueryAttentionBwdOp(Op):
         "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
         "gqa_bwd_ws_kernel": MHABwdWsKernel,
+        "gqa_bwd_mma_kernel": GQABwdMmaKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gqa_bwd_preprocess": GQAPreprocessBwdInterface,
