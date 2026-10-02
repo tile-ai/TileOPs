@@ -9,7 +9,7 @@ from tilelang.profiler import do_bench
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import GLAChunkCall, GLAFwdInterface
-from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
+from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
 
@@ -103,12 +103,15 @@ def gla_fwd_h_kernel(
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
+    if dim_v % num_v_partitions:
+        raise ValueError(
+            f"dim_v ({dim_v}) is not divisible by num_v_partitions ({num_v_partitions})"
+        )
     dim_v_part = dim_v // num_v_partitions
     if dim_v_part < GEMM_MIN_N:
         raise ValueError(
-            f"dim_v ({dim_v}) split across num_v_partitions "
-            f"({num_v_partitions}) gives a {dim_v_part}-column T.gemm B "
-            f"operand, below the minimum N extent ({GEMM_MIN_N})"
+            f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) gives a "
+            f"{dim_v_part}-column T.gemm B operand, below the minimum N extent ({GEMM_MIN_N})"
         )
     dim_k_part = dim_k // num_k_partitions
     num_kv = num_k_partitions * num_v_partitions
@@ -122,6 +125,13 @@ def gla_fwd_h_kernel(
         },
     )
     def _h_func(num_stages, threads=128):
+        # The V partition is the recurrence gemm's B operand, which the thread count bounds.
+        if dim_v_part < min_gemm_n(threads):
+            raise ValueError(
+                f"dim_v ({dim_v}) split across num_v_partitions ({num_v_partitions}) "
+                f"gives a {dim_v_part}-column T.gemm B operand, below the minimum N "
+                f"extent ({min_gemm_n(threads)}) at {threads} threads"
+            )
         k_shape = [batch, seq_len, heads, dim_k]
         v_shape = [batch, seq_len, heads, dim_v]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
@@ -415,12 +425,18 @@ class GLAChunkedFwdKernel(Kernel):
             )
         return None
 
+    def _v_partitions(self, threads: int, candidates: list[int]) -> list[int]:
+        """Return the candidates the recurrence can build at *threads*, widest first."""
+        floor = max(GEMM_MIN_N, min_gemm_n(threads))
+        return [n for n in candidates if self.dim_v % n == 0 and self.dim_v // n >= floor]
+
     @property
     def default_config(self) -> dict:
+        threads = 64
         return {
             "num_stages": 3,
-            "threads": 64,
-            "num_v_partitions": 4,
+            "threads": threads,
+            "num_v_partitions": self._v_partitions(threads, [4, 2, 1])[0],
             "num_k_partitions": 2,
         }
 
@@ -430,7 +446,7 @@ class GLAChunkedFwdKernel(Kernel):
         for ns in [1, 2, 3]:
             for t_par in [64, 128, 256]:
                 for t_seq in [64, 128, 256]:
-                    for nvp in [2, 4]:
+                    for nvp in self._v_partitions(t_seq, [2, 4]):
                         for nkp in [1, 2]:
                             configs.append(
                                 {

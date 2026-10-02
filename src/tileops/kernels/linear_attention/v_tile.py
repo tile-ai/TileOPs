@@ -1,15 +1,33 @@
 """V-tile width resolution for kernels feeding ``[*, BV]`` tiles into ``T.gemm``.
 
-WGMMA requires the gemm N extent (columns of the B operand) to be at least
-16 and tilelang rejects narrower B operands at compile time, so a narrower
-resolved V-tile is a configuration error to reject eagerly, not to clamp.
+The chunked state recurrences pass their V tile as the B operand of a
+``FullRow`` gemm, and WGMMA splits that operand's N extent across warp groups:
+``min_gemm_n`` is the floor those kernels adopt. A V tile below it is a
+configuration error to reject eagerly, not to clamp. A kernel that assigns warp
+roles itself, as the gated DeltaNet prefill does, is not bound by it.
 """
 
-__all__ = ["GEMM_MIN_N", "resolve_block_v"]
+__all__ = ["GEMM_MIN_N", "min_gemm_n", "resolve_block_v"]
 
-# tilelang's WGMMA lowering rejects B operands narrower than 16 (verified at
-# tilelang afcebed1 and c7fabc4). Re-check when bumping tilelang.
+# Narrowest N extent one warp group can take. tilelang's WGMMA lowering rejects
+# a narrower share whatever the thread count.
 GEMM_MIN_N = 16
+
+
+def min_gemm_n(threads: int) -> int:
+    """Return the N extent WGMMA needs from a ``FullRow`` gemm's B operand at *threads*.
+
+    Each warp group of 128 threads takes a share of the N extent, and a share
+    below ``GEMM_MIN_N`` has no legal layout: tilelang rejects it with "Not a
+    canonical GMMA_MN layout". Measured on tilelang 0.1.12 / SM90, fp16 and
+    bf16 alike: a 16-column operand builds at 128 threads and fails at 256.
+    Under one whole warp group the gemm does not reach WGMMA, so this rule sets
+    no floor there and returns 0; a kernel with a floor of its own keeps it.
+
+    Args:
+        threads: Thread count the kernel launches with.
+    """
+    return GEMM_MIN_N * (threads // 128)
 
 
 def resolve_block_v(dim_v: int, block_v: int) -> int:

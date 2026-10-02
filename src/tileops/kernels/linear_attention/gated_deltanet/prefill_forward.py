@@ -23,7 +23,7 @@ from tileops.utils import get_sm_count
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
-    compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
+    compile_flags=["-O3", "-DENABLE_BF16"],
 )
 def _build_fused_chunk_gdr_fwd_kernel(
     H,

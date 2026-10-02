@@ -10,7 +10,7 @@ import itertools
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from tileops.kernels.linear_attention.v_tile import resolve_block_v
+from tileops.kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 
 __all__ = [
     "H_BLOCK_V_WIDTHS",
@@ -18,6 +18,7 @@ __all__ = [
     "PIPELINE_CONFIGS",
     "TILED_DEFAULT_MIN_CHUNK_SIZE",
     "default_h_block_v",
+    "default_h_threads",
     "delta_rule_fwd_autotune_configs",
     "h_block_v_candidates",
     "tune_delta_rule_fwd",
@@ -135,7 +136,28 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
             _require_h_block_v_candidates(dim_v),
             OUTPUT_CONFIGS,
         )
+        if resolve_block_v(dim_v, block_v) >= min_gemm_n(recurrence["threads"])
     ]
+
+
+def default_h_threads(dim_v: int, block_v: int) -> int:
+    """Return the widest recurrence thread count this V tile can be built with.
+
+    Args:
+        dim_v: Value dimension.
+        block_v: V-tile width, as ``default_h_block_v`` returns it.
+
+    Raises:
+        ValueError: if no declared thread count admits the tile.
+    """
+    width = resolve_block_v(dim_v, block_v)
+    admitted = [c["threads"] for c in PIPELINE_CONFIGS if width >= min_gemm_n(c["threads"])]
+    if not admitted:
+        raise ValueError(
+            f"V-tile width {width} (dim_v={dim_v}) is below the minimum T.gemm N extent "
+            f"at every declared recurrence thread count {sorted({c['threads'] for c in PIPELINE_CONFIGS})}"
+        )
+    return max(admitted)
 
 
 def tune_delta_rule_fwd(

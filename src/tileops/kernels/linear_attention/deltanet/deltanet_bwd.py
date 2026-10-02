@@ -23,6 +23,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetBwdInterface, DeltaNetChunkCall
+from tileops.kernels.linear_attention.v_tile import min_gemm_n
 from tileops.utils import get_shared_memory_optin
 
 __all__ = [
@@ -63,6 +64,13 @@ def _bwd_parallel_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads=256):
+        # The V extent is a gemm B operand here, which the thread count bounds.
+        if dim_v < min_gemm_n(threads):
+            raise ValueError(
+                f"dim_v ({dim_v}) is below the minimum T.gemm N extent "
+                f"({min_gemm_n(threads)}) at {threads} threads"
+            )
+
         @T.prim_func
         def bwd_parallel_kernel(
             do: T.Tensor([batch, head, seq_len, dim_v], dtype),
@@ -240,6 +248,13 @@ def _dh_recurrence_bwd_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=256):
+        # The V extent is a gemm B operand here, which the thread count bounds.
+        if dim_v < min_gemm_n(threads):
+            raise ValueError(
+                f"dim_v ({dim_v}) is below the minimum T.gemm N extent "
+                f"({min_gemm_n(threads)}) at {threads} threads"
+            )
+
         @T.prim_func
         def dh_recurrence_bwd_kernel(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -475,6 +490,9 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
     @property
     def default_config(self) -> dict:
         threads = 256 if self.chunk_size >= 64 else 128
+        # Both builders feed dim_v to a gemm as the B operand, so it caps the thread count.
+        while threads > 64 and self.dim_v < min_gemm_n(threads):
+            threads //= 2
         return {
             "num_stages": max(self._recurrence_stage_options()),
             "threads": threads,
@@ -531,7 +549,10 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
 
-        parallel_configs = [{"threads": t} for t in [128, 256]]
+        # Both gemm-bearing sub-kernels take dim_v as a B operand, so the sweep offers
+        # only the thread counts that extent admits.
+        thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
+        parallel_configs = [{"threads": t} for t in thread_options]
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
         parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
         _parallel_at = dict(configs=parallel_configs, warmup=warmup, rep=rep)
@@ -551,7 +572,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
         recurrence_configs = [
             {"num_stages": ns, "threads": t}
             for ns in self._recurrence_stage_options()
-            for t in [128, 256]
+            for t in thread_options
         ]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)

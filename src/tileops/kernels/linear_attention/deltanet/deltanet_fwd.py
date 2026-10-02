@@ -23,6 +23,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.autotune import (
     default_h_block_v,
+    default_h_threads,
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
@@ -30,7 +31,7 @@ from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall, DeltaN
 from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
 )
-from tileops.kernels.linear_attention.v_tile import resolve_block_v
+from tileops.kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 
 __all__ = ["DeltaNetFwdKernel"]
 
@@ -71,6 +72,13 @@ def _h_recurrence_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=128):
+        # ``u`` reaches T.gemm as the B operand, so the thread count bounds the V tile.
+        if min_gemm_n(threads) > BV:
+            raise ValueError(
+                f"V-tile width {BV} (dim_v={dim_v}, block_v={block_v}) is below the "
+                f"minimum T.gemm N extent ({min_gemm_n(threads)}) at {threads} threads"
+            )
+
         @T.prim_func
         def h_recurrence_kernel(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -311,12 +319,13 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        h_block_v = default_h_block_v(self.dim_v, self.chunk_size)
         return {
             "fused_num_stages": 2,
             "fused_threads": 256,
             "h_num_stages": 2,
-            "h_threads": 256,
-            "h_block_v": default_h_block_v(self.dim_v, self.chunk_size),
+            "h_threads": default_h_threads(self.dim_v, h_block_v),
+            "h_block_v": h_block_v,
             "o_threads": 256,
         }
 
