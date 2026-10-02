@@ -36,7 +36,7 @@ from tileops.kernels.gemm.dense import (
     GemvKernel,
 )
 from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
-from tileops.kernels.gemm.w4a16 import GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16 import GemmW4A16Kernel, GemmW4A16MmaKernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 
 __all__ = [
@@ -64,6 +64,7 @@ __all__ = [
     "GemmW4A16Call",
     "GemmW4A16FwdInterface",
     "GemmW4A16Kernel",
+    "GemmW4A16MmaKernel",
     "GemvKernel",
     "W4A16RepackCall",
     "W4A16RepackFwdInterface",
