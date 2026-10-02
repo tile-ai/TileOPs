@@ -121,6 +121,10 @@ GroupedQueryAttentionVarlenFwdOp:
   - {T_q: 4096, T_kv: 4096, H: 32, H_kv: 4, D: 512, q_lens: "repeat(2048, 2)", kv_lens: "repeat(2048, 2)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-uniform}
   - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 4, D: 512, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-q-lt-kv}
   - {T_q: 6048, T_kv: 6048, H: 16, H_kv: 2, D: 512, q_lens: [1000, 2048, 3000], kv_lens: [1000, 2048, 3000], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-26b-a4b-ragged}
+  - {T_q: 2048, T_kv: 2048, P: 512, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform-rope}
+  - {T_q: 2048, T_kv: 2048, P: 512, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-rope-interleaved}
+  - {T_q: 1018, T_kv: 2041, P: 1024, H: 32, H_kv: 8, D: 128, q_lens: [1, 0, 1000, 17], kv_lens: [1024, 0, 1000, 17], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-rope-partial}
+  - {T_q: 3018, T_kv: 4017, P: 3000, H: 16, H_kv: 2, D: 128, q_lens: [3000, 1, 17], kv_lens: [3000, 1000, 17], is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: qwen-ragged-rope}
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
 
