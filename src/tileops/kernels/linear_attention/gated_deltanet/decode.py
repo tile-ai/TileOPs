@@ -1,131 +1,17 @@
 """SM90 single-token Gated DeltaNet inference decode."""
 
-import functools
 from typing import Optional, Tuple
 
-import tilelang
-import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GatedDeltaNetCall,
     GatedDeltaNetFwdInterface,
 )
+from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
 
-__all__ = [
-    "DENSE_DECODE_SM90_CONFIG",
-    "GatedDeltaNetDenseDecodeFwdKernel",
-    "gated_deltanet_dense_decode_sm90_tl",
-]
-
-# The launch shape of the decode program, shared by the gated kernel and the ungated one
-# that runs the same program with a zero gate. One warp owns a 16-column state tile, two
-# lanes reduce the key dimension for each output column. Re-fit maxrregcount by sweeping
-# it against the decode workload rows of `benchmarks/ops/bench_gated_deltanet.py`.
-DENSE_DECODE_SM90_CONFIG = {
-    "threads": 32,
-    "v_tile": 16,
-    "lane_group": 2,
-    "maxrregcount": 146,
-}
-
-
-@functools.lru_cache(maxsize=32)
-def gated_deltanet_dense_decode_sm90_tl(
-    batch: int,
-    heads: int,
-    dim: int,
-    scale: float,
-    dtype: str,
-    v_tile: int,
-    lane_group: int,
-    maxrregcount: int,
-):
-    """Build the one-warp-per-state-column-tile decode program."""
-    if dim != 128:
-        raise ValueError("Hopper Gated DeltaNet decode currently requires K == V == 128")
-    if dim % v_tile != 0:
-        raise ValueError(f"dim={dim} must be divisible by v_tile={v_tile}")
-    if lane_group * v_tile != 32:
-        raise ValueError("lane_group * v_tile must equal one warp")
-    if dim % lane_group != 0:
-        raise ValueError(f"dim={dim} must be divisible by lane_group={lane_group}")
-
-    total_blocks = batch * heads * (dim // v_tile)
-    k_chunk = dim // lane_group
-    compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
-    if maxrregcount > 0:
-        compile_flags.append(f"--maxrregcount={maxrregcount}")
-
-    @tilelang.jit(out_idx=[-2, -1], compile_flags=compile_flags)
-    def _decode(threads=32):
-        @T.prim_func
-        def gated_deltanet_dense_decode_sm90(
-            q: T.Tensor([batch, 1, heads, dim], dtype),
-            k: T.Tensor([batch, 1, heads, dim], dtype),
-            v: T.Tensor([batch, 1, heads, dim], dtype),
-            g: T.Tensor([batch, 1, heads], dtype),
-            beta: T.Tensor([batch, 1, heads], dtype),
-            state: T.Tensor([batch, heads, dim, dim], "float32"),
-            o: T.Tensor([batch, 1, heads, dim], dtype),
-            final_state: T.Tensor([batch, heads, dim, dim], "float32"),
-        ):
-            with T.Kernel(total_blocks, threads=threads) as (block,):
-                tx = T.get_thread_binding()
-                value_tile = block % (dim // v_tile)
-                batch_head = block // (dim // v_tile)
-                batch_idx = batch_head // heads
-                head_idx = batch_head - batch_idx * heads
-                value_lane = tx // lane_group
-                k_rank = tx - value_lane * lane_group
-                value_idx = value_tile * v_tile + value_lane
-                k_begin = k_rank * k_chunk
-
-                k_shared = T.alloc_shared([dim], "float32")
-                q_shared = T.alloc_shared([dim], "float32")
-                state_local = T.alloc_local([k_chunk], "float32")
-                old_partial = T.alloc_var("float32", init=0.0)
-                out_partial = T.alloc_var("float32", init=0.0)
-                value_new = T.alloc_var("float32", init=0.0)
-
-                for i in T.serial(T.ceildiv(dim, 32)):
-                    kk = tx + i * 32
-                    if kk < dim:
-                        k_shared[kk] = T.cast(k[batch_idx, 0, head_idx, kk], "float32")
-                        q_shared[kk] = T.cast(q[batch_idx, 0, head_idx, kk], "float32") * scale
-                T.sync_threads()
-
-                decay = T.exp2(T.cast(g[batch_idx, 0, head_idx], "float32") * LOG2E)
-                beta_value = T.cast(beta[batch_idx, 0, head_idx], "float32")
-
-                for ii in T.serial(k_chunk):
-                    kk = k_begin + ii
-                    decayed_state = decay * state[batch_idx, head_idx, kk, value_idx]
-                    state_local[ii] = decayed_state
-                    old_partial += decayed_state * k_shared[kk]
-
-                old_value = old_partial + T.shfl_down(old_partial, 1, width=lane_group)
-                if k_rank == 0:
-                    value_new = beta_value * (
-                        T.cast(v[batch_idx, 0, head_idx, value_idx], "float32") - old_value
-                    )
-                value_new = T.shfl_sync(value_new, value_lane * lane_group, width=lane_group)
-
-                for ii in T.serial(k_chunk):
-                    kk = k_begin + ii
-                    updated_state = state_local[ii] + k_shared[kk] * value_new
-                    final_state[batch_idx, head_idx, kk, value_idx] = updated_state
-                    out_partial += updated_state * q_shared[kk]
-
-                out_value = out_partial + T.shfl_down(out_partial, 1, width=lane_group)
-                if k_rank == 0:
-                    o[batch_idx, 0, head_idx, value_idx] = T.cast(out_value, dtype)
-
-        return gated_deltanet_dense_decode_sm90
-
-    return _decode
+__all__ = ["GatedDeltaNetDenseDecodeFwdKernel"]
 
 
 class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
@@ -133,7 +19,10 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
 
     One warp owns a 16-column state tile. Two lanes reduce the K dimension for
     each output column, keeping the decayed state slice in registers so the
-    state update and output projection reuse the same load.
+    state update and output projection reuse the same load. The gate transform,
+    the beta sigmoid, the Q/K L2 normalization and the starting state are build
+    flags of the program, so a call that asks for none of them runs a program
+    that contains none of them.
     """
 
     supported_archs = [90]
@@ -146,40 +35,54 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        One token continuing a 128-wide square state the caller owns, with the gate, the
-        step size and the Q/K normalization settled before the call.
+        One token continuing a 64- or 128-wide square state, in either layout, under
+        any combination of the recurrence flags the operator fixes.
         """
-        variant = call.recurrence_refusal
-        if variant is not None:
-            return variant
-        if call.l2norm:
-            return "takes Q and K already normalized"
-        if call.gate_in_kernel:
-            return "takes g already in log space"
-        if call.beta_sigmoid:
-            return "takes beta already transformed"
-        if call.varlen:
-            return "serves a single token of an equal-length call"
-        if call.value_heads != call.heads:
-            return "serves one key head per value head"
-        if call.dim_k != 128 or call.dim_v != 128:
-            return "does not support K and V other than 128"
-        if call.seq_len != 1:
-            return "serves one token per call"
-        if not call.has_initial_state:
-            return "does not support decode without initial_state"
-        return None
+        unsupported = [
+            name
+            for name, present in (
+                ("packed varlen", call.varlen),
+                (
+                    "K and V other than matching 64 or 128",
+                    call.dim_k != call.dim_v or call.dim_k not in (64, 128),
+                ),
+                ("T other than 1", call.seq_len != 1),
+            )
+            if present
+        ]
+        return "does not support " + ", ".join(unsupported) if unsupported else None
 
     @classmethod
     def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        identity = (call.batch, call.heads, call.dim_k, call.scale, call.dtype, index)
+        identity = (
+            call.batch,
+            call.heads,
+            call.value_heads,
+            call.dim_k,
+            call.scale,
+            call.dtype,
+            call.has_initial_state,
+            call.state_v_first,
+            call.l2norm,
+            call.gate_in_kernel,
+            call.beta_sigmoid,
+            call.allow_neg_eigval,
+            index,
+        )
         return identity, lambda: cls(
             batch=call.batch,
             heads=call.heads,
+            value_heads=call.value_heads,
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
+            has_initial_state=call.has_initial_state,
+            state_v_first=call.state_v_first,
+            l2norm=call.l2norm,
+            gate_in_kernel=call.gate_in_kernel,
+            beta_sigmoid=call.beta_sigmoid,
+            allow_neg_eigval=call.allow_neg_eigval,
             device_index=index,
         )
 
@@ -187,33 +90,59 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         self,
         batch: int,
         heads: int,
+        value_heads: int,
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool,
+        state_v_first: bool,
+        l2norm: bool,
+        gate_in_kernel: bool,
+        beta_sigmoid: bool,
+        allow_neg_eigval: bool,
         *,
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
+        self.value_heads = value_heads
         self.dim = dim
         self.scale = scale
         self.dtype = dtype
+        self.has_initial_state = has_initial_state
+        self.state_v_first = state_v_first
+        self.gate_in_kernel = gate_in_kernel
         self.init_config()
-        self._kernel_fn = gated_deltanet_dense_decode_sm90_tl(
+        self._kernel_fn = delta_decode_sm90_tl(
             batch,
             heads,
+            value_heads,
             dim,
             scale,
             self.dtype_str,
-            self.config["v_tile"],
-            self.config["lane_group"],
-            self.config["maxrregcount"],
-        )(self.config["threads"])
+            gated=True,
+            gate_in_kernel=gate_in_kernel,
+            beta_sigmoid=beta_sigmoid,
+            allow_neg_eigval=allow_neg_eigval,
+            l2norm=l2norm,
+            has_initial_state=has_initial_state,
+            state_v_first=state_v_first,
+            threads=self.config["threads"],
+            lane_group=self.config["lane_group"],
+        )()
+        device = (
+            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
+        )
+        # The float32 parameters this build leaves unread are declared one element wide.
+        self._unread = torch.empty(1, dtype=torch.float32, device=device)
 
     @property
     def default_config(self) -> dict:
-        return dict(DENSE_DECODE_SM90_CONFIG)
+        """The block shape this call's grid and state layout call for."""
+        return decode_launch(
+            self.batch, self.value_heads, self.dim, self.state_v_first, self.device_index
+        )
 
     def forward(
         self,
@@ -228,8 +157,10 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
-        if initial_state is None:
-            raise ValueError("Gated DeltaNet decode requires initial_state")
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta, initial_state=initial_state)
-        return self._kernel_fn(q, k, v, g, beta, initial_state)
+        del cu_seqlens, cu_seqlens_cpu
+        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        if self.has_initial_state and initial_state is None:
+            raise ValueError("the build reads initial_state, but the call passed none")
+        state = initial_state if self.has_initial_state else self._unread
+        gate_params = (A_log, dt_bias) if self.gate_in_kernel else (self._unread, self._unread)
+        return self._kernel_fn(q, k, v, g, beta, *gate_params, state)

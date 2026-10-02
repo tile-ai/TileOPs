@@ -83,6 +83,7 @@ class DeltaNetInferenceCall(CallSpec):
     scale: float = 0.0
     l2norm: bool = False
     varlen: bool = False
+    has_initial_state: bool = False
     num_sequences: int = 0
 
 
@@ -133,18 +134,6 @@ class GatedDeltaNetCall(CallSpec):
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
     num_sequences: int = 0
-
-    @property
-    def recurrence_refusal(self) -> Optional[str]:
-        """Why no in-tree gated program serves this call, or ``None`` when one may.
-
-        The recurrence variants the in-tree pair does not implement, whatever the sequence
-        length or head counts. Both implementations ask it first, then state the shapes
-        and the input transforms they serve themselves.
-        """
-        if self.state_v_first:
-            return "does not support state_v_first=True"
-        return None
 
 
 class DeltaNetFwdInterface(KernelInterface):

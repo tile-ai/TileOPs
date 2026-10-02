@@ -584,7 +584,9 @@ def test_gla_dense_decode_matches_fla(
     _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp(scale)
-    test.check(op, *inputs, **standard_tolerance(dtype))
+    # One token puts the output at 4e-1 against a measured 3e-8, which the dtype's standard
+    # tolerance covers whole.
+    test.check(op, *inputs, atol=3e-7, rtol=3e-7)
 
 
 @pytest.mark.smoke
@@ -615,12 +617,18 @@ class GLADecodeTest(GLADecodeWorkload, TestBase):
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
+    """Ten times the agreement one decode step and four chained ones reach, by dtype.
+
+    One token leaves the output around 4e-1 and the error three to six orders below it, so
+    a bound set by the dtype's own rounding passes a step that was never taken. Re-fit by
+    measuring the step against ``ref_program`` over the fixture's whole grid.
+    """
     if dtype == torch.float32:
-        return {"atol": 5e-4, "rtol": 5e-4}
+        return {"atol": 3e-6, "rtol": 3e-6}
     elif dtype == torch.float16:
-        return {"atol": 1e-2, "rtol": 1e-2}
+        return {"atol": 7e-4, "rtol": 7e-4}
     else:  # bfloat16
-        return {"atol": 2e-2, "rtol": 2e-2}
+        return {"atol": 3e-3, "rtol": 3e-3}
 
 
 class GLADecodeFixture(FixtureBase):

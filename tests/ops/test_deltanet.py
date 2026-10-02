@@ -471,9 +471,10 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetInferenceFwdOp()
-    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *inputs, atol=atol, rtol=rtol)
-    test.check(op, *inputs[:4], atol=atol, rtol=rtol)
+    # One token over a 128-wide state puts the output at 5e-2, which the prefill tolerance
+    # covers whole; the measured agreement is 4e-9, and exact from a zero state.
+    test.check(op, *inputs, atol=4e-8, rtol=4e-8)
+    test.check(op, *inputs[:4], atol=4e-8, rtol=4e-8)
 
 
 @pytest.mark.smoke
@@ -491,12 +492,18 @@ class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):
 
 
 def _get_tolerances_deltanet_recurrence(dtype: torch.dtype) -> dict:
+    """Ten times the agreement one decode step and four chained ones reach, by dtype.
+
+    One token leaves the output around 4e-1 and the error three to six orders below it, so
+    a bound set by the dtype's own rounding passes a step that was never taken. Re-fit by
+    measuring the step against ``ref_program`` over the fixture's whole grid.
+    """
     if dtype == torch.float32:
-        return {"atol": 5e-4, "rtol": 5e-4}
+        return {"atol": 2e-6, "rtol": 2e-6}
     elif dtype == torch.float16:
-        return {"atol": 1e-2, "rtol": 1e-2}
+        return {"atol": 1e-4, "rtol": 1e-4}
     else:  # bfloat16
-        return {"atol": 2e-2, "rtol": 2e-2}
+        return {"atol": 2e-3, "rtol": 2e-3}
 
 
 class DeltaNetDecodeFixture(FixtureBase):

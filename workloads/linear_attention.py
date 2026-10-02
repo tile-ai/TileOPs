@@ -224,6 +224,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         raw_gate: bool = False,
         beta_sigmoid: bool = False,
         allow_neg_eigval: bool = False,
+        state_v_first: bool = False,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
@@ -238,6 +239,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         self.raw_gate = raw_gate
         self.beta_sigmoid = beta_sigmoid
         self.allow_neg_eigval = allow_neg_eigval
+        self.state_v_first = state_v_first
 
     @property
     def _spans(self) -> tuple[tuple[int, int], ...]:
@@ -342,7 +344,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
                     self.value_heads, self.dim, self.dim, dtype=torch.float32, device=q.device
                 )
                 if initial_state is None
-                else initial_state[sequence].float()
+                else self._key_major(initial_state[sequence].float())
             )
             for token in range(last - first):
                 index = (
@@ -362,8 +364,12 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
                 value = beta_t.unsqueeze(-1) * (v_t - decay.unsqueeze(-1) * old_value)
                 state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
                 output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
-            states.append(state)
+            states.append(self._key_major(state))
         return output, torch.stack(states)
+
+    def _key_major(self, state: torch.Tensor) -> torch.Tensor:
+        """*state* between the caller's layout and the ``[HV, K, V]`` the recurrence uses."""
+        return state.transpose(-1, -2) if self.state_v_first else state
 
 
 class GLAChunkwiseWorkload(WorkloadBase):
@@ -715,6 +721,7 @@ class GatedDeltaNetFwdCall(CallWorkload):
             output_final_state=True,
             cu_seqlens=cu_seqlens,
             use_qk_l2norm_in_kernel=self.call.ix["use_qk_l2norm_in_kernel"],
+            state_v_first=self.call.ix["state_v_first"],
         )
         if q.shape[1] == 1:
             return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)

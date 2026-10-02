@@ -321,6 +321,11 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
     ("call", "expected"),
     [
         pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
+        pytest.param(
+            _gated_call(1, False, dim_k=64, dim_v=64, value_heads=64, state_v_first=True),
+            "gated_deltanet_dense_decode",
+            id="decode-every-variant",
+        ),
         pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
         pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
         pytest.param(
@@ -355,28 +360,13 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_gated_call(1, False), "decode without initial_state", id="decode-no-state"),
         pytest.param(
-            _gated_call(1, True, dim_k=64, dim_v=64),
-            "K and V other than 128",
-            id="decode-narrow-state",
+            _gated_call(1, True, dim_k=256, dim_v=256),
+            "K and V other than matching 64 or 128",
+            id="decode-wide-state",
         ),
         pytest.param(
-            _gated_call(1, True, value_heads=64), "one key head per value head", id="decode-grouped"
-        ),
-        pytest.param(
-            _gated_call(1, True, l2norm=True), "Q and K already normalized", id="decode-l2norm"
-        ),
-        pytest.param(
-            _gated_call(1, True, gate_in_kernel=True), "g already in log space", id="decode-gate"
-        ),
-        pytest.param(
-            _gated_call(1, True, beta_sigmoid=True),
-            "beta already transformed",
-            id="decode-beta-sigmoid",
-        ),
-        pytest.param(
-            _gated_call(64, False, state_v_first=True), "state_v_first", id="state-v-first"
+            _gated_call(64, False, state_v_first=True), "state_v_first", id="prefill-state-v-first"
         ),
     ],
 )
@@ -422,6 +412,11 @@ def test_deltanet_inference_dispatch() -> None:
     assert op.select_implementation("deltanet_inference", _inference_call(l2norm=True)) == (
         "deltanet_dense_prefill"
     )
+    # Decode claims the state width and the in-kernel normalization it used to refuse.
+    narrow = _inference_call(seq_len=1, dim_k=64, dim_v=64)
+    assert op.select_implementation("deltanet_inference", narrow) == "deltanet_dense_decode"
+    normalized = _inference_call(seq_len=1, l2norm=True)
+    assert op.select_implementation("deltanet_inference", normalized) == "deltanet_dense_decode"
 
 
 @pytest.mark.cuda_only
@@ -429,9 +424,6 @@ def test_deltanet_inference_dispatch() -> None:
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(
-            _inference_call(seq_len=1, l2norm=True), "L2 normalization", id="decode-l2norm"
-        ),
         pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
         pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],
