@@ -54,11 +54,49 @@ __all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
 _SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
 
 
+# An abbreviation is one word: splitting on its internal case boundary turns `MoE` into
+# `mo_e` and `W4A16` into `w4_a16`, which is what the caller reads in a graph dump.
+_ABBREVIATIONS = (
+    "W4A16",
+    "W4A8",
+    "W8A8",
+    "FP8",
+    "INT8",
+    "INT4",
+    "C2C",
+    "TopK",
+    "TopP",
+    "MinP",
+    "MoE",
+    "MLP",
+    "FFT",
+    "RMS",
+    "NSA",
+    "MLA",
+    "GQA",
+    "SSD",
+    "MHC",
+)
+
+
 def operator_name(family: str, class_name: str) -> str:
     """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
-    opens with the family, such as ``MoePrePermuteFwdOp``, names it once."""
-    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", class_name)
+    opens with the family, such as ``MoePrePermuteFwdOp``, names it once.
+
+    An abbreviation in `_ABBREVIATIONS` stays one word.
+    """
+    held: dict[str, str] = {}
+    name = class_name
+    for i, abbreviation in enumerate(_ABBREVIATIONS):
+        if abbreviation in name:
+            # A placeholder the case-split rules leave alone: one capital, then lowercase.
+            holder = f"Zz{i:02d}zz"
+            held[holder.lower()] = abbreviation.lower()
+            name = name.replace(abbreviation, holder)
+    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     stem = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", spaced).lower().removesuffix("_op")
+    for holder, abbreviation in held.items():
+        stem = stem.replace(holder, abbreviation)
     if stem == family or stem.startswith(f"{family}_"):
         return stem
     return f"{family}_{stem}"
