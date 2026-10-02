@@ -35,6 +35,7 @@ _CORRECTNESS_CASES = (
     pytest.param(256, torch.complex64, (2, 4), marks=pytest.mark.full, id="packed-16x16"),
     pytest.param(512, torch.complex128, (3,), marks=pytest.mark.full, id="packed-8x8x8-c128"),
     pytest.param(1024, torch.complex64, (2, 4), marks=pytest.mark.full, id="three-pass-lower"),
+    pytest.param(2048, torch.complex64, (3,), marks=pytest.mark.full, id="three-pass-radix8"),
     pytest.param(8192, torch.complex128, (3,), marks=pytest.mark.full, id="four-pass-lower"),
     pytest.param(16384, torch.complex64, (), marks=pytest.mark.full, id="one-cta-upper"),
     pytest.param(
@@ -164,12 +165,16 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
 
 
 @pytest.mark.smoke
-def test_every_plan_serves_sm80_and_sm90_within_the_block_limits() -> None:
+def test_every_plan_fits_the_blocks_of_the_architectures_it_serves() -> None:
     """CI runs on Hopper, whose larger limits would hide a plan other cards cannot run."""
-    # The four-pass kernel sizes its strides from the length; 137 KB exceeds sm_86's 99 KB.
+    # The four-pass kernel sizes its strides from the length; 137 KB exceeds sm_86's 99 KB,
+    # which is the reason FFT_NARROW_PLANS carries a second record for this length.
     assert 86 not in FFT_PLANS[16384, "complex64"].archs
     for (n, dtype_str), plan in FFT_PLANS.items():
         assert {80, 90} <= set(plan.archs), f"{n} {dtype_str}"
+    for (n, dtype_str), plan in FFT_NARROW_PLANS.items():
+        # An empty record serves nothing and makes ``smem_cap`` reduce over no architecture.
+        assert plan.archs, f"{n} {dtype_str}"
     for (n, dtype_str), plan in [*FFT_PLANS.items(), *FFT_NARROW_PLANS.items()]:
         where = f"{n} {dtype_str}"
         if not plan.decomposed:
