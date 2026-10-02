@@ -1,5 +1,7 @@
 """Kernel-selection coverage for the remaining paged attention ops."""
 
+from itertools import accumulate
+
 import pytest
 import torch
 
@@ -44,20 +46,47 @@ def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             id="page-tile",
         ),
         pytest.param({"softcap": 2.0}, torch.float16, "GQADecodePagedKernel", id="softcap"),
+        pytest.param(
+            {"batch": 2, "q_lens": [0, 2]},
+            torch.float16,
+            "GQAPagedVarlenFwdKernel",
+            id="ragged-lengths",
+        ),
+        pytest.param(
+            {"window_size_left": 128}, torch.float16, "GQAPagedVarlenFwdKernel", id="window"
+        ),
+        pytest.param(
+            {"page_size": 65, "pages": 64},
+            torch.float16,
+            "GQAPagedVarlenFwdKernel",
+            id="page-no-tile-fits",
+        ),
     ],
 )
 def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
-    """Paged decode keeps its batch-1 fast path and its page-tile guard."""
-    extents = {"batch": 1, "pages": 32, "page_size": 256, "dim": 128, "softcap": None}
+    """Each paged region selects its own implementation: the batch-1 fast path, the
+    page-contained decode tiling, and the packed kernel that gathers its key tile."""
+    extents = {
+        "batch": 1,
+        "pages": 32,
+        "page_size": 256,
+        "dim": 128,
+        "softcap": None,
+        "window_size_left": -1,
+        "q_lens": None,
+    }
     extents.update(ctor)
     batch, dim = extents["batch"], extents["dim"]
-    op = GroupedQueryAttentionPagedFwdOp(softcap=extents["softcap"])
-    q = torch.empty(batch, 32, dim, dtype=dtype, device="cuda")
+    op = GroupedQueryAttentionPagedFwdOp(
+        softcap=extents["softcap"], window_size_left=extents["window_size_left"]
+    )
+    q_lens = extents["q_lens"] or [1] * batch
+    q = torch.empty(sum(q_lens), 32, dim, dtype=dtype, device="cuda")
     k_pages = torch.empty(
         extents["pages"], extents["page_size"], 4, dim, dtype=dtype, device="cuda"
     )
     page_table = torch.empty(batch, extents["pages"], dtype=torch.int32, device="cuda")
-    cu_seqlens_q = torch.arange(batch + 1, dtype=torch.int32, device="cuda")
+    cu_seqlens_q = torch.tensor([0, *accumulate(q_lens)], dtype=torch.int32, device="cuda")
     call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
     assert op.kernel_map[op.select_implementation("gqa_paged", call)].__name__ == expected
 

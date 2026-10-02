@@ -231,7 +231,9 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         V: torch.Tensor,
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
+        cu_seqlens_q: Optional[torch.Tensor] = None,
     ):
+        """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         c = self.config
         real_max = int(real_seqlen_kv.max().item())
         if real_max < self._MIN_CTX:

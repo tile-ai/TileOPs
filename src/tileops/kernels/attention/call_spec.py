@@ -298,18 +298,22 @@ class GQAPagedFwdInterface(KernelInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
+        cu_seqlens_q: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Attend each request's ``call.max_seqlen_q`` queries, aligned to the end of its cache.
+        """Attend each request's queries, aligned to the end of its cache.
 
         Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
         Args:
-            q: ``(batch * max_seqlen_q, heads, dim)`` in ``call.dtype``.
+            q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
             k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
                 a page.
             v_pool: The same layout, for the values.
             cache_seqlens: ``int32`` ``(batch,)``, each cache's length, its queries included.
             page_table: ``int32`` ``(batch, max_pages_per_req)`` pool page of each logical page.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*. An
+                implementation serving ``call.is_uniform`` only reads the lengths from
+                ``call.max_seqlen_q`` instead.
 
         Returns:
             A new output shaped like *q*, in ``call.dtype``.
