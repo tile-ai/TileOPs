@@ -11,6 +11,11 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQADenseFwdInterface,
 )
+from tileops.kernels.attention.fp8_fa3_layouts import (
+    fa3_acc_fragment,
+    fa3_qk_acc_column,
+    fa3_qk_row_fragment,
+)
 from tileops.kernels.attention.gqa_dense import make_dense_qk_rope_preprocessor
 from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
 from tileops.kernels.constants import LOG2E
@@ -73,50 +78,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         ],
     )
     def func():
-        def _make_fa3_pv_acc_fragment(dim: int, thread_offset: int) -> tilelang.layout.Fragment:
-            col_phase = dim // 8
-
-            def forward_fn(i, j):
-                rv = j // 4
-                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
-                index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
-                return thread, index
-
-            if dim != 128:
-                raise ValueError("FA3 PV accumulator fragment annotation requires dim == 128.")
-            return tilelang.layout.Fragment([64, dim], forward_fn=forward_fn)
-
-        def _make_fa3_qk_acc_fragment(block_n: int, thread_offset: int) -> tilelang.layout.Fragment:
-            col_phase = block_n // 8
-
-            def forward_fn(i, j):
-                rv = j // 4
-                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (j % 4)
-                index = (rv % col_phase) * 4 + ((i % 16) // 8) * 2 + rv // col_phase
-                return thread, index
-
-            if block_n != 224:
-                raise ValueError("FA3 QK accumulator fragment annotation requires block_n == 224.")
-            return tilelang.layout.Fragment([64, block_n], forward_fn=forward_fn)
-
-        def _qk_acc_column(j):
-            """The key column fragment index *j* of ``_make_fa3_qk_acc_fragment`` holds.
-
-            The fragment orders a row's registers lane first, then 8-column group, then
-            pair, which a row reduction does not see; a column-dependent mask does. The
-            WGMMA accumulator puts lane ``j % 4`` of group ``(j // 4) % 28`` on columns
-            ``8 * group + 2 * lane``, and the pair ``j // 112`` on the next one.
-            """
-            return 8 * ((j // 4) % 28) + 2 * (j % 4) + j // 112
-
-        def _make_fa3_qk_row_fragment(thread_offset: int) -> tilelang.layout.Fragment:
-            def forward_fn(i, rep):
-                thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + rep
-                index = (i % 16) // 8
-                return thread, index
-
-            return tilelang.layout.Fragment([64], forward_fn=forward_fn, replicate=4)
-
         @T.macro
         def online_softmax_with_partial_sum(
             acc_s,
@@ -338,20 +299,20 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
                         k_smem_0: tilelang.layout.make_swizzled_layout(k_smem_0),
                         k_smem_1: tilelang.layout.make_swizzled_layout(k_smem_1),
-                        acc_s_1: _make_fa3_qk_acc_fragment(224, 128),
-                        acc_s_2: _make_fa3_qk_acc_fragment(224, 256),
-                        sm_1: _make_fa3_qk_row_fragment(128),
-                        smp_1: _make_fa3_qk_row_fragment(128),
-                        ss_1: _make_fa3_qk_row_fragment(128),
-                        ssum_1: _make_fa3_qk_row_fragment(128),
-                        ls_1: _make_fa3_qk_row_fragment(128),
-                        sm_2: _make_fa3_qk_row_fragment(256),
-                        smp_2: _make_fa3_qk_row_fragment(256),
-                        ss_2: _make_fa3_qk_row_fragment(256),
-                        ssum_2: _make_fa3_qk_row_fragment(256),
-                        ls_2: _make_fa3_qk_row_fragment(256),
-                        acc_o_1: _make_fa3_pv_acc_fragment(dim, 128),
-                        acc_o_2: _make_fa3_pv_acc_fragment(dim, 256),
+                        acc_s_1: fa3_acc_fragment(224, 128),
+                        acc_s_2: fa3_acc_fragment(224, 256),
+                        sm_1: fa3_qk_row_fragment(128),
+                        smp_1: fa3_qk_row_fragment(128),
+                        ss_1: fa3_qk_row_fragment(128),
+                        ssum_1: fa3_qk_row_fragment(128),
+                        ls_1: fa3_qk_row_fragment(128),
+                        sm_2: fa3_qk_row_fragment(256),
+                        smp_2: fa3_qk_row_fragment(256),
+                        ss_2: fa3_qk_row_fragment(256),
+                        ssum_2: fa3_qk_row_fragment(256),
+                        ls_2: fa3_qk_row_fragment(256),
+                        acc_o_1: fa3_acc_fragment(dim, 128),
+                        acc_o_2: fa3_acc_fragment(dim, 256),
                     }
                 )
                 T.sync_threads()
@@ -578,14 +539,14 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
                                 for i, j in T.Parallel(half_m, 224):
-                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                    if n_idx * 224 + fa3_qk_acc_column(j) >= seq_len_kv:
                                         acc_s_1[i, j] = -T.infinity(accum_dtype)
                             # A tile needs the mask when its last key lies past the first
                             # row this warpgroup owns.
                             if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
                                 for i, j in T.Parallel(half_m, 224):
                                     acc_s_1[i, j] = T.if_then_else(
-                                        n_idx * 224 + _qk_acc_column(j)
+                                        n_idx * 224 + fa3_qk_acc_column(j)
                                         <= causal_offset + row_base + i,
                                         acc_s_1[i, j],
                                         -T.infinity(accum_dtype),
@@ -759,7 +720,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 )
                             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
                                 for i, j in T.Parallel(half_m, 224):
-                                    if n_idx * 224 + _qk_acc_column(j) >= seq_len_kv:
+                                    if n_idx * 224 + fa3_qk_acc_column(j) >= seq_len_kv:
                                         acc_s_2[i, j] = -T.infinity(accum_dtype)
                             if (
                                 is_causal
@@ -767,7 +728,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             ):
                                 for i, j in T.Parallel(half_m, 224):
                                     acc_s_2[i, j] = T.if_then_else(
-                                        n_idx * 224 + _qk_acc_column(j)
+                                        n_idx * 224 + fa3_qk_acc_column(j)
                                         <= causal_offset + row_base + half_m + i,
                                         acc_s_2[i, j],
                                         -T.infinity(accum_dtype),
