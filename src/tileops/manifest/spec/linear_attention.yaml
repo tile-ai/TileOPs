@@ -66,7 +66,7 @@ GatedDeltaNetFwdOp:
   # state_v_first stores the state as [.., V, K]; A_log and dt_bias are passed
   # exactly when the gate is computed in the kernel.
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     types:
       State:
