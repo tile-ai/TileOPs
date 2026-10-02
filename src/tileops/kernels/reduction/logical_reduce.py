@@ -17,6 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
@@ -66,6 +67,8 @@ _BYTE_ONES = 0x01010101
 _BYTE_LOW = 0x7F7F7F7F
 _BYTE_HIGH = 0x80808080
 
+_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
+
 
 def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int = 0) -> int:
     """Units one vector access of the fold reads, for rows of *row_units* units.
@@ -98,6 +101,7 @@ def _logical_fold_kernel(
     pack: int,
     vec: int,
     out_dtype: str,
+    stream: bool,
 ):
     """Build an any/all/count_nonzero kernel that folds each row into registers.
 
@@ -114,6 +118,7 @@ def _logical_fold_kernel(
         pack: Elements per unit: 4 for bytes read as a 32-bit word, else 1.
         vec: Units per vector access, a multiple of ``components`` dividing the run.
         out_dtype: TileLang dtype string of the output.
+        stream: Whether a full-width vector access loads evict-first.
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (threads).
@@ -126,7 +131,7 @@ def _logical_fold_kernel(
     # no zero for all.
     pad = (_BYTE_ONES if pack > 1 else 1) if op_kind == "all" else 0
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH])
     def _func(threads):
         def _fold_term(op_kind: str, held, e, components: int, pack: int):
             """What element (or word) *e* of a lane's vector adds to its accumulator."""
@@ -190,8 +195,16 @@ def _logical_fold_kernel(
                 acc[0] = T.cast(0, acc_dtype)
                 for lead_idx in T.serial(lead):
                     for k in T.serial(full_steps):
-                        for v in T.vectorized(vec):
-                            held[v] = x[lead_idx, row, k * step + tx * vec + v]
+                        if stream:
+                            T.call_extern(
+                                "handle",
+                                "tl::tileops_load16_evict_first",
+                                T.address_of(held[0]),
+                                T.address_of(x[lead_idx, row, k * step + tx * vec]),
+                            )
+                        else:
+                            for v in T.vectorized(vec):
+                                held[v] = x[lead_idx, row, k * step + tx * vec + v]
                         fold_held(held, acc)
                     if tail:
                         # ``vec`` divides the run, so a lane's vector is wholly inside it
@@ -292,6 +305,10 @@ def _fold_reduce(
         pack,
         vec,
         out_dtype,
+        # The fold reads every unit of the input exactly once, so none of it is worth
+        # keeping cached: a full-width access loads evict-first. The helper moves
+        # exactly one 16-byte vector, so a narrower access keeps the plain load.
+        vec * units.element_size() == VECTOR_ACCESS_BYTES,
     )
     return program(threads)(units)
 

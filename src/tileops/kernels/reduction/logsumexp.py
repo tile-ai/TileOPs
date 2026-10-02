@@ -33,6 +33,7 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
     edge_axis_split,
+    exp_shifted,
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
@@ -182,7 +183,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
-                        x_f32[i, j] = T.exp(x_f32[i, j] - row_shift[i])
+                        x_f32[i, j] = exp_shifted(x_f32[i, j], row_shift[i])
                 T.reduce_sum(x_f32, row_sum, dim=1)
 
                 out_local = T.alloc_fragment((block_m,), dtype)
@@ -282,7 +283,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 
                     for i in T.serial(block_m):
                         for j in T.Parallel(tile_n):
-                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_shift[i])
+                            tile_f32[i, j] = exp_shifted(tile_f32[i, j], row_shift[i])
                     T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                     # Rescaled by the maxima, not the shifts: exp(0 - shift) of a
@@ -291,12 +292,13 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                     for i in T.Parallel(block_m):
                         row_sum[i] = (
                             row_sum[i]
-                            * T.exp(
+                            * T.exp2(
                                 T.if_then_else(
                                     prev_max[i] == row_max[i],
                                     T.cast(0.0, "float32"),
                                     prev_max[i] - row_max[i],
                                 )
+                                * LOG2E
                             )
                             + tile_sum[i]
                         )
