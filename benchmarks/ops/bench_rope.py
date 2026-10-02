@@ -21,11 +21,10 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.rope import (
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
-    RopeNeoxFwdOp,
     RopeNeoxPositionIdsFwdOp,
-    RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
 from workloads.device import run_device
@@ -65,6 +64,18 @@ def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tens
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
 
 
+def _rotate_interleaved(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Rotate each adjacent pair, reading the first half of the doubled tables."""
+    half = x.shape[-1] // 2
+    cos_pairs, sin_pairs = cos[..., :half], sin[..., :half]
+    pairs = x.unflatten(-1, (half, 2))
+    even, odd = pairs[..., 0], pairs[..., 1]
+    rotated = torch.stack(
+        (even * cos_pairs - odd * sin_pairs, odd * cos_pairs + even * sin_pairs), dim=-1
+    )
+    return rotated.flatten(-2)
+
+
 def _vllm_rope(
     x: torch.Tensor,
     position_ids: torch.Tensor,
@@ -100,14 +111,16 @@ def _bench_rope(op_cls, call) -> None:
     op = op_cls(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
     x = tensors["x"]
-    layout = call.params["layout"]
-    seq_len = x.shape[0] if layout == "1d" else x.shape[1]
+    input_layout = call.params["input_layout"]
+    seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
     cos, sin = _rope_tables(seq_len, x.shape[-1], x.dtype)
-    if layout != "1d":
+    if input_layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, x.shape[-1]) for t in (cos, sin))
+    # The scheme variants serve NeoX only, so a call without the parameter is NeoX.
+    rotate = _rotate if call.params.get("rope_layout", "neox") == "neox" else _rotate_interleaved
 
     def baseline_fn(t):
-        return _rotate(t, cos, sin)
+        return rotate(t, cos, sin)
 
     bm.compare(
         {
@@ -119,14 +132,9 @@ def _bench_rope(op_cls, call) -> None:
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeNeoxFwdOp))
-def test_rope_neox_bench(call) -> None:
-    _bench_rope(RopeNeoxFwdOp, call)
-
-
-@pytest.mark.parametrize("call", manifest_calls(RopeNonNeoxFwdOp))
-def test_rope_non_neox_bench(call) -> None:
-    _bench_rope(RopeNonNeoxFwdOp, call)
+@pytest.mark.parametrize("call", manifest_calls(RopeFwdOp))
+def test_rope_bench(call) -> None:
+    _bench_rope(RopeFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLlama31FwdOp))

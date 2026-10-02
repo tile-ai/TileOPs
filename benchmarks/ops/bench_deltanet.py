@@ -1,4 +1,4 @@
-"""Benchmarks for the DeltaNet ops (chunkwise forward, backward and autograd, inference, decode), one case per
+"""Benchmarks for the DeltaNet ops (chunkwise forward and backward, inference, decode), one case per
 manifest call, against FLA and torch.
 """
 
@@ -12,7 +12,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops import (
-    DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
     DeltaNetFwdOp,
@@ -91,23 +90,6 @@ def test_deltanet_vs_fla_bwd(call) -> None:
         return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), dbeta.transpose(1, 2)
 
     bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
-
-
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetAutogradFwdOp))
-def test_deltanet_vs_fla_autograd(call) -> None:
-    from fla.ops.delta_rule import chunk_delta_rule
-
-    workload = DeltaNetChunkwiseCall(call)
-    inputs = workload.gen_inputs()
-    op = DeltaNetAutogradFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-
-    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
-
-    def fla_fwd():
-        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)[0]
-
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(DeltaNetDecodeFwdOp))

@@ -1,5 +1,4 @@
 from tileops.ops.linear_attention.deltanet import (
-    DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetFwdOp,
 )
@@ -15,7 +14,6 @@ __all__: list[str] = [
     "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
     "DeltaNetInferenceFwdOp",
-    "DeltaNetAutogradFwdOp",
     "GatedDeltaNetFwdOp",
     "GLABwdOp",
     "GLADecodeFwdOp",

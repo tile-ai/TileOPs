@@ -271,43 +271,6 @@ GLADecodeFwdOp:
     # readout (2 * DK * DV) and the output scale (DV).
     flops: "B * H * (5 * DK * DV + DK + DV)"
 
-DeltaNetAutogradFwdOp:
-  # The autograd wrapper over DeltaNetFwdOp and DeltaNetBwdOp: one output rather
-  # than the forward's six, because the chunk buffers the backward reads are
-  # saved for it rather than returned. The sequence index is L because S names
-  # the forward's state buffer.
-  family: linear_attention
-  status: implemented
-  signature:
-    forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
-    params:
-      chunk_size: {type: int, default: 64}
-    inputs:
-      q: {dtype: T, shape: "[B, H, L, DK]"}
-      k: {dtype: T, shape: "[B, H, L, DK]"}
-      v: {dtype: T, shape: "[B, H, L, DV]"}
-      beta: {dtype: T, shape: "[B, H, L]"}
-    outputs:
-      o: {dtype: T, shape: "[B, H, L, DV]"}
-    shape_rules:
-    - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
-    - "chunk_size > 0 and L % chunk_size == 0"
-  workloads:
-  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
-  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
-  roofline:
-    # The op runs DeltaNetFwdOp's chunked forward, priced as that op prices it.
-    flops: >-
-      B * H * (L // chunk_size) * (6 * chunk_size * DK * DV
-      + 2 * chunk_size * (chunk_size + 1) * (DK + DV)
-      + chunk_size * (chunk_size - 1) * DK + chunk_size * (chunk_size - 1) // 2
-      + chunk_size * (chunk_size * chunk_size - 1) // 3 + chunk_size * (DK + 3 * DV))
-  composition:
-    kind: composite
-    stages:
-    - {name: forward, op: DeltaNetFwdOp}
-    - {name: backward, op: DeltaNetBwdOp}
-
 DeltaNetFwdOp:
   # Chunked ungated DeltaNet forward. S is the fp32 state at every chunk
   # boundary; Aw, Au, w, u are the chunk buffers DeltaNetBwdOp reads, in the

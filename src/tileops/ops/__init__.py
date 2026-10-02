@@ -30,7 +30,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GroupedGemmFwdOp,
     )
     from tileops.ops.linear_attention import (
-        DeltaNetAutogradFwdOp,
         DeltaNetBwdOp,
         DeltaNetDecodeFwdOp,
         DeltaNetFwdOp,
@@ -105,9 +104,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         CountNonzeroFwdOp,
         CumprodFwdOp,
         CumsumFwdOp,
-        InfNormFwdOp,
-        L1NormFwdOp,
-        L2NormFwdOp,
         LogSoftmaxFwdOp,
         LogSumExpFwdOp,
         MeanFwdOp,
@@ -117,13 +113,13 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         SumFwdOp,
         VarFwdOp,
         VarMeanFwdOp,
+        VectorNormFwdOp,
     )
     from tileops.ops.rope import (
+        RopeFwdOp,
         RopeLlama31FwdOp,
         RopeLongRopeFwdOp,
-        RopeNeoxFwdOp,
         RopeNeoxPositionIdsFwdOp,
-        RopeNonNeoxFwdOp,
         RopeYarnFwdOp,
     )
     from tileops.ops.sampling import (
@@ -161,9 +157,7 @@ _LAZY = {
     "SoftmaxFwdOp": ".reduction",
     "LogSoftmaxFwdOp": ".reduction",
     "LogSumExpFwdOp": ".reduction",
-    "L1NormFwdOp": ".reduction",
-    "L2NormFwdOp": ".reduction",
-    "InfNormFwdOp": ".reduction",
+    "VectorNormFwdOp": ".reduction",
     "CumsumFwdOp": ".reduction",
     "CumprodFwdOp": ".reduction",
     "AllFwdOp": ".reduction",
@@ -232,9 +226,8 @@ _LAZY = {
     "SamplingFromProbsFwdOp": ".sampling",
     "ChainSpeculativeSamplingFwdOp": ".sampling",
     # Rotary position embedding
-    "RopeNeoxFwdOp": ".rope",
+    "RopeFwdOp": ".rope",
     "RopeNeoxPositionIdsFwdOp": ".rope",
-    "RopeNonNeoxFwdOp": ".rope",
     "RopeLlama31FwdOp": ".rope",
     "RopeYarnFwdOp": ".rope",
     "RopeLongRopeFwdOp": ".rope",
@@ -254,7 +247,6 @@ _LAZY = {
     "FP8LightningIndexerFwdOp": ".fp8_lightning_indexer",
     "TopkSelectorFwdOp": ".topk_selector",
     # Linear attention
-    "DeltaNetAutogradFwdOp": ".linear_attention",
     "DeltaNetFwdOp": ".linear_attention",
     "DeltaNetBwdOp": ".linear_attention",
     "DeltaNetInferenceFwdOp": ".linear_attention",

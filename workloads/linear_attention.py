@@ -617,7 +617,7 @@ class GLADecodeCall(CallWorkload):
 
 
 class DeltaNetChunkwiseCall(CallWorkload):
-    """A manifest call of DeltaNetFwdOp, DeltaNetAutogradFwdOp or DeltaNetBwdOp.
+    """A manifest call of DeltaNetFwdOp or DeltaNetBwdOp.
 
     The backward's saved buffers come back random; a caller that needs the forward's
     values runs the forward on ``q, k, v, beta``.

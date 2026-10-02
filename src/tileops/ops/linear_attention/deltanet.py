@@ -14,7 +14,7 @@ from tileops.kernels.linear_attention import (
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["DeltaNetAutogradFwdOp", "DeltaNetBwdOp", "DeltaNetFwdOp"]
+__all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp"]
 
 
 class DeltaNetFwdOp(Op):
@@ -216,90 +216,6 @@ class DeltaNetBwdOp(Op):
         inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
         kernel = self.kernel_for("deltanet_bwd", self._call(q, v))
         return kernel(*inputs)
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.tensors["q"][1])
-
-
-class _DeltaNetFunction(torch.autograd.Function):
-    """Autograd function running DeltaNetFwdOp forward and DeltaNetBwdOp backward."""
-
-    @staticmethod
-    def forward(ctx, q, k, v, beta, fwd_op, bwd_op):
-        """Run ``fwd_op`` and keep the chunk buffers ``bwd_op`` reads."""
-        o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
-        ctx.save_for_backward(q, k, v, beta, S, Aw, Au, w, u)
-        ctx.bwd_op = bwd_op
-        return o
-
-    @staticmethod
-    def backward(ctx, do):
-        q, k, v, beta, S, Aw, Au, w, u = ctx.saved_tensors
-        dq, dk, dv, dbeta = ctx.bwd_op(do.contiguous(), q, k, v, beta, S, Aw, Au, w, u)
-        return dq, dk, dv, dbeta, None, None
-
-
-class DeltaNetAutogradFwdOp(Op):
-    """Combined DeltaNet fwd+bwd operator with autograd support (ungated).
-
-    Runs ``DeltaNetFwdOp`` inside a ``torch.autograd.Function`` whose backward
-    runs ``DeltaNetBwdOp``, so ``output.backward(do)`` invokes the TileOPs
-    backward kernels.
-
-    Layout: BHSD (batch, head, seq_len, dim).
-
-    """
-
-    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        "forward": DeltaNetFwdOp,
-        "backward": DeltaNetBwdOp,
-    }
-
-    def __init__(
-        self,
-        chunk_size: int = 64,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from each call.
-
-        Args:
-            chunk_size: Chunk size for chunked linear attention.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides, passed to both sub-ops.
-            tune: Whether to autotune kernels.
-        """
-        self.chunk_size = chunk_size
-        self.tune = tune
-        self.target = target
-        # This composite owns no kernel; the override reaches the sub-ops that do.
-        self.dispatch_kernel(kernel_map)
-        self._fwd_op = self.delegate_for("forward", None, chunk_size=chunk_size)
-        self._bwd_op = self.delegate_for("backward", None, chunk_size=chunk_size)
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run deltanet forward with autograd backward support.
-
-        Args:
-            q: Query tensor [B, H, S, DK].
-            k: Key tensor [B, H, S, DK].
-            v: Value tensor [B, H, S, DV].
-            beta: Beta tensor [B, H, S].
-
-        Returns:
-            Output tensor o [B, H, S, DV] (supports .backward()).
-        """
-        return _DeltaNetFunction.apply(q, k, v, beta, self._fwd_op, self._bwd_op)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

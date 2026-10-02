@@ -9,6 +9,8 @@ and logsumexp reduces everything, and either choice keeps the output shape while
 the values, so a case that does not say which axis it means proves little.
 """
 
+from math import inf
+
 import pytest
 import torch
 
@@ -23,9 +25,6 @@ from tileops.ops.reduction import (
     CountNonzeroFwdOp,
     CumprodFwdOp,
     CumsumFwdOp,
-    InfNormFwdOp,
-    L1NormFwdOp,
-    L2NormFwdOp,
     LogSoftmaxFwdOp,
     LogSumExpFwdOp,
     MeanFwdOp,
@@ -35,6 +34,7 @@ from tileops.ops.reduction import (
     SumFwdOp,
     VarFwdOp,
     VarMeanFwdOp,
+    VectorNormFwdOp,
 )
 from workloads.device import run_device
 
@@ -56,9 +56,7 @@ _OP_CLASSES = (
     AllFwdOp,
     AnyFwdOp,
     CountNonzeroFwdOp,
-    L1NormFwdOp,
-    L2NormFwdOp,
-    InfNormFwdOp,
+    VectorNormFwdOp,
     SoftmaxFwdOp,
     LogSoftmaxFwdOp,
     LogSumExpFwdOp,
@@ -113,9 +111,9 @@ def _cases():
         "any": one_tensor(AnyFwdOp, dim=-1),
         # int64 out.
         "count-nonzero": one_tensor(CountNonzeroFwdOp, dim=-1),
-        "l1-norm": one_tensor(L1NormFwdOp, dim=-1),
-        "l2-norm": one_tensor(L2NormFwdOp, dim=-1),
-        "inf-norm": one_tensor(InfNormFwdOp, dim=-1),
+        "l1-norm": one_tensor(VectorNormFwdOp, 1, dim=-1),
+        "l2-norm": one_tensor(VectorNormFwdOp, 2, dim=-1),
+        "inf-norm": one_tensor(VectorNormFwdOp, inf, dim=-1),
         "softmax": one_tensor(SoftmaxFwdOp, dim=-1),
         # A same-shape result over a non-last axis comes back through a permute, so its
         # strides have to match what the fake promised.
