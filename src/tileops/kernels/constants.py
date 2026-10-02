@@ -16,6 +16,10 @@ WARPGROUP_THREADS: int = 128
 # Rows one WGMMA instruction computes: its M extent.
 WGMMA_ROWS: int = 64
 
+# Rows one warp-level MMA instruction computes: the M extent TileLang lowers to below
+# WGMMA_ROWS, and so the narrowest a matrix operand may be.
+WARP_MMA_ROWS: int = 16
+
 # Shared memory one block may take without opting in to the dynamic allocation.
 STATIC_SHARED_BYTES: int = 48 * 1024
 

@@ -123,6 +123,9 @@ GatedDeltaNetFwdOp:
   - {B: 32, S: 1, H: 8, HV: 16, K: 64, V: 64, use_gate_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-gate-fused}
   - {B: 2, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, allow_neg_eigval: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-beta-l2norm}
   - {B: 17, S: 1, H: 3, HV: 6, K: 128, V: 128, state_v_first: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-vfirst-b17}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, state_v_first: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-v-first-4k}
+  - {B: 1, S: 3000, H: 16, HV: 16, K: 64, V: 64, state_v_first: true, dtype_cases: [{T: bfloat16}], label: prefill-v-first-narrow}
+  - {B: 1, S: 4099, H: 4, HV: 16, K: 128, V: 128, seq_lens: [1, 67, 1031, 3000], state_v_first: true, some: [cu_seqlens, cu_seqlens_cpu, initial_state], dtype_cases: [{T: float16}], label: varlen-v-first-ragged}
   roofline:
     # Each transform the op may leave to the kernel: normalizing one head vector is its sum
     # of squares, the epsilon, the reciprocal square root and the scale; the gate is a bias,
