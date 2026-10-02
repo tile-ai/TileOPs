@@ -115,6 +115,39 @@ RUN { mkdir -p /tmp/DeepGEMM \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
     rm -rf /tmp/DeepGEMM
 
+# The Hadamard transform baselines. Both non-fatal, like the baselines above: no test imports
+# them, and their absence drops benchmark rows rather than failing the image.
+# A commit, not PyPI's 1.1.0 sdist: only v1.1.0.post2 gates `c10::DeviceGuard` by torch version and
+# takes the lightweight CUDAGuard header, and both are needed to compile against this torch.
+# FORCE_BUILD compiles here instead of fetching a release wheel: the releases carry no
+# cu13/torch2.13 build. --no-deps: torch, packaging and ninja are already installed and pinned.
+ARG FAST_HADAMARD_TRANSFORM_GIT_SHA=e7706faf8d1c3b9f241e36860640ad1dac644ede
+RUN { mkdir -p /tmp/fast-hadamard-transform \
+        && cd /tmp/fast-hadamard-transform \
+        && git init -q \
+        && git remote add origin https://github.com/Dao-AILab/fast-hadamard-transform.git \
+        && git fetch --depth 1 origin "${FAST_HADAMARD_TRANSFORM_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
+        && FAST_HADAMARD_TRANSFORM_FORCE_BUILD=TRUE \
+            uv pip install --no-build-isolation --no-deps .; } \
+    || echo "WARNING: bench baseline 'fast-hadamard-transform' install failed (non-fatal)"; \
+    rm -rf /tmp/fast-hadamard-transform
+# HadaCore. It is one directory of a monorepo that publishes no release, so the SHA is the last
+# commit touching that directory. Its setup.py hard-codes -gencode for sm_80, sm_89 and sm_90 and
+# reads no TORCH_CUDA_ARCH_LIST; sm_90 is the pool's arch and is in that list. The package it
+# installs is named faster_hadamard_transform.
+ARG HADACORE_GIT_SHA=c833061bd85d2e7f3af796b9a461e27dcd73f812
+RUN { mkdir -p /tmp/applied-ai \
+        && cd /tmp/applied-ai \
+        && git init -q \
+        && git remote add origin https://github.com/meta-pytorch/applied-ai.git \
+        && git fetch --depth 1 origin "${HADACORE_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
+        && uv pip install --no-build-isolation --no-deps \
+            ./kernels/cuda/inference/hadamard_transform; } \
+    || echo "WARNING: bench baseline 'HadaCore' install failed (non-fatal)"; \
+    rm -rf /tmp/applied-ai
+
 # After the bench baselines, so tilelang links against the final stack and a TILELANG_GIT_SHA bump
 # reuses every layer before this one. By default it installs the tilelang release constraints.txt
 # pins, which vllm already pulled; naming it here keeps it off vllm's non-fatal install.
