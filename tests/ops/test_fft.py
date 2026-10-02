@@ -5,8 +5,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.constants import MAX_BLOCK_THREADS
-from tileops.kernels.fft import FFT_PLANS, FFTC2CCall, FFTC2CDecomposedKernel
+from tileops.kernels import fft as fft_kernels
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
+from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CDecomposedKernel
 from tileops.ops import FFTC2CFwdOp
 from workloads.device import run_device
 from workloads.fft import FFTWorkload
@@ -44,6 +45,14 @@ _CORRECTNESS_CASES = (
         id="decomposed-dtype-boundary",
     ),
     pytest.param(1 << 25, torch.complex64, (), marks=pytest.mark.full, id="three-factor-lower"),
+    # Asks for 80 GiB free; the nightly job runs alone on its GPU.
+    pytest.param(
+        16384,
+        torch.complex128,
+        (65536,),
+        marks=pytest.mark.nightly,
+        id="decomposed-batch-above-grid-y-limit",
+    ),
 )
 
 
@@ -57,7 +66,7 @@ def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     batch = math.prod(batch_shape) if batch_shape else 1
     # Allow for input, scratch, output, reference, and allocator overlap.
     need = 5 * batch * n * (8 if dtype == torch.complex64 else 16)
-    free, _total = torch.cuda.mem_get_info()
+    free, _total = torch.cuda.mem_get_info(run_device())
     if need > free:
         pytest.skip(f"n={n} {dtype} needs {need >> 20} MiB free, device has {free >> 20} MiB")
     test = FFTTest(n, dtype, batch_shape=batch_shape)
@@ -106,15 +115,16 @@ def test_fft_lazy_conjugate_input() -> None:
     ),
 )
 def test_every_power_of_two_through_2_28_has_a_kernel(dtype: torch.dtype) -> None:
-    """The manifest's upper bound: 2**28 is served and 2**29 is not."""
+    """The manifest's upper bound: 2**28 is served and 2**29 is not, on every architecture."""
     op = FFTC2CFwdOp()
-    for exponent in range(1, 30):
-        call = FFTC2CCall(n=1 << exponent, dtype=dtype, arch=90, sm_count=1)
-        if exponent == 29:
-            with pytest.raises(ValueError, match="no implementation serves"):
+    for arch in BLOCK_SHARED_BYTES_OPT_IN:
+        for exponent in range(1, 30):
+            call = FFTC2CCall(n=1 << exponent, dtype=dtype, arch=arch, sm_count=1)
+            if exponent == 29:
+                with pytest.raises(ValueError, match="no implementation serves"):
+                    op.select_implementation("fft_c2c", call)
+            else:
                 op.select_implementation("fft_c2c", call)
-        else:
-            op.select_implementation("fft_c2c", call)
 
 
 @pytest.mark.smoke
@@ -159,8 +169,9 @@ def test_every_plan_serves_sm80_and_sm90_within_the_block_limits() -> None:
     # The four-pass kernel sizes its strides from the length; 137 KB exceeds sm_86's 99 KB.
     assert 86 not in FFT_PLANS[16384, "complex64"].archs
     for (n, dtype_str), plan in FFT_PLANS.items():
+        assert {80, 90} <= set(plan.archs), f"{n} {dtype_str}"
+    for (n, dtype_str), plan in [*FFT_PLANS.items(), *FFT_NARROW_PLANS.items()]:
         where = f"{n} {dtype_str}"
-        assert {80, 90} <= set(plan.archs), where
         if not plan.decomposed:
             assert n < 1024 or n // 16 <= MAX_BLOCK_THREADS, where
             continue
@@ -170,3 +181,18 @@ def test_every_plan_serves_sm80_and_sm90_within_the_block_limits() -> None:
             _nf, lanes, extent, _twrows, _r = plan.geometry(index)
             assert tile >= 1 and extent % tile == 0, f"{where} kernel {index}"
             assert tile * lanes <= MAX_BLOCK_THREADS, f"{where} kernel {index}"
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "arch, table",
+    [pytest.param(89, FFT_NARROW_PLANS, id="sm89"), pytest.param(90, FFT_PLANS, id="sm90")],
+)
+def test_decomposed_kernel_selects_its_devices_record(
+    monkeypatch: pytest.MonkeyPatch, arch: int, table: dict
+) -> None:
+    monkeypatch.setattr(fft_kernels, "get_sm_version", lambda index=None: arch)
+    kernel = FFTC2CDecomposedKernel(1 << 22, torch.complex64)
+    assert kernel.plan is table[1 << 22, "complex64"]
+    assert kernel.config["tile"] == kernel.plan.tile
