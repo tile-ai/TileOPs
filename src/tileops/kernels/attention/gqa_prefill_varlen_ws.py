@@ -10,6 +10,7 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import ATTENTION_DTYPES
 from tileops.kernels.attention.varlen import VarlenKernel
+from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.utils import get_sm_count
@@ -37,8 +38,9 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel"]
     ],
 )
 def _gqa_prefill_varlen_ws_kernel(
-    batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas
-):
+    batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas,
+    fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
+):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
     score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -52,6 +54,15 @@ def _gqa_prefill_varlen_ws_kernel(
     total_q = T.dynamic("total_q")
     total_kv = T.dynamic("total_kv")
     q_tiling = GroupTiling(batch, block_m)
+    rope_half = rotary_dim // 2
+    table_dtype = rope_dtype or dtype
+    rotate_query_tile = (
+        make_varlen_query_rope(
+            half, rotary_dim, rope_layout, max_position, dtype, rope_dtype, tile_axes=2
+        )
+        if fuse_rope
+        else None
+    )
 
     @T.macro
     def apply_softcap(acc_s):
@@ -239,6 +250,7 @@ def _gqa_prefill_varlen_ws_kernel(
     @T.macro
     def consumer(
         wg: int, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
+        rope_cos=None, rope_sin=None,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
         T.set_max_nreg(240, 1)
@@ -274,6 +286,11 @@ def _gqa_prefill_varlen_ws_kernel(
             T.fill(logsum, 0)
             T.fill(alpha, 1.0)
             T.fill(sm, -T.infinity(accum))
+            if rope_cos is not None:
+                # Query token i of a request sits at position kv_len - q_len + i. A
+                # warpgroup rotates its own half, which the named-barrier sync before the
+                # first WGMMA fences.
+                rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg)
             if wg == 1 and served == 0:
                 T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
 
@@ -361,6 +378,73 @@ def _gqa_prefill_varlen_ws_kernel(
             T.mbarrier_wait_parity(q_bar[served % 2], (served // 2) % 2)
             work = item_slot[served % 2, 7]
 
+    @T.macro
+    def launch(Q, K, V, CuQ, CuKV, O, Sched, rope_cos=None, rope_sin=None):
+        """One persistent CTA: the TMA producer warp, then the two consumer warpgroups."""
+        Qs = T.alloc_shared([2, 2, half, dim], dtype)
+        Ks = T.alloc_shared([stages, block_n, dim], dtype)
+        Vs = T.alloc_shared([stages, block_n, dim], dtype)
+        Os = T.alloc_shared([2, half, dim], dtype)
+        tile_cum = T.alloc_shared([batch + 1], "int32")
+        item_slot = T.alloc_shared([2, 8], "int32")
+        T.annotate_layout(
+            {
+                Qs: make_swizzled_layout(Qs),
+                Ks: make_swizzled_layout(Ks),
+                Vs: make_swizzled_layout(Vs),
+                Os: make_swizzled_layout(Os),
+            }
+        )
+        q_bar = T.alloc_barrier([32, 32])
+        qfree = T.alloc_barrier([consumers, consumers])
+        kready = T.alloc_barrier([32] * stages)
+        kfree = T.alloc_barrier([consumers] * stages)
+        vready = T.alloc_barrier([32] * stages)
+        vfree = T.alloc_barrier([consumers] * stages)
+        lo = T.alloc_local([1], "int32")
+        hi = T.alloc_local([1], "int32")
+        q_row = T.alloc_local([1], "int32")
+        request = T.alloc_local([1], "int32")
+        meta = T.alloc_local([7], "int32")
+
+        q_tiling.cumsum_offsets(CuQ, tile_cum)
+        T.sync_threads()
+        tx = T.get_thread_binding()
+        if tx >= consumers:
+            T.set_max_nreg(24, 0)  # the producer only issues TMA
+        if tx >= consumers and tx < consumers + 32:
+            producer(
+                Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree,
+                vready, vfree, tile_cum[batch] * heads, tile_cum, lo, hi, request, q_row, meta,
+                tx - consumers,
+            )  # fmt: skip
+        args = (Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta)
+        if rope_cos is not None:
+            args = (*args, rope_cos, rope_sin)
+        with T.ws(0):
+            consumer(0, *args)
+        with T.ws(1):
+            consumer(1, *args)
+
+    if fuse_rope:
+
+        @T.prim_func
+        def main(
+            Q: T.Tensor([total_q, heads, dim], dtype),
+            K: T.Tensor([total_kv, heads_kv, dim], dtype),
+            V: T.Tensor([total_kv, heads_kv, dim], dtype),
+            CuQ: T.Tensor([batch + 1], "int32"),
+            CuKV: T.Tensor([batch + 1], "int32"),
+            RopeCos: T.Tensor([max_position, rope_half], table_dtype),
+            RopeSin: T.Tensor([max_position, rope_half], table_dtype),
+            O: T.Tensor([total_q, heads, dim], dtype),
+            Sched: T.Tensor([2], "int32"),
+        ):
+            with T.Kernel(num_ctas, threads=384):
+                launch(Q, K, V, CuQ, CuKV, O, Sched, RopeCos, RopeSin)
+
+        return main
+
     @T.prim_func
     def main(
         Q: T.Tensor([total_q, heads, dim], dtype),
@@ -372,48 +456,7 @@ def _gqa_prefill_varlen_ws_kernel(
         Sched: T.Tensor([2], "int32"),
     ):
         with T.Kernel(num_ctas, threads=384):
-            Qs = T.alloc_shared([2, 2, half, dim], dtype)
-            Ks = T.alloc_shared([stages, block_n, dim], dtype)
-            Vs = T.alloc_shared([stages, block_n, dim], dtype)
-            Os = T.alloc_shared([2, half, dim], dtype)
-            tile_cum = T.alloc_shared([batch + 1], "int32")
-            item_slot = T.alloc_shared([2, 8], "int32")
-            T.annotate_layout(
-                {
-                    Qs: make_swizzled_layout(Qs),
-                    Ks: make_swizzled_layout(Ks),
-                    Vs: make_swizzled_layout(Vs),
-                    Os: make_swizzled_layout(Os),
-                }
-            )
-            q_bar = T.alloc_barrier([32, 32])
-            qfree = T.alloc_barrier([consumers, consumers])
-            kready = T.alloc_barrier([32] * stages)
-            kfree = T.alloc_barrier([consumers] * stages)
-            vready = T.alloc_barrier([32] * stages)
-            vfree = T.alloc_barrier([consumers] * stages)
-            lo = T.alloc_local([1], "int32")
-            hi = T.alloc_local([1], "int32")
-            q_row = T.alloc_local([1], "int32")
-            request = T.alloc_local([1], "int32")
-            meta = T.alloc_local([7], "int32")
-
-            q_tiling.cumsum_offsets(CuQ, tile_cum)
-            T.sync_threads()
-            tx = T.get_thread_binding()
-            if tx >= consumers:
-                T.set_max_nreg(24, 0)  # the producer only issues TMA
-            if tx >= consumers and tx < consumers + 32:
-                producer(
-                    Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree,
-                    vready, vfree, tile_cum[batch] * heads, tile_cum, lo, hi, request, q_row, meta,
-                    tx - consumers,
-                )  # fmt: skip
-            args = (Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta)
-            with T.ws(0):
-                consumer(0, *args)
-            with T.ws(1):
-                consumer(1, *args)
+            launch(Q, K, V, CuQ, CuKV, O, Sched)
 
     return main
 
@@ -441,7 +484,6 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             call.dtype in ATTENTION_DTYPES
             and call.dim in cls._DIMS
             and not call.is_fp8
-            and not call.fuse_rope
             and not call.uses_sliding_window
             and not call.empty_kv
             and call.batch <= cls._MAX_BATCH
@@ -460,6 +502,11 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self._BLOCK_N,
             self._STAGES,
             get_sm_count(self.device_index),
+            self.fuse_rope,
+            self.max_position,
+            self.rotary_dim,
+            self.rope_layout,
+            self.rope_table_dtype_str,
         )
 
     @property
@@ -495,5 +542,9 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
         out = torch.empty_like(q)
-        self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, out, counter)
+        if self.key_rope is None:
+            self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, out, counter)
+            return out
+        k_rot = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
+        self.kernel(q, k_rot, v, cu_seqlens_q, cu_seqlens_kv, rope_cos, rope_sin, out, counter)
         return out

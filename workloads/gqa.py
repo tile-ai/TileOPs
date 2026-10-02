@@ -760,6 +760,9 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         dtype: torch.dtype,
         sm_scale: float | None = None,
         softcap: float | None = None,
+        pos_encoding_mode: str = "none",
+        rotary_dim: int | None = None,
+        rope_layout: str = "neox",
     ) -> None:
         self.batch = batch
         self.seqlens_q = seqlens_q
@@ -773,6 +776,9 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         self.dtype = dtype
         self.sm_scale = sm_scale
         self.softcap = softcap
+        self.pos_encoding_mode = pos_encoding_mode
+        self.rotary_dim = dim if rotary_dim is None else rotary_dim
+        self.rope_layout = rope_layout
 
     @property
     def max_seqlen_q(self) -> int:
@@ -782,9 +788,8 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
     def max_seqlen_kv(self) -> int:
         return max(self.seqlens_k)
 
-    def gen_inputs(
-        self,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        """The five packed tensors, plus the RoPE tables when the call carries them."""
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)
         q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device=run_device()) * 0.1
@@ -807,7 +812,17 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
             dtype=torch.int32,
             device=run_device(),
         )
-        return q, k, v, cu_seqlens_q, cu_seqlens_k
+        if self.pos_encoding_mode != "rope":
+            return q, k, v, cu_seqlens_q, cu_seqlens_k
+        # Angles span a whole turn. A narrow draw puts every cosine near one and every sine
+        # near zero, which makes the rotation near-identity: a kernel that skips it, pairs
+        # the wrong channels, or rotates the channels a partial width should leave alone
+        # then lands inside the tolerance and the row proves nothing.
+        angles = torch.rand(
+            max(max(self.seqlens_k), 1), self.rotary_dim // 2, device=run_device()
+        ) * (2 * math.pi)
+        cos, sin = angles.cos().to(self.dtype), angles.sin().to(self.dtype)
+        return q, k, v, cu_seqlens_q, cu_seqlens_k, None, None, None, cos, sin
 
     def ref_program(
         self,
@@ -816,8 +831,17 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Canonical materialized reference for regular and windowed Varlen GQA."""
+        """Canonical materialized reference for regular and windowed Varlen GQA.
+
+        Under RoPE, query token ``i`` of a request sits at position ``kv_len - q_len + i``
+        and key token ``j`` at position ``j``; the rotation runs before the scores form.
+        """
         groups = self.heads // self.heads_kv
         scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
         outputs = []
@@ -826,11 +850,19 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
             q_end = int(cu_seqlens_q[request + 1].item())
             kv_start = int(cu_seqlens_kv[request].item())
             kv_end = int(cu_seqlens_kv[request + 1].item())
-            q_i = q[q_start:q_end].transpose(0, 1).float()
-            k_i = k[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
-            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
             q_len = q_end - q_start
             kv_len = kv_end - kv_start
+            q_b, k_b = q[q_start:q_end], k[kv_start:kv_end]
+            if rope_cos is not None:
+                rope = dict(rotary_dim=self.rotary_dim, layout=self.rope_layout)
+                positions = torch.arange(kv_len, device=q.device)
+                q_b = apply_dense_rope(
+                    q_b[None], positions[kv_len - q_len :], rope_cos, rope_sin, **rope
+                )[0]
+                k_b = apply_dense_rope(k_b[None], positions, rope_cos, rope_sin, **rope)[0]
+            q_i = q_b.transpose(0, 1).float()
+            k_i = k_b.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
             scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * scale
             if self.softcap is not None and self.softcap > 0:
                 scores = self.softcap * torch.tanh(scores / self.softcap)
@@ -954,6 +986,9 @@ class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenF
             _dtype(call, "q"),
             sm_scale=params.get("sm_scale"),
             softcap=params.get("softcap"),
+            pos_encoding_mode=params.get("pos_encoding_mode", "none"),
+            rotary_dim=ix.get("R") if params.get("pos_encoding_mode") == "rope" else None,
+            rope_layout=params.get("rope_layout", "neox"),
         )
 
     gen_inputs = GroupedQueryAttentionVarlenFwdWorkload.gen_inputs

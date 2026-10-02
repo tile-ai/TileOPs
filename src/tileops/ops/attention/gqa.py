@@ -384,8 +384,8 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     covers both prefill and decode; tensor geometry and sequence metadata come
     from each call, while mask, score, out_dtype, and RoPE semantics are fixed at
     construction. The current BUILTIN path implements 16-bit regular and
-    sliding-window attention; FP8 and fused RoPE remain part of the public
-    contract for later kernel migrations.
+    sliding-window attention, with or without fused RoPE; FP8 remains part of the
+    public contract for a later kernel migration.
     """
 
     compile_boundary = True

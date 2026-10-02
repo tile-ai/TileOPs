@@ -262,10 +262,65 @@ def test_gqa_dense_prefill_bench(call) -> None:
     )
 
 
+def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tensor):
+    """Rotate packed Q and K as a caller must before a kernel that does not fuse RoPE.
+
+    Returns ``None`` when the row carries no tables. FlashInfer rotates a query and a key
+    tensor of one packed length together, while Q and K here differ in length and in head
+    count, so each takes its own call with a scratch tensor standing in for the side that
+    call leaves alone. Query token ``i`` of a request sits at position ``kv_len - q_len + i``
+    and key token ``j`` at position ``j``.
+    """
+    if workload.pos_encoding_mode != "rope":
+        return None
+    from flashinfer.rope import apply_rope_with_cos_sin_cache
+
+    q, k, cos, sin = inputs[0], inputs[1], inputs[8], inputs[9]
+    device = q.device
+    cos_sin = torch.cat([cos.float(), sin.float()], dim=-1).contiguous()
+    pos_k = torch.cat([torch.arange(kv, device=device) for kv in workload.seqlens_k]).int()
+    is_neox = workload.rope_layout == "neox"
+    dim = workload.dim
+
+    if workload.seqlens_q == workload.seqlens_k:
+        # Query and key tokens share their positions here, so one call rotates both.
+        def rotate(q, k):
+            q_rot, k_rot = apply_rope_with_cos_sin_cache(
+                pos_k, q.view(q.shape[0], -1), k.view(k.shape[0], -1), dim, cos_sin, is_neox
+            )
+            return q_rot.view_as(q), k_rot.view_as(k)
+
+        return rotate
+
+    pos_q = torch.cat(
+        [
+            torch.arange(kv - qn, kv, device=device)
+            for qn, kv in zip(workload.seqlens_q, workload.seqlens_k, strict=True)
+        ]
+    ).int()
+    # The entry point rotates a query and a key tensor of one packed length together, and
+    # these differ in length and head count, so each takes its own call against a one-head
+    # stand-in on the side that call leaves alone.
+    scratch_q = torch.empty(k.shape[0], dim, dtype=q.dtype, device=device)
+    scratch_k = torch.empty(q.shape[0], dim, dtype=k.dtype, device=device)
+
+    def rotate(q, k):
+        q_rot, _ = apply_rope_with_cos_sin_cache(
+            pos_q, q.view(q.shape[0], -1), scratch_k, dim, cos_sin, is_neox
+        )
+        _, k_rot = apply_rope_with_cos_sin_cache(
+            pos_k, scratch_q, k.view(k.shape[0], -1), dim, cos_sin, is_neox
+        )
+        return q_rot.view_as(q), k_rot.view_as(k)
+
+    return rotate
+
+
 def _fa3_gqa_varlen(
     workload: GroupedQueryAttentionVarlenCall,
     window_size_left: int,
     window_size_right: int,
+    rotate=None,
 ):
     """FlashAttention-3 over the same packed-varlen layout; it has no kernel above head dim 256."""
     if workload.dim > 256:
@@ -275,7 +330,9 @@ def _fa3_gqa_varlen(
     except ImportError:
         return None
 
-    def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv):
+    def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv, *_tables):
+        if rotate is not None:
+            q, k = rotate(q, k)
         out = flash_attn_varlen_func(
             q,
             k,
@@ -297,11 +354,12 @@ def _flashinfer_gqa_varlen(
     window_size_left: int,
     window_size_right: int,
     *inputs: torch.Tensor,
+    rotate=None,
 ):
     """FlashInfer ragged prefill over the same packed layout; it has no right window."""
     if window_size_right >= 0:
         return None
-    q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs
+    q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs[:5]
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = flashinfer_op("prefill.BatchPrefillWithRaggedKVCacheWrapper")(
         workspace, kv_layout="NHD"
@@ -317,7 +375,9 @@ def _flashinfer_gqa_varlen(
         q_data_type=q.dtype,
     )
 
-    def _run(q, k, v, _cu_seqlens_q, _cu_seqlens_kv):
+    def _run(q, k, v, _cu_seqlens_q, _cu_seqlens_kv, *_tables):
+        if rotate is not None:
+            q, k = rotate(q, k)
         return wrapper.run(q, k, v)
 
     return _run
@@ -337,11 +397,14 @@ def test_gqa_varlen_fwd_bench(call) -> None:
         "torch-ref": workload.ref_program,
     }
     assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
-    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
+    rotate = _varlen_rope(workload, *inputs)
+    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr, rotate)
     if fa3_fn is not None:
         assert_matches_reference(fa3_fn, functors["torch-ref"], *inputs, **tolerance)
         functors["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_varlen(workload, workload.wl, workload.wr, *inputs)
+    flashinfer_fn = _flashinfer_gqa_varlen(
+        workload, workload.wl, workload.wr, *inputs, rotate=rotate
+    )
     if flashinfer_fn is not None:
         assert_matches_reference(flashinfer_fn, functors["torch-ref"], *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn

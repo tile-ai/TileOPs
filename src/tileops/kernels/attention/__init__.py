@@ -29,6 +29,7 @@ from tileops.kernels.attention.gqa_sliding_window_varlen_fwd import (
 )
 from tileops.kernels.attention.mha_bwd_ws import MHABwdWsKernel
 from tileops.kernels.attention.mha_decode_paged_ws import MHADecodePagedWsKernel
+from tileops.kernels.attention.varlen_rope import VarlenKeyRoPE
 
 __all__ = [
     "FlashAttnBwdPreprocessKernel",
@@ -61,4 +62,5 @@ __all__ = [
     "SparseMlaBasicKernel",
     "SparseMlaCall",
     "SparseMlaKernel",
+    "VarlenKeyRoPE",
 ]
