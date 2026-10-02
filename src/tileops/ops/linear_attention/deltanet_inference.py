@@ -24,11 +24,15 @@ class DeltaNetInferenceFwdOp(Op):
     The input layout is ``[B, T, H, D]``. One call covers equal-length
     prefill, packed-varlen prefill, and single-token decode. The recurrent
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
-    while ``(o, final_state)`` is always returned. The in-tree implementations
-    cover SM90 prefill over a 64- or 128-wide square state, equal-length or
-    packed, with a sequence that is not a whole number of 64-token chunks and
-    with or without ``use_qk_l2norm_in_kernel``, and SM90 single-token decode
-    over a 128-wide one with Q and K already normalized.
+    while ``(o, final_state)`` is always returned.
+
+    The in-tree implementations serve SM90. Prefill runs over a 64- or
+    128-wide square state in float16 or bfloat16, equal-length or packed, with
+    a sequence that is not a whole number of 64-token chunks, and with or
+    without ``use_qk_l2norm_in_kernel``. Decode runs one token over a 128-wide
+    square state with Q and K already normalized. A key width that is neither
+    64 nor 128, or one that differs from the value width, has no in-tree
+    kernel and needs an external target implementation.
 
     ``beta`` contains the already-transformed update strength. This Op does
     not apply a sigmoid or another beta transform.

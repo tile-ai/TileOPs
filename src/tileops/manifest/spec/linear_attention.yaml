@@ -8,7 +8,7 @@ DeltaNetInferenceFwdOp:
   # The five training buffers of the chunkwise forward are not public outputs.
   # A packed call (cu_seqlens) carries one state per sequence.
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     types:
       State:
