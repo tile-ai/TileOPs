@@ -53,6 +53,10 @@ _FP8_DTYPE = "float8_e4m3fn"
 # innermost extent is a whole vectorized access, which the packed ABI requires.
 _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
 _FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
+# The work counter the persistent CTAs claim from: the next item to hand out, and the
+# CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
+# every launch and no call has to clear it.
+_CLAIM_SLOTS = 2
 # The tensor-map fields the raw value transfer needs; the helper takes the FP8 bytes
 # as unsigned chars, with the 128-byte swizzle the FA3 operand layout assumes.
 _TMA_DTYPE_UINT8 = 0
@@ -323,6 +327,12 @@ def _gqa_varlen_fp8_ws_kernel(
     block_m = 2 * half_m
     # Threads of the two compute warpgroups, which the turn-passing barriers count.
     compute_threads = 2 * WARPGROUP_THREADS
+    # Every thread of the block, which the claim handshake counts. Barriers 1 and 2 pass
+    # the turn between the compute warpgroups and 3 and 4 close each one's query tile and
+    # epilogue, so the handshake takes the next two.
+    block_threads = 3 * WARPGROUP_THREADS
+    claim_read_barrier = 5
+    claim_write_barrier = 6
     # Key and value tiles in flight. Three is what the 227 KB an SM90 block may use
     # holds beside the query and output buffers once the value transpose runs in place;
     # it is one more than either compute warpgroup needs, which is what lets one of
@@ -429,6 +439,20 @@ def _gqa_varlen_fp8_ws_kernel(
             T.barrier_arrive(v_full[slot])
 
         @T.macro
+        def claim_item(claimed, Claim):
+            """Draw the next item off the shared counter into *claimed* for the whole CTA.
+
+            One thread draws it so the transfer warpgroup and the two compute warpgroups
+            reach the same item; the first barrier holds the draw until every role has
+            read the previous one. Both are per item rather than per key tile, so a CTA
+            crosses them once per item it runs and not once per tile it scans.
+            """
+            T.sync_threads(barrier_id=claim_read_barrier, arrive_count=block_threads)
+            if T.get_thread_binding() == 0:
+                claimed[0] = T.atomic_add(Claim[0], 1, return_prev=True)
+            T.sync_threads(barrier_id=claim_write_barrier, arrive_count=block_threads)
+
+        @T.macro
         def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta):
             """Fill meta for item *work*: KV head, offsets, lengths, first position, key tiles."""
             # Query tiles are walked from the last one of the call: under the causal
@@ -478,9 +502,12 @@ def _gqa_varlen_fp8_ws_kernel(
             VD: T.Tensor([batch, heads_kv], accum_dtype),  # type: ignore
             RopeCos: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
             RopeSin: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
+            Claim: T.Tensor([_CLAIM_SLOTS], "int32"),  # type: ignore
             O: T.Tensor([total_q, heads, dim], out_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(num_ctas, threads=3 * WARPGROUP_THREADS) as bx:
+            # Which items a CTA runs follows the order its claims land in, so the block
+            # index names nothing the program reads.
+            with T.Kernel(num_ctas, threads=3 * WARPGROUP_THREADS) as _cta:
                 q_shared_1 = T.alloc_shared([half_m, dim], _FP8_DTYPE)
                 q_shared_2 = T.alloc_shared([half_m, dim], _FP8_DTYPE)
                 k_smem = T.alloc_shared([stages, block_n, dim], _FP8_DTYPE)
@@ -492,6 +519,7 @@ def _gqa_varlen_fp8_ws_kernel(
                 ls_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 tile_cum = T.alloc_shared([batch + 1], "int32")
+                claimed = T.alloc_shared([1], "int32")
                 acc_s_1 = T.alloc_fragment([half_m, block_n], accum_dtype)
                 acc_o_1 = T.alloc_fragment([half_m, dim], accum_dtype)
                 sm_1 = T.alloc_fragment([half_m], accum_dtype)
@@ -546,7 +574,9 @@ def _gqa_varlen_fp8_ws_kernel(
                     # CTA walks, so the slot and the barrier phase follow from them.
                     issued = T.alloc_var("int32", init=0)
                     folded = T.alloc_var("int32", init=0)
-                    work = T.alloc_var("int32", init=bx)
+                    work = T.alloc_var("int32", init=0)
+                    claim_item(claimed, Claim)
+                    work = claimed[0]
                     while work < tile_cum[batch] * heads_kv:
                         locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
                         head_kv = meta[0]
@@ -620,17 +650,37 @@ def _gqa_varlen_fp8_ws_kernel(
                                     folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
                                 )  # fmt: skip
                                 folded = folded + 1
-                        work = work + num_ctas
+                        # Every tile this item staged is turned into its operand before the
+                        # item ends. Carrying one over would hold a compute warpgroup on
+                        # ``v_full`` while this warpgroup waits at the claim, and the claim
+                        # is what would have issued the tiles that released it.
+                        while folded < issued:
+                            transpose_value_tile(
+                                folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
+                            )  # fmt: skip
+                            folded = folded + 1
+                        claim_item(claimed, Claim)
+                        work = claimed[0]
                     while folded < issued:
                         transpose_value_tile(
                             folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
                         )  # fmt: skip
                         folded = folded + 1
+                    # A CTA touches the counter for the last time before it arrives here,
+                    # so the CTA that arrives last leaves both slots zeroed for the next
+                    # launch and no caller has to clear them.
+                    if tx == 0:
+                        arrived = T.atomic_add(Claim[1], 1, return_prev=True)
+                        if arrived == num_ctas - 1:
+                            Claim[0] = 0
+                            Claim[1] = 0
                 elif tx < 256:
                     T.inc_max_nreg(240)
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
-                    work = T.alloc_var("int32", init=bx)
+                    work = T.alloc_var("int32", init=0)
+                    claim_item(claimed, Claim)
+                    work = claimed[0]
                     while work < tile_cum[batch] * heads_kv:
                         locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
                         head_kv = meta[0]
@@ -790,12 +840,15 @@ def _gqa_varlen_fp8_ws_kernel(
                                 heads * dim,
                                 q_len - pos_base,
                             )
-                        work = work + num_ctas
+                        claim_item(claimed, Claim)
+                        work = claimed[0]
                 else:
                     T.inc_max_nreg(240)
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
-                    work = T.alloc_var("int32", init=bx)
+                    work = T.alloc_var("int32", init=0)
+                    claim_item(claimed, Claim)
+                    work = claimed[0]
                     T.named_barrier_arrive(
                         1, compute_threads
                     )  # let warpgroup 0 take the first turn
@@ -958,7 +1011,8 @@ def _gqa_varlen_fp8_ws_kernel(
                                 heads * dim,
                                 q_len - pos_base,
                             )
-                        work = work + num_ctas
+                        claim_item(claimed, Claim)
+                        work = claimed[0]
 
         return main
 
@@ -1178,6 +1232,10 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     """
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"gqa_varlen_fp8"})
+    # Which CTA runs which item follows the order the claims land in, which is not fixed
+    # between launches. An item owns a disjoint slice of the output, so the result does
+    # not depend on that order.
+    _claim: Optional[torch.Tensor] = None
     # The staged FA3 buffers take 217 KB of the 227 KB an SM90 block may use, and the
     # per-request tile prefix takes four bytes a request out of what is left. Recompute
     # it from the buffer list in the program if any shared buffer grows.
@@ -1251,7 +1309,20 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         if self.key_rope is not None:
             k = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
         out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
+        if self._claim is None:
+            self._claim = torch.zeros(_CLAIM_SLOTS, dtype=torch.int32, device=q.device)
         self.kernel()(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale, cos, sin, out
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            cos,
+            sin,
+            self._claim,
+            out,
         )
         return out
