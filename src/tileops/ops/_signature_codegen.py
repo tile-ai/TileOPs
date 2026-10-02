@@ -1030,6 +1030,8 @@ def check_result(
     # Storage a fresh output may not share: every tensor passed or held, and each output before it.
     taken = [v for v in tensors.values() if isinstance(v, torch.Tensor)]
     taken += [v for v in held if isinstance(v, torch.Tensor)]
+    # Fake tensors carry no storage to compare, and the loop below enters no tracing region.
+    traced = detect_fake_mode() is not None or torch.compiler.is_compiling()
     for name, item in zip(outputs, items, strict=True):
         decl = sig.outputs[name]
         if name not in call.tensors:
@@ -1053,15 +1055,14 @@ def check_result(
             _require(item.is_contiguous(), f"{sig.name}: {name} must be contiguous")
         fresh = not (decl.buffer and call.out) and decl.alias not in call.written
         _require(
-            not fresh or not any(_shares_storage(item, other) for other in taken),
+            not fresh or traced or not any(_shares_storage(item, other) for other in taken),
             f"{sig.name}: {name} shares storage with a tensor it does not declare as its alias",
         )
         taken.append(item)
 
 
 def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
-    if detect_fake_mode() is not None or torch.compiler.is_compiling():
-        return False
+    """Whether two real tensors share storage; the caller settles that neither is traced."""
     if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
     return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
