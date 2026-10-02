@@ -456,9 +456,8 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     [
         pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
         pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
-        # q_len 1, an empty request, and a partial rotary width whose tail passes through.
+        # The channels past a partial rotary width pass through unrotated.
         pytest.param([1, 0, 130], [200, 0, 130], 128, 64, "neox", -1, id="ragged-partial"),
-        # A window and a head dimension past the warp-specialized kernel's reach.
         pytest.param([130, 70], [130, 70], 128, None, "interleaved", 64, id="windowed"),
         pytest.param([70, 40], [200, 40], 512, None, "neox", -1, id="dim-512"),
     ],

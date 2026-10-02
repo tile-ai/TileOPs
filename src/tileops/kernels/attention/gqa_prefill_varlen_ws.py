@@ -287,9 +287,9 @@ def _gqa_prefill_varlen_ws_kernel(
             T.fill(alpha, 1.0)
             T.fill(sm, -T.infinity(accum))
             if rope_cos is not None:
-                # Query token i of a request sits at position kv_len - q_len + i. Each
-                # warpgroup rotates its own half of the tile, which the named-barrier
-                # sync before the first WGMMA already fences.
+                # Query token i of a request sits at position kv_len - q_len + i. A
+                # warpgroup rotates its own half, which the named-barrier sync before the
+                # first WGMMA fences.
                 rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg)
             if wg == 1 and served == 0:
                 T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first

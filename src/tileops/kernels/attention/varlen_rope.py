@@ -54,8 +54,7 @@ def make_varlen_query_rope(
         rotary_dim: Rotated width; the channels past it are left alone.
         rope_layout: ``"neox"`` or ``"interleaved"``.
         max_position: Rows of the table, which bounds the position an index may take.
-        dtype: Element type of the tile, which the widest vectorized access over it
-            divides into the frequencies one thread takes.
+        dtype: Element type of the tile.
         rope_dtype: Element type of the table, which an FP8 call carries at 16 bits while
             the tile it rotates is 8. Empty means the tile's.
         tile_axes: Axes in front of the tile's own two. A warp-specialized kernel holds
@@ -65,9 +64,8 @@ def make_varlen_query_rope(
     """
     half = rotary_dim // 2
     accum = "float"
-    # Frequencies one thread owns. A run of them spans the two channel runs the pair
-    # indexing selects, and the width that makes those runs one widest access together is
-    # what the rotation measured fastest at, under both layouts.
+    # Frequencies one thread owns: enough that the two channel runs the pair indexing
+    # selects form one widest access together. Re-fit by changing the divisor.
     itemsize = torch.empty(0, dtype=getattr(torch, dtype)).element_size()
     run = max(1, VECTOR_ACCESS_BYTES // (2 * itemsize))
     while half % run:
@@ -146,10 +144,9 @@ def _varlen_rope_keys_kernel(
                     kv_start = cu_seqlens_kv[request[0]]
                     kv_len = cu_seqlens_kv[request[0] + 1] - kv_start
                     base = row[0]
-                    # A tile that ends inside the request runs unguarded, so each half of
-                    # the rotated channels crosses global memory as a vector; only the
-                    # request's last tile pays a predicate, and the rows past its end are
-                    # left as they are.
+                    # A tile ending inside the request runs unguarded, so each half of the
+                    # rotated channels crosses global memory as a vector; only the request's
+                    # last tile carries a predicate.
                     if base + block_t <= kv_len:
                         for i, freq in T.Parallel(block_t, half):
                             d0, d1 = rope_channel_pair(rope_layout, half, freq)

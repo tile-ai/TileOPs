@@ -283,8 +283,7 @@ def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tenso
     dim = workload.dim
 
     if workload.seqlens_q == workload.seqlens_k:
-        # Self-attention packing: query and key tokens share their positions, so one call
-        # rotates both, which is what a serving stack issues.
+        # Query and key tokens share their positions here, so one call rotates both.
         def rotate(q, k):
             q_rot, k_rot = apply_rope_with_cos_sin_cache(
                 pos_k, q.view(q.shape[0], -1), k.view(k.shape[0], -1), dim, cos_sin, is_neox
@@ -300,8 +299,8 @@ def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tenso
         ]
     ).int()
     # The entry point rotates a query and a key tensor of one packed length together, and
-    # here they differ in both length and head count, so each takes its own call against a
-    # one-head stand-in: the smallest tensor the other side of the call accepts.
+    # these differ in length and head count, so each takes its own call against a one-head
+    # stand-in on the side that call leaves alone.
     scratch_q = torch.empty(k.shape[0], dim, dtype=q.dtype, device=device)
     scratch_k = torch.empty(q.shape[0], dim, dtype=k.dtype, device=device)
 
