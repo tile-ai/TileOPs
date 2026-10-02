@@ -783,6 +783,7 @@ for _op_cls in (
     DeltaNetFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
+    DeltaNetInferenceFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
     ChainSpeculativeSamplingFwdOp,

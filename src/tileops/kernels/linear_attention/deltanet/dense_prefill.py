@@ -37,13 +37,12 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         The pipeline runs chunks of 64 tokens over a square 16-bit state, equal-length or
-        packed and with a row that is not a whole chunk, and takes Q and K already
-        normalized.
+        packed, with a row that is not a whole chunk, and with the Q/K L2 normalization
+        taken in kernel.
         """
         unsupported = [
             name
             for name, present in (
-                ("Q/K L2 normalization", call.l2norm),
                 ("a single token outside a packed call", call.seq_len == 1 and not call.varlen),
                 (
                     "K/V dimensions other than matching 64 or 128",
@@ -70,6 +69,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
+            l2norm=call.l2norm,
             device_index=index,
         )
         return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)
@@ -84,6 +84,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        l2norm: bool = False,
         config: Optional[Dict[str, Any]] = None,
         *,
         device_index: int | None = None,
@@ -98,6 +99,9 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         self.varlen = varlen
         self.dim = dim
         self.scale = scale
+        # Normalizing Q and K changes what every stage is built to read, so it belongs to
+        # the build identity rather than to a launch argument.
+        self.l2norm = l2norm
         self.init_config(config)
         if self.config["max_local_chunks"] < 4:
             raise ValueError(
@@ -166,14 +170,14 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             local_chunks = max(local_chunks, 256)
         return max(local_chunks, 4)
 
-    @classmethod
     def _partition_initial_state(
-        cls,
+        self,
         k: torch.Tensor,
         v: torch.Tensor,
         inverse: torch.Tensor,
         zero_gate: torch.Tensor,
         beta: torch.Tensor,
+        k_rnorm: torch.Tensor,
         cu_seqlens: torch.Tensor,
         sequence_lengths: tuple[int, ...] | None,
         initial_state: torch.Tensor | None,
@@ -199,7 +203,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         )
         if not use_partition:
             return initial_state, cu_seqlens, None, cu_seqlens
-        raw_cu, cp_cu, cp_to_raw, raw_to_cp, final_mask = cls._partition_metadata(
+        raw_cu, cp_cu, cp_to_raw, raw_to_cp, final_mask = self._partition_metadata(
             sequence_lengths, heads, max_local_chunks, True, k.device.index
         )
         assert cp_cu is not None
@@ -225,6 +229,8 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             output_h=False,
             cu_seqlens=cp_cu,
             num_warmup_chunks=warmup_chunks,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
         )
         partition_h0 = correct_initial_states(
             raw_h0=initial_state,
@@ -268,8 +274,8 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
         else:
             lengths = None
-        inverse = prefill_blocksolve_A_bthd(
-            k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, use_gate=False
+        inverse, k_rnorm = prefill_blocksolve_A_bthd(
+            k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, use_gate=False, l2norm=self.l2norm
         )
         partition_h0, offsets, seq_map, raw_offsets = self._partition_initial_state(
             k_flat,
@@ -277,6 +283,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             inverse,
             self.zero_gate,
             beta_flat,
+            k_rnorm,
             cu_seqlens,
             lengths,
             initial_state,
@@ -297,5 +304,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             cp_seq_map=seq_map,
             raw_cu_seqlens=raw_offsets,
             chunk_size=64,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
         )
         return o.reshape(batch, seq_len, heads, dim), final_state

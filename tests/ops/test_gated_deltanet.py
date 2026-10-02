@@ -1,7 +1,9 @@
+from functools import partial
+
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.test_base import TestBase, allclose_compare
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
@@ -73,6 +75,88 @@ def test_gated_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(2, 100, 2, 64, torch.bfloat16)
     test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("l2norm", "raw_gate", "beta_sigmoid", "allow_neg_eigval", "dtype"),
+    [
+        (True, False, False, False, torch.bfloat16),
+        (False, True, False, False, torch.bfloat16),
+        (False, False, True, False, torch.bfloat16),
+        (False, False, True, True, torch.bfloat16),
+        (True, True, True, True, torch.bfloat16),
+        (True, True, True, True, torch.float16),
+    ],
+    ids=[
+        "l2norm",
+        "raw-gate",
+        "beta-sigmoid",
+        "beta-sigmoid-negative",
+        "every-transform",
+        "every-transform-fp16",
+    ],
+)
+def test_gated_deltanet_prefill_takes_each_input_transform(
+    l2norm: bool, raw_gate: bool, beta_sigmoid: bool, allow_neg_eigval: bool, dtype: torch.dtype
+) -> None:
+    """Each transform the op may leave to the kernel, alone and all together."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1,
+        128,
+        2,
+        64,
+        dtype,
+        l2norm=l2norm,
+        raw_gate=raw_gate,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+    op = GatedDeltaNetFwdOp(
+        use_qk_l2norm_in_kernel=l2norm,
+        use_gate_in_kernel=raw_gate,
+        use_beta_sigmoid_in_kernel=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+    if dtype == torch.float16:
+        # Measured against the reference: the output reaches 1.03e-3 and the float32
+        # final state 4.3e-3. Both are chunk-decomposition differences the activation
+        # dtype's own 1e-3 bound does not describe, the state's the larger because the
+        # recurrence carries it to the end of the row.
+        test.check(
+            op,
+            *test.gen_inputs(),
+            compare=[
+                partial(allclose_compare, atol=2e-3, rtol=1e-3),
+                partial(allclose_compare, atol=6e-3, rtol=1e-3),
+            ],
+        )
+        return
+    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_gated_deltanet_partitioned_prefill_normalizes_the_key_it_stages() -> None:
+    """The warmup pass stages the key itself, so partitioning normalizes it a second time."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16, l2norm=True)
+    kernel = GatedDeltaNetDensePrefillFwdKernel(
+        1,
+        2,
+        2,
+        512,
+        1,
+        False,
+        128,
+        128**-0.5,
+        torch.bfloat16,
+        l2norm=True,
+        config={"max_local_chunks": 4},
+    )
+    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    test.check(kernel, q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.sm90

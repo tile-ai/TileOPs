@@ -44,7 +44,8 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
-        packed, with a row that is not a whole chunk and with grouped value heads.
+        packed, with a row that is not a whole chunk, with grouped value heads, and with
+        the Q/K normalization, the gate and the beta transform taken in kernel.
         """
         variant = call.recurrence_refusal
         if variant is not None:
@@ -68,6 +69,10 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
+            l2norm=call.l2norm,
+            gate_in_kernel=call.gate_in_kernel,
+            beta_sigmoid=call.beta_sigmoid,
+            allow_neg_eigval=call.allow_neg_eigval,
             device_index=index,
         )
         return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)
@@ -83,6 +88,10 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        l2norm: bool = False,
+        gate_in_kernel: bool = False,
+        beta_sigmoid: bool = False,
+        allow_neg_eigval: bool = False,
         config: Optional[Dict[str, Any]] = None,
         *,
         device_index: int | None = None,
@@ -99,6 +108,12 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         self.dim = dim
         self.scale = scale
         self.dtype = dtype
+        # Each transform the op left to the kernel changes what every stage is built to
+        # read, so all four belong to the build identity rather than to a launch argument.
+        self.l2norm = l2norm
+        self.gate_in_kernel = gate_in_kernel
+        self.beta_sigmoid = beta_sigmoid
+        self.allow_neg_eigval = allow_neg_eigval
         self.init_config(config)
         if self.config["max_local_chunks"] < 4:
             raise ValueError(
@@ -165,14 +180,14 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             max_local_chunks = max(max_local_chunks, 256)
         return max(max_local_chunks, 4)
 
-    @classmethod
     def _partitioned_initial_state(
-        cls,
+        self,
         k: torch.Tensor,
         v: torch.Tensor,
         A: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        k_rnorm: torch.Tensor,
         chunk_size: int,
         max_local_chunks: int,
         initial_state: torch.Tensor | None,
@@ -206,7 +221,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             seq_map_c2r_t,
             seq_map_r2c_t,
             ht_mask_t,
-        ) = cls._partition_metadata(
+        ) = self._partition_metadata(
             sequence_lengths,
             num_heads,
             chunk_size,
@@ -232,6 +247,10 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             output_h=False,
             cu_seqlens=cp_cu_seqlens_t,
             num_warmup_chunks=num_warmup_chunks,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
         )
         cp_h0 = correct_initial_states(
             raw_h0=initial_state,
@@ -263,7 +282,6 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        del A_log, dt_bias
         self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len = q.shape[:2]
@@ -283,21 +301,34 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
         else:
             lengths = None
-        g = prefill_chunk_local_cumsum_bthd_tl(
+        cumsum = prefill_chunk_local_cumsum_bthd_tl(
             batch * seq_len,
             self.num_sequences,
             value_heads,
             chunk_size,
             str(q.dtype).split(".")[-1],
             str(cu_seqlens.dtype).split(".")[-1],
-        )(g, cu_seqlens)
-        inverse = prefill_blocksolve_A_bthd(k, g, beta, cu_seqlens, chunk_size, use_gate=False)
+            self.gate_in_kernel,
+        )
+        g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)
+        inverse, k_rnorm = prefill_blocksolve_A_bthd(
+            k,
+            g,
+            beta,
+            cu_seqlens,
+            chunk_size,
+            use_gate=False,
+            l2norm=self.l2norm,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
+        )
         initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
             v,
             inverse,
             g,
             beta,
+            k_rnorm,
             chunk_size,
             self.config["max_local_chunks"],
             initial_state,
@@ -320,5 +351,9 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             chunk_size=chunk_size,
             state_head_first=False,
             chunks_per_sequence=0,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
         )
         return o.reshape(batch, seq_len, value_heads, dim_v), final_state

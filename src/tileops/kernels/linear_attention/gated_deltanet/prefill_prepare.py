@@ -11,7 +11,11 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.linear_attention.gated_deltanet.prefill_common import prepare_chunk_offsets
+from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+    L2NORM_EPS,
+    prepare_chunk_offsets,
+    step_size,
+)
 
 
 @functools.lru_cache(maxsize=32)
@@ -22,6 +26,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
     chunk_size: int,
     dtype: str,
     offsets_dtype: str,
+    gate_in_kernel: bool = False,
 ):
     """Accumulate the gate inside each chunk, restarting at every sequence start.
 
@@ -30,9 +35,15 @@ def prefill_chunk_local_cumsum_bthd_tl(
     call is a packed call and runs this kernel too. The grid covers the most chunks the
     offsets can describe and a block past the count they give retires at once, which is what
     keeps the launch extent out of the offsets' values.
+
+    With *gate_in_kernel*, ``g`` carries the raw gate and the log-space decay
+    ``-exp(A_log) * softplus(g + dt_bias)`` is formed here, inside the pass that already
+    reads every gate value and writes it back, so the transform moves no extra bytes.
     """
     tiling = GroupTiling(num_sequences, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
+    # Above this, softplus is the identity to float32 precision; torch's default.
+    softplus_threshold = 20.0
 
     @tilelang.jit(
         out_idx=[-1],
@@ -42,33 +53,67 @@ def prefill_chunk_local_cumsum_bthd_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads: int = 128):
-        @T.prim_func
-        def chunk_cumsum_bthd_kernel(
-            g: T.Tensor([1, total_tokens, head], dtype),
-            cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
-            out: T.Tensor([1, total_tokens, head], dtype),
-        ):
-            with T.Kernel(num_chunks, threads=threads) as (cid,):
-                tile_cum = T.alloc_shared([num_sequences + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
-                acc_s = T.alloc_shared([head], "float32")
+        @T.macro
+        def accumulate(cid, g, cu_seqlens, a_log, dt_bias, out):
+            tile_cum = T.alloc_shared([num_sequences + 1], "int32")
+            lo = T.alloc_local([1], "int32")
+            hi = T.alloc_local([1], "int32")
+            seq = T.alloc_local([1], "int32")
+            first = T.alloc_local([1], "int32")
+            acc_s = T.alloc_shared([head], "float32")
+            rate_s = T.alloc_shared([head], "float32")
+            shift_s = T.alloc_shared([head], "float32")
 
-                tiling.cumsum_offsets(cu_seqlens, tile_cum)
-                if cid < tile_cum[num_sequences]:
-                    tiling.decode(cid, tile_cum, lo, hi, seq, first)
-                    base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
-                    end = T.cast(cu_seqlens[seq[0] + 1], "int32")
+            tiling.cumsum_offsets(cu_seqlens, tile_cum)
+            if cid < tile_cum[num_sequences]:
+                tiling.decode(cid, tile_cum, lo, hi, seq, first)
+                base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                end = T.cast(cu_seqlens[seq[0] + 1], "int32")
 
+                for hid in T.Parallel(head):
+                    acc_s[hid] = T.float32(0.0)
+                if gate_in_kernel:
                     for hid in T.Parallel(head):
-                        acc_s[hid] = T.float32(0.0)
-                    for i in T.Serial(chunk_size):
-                        for hid in T.Parallel(head):
-                            if base + i < end:
-                                acc_s[hid] = acc_s[hid] + T.cast(g[0, base + i, hid], "float32")
-                                out[0, base + i, hid] = T.cast(acc_s[hid], dtype)
+                        rate_s[hid] = -T.exp(a_log[hid])
+                        shift_s[hid] = dt_bias[hid]
+                for i in T.Serial(chunk_size):
+                    for hid in T.Parallel(head):
+                        if base + i < end:
+                            raw = T.cast(g[0, base + i, hid], "float32")
+                            if gate_in_kernel:
+                                biased = raw + shift_s[hid]
+                                softplus = T.log(T.float32(1.0) + T.exp(biased))
+                                decay = rate_s[hid] * T.if_then_else(
+                                    biased > softplus_threshold, biased, softplus
+                                )
+                            else:
+                                decay = raw
+                            acc_s[hid] = acc_s[hid] + decay
+                            out[0, base + i, hid] = T.cast(acc_s[hid], dtype)
+
+        if gate_in_kernel:
+
+            @T.prim_func
+            def chunk_cumsum_bthd_kernel(
+                g: T.Tensor([1, total_tokens, head], dtype),
+                cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
+                a_log: T.Tensor([head], "float32"),
+                dt_bias: T.Tensor([head], "float32"),
+                out: T.Tensor([1, total_tokens, head], dtype),
+            ):
+                with T.Kernel(num_chunks, threads=threads) as (cid,):
+                    accumulate(cid, g, cu_seqlens, a_log, dt_bias, out)
+
+        else:
+
+            @T.prim_func
+            def chunk_cumsum_bthd_kernel(
+                g: T.Tensor([1, total_tokens, head], dtype),
+                cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
+                out: T.Tensor([1, total_tokens, head], dtype),
+            ):
+                with T.Kernel(num_chunks, threads=threads) as (cid,):
+                    accumulate(cid, g, cu_seqlens, None, None, out)
 
         return chunk_cumsum_bthd_kernel
 
@@ -86,6 +131,9 @@ def _prefill_blocksolve_A_bthd_tl(
     dtype: str,
     offsets_dtype: str,
     use_gate: bool = True,
+    l2norm: bool = False,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
 ):
     if chunk_size != 64 or dim_k not in (64, 128):
         raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
@@ -103,6 +151,9 @@ def _prefill_blocksolve_A_bthd_tl(
     block_k = 64
     accum_dtype = "float32"
     solve_dtype = dtype
+    # A build that does not normalize never writes this tensor, and the host hands it one
+    # token so the allocation carries no cost.
+    rnorm_tokens = total_tokens if l2norm else 1
 
     @tilelang.jit(
         out_idx=[],
@@ -119,6 +170,7 @@ def _prefill_blocksolve_A_bthd_tl(
             beta: T.Tensor([1, total_tokens, head], dtype),
             cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
             A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
+            k_rnorm: T.Tensor([1, rnorm_tokens, key_head], accum_dtype),
         ):
             with T.Kernel(num_chunks, head, threads=threads) as (cid, hid):
                 tile_cum = T.alloc_shared([num_sequences + 1], "int32")
@@ -137,6 +189,8 @@ def _prefill_blocksolve_A_bthd_tl(
                 gate2_s = T.alloc_shared([block_t], dtype)
                 gate3_s = T.alloc_shared([block_t], dtype)
                 beta_f_s = T.alloc_shared([block_t], dtype)
+                if l2norm:
+                    rnorm_s = T.alloc_shared([block_t], accum_dtype)
                 a_s = T.alloc_shared([10, block_c, block_c], solve_dtype)
                 i_s = T.alloc_shared([4, block_c, block_c], solve_dtype)
                 work_s = T.alloc_shared([1, block_c, block_c], solve_dtype)
@@ -180,8 +234,11 @@ def _prefill_blocksolve_A_bthd_tl(
                     for t in T.Parallel(block_t):
                         g_s[t] = g[0, T.min(base + t, end - 1), hid]
                 for t in T.Parallel(block_t):
+                    step = step_size(
+                        beta[0, T.min(base + t, end - 1), hid], beta_sigmoid, allow_neg_eigval
+                    )
                     beta_s[t] = T.if_then_else(
-                        base + t < end, beta[0, base + t, hid], T.cast(0, dtype)
+                        base + t < end, T.cast(step, dtype), T.cast(0, dtype)
                     )
 
                 T.clear(G00)
@@ -244,6 +301,37 @@ def _prefill_blocksolve_A_bthd_tl(
                     T.gemm(k3, k1, G31, transpose_B=True)
                     T.gemm(k3, k2, G32, transpose_B=True)
                     T.gemm(k3, k3, G33, transpose_B=True)
+
+                if l2norm:
+                    # A row's sum of squares is already on the Gram matrix's diagonal, so
+                    # normalizing the key costs this solve no pass and no reduction: the
+                    # Gram matrix of the normalized key is this one scaled by the outer
+                    # product of the two rows' reciprocal norms.
+                    for i, j in T.Parallel(block_c, block_c):
+                        if i == j:
+                            rnorm_s[i] = T.rsqrt(G00[i, j] + L2NORM_EPS)
+                            rnorm_s[block_c + i] = T.rsqrt(G11[i, j] + L2NORM_EPS)
+                            rnorm_s[2 * block_c + i] = T.rsqrt(G22[i, j] + L2NORM_EPS)
+                            rnorm_s[3 * block_c + i] = T.rsqrt(G33[i, j] + L2NORM_EPS)
+                    T.sync_threads()
+                    # The two later passes stage this key again and cannot reach its Gram
+                    # matrix, so the norm they would each reduce for themselves is handed
+                    # on here. One recurrent head per group writes it.
+                    if hid % group == 0:
+                        for t in T.Parallel(block_t):
+                            if base + t < end:
+                                k_rnorm[0, base + t, khid] = rnorm_s[t]
+                    for i, j in T.Parallel(block_c, block_c):
+                        G00[i, j] *= rnorm_s[i] * rnorm_s[j]
+                        G10[i, j] *= rnorm_s[block_c + i] * rnorm_s[j]
+                        G11[i, j] *= rnorm_s[block_c + i] * rnorm_s[block_c + j]
+                        G20[i, j] *= rnorm_s[2 * block_c + i] * rnorm_s[j]
+                        G21[i, j] *= rnorm_s[2 * block_c + i] * rnorm_s[block_c + j]
+                        G22[i, j] *= rnorm_s[2 * block_c + i] * rnorm_s[2 * block_c + j]
+                        G30[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[j]
+                        G31[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[block_c + j]
+                        G32[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[2 * block_c + j]
+                        G33[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[3 * block_c + j]
 
                 for t in T.Parallel(block_t):
                     g_val = T.cast(g_s[t], accum_dtype) if use_gate else T.float32(0.0)
@@ -521,6 +609,9 @@ def prefill_blocksolve_A_bthd(
     cu_seqlens: torch.Tensor,
     chunk_size: int,
     use_gate: bool = True,
+    l2norm: bool = False,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
 ) -> torch.Tensor:
     """The per-chunk triangular inverse the delta rule contracts against.
 
@@ -531,13 +622,21 @@ def prefill_blocksolve_A_bthd(
         cu_seqlens: ``(num_sequences + 1,)`` packed row offsets.
         chunk_size: Tokens one chunk of the recurrence contracts over.
         use_gate: Read *g*; a zero-gate caller leaves it unread.
+        l2norm: Take *k* unnormalized and L2-normalize each head vector here.
+        beta_sigmoid: Take *beta* as raw logits and apply the sigmoid here.
+        allow_neg_eigval: Double the step size the sigmoid produces.
 
     Returns:
-        New ``(1, total_tokens, head, chunk_size)`` inverse in *k*'s dtype.
+        New ``(1, total_tokens, head, chunk_size)`` inverse in *k*'s dtype, and, where
+        *l2norm* holds, the float32 ``(1, total_tokens, key_head)`` reciprocal norms the
+        later passes read; otherwise a one-token tensor none of them reads.
     """
     _, total_tokens, key_head, dim_k = k.shape
     head = g.shape[-1]
     A = torch.empty(1, total_tokens, head, chunk_size, dtype=k.dtype, device=k.device)
+    k_rnorm = torch.empty(
+        1, total_tokens if l2norm else 1, key_head, dtype=torch.float32, device=k.device
+    )
     kernel = _prefill_blocksolve_A_bthd_tl(
         total_tokens,
         cu_seqlens.shape[0] - 1,
@@ -548,9 +647,12 @@ def prefill_blocksolve_A_bthd(
         str(k.dtype).split(".")[-1],
         str(cu_seqlens.dtype).split(".")[-1],
         use_gate,
+        l2norm,
+        beta_sigmoid,
+        allow_neg_eigval,
     )
-    kernel(k, g, beta, cu_seqlens, A)
-    return A
+    kernel(k, g, beta, cu_seqlens, A, k_rnorm)
+    return A, k_rnorm
 
 
 @functools.lru_cache(maxsize=32)
@@ -883,12 +985,18 @@ def _build_prepare_h_kernel(
     store_h,
     is_varlen,
     is_cp,
+    l2norm=False,
+    beta_sigmoid=False,
+    allow_neg_eigval=False,
     num_stages=2,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
     num_chunks = T.dynamic("num_chunks")
     block_S = chunk_size
+    # A build that does not normalize never reads this tensor, and the host hands it one
+    # token so the allocation carries no cost.
+    rnorm_tokens = num_tokens if l2norm else 1
 
     if is_varlen:
         k_shape = (1, num_tokens, Hg, DK)
@@ -896,6 +1004,7 @@ def _build_prepare_h_kernel(
         a_shape = (1, num_tokens, H, chunk_size)
         g_shape = (1, num_tokens, H)
         b_shape = (1, num_tokens, H)
+        rnorm_shape = (1, rnorm_tokens, Hg)
         h_shape = (1, num_chunks, H, DK, DV)
     else:
         k_shape = (batch_size, num_tokens, Hg, DK)
@@ -903,6 +1012,7 @@ def _build_prepare_h_kernel(
         a_shape = (batch_size, num_tokens, H, chunk_size)
         g_shape = (batch_size, num_tokens, H)
         b_shape = (batch_size, num_tokens, H)
+        rnorm_shape = (batch_size, rnorm_tokens, Hg)
         h_shape = (batch_size, num_chunks, H, DK, DV)
     h0_shape = (batch_size, H, DK, DV)
     ht_shape = (batch_size, H, DK, DV)
@@ -915,6 +1025,7 @@ def _build_prepare_h_kernel(
         a: T.Tensor(a_shape, dtype=qkva_dtype),
         g: T.Tensor(g_shape, dtype=g_dtype),
         b: T.Tensor(b_shape, dtype=b_dtype),
+        k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
         h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
@@ -971,6 +1082,11 @@ def _build_prepare_h_kernel(
             m_fragment_R = T.alloc_fragment((DK, DK // 2), dtype=accum_dtype)
             z_fragment_L = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
             z_fragment_R = T.alloc_fragment((block_S, DK // 2), dtype=accum_dtype)
+            if l2norm:
+                k_rnorm_shared = T.alloc_shared(
+                    (num_stages, block_S), dtype=accum_dtype, scope="shared"
+                )
+
             g_last_local_S = T.alloc_local((1), dtype=accum_dtype)
             g_last_local_X = T.alloc_local((1), dtype=accum_dtype)
             g_last_local_Y = T.alloc_local((1), dtype=accum_dtype)
@@ -1046,6 +1162,18 @@ def _build_prepare_h_kernel(
 
                 for i_s in T.serial(num_iters):
                     T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
+                    if l2norm:
+                        # The key enters ``A^T @ K`` on the contracted index, so the row
+                        # scale cannot be folded into that product's result and the staged
+                        # tile is normalized instead. The two products below read the same
+                        # tile, so one pass serves all three. Every warp group waits on
+                        # ``bar_0`` while this one runs, and this group arrives last.
+                        for j_s, j_k in T.Parallel(block_S, DK):
+                            k_shared[i_s % num_stages, j_s, j_k] = T.cast(
+                                T.cast(k_shared[i_s % num_stages, j_s, j_k], accum_dtype)
+                                * k_rnorm_shared[i_s % num_stages, j_s],
+                                qkva_dtype,
+                            )
                     T.barrier_arrive(bar_0)
 
                     T.barrier_wait(bar_0, i_s % 2)
@@ -1224,13 +1352,24 @@ def _build_prepare_h_kernel(
                                     ]
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
-                                b_shared[i_s % num_stages, j_s] = b[batch_idx, left + j_s, bh]
+                                b_shared[i_s % num_stages, j_s] = step_size(
+                                    b[batch_idx, left + j_s, bh], beta_sigmoid, allow_neg_eigval
+                                )
                         else:
                             for j_s in T.Parallel(block_S):
                                 if left + j_s < seq_end_idx:
-                                    b_shared[i_s % num_stages, j_s] = b[batch_idx, left + j_s, bh]
+                                    b_shared[i_s % num_stages, j_s] = step_size(
+                                        b[batch_idx, left + j_s, bh],
+                                        beta_sigmoid,
+                                        allow_neg_eigval,
+                                    )
                                 else:
                                     b_shared[i_s % num_stages, j_s] = 0
+                        if l2norm:
+                            for j_s in T.Parallel(block_S):
+                                k_rnorm_shared[i_s % num_stages, j_s] = k_rnorm[
+                                    batch_idx, T.min(left + j_s, seq_end_idx - 1), bhg
+                                ]
 
                         T.barrier_arrive(data_is_ready[i_s % num_stages])
 
@@ -1261,6 +1400,10 @@ def fused_gdr_h(
     chunk_size: int = 64,
     cu_seqlens: torch.LongTensor | None = None,
     num_warmup_chunks: torch.LongTensor | None = None,
+    k_rnorm: torch.Tensor | None = None,
+    l2norm: bool = False,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
@@ -1318,13 +1461,19 @@ def fused_gdr_h(
         store_h=output_h,
         is_varlen=is_varlen,
         is_cp=is_cp,
+        l2norm=l2norm,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
     )
+    if k_rnorm is None:
+        k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
     prepare_h_kernel(
         k,
         v,
         a,
         g,
         b,
+        k_rnorm,
         initial_state,
         cu_seqlens,
         chunk_offsets,

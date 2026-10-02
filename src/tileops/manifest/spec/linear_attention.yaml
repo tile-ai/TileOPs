@@ -8,7 +8,7 @@ DeltaNetInferenceFwdOp:
   # The five training buffers of the chunkwise forward are not public outputs.
   # A packed call (cu_seqlens) carries one state per sequence.
   family: linear_attention
-  status: spec-only
+  status: implemented
   signature:
     types:
       State:
@@ -47,8 +47,14 @@ DeltaNetInferenceFwdOp:
   - {B: 1, S: 4096, H: 4, K: 64, V: 64, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
   - {B: 1, S: 4096, H: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: bfloat16}], label: varlen-ragged}
   - {B: 2, S: 3000, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-3000}
+  - {B: 1, S: 4096, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: prefill-l2norm-4k}
+  - {B: 1, S: 3000, H: 6, K: 64, V: 64, seq_lens: [1, 59, 937, 2003], use_qk_l2norm_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: prefill-l2norm-ragged}
   roofline:
-    flops: "B * S * H * (6 * K * V + 2 * K)"
+    # Normalizing one head vector is its sum of squares, the epsilon, the reciprocal square
+    # root and the scale: 3 * K + 2 for each of Q and K.
+    flops: >-
+      B * S * H * (6 * K * V + 2 * K)
+      + (2 * B * S * H * (3 * K + 2) if use_qk_l2norm_in_kernel else 0)
 
 GatedDeltaNetFwdOp:
   # Inference contract shared by equal-length, packed-varlen, prefill, and
@@ -108,8 +114,18 @@ GatedDeltaNetFwdOp:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
   - {B: 1, S: 4096, H: 4, HV: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: float16}], label: varlen-ragged-grouped}
   - {B: 1, S: 3000, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-3000}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, dtype_cases: [{T: bfloat16}], label: prefill-raw-4k}
+  - {B: 1, S: 3000, H: 6, HV: 24, K: 64, V: 64, seq_lens: [1, 59, 937, 2003], use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: prefill-raw-ragged}
   roofline:
-    flops: "B * S * HV * 7 * K * V"
+    # Each transform the op may leave to the kernel: normalizing one head vector is its sum
+    # of squares, the epsilon, the reciprocal square root and the scale; the gate is a bias,
+    # a softplus and a rate per token plus the rate's own exponential and negation per head;
+    # the step size is a sigmoid, and one multiply more where the eigenvalue may go negative.
+    flops: >-
+      B * S * HV * 7 * K * V
+      + (2 * B * S * H * (3 * K + 2) if use_qk_l2norm_in_kernel else 0)
+      + (B * S * HV * 5 + 2 * HV if use_gate_in_kernel else 0)
+      + (B * S * HV * (5 if allow_neg_eigval else 4) if use_beta_sigmoid_in_kernel else 0)
 
 KimiDeltaAttentionFwdOp:
   # Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay g

@@ -366,7 +366,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 
     assert o.shape == v.shape
     assert final_state.shape == initial_state.shape
-    assert op.eval_roofline() == (7 * 2 * (6 * 8 * 6 + 2 * 8), 2396)
+    assert op.eval_roofline() == (7 * 2 * (6 * 8 * 6 + 2 * 8) + 2 * 7 * 2 * (3 * 8 + 2), 2396)
     decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float16)
     decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float16)
     decode_beta = torch.rand(1, 1, 2, dtype=torch.float16)
@@ -414,6 +414,17 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     else:
         test.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
         test.check(op, *inputs[:4], atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
+    """``use_qk_l2norm_in_kernel`` takes Q and K unnormalized and matches FLA."""
+    torch.manual_seed(2163)
+    test = DeltaNetInferenceTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
+    op = DeltaNetInferenceFwdOp(use_qk_l2norm_in_kernel=True)
+    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.smoke

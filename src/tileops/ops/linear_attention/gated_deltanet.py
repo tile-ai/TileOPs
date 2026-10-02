@@ -43,11 +43,12 @@ class GatedDeltaNetFwdOp(Op):
 
     The in-tree implementations currently cover SM90 prefill over a 64- or
     128-wide square state -- equal-length or packed, with a sequence that is
-    not a whole number of 64-token chunks, and with ``HV`` a multiple of
-    ``H`` -- and single-token SM90 decode over a 128-wide one with matching
-    recurrent head counts, both with precomputed gate and beta values. Other
-    regions still require an external target implementation while their
-    retained kernels are migrated.
+    not a whole number of 64-token chunks, with ``HV`` a multiple of ``H``,
+    and under any combination of the three input transforms -- and
+    single-token SM90 decode over a 128-wide one with matching recurrent head
+    counts and the gate, the step size and the Q/K normalization settled
+    before the call. Other regions still require an external target
+    implementation while their retained kernels are migrated.
     """
 
     compile_boundary: ClassVar[bool] = True
