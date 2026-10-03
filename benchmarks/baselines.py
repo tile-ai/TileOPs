@@ -57,14 +57,9 @@ VLLM_TAG = "vllm"
 def compiled_reference(
     fn: Callable, *, dynamic: bool = False, preserve_precision: bool = False
 ) -> Callable:
-    """Return *fn* compiled by inductor, resetting dynamo first.
+    """Compile one full graph without an extra eager execution of stateful or random code.
 
-    ``preserve_precision`` retains eager rounding casts, needed before quantization.
-
-    Full-graph compilation rejects graph breaks without executing an eager
-    diagnostic pass, which would advance an in-place state or RNG before the
-    actual warmup. Reset Dynamo because all cases share the reference's code.
-    """
+    Reset Dynamo for shared reference code; ``preserve_precision`` retains rounding casts."""
     torch._dynamo.reset()
     compiled: list[Callable] = []
 

@@ -350,8 +350,7 @@ def test_mean_pooling_bench(call) -> None:
 
     reference = workload.ref_program
     if len(inputs) > 1 and inputs[1] is not None:
-        # Specialize the fixed workload metadata before tracing; a data-dependent
-        # Python loop over CUDA offsets would silently fall back to eager execution.
+        # Fixed chunk bounds permit full-graph compilation of ragged workloads.
         offsets = inputs[1].tolist()
         slices = [
             (start, min(start + workload.chunk_size, end))

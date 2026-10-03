@@ -76,8 +76,7 @@ def test_fused_topk_bench(call) -> None:
         logits = gating_output.float()
         scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
         selection = scores if correction_bias is None else scores + correction_bias
-        # Different expert order and exact ties are valid, but selected scores and
-        # the weight attached to each actual expert must both be correct.
+        # Validate selected scores and per-expert weights independently of tie order.
         torch.testing.assert_close(
             selection.gather(1, ids.long()).sort(-1).values,
             selection.gather(1, ref_ids.long()).sort(-1).values,

@@ -447,8 +447,7 @@ def _nsa_topk_torch(
         curr = (i_t // bs)[:, None, None, None]  # the block the token sits in
         o_c = torch.arange(n_chunk, device=device)
 
-        # Keep the dot products in FP32, as the kernel does before ranking.
-        # Casting after a half matmul has already rounded can flip close scores.
+        # FP32 dot products preserve close scores before ranking.
         q_seq = q[bos:eos].view(n_token, head_kv, group, dim).to(accum_dtype)
         k_seq = k_cmp[boc : boc + n_chunk].to(accum_dtype)
         acc_s = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n")

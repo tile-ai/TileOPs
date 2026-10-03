@@ -1,13 +1,4 @@
-"""What establishes that a benchmark tag computes what the op computes.
-
-A ratio against a baseline computing something else is precise and meaningless, which is
-worse than no ratio. Every tag therefore carries evidence, and the four kinds below are the
-whole vocabulary: a tag is checked elementwise against the reference, checked by a validator
-the case supplies, timed without a ratio because it implements a different function, or
-measured with no reference available and said so.
-
-`Exact` is the default where a reference exists; unavailable references are unestablished.
-"""
+"""Correctness evidence for benchmark ratios. Available references default to Exact."""
 
 import dataclasses
 from typing import Any, Callable, Optional
@@ -64,18 +55,9 @@ def zeroed_input(index: int, name: str) -> NegativeControl:
 
 @dataclasses.dataclass(frozen=True)
 class Exact:
-    """The tag's outputs equal the reference's.
+    """Compare every returned output with an independent reference.
 
-    ``rtol`` and ``atol`` override the dtype's table entry, for an op whose accumulation
-    order makes that table too tight: a complex FFT has no entry at all, and the table is
-    the test's decision rather than the shared layer's.
-
-    ``reference`` names the one to check against, for a workload shared by more than one
-    op: `layer-boundaries.md` puts the reference on the narrowest class naming a single
-    operator, so a call class serving both a forward and a backward carries neither. A
-    backward's reference must differentiate its own forward, since one checked against
-    state the op's own forward produced validates a matching pair of errors.
-    """
+    Explicit tolerances override dtype defaults; ``reference`` overrides the workload oracle."""
 
     rtol: Optional[float] = None
     atol: Optional[float] = None
@@ -84,20 +66,14 @@ class Exact:
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
-        """The tolerance to assert with, the declaration winning over the dtype's."""
+        """Use explicit tolerances, or the dtype defaults."""
         named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}
         return named or default
 
 
 @dataclasses.dataclass(frozen=True)
 class Partial:
-    """The reference establishes the first *outputs* of the tag's result and no more.
-
-    An op whose signature declares intermediates the reference has no counterpart for —
-    DeltaNet's chunk buffers, a saved state — would otherwise have them pass unchecked
-    under `Exact`, which claims the whole result was established. *reason* names what is
-    left, so a reader of the row knows which outputs nothing stands behind.
-    """
+    """Check the first ``outputs`` results; ``reason`` identifies unchecked outputs."""
 
     outputs: int
     reason: str
@@ -116,31 +92,21 @@ class Partial:
             )
 
     def tolerance(self, default: dict) -> dict:
-        """The tolerance to assert with, the declaration winning over the dtype's."""
+        """Use explicit tolerances, or the dtype defaults."""
         named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}
         return named or default
 
 
 @dataclasses.dataclass(frozen=True)
 class Unestablished:
-    """Nothing available can check this tag, and no one has said why.
-
-    What a tag defaults to when its workload carries no reference. Distinct from
-    `ReferenceInfeasible`, which is a judgement someone made; this is the absence of one.
-    The row is timed, carries no ratio, and the nightly report counts it.
-    """
+    """No reference contract is available; publish timing without a ratio."""
 
     kind: str = "unestablished"
 
 
 @dataclasses.dataclass(frozen=True)
 class Custom:
-    """The tag is checked by *validator*, for an op an elementwise check cannot judge.
-
-    A sampling op is the case: its outputs are a draw, and `tests/ops/test_sampling.py`
-    compares support, structure and distribution instead. The validator takes the tag's
-    output and the reference's and raises on disagreement.
-    """
+    """Validate outputs against the oracle with a case-specific assertion function."""
 
     validator: Callable[[Any, Any], None]
     reason: str
@@ -150,11 +116,7 @@ class Custom:
 
 @dataclasses.dataclass(frozen=True)
 class Noncomparable:
-    """The tag implements a different function, so it is timed and publishes no ratio.
-
-    fla's NSA block selection against `NSATopkVarlenFwdOp` is the case: different pinning
-    and tie rules, so no tolerance applies and a ratio would compare two functions.
-    """
+    """Different operator semantics; publish timing without a ratio."""
 
     reason: str
     kind: str = "noncomparable"
@@ -162,12 +124,7 @@ class Noncomparable:
 
 @dataclasses.dataclass(frozen=True)
 class ReferenceInfeasible:
-    """Nothing available can establish this tag at this case.
-
-    Distinct from `Noncomparable`: the tag computes the right function and nothing here can
-    currently say so. *missing* names what would close it, so the row states the gap rather
-    than a tracker number that goes stale while the gap does not.
-    """
+    """Reference unavailable for this case; record the missing capability and omit ratios."""
 
     missing: str
     reason: str
@@ -198,11 +155,7 @@ def describe(evidence: Evidence) -> Optional[str]:
 
 
 def assert_quantized(got: Any, expected: Any) -> None:
-    """Check scales numerically and FP8/INT8 codes within one representable step.
-
-    Division and multiplication by a reciprocal can round adjacent codes at a
-    quantization boundary; both still quantize the same input.
-    """
+    """Check scales and allow one adjacent FP8/INT8 code at rounding boundaries."""
     for output, target in zip(got, expected, strict=True):
         assert output.shape == target.shape and output.dtype == target.dtype
         if output.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
@@ -218,9 +171,7 @@ def assert_quantized(got: Any, expected: Any) -> None:
 def assert_normalized_error(got: Any, expected: Any, tolerance: float = 1e-3) -> None:
     """Bound squared error / combined energy, with identical nonfinite values.
 
-    The symmetric error metric used by FP8 indexer tests, reduced in chunks to
-    avoid allocating several FP64 copies of a long-context attention output.
-    """
+    Chunked FP64 reduction limits temporary memory for long attention outputs."""
     if isinstance(got, (tuple, list)) or isinstance(expected, (tuple, list)):
         outputs = got if isinstance(got, (tuple, list)) else (got,)
         targets = expected if isinstance(expected, (tuple, list)) else (expected,)

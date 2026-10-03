@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Run each benchmark file in its own pytest process and merge the results.
+"""Run isolated benchmark processes and merge reports, including partial failures.
 
-A native failure (hang, segfault, OOM kill) costs one file: other fragments
-survive into the merged report and a hung child leaves a py-spy stack dump.
-Upcoming children import while the current file owns the GPU, hiding startup
-cost. This parent must never import torch: children need fresh processes.
-
-Two limits, because a stuck file and an expensive one call for opposite
-responses. ``--stall-timeout`` kills a child that stopped starting tests,
-however long its individual tests take. ``--total-budget`` stops launching
-files and terminates an active child at the deadline, preserving its partial report.
-"""
+Preload upcoming imports without initializing CUDA. The parent must not import torch.
+``--stall-timeout`` limits time without a new test; ``--total-budget`` bounds the
+entire sweep. Timeout failures retain partial results and a py-spy stack dump."""
 
 from __future__ import annotations
 

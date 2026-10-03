@@ -275,12 +275,7 @@ class OpBenchmark(BenchmarkBase[W]):
         return self._get_roofline()[1]
 
     def _resolve_evidence(self, plan: dict, declared: Optional[dict]) -> dict:
-        """Evidence for every tag: Exact where a reference exists, otherwise Unestablished.
-
-        A tag whose workload carries no reference cannot be checked, here or under the
-        verification step. The row is still timed, so that a family which has not been
-        converted keeps publishing, and it carries no ratio and a note saying so.
-        """
+        """Resolve each tag's evidence; missing oracles disable ratios."""
         declared = declared or {}
         stray = set(declared) - set(plan)
         if stray:
@@ -291,7 +286,7 @@ class OpBenchmark(BenchmarkBase[W]):
         resolved = {tag: declared.get(tag, Exact()) for tag in plan}
         if getattr(self.workload, "ref_program", None) is not None:
             return resolved
-        # Each of these three claims a check ran, and each needs an oracle to run it.
+        # Ratio-bearing evidence requires an oracle.
         return {
             tag: Unestablished()
             if mark.kind in ("exact", "partial", "custom")
@@ -301,12 +296,7 @@ class OpBenchmark(BenchmarkBase[W]):
         }
 
     def _verify(self, plan: dict, evidence: dict, inputs: tuple) -> None:
-        """Check the timed callables during correctness warmup.
-
-        The reference takes the call's own inputs. A tag given as ``(callable, args)`` has
-        already folded what it needs into that closure, and those args are the library's
-        calling convention rather than the op's.
-        """
+        """Validate timed callables on their arguments against oracles on canonical inputs."""
         reference = getattr(self.workload, "ref_program", None)
         active = []
         for tag, (functor, args) in plan.items():
@@ -331,7 +321,7 @@ class OpBenchmark(BenchmarkBase[W]):
                 for key, tensor in live.items():
                     tensor.copy_(pristine[key])
 
-        # An independent oracle is evaluated once per case, not once per timed tag.
+        # Share each oracle result across tags.
         references = []
         control_checks = {}
         try:
@@ -362,8 +352,7 @@ class OpBenchmark(BenchmarkBase[W]):
                     control_checks.setdefault(key, (control, []))[1].append((tag, mark, dtypes))
                 del produced
 
-            # Execute each fault once per oracle, then judge it with every tag's
-            # own comparator. Only one fault output is retained at a time.
+            # Share each fault across tag comparators, retaining one fault output at a time.
             for (reference_index, _), (control, checks) in control_checks.items():
                 oracle, expected = references[reference_index]
                 restore()
@@ -434,41 +423,23 @@ class OpBenchmark(BenchmarkBase[W]):
         count_copies: bool = False,
         evidence: Optional[dict[str, Evidence]] = None,
     ) -> dict[str, dict]:
-        """Time several implementations forward then reversed, and record them.
+        """Verify, time in both tag orders, and record results under this op.
 
-        Every tag is recorded under the op this benchmark was built for: the row
-        names what ran, so no call site can put one op's numbers under another's
-        name.
+        Values are callables on ``inputs`` or ``(callable, args)`` pairs. Timing runs
+        under ``no_grad``; backward baselines must invoke their autograd node directly.
+        ``count_copies`` includes device copies consistently across all tags.
 
-        Timing each one twice in opposite orders keeps drift across the case
-        from landing on whichever ran last. A value is a callable timed on
-        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
-        ``no_grad``: a graph built inside the timed region is host work, and a
-        backward reached through autograd runs where the timer cannot attribute
-        it. A backward baseline is timed by applying its node directly.
-
-        ``count_copies`` puts device-to-device copies into every tag's reading, for a
-        case where an implementation computes part of the result with one. It belongs to
-        the case rather than the tag: reading one side with copies and the other without
-        compares two instruments.
-
-        Every tag is checked during correctness warmup, defaulting to ``Exact`` where a
-        reference exists. ``evidence`` names the tags that something else establishes — a validator
-        for an op whose output is a draw, `Noncomparable` for an implementation of a
-        different function, `ReferenceInfeasible` where no reference runs at this shape.
-        Reference results and snapshots are released before timing warmup and sampling.
-        ``--tileops-verify`` runs only the correctness warmup for diagnosis.
+        ``evidence`` overrides the default reference check. Verification temporaries
+        are released before sampling; ``--tileops-verify`` omits timing.
 
         Raises:
-            ValueError: ``evidence`` names a tag this call does not time.
-        """
+            ValueError: Evidence names a tag absent from the timing plan."""
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
             for tag, value in functors.items()
         }
         evidence = self._resolve_evidence(plan, evidence)
-        # These calls are the correctness warmup of the very same callables we time.
-        # Let verification locals die before the timer allocates its cache-flush buffer.
+        # Release verification temporaries before allocating timer buffers.
         self._verify(plan, evidence, inputs)
         if verifying():
             return {}
