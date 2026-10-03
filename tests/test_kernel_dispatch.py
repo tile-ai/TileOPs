@@ -5,6 +5,7 @@ selection, caching and installation checks need no device. The contract tests us
 kernel interface and write their implementations against it only.
 """
 
+import contextlib
 import dataclasses
 import importlib
 import inspect
@@ -337,6 +338,42 @@ def test_device_facts_come_from_the_calls_device(monkeypatch: pytest.MonkeyPatch
     assert asked == [1, 0]
     assert [device.index for device, _ in seen] == [1, 0]
     assert seen[0][1] == torch.cuda.get_device_properties(1).multi_processor_count
+
+
+@pytest.mark.cuda_only
+def test_a_call_without_a_device_resolves_again_when_the_current_device_changes() -> None:
+    import tileops.utils
+
+    # No device 1 exists to switch to; the stand-in stays a class, which torch checks against.
+    class _Stay(contextlib.nullcontext):
+        def __init__(self, device: torch.device) -> None:
+            super().__init__()
+
+    seen = []
+    cuda = _implementation(
+        "OnCuda",
+        lambda c: seen.append((c.device, c.arch)) or True,
+        devices=frozenset({"cuda"}),
+        general=True,
+        entry_for=classmethod(lambda cls, call: ((call.n, call.device), lambda: cls(call.n))),
+    )
+
+    class _CudaOp(_ScaleOp):
+        kernel_types = {"on_cuda": cuda}
+
+    current = [0]
+    # Undone before the teardown hooks, which read the real current device.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torch.cuda, "is_available", lambda: True)
+        patch.setattr(torch.cuda, "current_device", lambda: current[0])
+        patch.setattr(torch.cuda, "device", _Stay)
+        patch.setattr(tileops.utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
+        op = _CudaOp()
+        first = op.kernel_for("scale", _Call(n=1))
+        current[0] = 1
+        second = op.kernel_for("scale", _Call(n=1))
+    assert seen == [(torch.device("cuda", 0), 89), (torch.device("cuda", 1), 90)]
+    assert first is not second
 
 
 class _TorchLayerNorm(Kernel, LayerNormFwdInterface):
