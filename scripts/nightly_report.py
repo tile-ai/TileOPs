@@ -180,6 +180,11 @@ def parse_bench_xml(path: str) -> list[dict]:
                 else None
             ),
         }
+        # Evidence rides on every tag, not only the two the perf keys name.
+        for pkey, pval in props.items():
+            if pkey.endswith(("_no_ratio", "_unverified")):
+                entry[pkey] = pval
+
         # Perf data
         for key in _PERF_KEYS:
             if key in props:
@@ -310,6 +315,9 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         for key in (*_PERF_KEYS, "baselines"):
             if key in r:
                 config_entry[key] = r[key]
+        for key, value in r.items():
+            if key.endswith(("_no_ratio", "_unverified")):
+                config_entry[key] = value
         d["configs"].append(config_entry)
     return dict(ops)
 
@@ -588,11 +596,16 @@ def _unverified_rows(bench_ops: dict) -> list[tuple[str, str, str]]:
     found = []
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
-            for tag in ("tileops", "baseline"):
-                if cfg.get(f"{tag}_no_ratio"):
-                    found.append(
-                        (op, cfg.get("config", ""), cfg.get(f"{tag}_unverified", "unestablished"))
-                    )
+            for key in cfg:
+                if not key.endswith("_no_ratio") or not cfg[key]:
+                    continue
+                tag = key[: -len("_no_ratio")]
+                # The alias conftest writes beside the first baseline's own tag.
+                if tag == "baseline":
+                    continue
+                found.append(
+                    (op, cfg.get("config", ""), cfg.get(f"{tag}_unverified", "unestablished"))
+                )
     return found
 
 

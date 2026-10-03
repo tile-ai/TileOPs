@@ -285,6 +285,15 @@ def main() -> int:
             "written instead of the CI job being cancelled mid-sweep"
         ),
     )
+    parser.add_argument(
+        "--pytest-arg",
+        action="append",
+        default=[],
+        help=(
+            "an argument handed to every child pytest, repeatable; --pytest-arg "
+            "--tileops-verify runs the verification pass with this file isolation"
+        ),
+    )
     parser.add_argument("--dump-dir", default="bench_stack_dumps", help="stack dump directory")
     parser.add_argument(
         "--teardown-timeout",
@@ -325,7 +334,7 @@ def main() -> int:
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
-            argv = ["-q", bench_files[index], f"--junit-xml={fragment}"]
+            argv = ["-q", bench_files[index], f"--junit-xml={fragment}", *args.pytest_arg]
             return Child(
                 _CHILD,
                 argv,

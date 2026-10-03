@@ -71,6 +71,46 @@ def backward_of(output: torch.Tensor) -> Any:
     return getattr(node, "apply", None) or node
 
 
+def _flatten_tensors(value: Any) -> list:
+    """Every tensor reachable in *value* through tuples, lists and dicts."""
+    if torch.is_tensor(value):
+        return [value]
+    if isinstance(value, (tuple, list)):
+        return [found for item in value for found in _flatten_tensors(item)]
+    if isinstance(value, dict):
+        return [found for item in value.values() for found in _flatten_tensors(item)]
+    return []
+
+
+def _detached_copy(value: Any) -> Any:
+    """*value* with every tensor replaced by a copy, so a later write cannot reach it."""
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    if isinstance(value, tuple):
+        return tuple(_detached_copy(item) for item in value)
+    if isinstance(value, list):
+        return [_detached_copy(item) for item in value]
+    return value
+
+
+def _same_callable(one: Any, other: Any) -> bool:
+    """Whether both run the same code on the same object."""
+    if one is other:
+        return True
+    function = getattr(one, "__func__", None)
+    return (
+        function is not None
+        and function is getattr(other, "__func__", None)
+        and getattr(one, "__self__", None) is getattr(other, "__self__", None)
+    )
+
+
+def _result_dtype(value: Any) -> Optional[torch.dtype]:
+    """The least precise floating dtype in *value*, which is the one a tolerance must admit."""
+    dtypes = [t.dtype for t in _flatten_tensors(value) if t.is_floating_point() or t.is_complex()]
+    return max(dtypes, key=lambda dtype: torch.finfo(dtype).eps) if dtypes else None
+
+
 class BenchmarkBase(Generic[W], ABC):
     """Turns measured latency into roofline-relative metrics.
 
@@ -247,8 +287,12 @@ class OpBenchmark(BenchmarkBase[W]):
         resolved = {tag: declared.get(tag, Exact()) for tag in plan}
         if getattr(self.workload, "ref_program", None) is not None:
             return resolved
+        # Each of these three claims a check ran, and each needs an oracle to run it.
         return {
-            tag: Unestablished() if mark.kind == "exact" and mark.reference is None else mark
+            tag: Unestablished()
+            if mark.kind in ("exact", "partial", "custom")
+            and getattr(mark, "reference", None) is None
+            else mark
             for tag, mark in resolved.items()
         }
 
@@ -260,44 +304,46 @@ class OpBenchmark(BenchmarkBase[W]):
         calling convention rather than the op's.
         """
         reference = getattr(self.workload, "ref_program", None)
-        # Most workloads carry no dtype; the call sites that assert take it off an input,
-        # and the default tolerance is far tighter than fp16 accumulation reaches.
-        dtype = getattr(self.workload, "dtype", None)
-        if not isinstance(dtype, torch.dtype):
-            dtype = next(
-                (t.dtype for t in inputs if torch.is_tensor(t) and t.is_floating_point()), None
-            )
-        tolerance = reference_tolerance(dtype) if dtype is not None else {}
-        pristine = tuple(t.clone() if torch.is_tensor(t) else t for t in inputs)
+        declared_dtype = getattr(self.workload, "dtype", None)
+        # Everything a call can write: the op's inputs, and a tag's own argument list.
+        live = {id(t): t for t in _flatten_tensors(inputs)}
+        for _, args in plan.values():
+            live.update({id(t): t for t in _flatten_tensors(args)})
+        pristine = {key: tensor.detach().clone() for key, tensor in live.items()}
 
         def restore():
-            for live, original in zip(inputs, pristine, strict=True):
-                if torch.is_tensor(live):
-                    live.copy_(original)
+            with torch.no_grad():
+                for key, tensor in live.items():
+                    tensor.copy_(pristine[key])
 
         for tag, (functor, args) in plan.items():
             mark = evidence[tag]
             oracle = getattr(mark, "reference", None) or reference
             if oracle is None or mark.kind in ("noncomparable", "reference_infeasible"):
                 continue
-            if functor is oracle or getattr(functor, "__func__", None) is getattr(
-                oracle, "__func__", oracle
-            ):
+            # The oracle against itself proves nothing, but only when called the same way.
+            if args is inputs and _same_callable(functor, oracle):
                 continue
-            # Each side reads the inputs as the call made them: a tag that writes an input
-            # would otherwise hand what it wrote to its own oracle and agree with itself.
             restore()
-            produced = functor(*args)
+            # Copied before the restore below, which would undo an in-place result.
+            produced = _detached_copy(functor(*args))
             restore()
             expected = oracle(*inputs)
             if mark.kind == "custom":
                 mark.validator(produced, expected)
                 continue
-            width = len(produced) if isinstance(produced, tuple) else 1
-            covered = len(expected) if isinstance(expected, tuple) else 1
+            dtype = (
+                declared_dtype
+                if isinstance(declared_dtype, torch.dtype)
+                else _result_dtype(produced)
+            )
+            tolerance = reference_tolerance(dtype) if dtype is not None else {}
+            # A shorter reference leaves the rest unchecked. Exact claims all of it.
+            width = len(produced) if isinstance(produced, (tuple, list)) else 1
+            covered = len(expected) if isinstance(expected, (tuple, list)) else 1
             claimed = getattr(mark, "outputs", width)
-            # assert_matches_reference compares only what the reference returns, so a
-            # shorter reference leaves the rest unchecked. Exact claims the whole result.
+            if covered < 1:
+                raise ValueError(f"{tag}: the reference returned nothing to check against")
             if mark.kind == "exact" and covered < width:
                 raise ValueError(
                     f"{tag}: the reference establishes {covered} of {width} outputs; declare "

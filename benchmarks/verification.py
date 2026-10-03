@@ -83,6 +83,14 @@ class Partial:
     reference: Optional[Callable] = None
     kind: str = "partial"
 
+    def __post_init__(self) -> None:
+        # Zero outputs keeps the ratio while nothing was compared.
+        if self.outputs < 1:
+            raise ValueError(
+                f"Partial(outputs={self.outputs}) establishes nothing; a tag no reference "
+                "reaches is Noncomparable or ReferenceInfeasible"
+            )
+
     def tolerance(self, default: dict) -> dict:
         """The tolerance to assert with, the declaration winning over the dtype's."""
         named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}

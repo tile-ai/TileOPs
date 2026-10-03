@@ -186,6 +186,28 @@ def test_history_is_keyed_by_case_id(report):
     assert set(report.build_history_entry(ops, _RUN)["ops"][_OP]) == {"row-bfloat16"}
 
 
+def test_every_unchecked_tag_is_counted(report):
+    """A case timing five implementations publishes five rows, not two.
+
+    The first baseline is written twice, under its own tag and under the unprefixed alias
+    the perf keys read; counting both would double it.
+    """
+    row = {
+        "name": "test_foo_bench[row-bfloat16]",
+        "op": _OP,
+        "outcome": "passed",
+        "tileops_device_busy_ms": 0.1,
+        "tileops_no_ratio": "True",
+        "tileops_unverified": "unestablished: the workload carries no reference",
+        "baseline_tag": "torch",
+        "baseline_no_ratio": "True",
+        "torch_no_ratio": "True",
+        "torch-compile_no_ratio": "True",
+    }
+    ops = report.aggregate_bench_results([row])
+    assert len(report._unverified_rows(ops)) == 3
+
+
 def test_history_entry_records_the_percentiles(report):
     """The noise gate needs each run's spread persisted with its reading."""
     entry = report.build_history_entry(_bench_ops(0.010, p10=0.0099, p90=0.0101), _RUN)

@@ -138,13 +138,18 @@ jobs:
       # Correctness before timing, at the benchmark's own shapes, which no test covers.
       # Four bench files declare their evidence; the rest are marked and convert later, so a
       # failure here records rather than blocks. The report carries the count either way.
+      # One process per file, as the timing step runs: a crash costs that file alone.
       - name: Verify benchmark baselines against their references
         continue-on-error: true
         run: |
           set -euo pipefail
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
-          python3 -m pytest benchmarks/ops -q --tileops-verify \
-            --timeout=1800 --timeout-method=thread | tee tileops_bench_verify.log
+          python3 -u scripts/ci/run_benchmarks.py benchmarks/ops \
+            --pytest-arg --tileops-verify \
+            --junit-xml bench_verify.xml \
+            --stall-timeout 900 \
+            --total-budget 5400 \
+            --dump-dir bench_verify_stack_dumps
         shell: bash
 
       - name: Run benchmark ops
