@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
 from tileops.kernels.attention.dsa import decode as dsa_decode
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
@@ -93,6 +93,22 @@ def test_sparse_mla_decode(
         dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dim_tail", "dtype"),
+    [
+        pytest.param(64, torch.bfloat16, id="bf16-tail"),
+        pytest.param(0, torch.bfloat16, id="bf16-no-tail"),
+        pytest.param(0, torch.float16, id="fp16-no-tail"),
+    ],
+)
+def test_sparse_mla_decode_tail_and_dtype(dim_tail, dtype) -> None:
+    """BF16 preserves the output dtype; a zero tail omits the extra QK contraction."""
+    test = DsaDecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, 1, 256)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 def _padded_topk_indices(

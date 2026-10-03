@@ -5,8 +5,7 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import QUACK_TAG, VLLM_TAG, quack_op, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.moe_baselines import flashinfer_experts
-from benchmarks.verification import Exact
+from benchmarks.moe_baselines import flashinfer_experts, moe_evidence
 from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from workloads.moe import FusedMoeSharedExpertWorkload, FusedMoeWorkload, SharedExpertMLPWorkload
 
@@ -63,7 +62,7 @@ def test_fused_moe_fwd_bench(call) -> None:
         },
     }
     ManifestBenchmark(op, workload).compare(
-        functors, *inputs, evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2))
+        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, moe_evidence(2))
     )
 
 
@@ -93,7 +92,7 @@ def test_fused_moe_shared_expert_bench(call) -> None:
         },
     }
     ManifestBenchmark(op, workload).compare(
-        functors, *inputs, evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2))
+        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, moe_evidence(2))
     )
 
 
@@ -117,5 +116,5 @@ def test_shared_expert_mlp_bench(call) -> None:
 
     functors = {"tileops": op, "torch-cublas": torch_fn, QUACK_TAG: quack_fn}
     ManifestBenchmark(op, workload).compare(
-        functors, *inputs, evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2))
+        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, moe_evidence(1))
     )

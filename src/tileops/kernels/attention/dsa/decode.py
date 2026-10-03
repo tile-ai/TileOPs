@@ -47,8 +47,8 @@ class SparseMlaKernelBase(Kernel, SparseMLADecodeFwdInterface):
         if not is_causal:
             return "requires the causal mask"
         pow2 = tilelang.math.next_power_of_2
-        if dim != pow2(dim) or tail_dim != pow2(tail_dim):
-            return "requires power-of-two dim and tail_dim"
+        if dim != pow2(dim) or (tail_dim != 0 and tail_dim != pow2(tail_dim)):
+            return "requires power-of-two dim and a zero or power-of-two tail_dim"
         group_heads = heads // kv_group
         if group_heads > 64 and group_heads % 64 != 0:
             return "requires at most 64 heads per KV group, or a multiple of 64"
@@ -623,9 +623,9 @@ def _sparse_mla_basic_kernel(
                 # consume kv_shared directly: V is the first `dim` columns of
                 # the fused KV cache (v = kv[..., :dim]).
                 q_shared = T.alloc_shared([h_per_block, d], dtype)
-                q_tail_shared = T.alloc_shared([h_per_block, d_tail], dtype)
+                q_tail_shared = T.alloc_shared([h_per_block, d_tail or 16], dtype)
                 kv_shared = T.alloc_shared([i_block, d], dtype)
-                kv_tail_shared = T.alloc_shared([i_block, d_tail], dtype)
+                kv_tail_shared = T.alloc_shared([i_block, d_tail or 16], dtype)
                 s_shared = T.alloc_shared([h_per_block, i_block], dtype)
                 # Q is dead once the last QK^T gemm has been issued, so the
                 # output staging reuses its shared buffer.
@@ -654,7 +654,8 @@ def _sparse_mla_basic_kernel(
                 h1 = h0 + h_per_block
 
                 T.copy(q[b_i, s_i, h0:h1, :d], q_shared)
-                T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
+                if d_tail > 0:
+                    T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
                 T.fill(sumexp, 0)
                 T.fill(m_i, -(2**30))  # avoid -inf - inf to cause nan
                 T.fill(acc_o, 0)
@@ -667,10 +668,12 @@ def _sparse_mla_basic_kernel(
                         kv_idx = indices[b_i, s_i, g_i, i_i * i_block + r]
                         if (kv_idx >= 0) & (kv_idx <= max_kv_i):
                             T.copy(kv[b_i, kv_idx, g_i, :d], kv_shared[r, :])
-                            T.copy(kv[b_i, kv_idx, g_i, d:], kv_tail_shared[r, :])
+                            if d_tail > 0:
+                                T.copy(kv[b_i, kv_idx, g_i, d:], kv_tail_shared[r, :])
                         else:
                             T.clear(kv_shared[r, :])
-                            T.clear(kv_tail_shared[r, :])
+                            if d_tail > 0:
+                                T.clear(kv_tail_shared[r, :])
 
                     # acc_s starts at 0 for valid rows / -inf for invalid
                     # ones; the gemms below accumulate onto it.
@@ -688,13 +691,14 @@ def _sparse_mla_basic_kernel(
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullCol,
                     )
-                    T.gemm(
-                        q_tail_shared,
-                        kv_tail_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullCol,
-                    )
+                    if d_tail > 0:
+                        T.gemm(
+                            q_tail_shared,
+                            kv_tail_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol,
+                        )
 
                     # Online softmax — same math as the WGMMA version.
                     T.copy(m_i, m_i_prev)

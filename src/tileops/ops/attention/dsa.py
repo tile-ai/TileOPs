@@ -21,8 +21,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
     The layout of the operation is BSHD.
 
-    The in-tree kernels serve causal calls only, with a power-of-two head dimension
-    walked in 128-column steps and a 64-column tail; they refuse other calls.
+    The in-tree kernels serve causal calls with a power-of-two value dimension
+    and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 
     compile_boundary = True

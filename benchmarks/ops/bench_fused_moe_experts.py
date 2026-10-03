@@ -5,8 +5,7 @@ import torch
 
 from benchmarks.baselines import vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.moe_baselines import flashinfer_experts
-from benchmarks.verification import Exact
+from benchmarks.moe_baselines import flashinfer_experts, moe_evidence
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedMoEExpertsFwdOp,
@@ -40,7 +39,8 @@ def test_moe_experts_bench(call) -> None:
     bm.compare(
         {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2)),
+        count_copies=True,
+        evidence=dict.fromkeys(functors, moe_evidence(2)),
     )
 
 
@@ -91,5 +91,6 @@ def test_indexed_expert_mlp_bench(call) -> None:
     ManifestBenchmark(indexed, workload).compare(
         {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2)),
+        count_copies=True,
+        evidence=dict.fromkeys(functors, moe_evidence(2)),
     )
