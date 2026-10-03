@@ -7,8 +7,10 @@ import dataclasses
 import pytest
 
 from benchmarks.baselines import (
+    FLA_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
+    fla_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
@@ -144,9 +146,25 @@ def test_deltanet_decode_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = DeltaNetRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
+    recurrent = fla_op("ops.delta_rule.fused_recurrent_delta_rule")
+
+    def fla_fn(q, k, v, beta, state):
+        out, final_state = recurrent(
+            q.unsqueeze(1),
+            k.unsqueeze(1),
+            v.unsqueeze(1),
+            beta.unsqueeze(1),
+            scale=1.0,
+            initial_state=state.float(),
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=False,
+        )
+        return out.squeeze(1), final_state.to(state.dtype)
+
     bm.compare(
         {
             "tileops": op,
+            FLA_TAG: fla_fn,
             "torch": workload.ref_program,
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },

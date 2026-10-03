@@ -126,6 +126,133 @@ GatedDeltaNetFwdOp:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, state_v_first: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-v-first-4k}
   - {B: 1, S: 3000, H: 16, HV: 16, K: 64, V: 64, state_v_first: true, dtype_cases: [{T: bfloat16}], label: prefill-v-first-narrow}
   - {B: 1, S: 4099, H: 4, HV: 16, K: 128, V: 128, seq_lens: [1, 67, 1031, 3000], state_v_first: true, some: [cu_seqlens, cu_seqlens_cpu, initial_state], dtype_cases: [{T: float16}], label: varlen-v-first-ragged}
+  - {B: 1, S: 65536, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-65536}
+  - {B: 1, S: 32768, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-32768}
+  - {B: 1, S: 16384, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-16384}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-8192}
+  - {B: 1, S: 4096, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-4096}
+  - {B: 1, S: 2048, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-2048}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 2, HV: 8, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp8-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-65536}
+  - {B: 1, S: 32768, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-32768}
+  - {B: 1, S: 16384, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-16384}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-8192}
+  - {B: 1, S: 4096, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-4096}
+  - {B: 1, S: 2048, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-2048}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 4, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp4-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-65536}
+  - {B: 1, S: 32768, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-32768}
+  - {B: 1, S: 16384, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-16384}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-8192}
+  - {B: 1, S: 4096, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-4096}
+  - {B: 1, S: 2048, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-2048}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 8, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp2-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-65536}
+  - {B: 1, S: 32768, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-32768}
+  - {B: 1, S: 16384, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-16384}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-8192}
+  - {B: 1, S: 4096, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-4096}
+  - {B: 1, S: 2048, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-2048}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 16, HV: 64, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-397b-tp1-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-65536}
+  - {B: 1, S: 32768, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-32768}
+  - {B: 1, S: 16384, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-16384}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-8192}
+  - {B: 1, S: 4096, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-4096}
+  - {B: 1, S: 2048, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-2048}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-35b-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-65536}
+  - {B: 1, S: 32768, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-32768}
+  - {B: 1, S: 16384, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-16384}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-8192}
+  - {B: 1, S: 4096, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-4096}
+  - {B: 1, S: 2048, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-2048}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 16, HV: 48, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-27b-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-65536}
+  - {B: 1, S: 16384, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-16384}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-8192}
+  - {B: 1, S: 2048, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-2048}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-2b-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-65536}
+  - {B: 1, S: 32768, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-32768}
+  - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-16384}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-8192}
+  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-4096}
+  - {B: 1, S: 2048, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-2048}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-6144-2048, seq_lens: [6144, 2048], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-4096-4096, seq_lens: "repeat(4096, 2)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-2048-6144, seq_lens: [2048, 6144], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-1024-7168, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-4x2048, seq_lens: "repeat(2048, 4)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-8x1024, seq_lens: "repeat(1024, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-8x8192, seq_lens: "repeat(8192, 8)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 131072, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-16x8192, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 262144, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-symmetric-32x8192, seq_lens: "repeat(8192, 32)", some: [cu_seqlens, cu_seqlens_cpu]}
+  - {B: 1, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b1, some: [initial_state]}
+  - {B: 4, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b4, some: [initial_state]}
+  - {B: 8, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b8, some: [initial_state]}
+  - {B: 16, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b16, some: [initial_state]}
+  - {B: 32, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b32, some: [initial_state]}
+  - {B: 64, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b64, some: [initial_state]}
+  - {B: 128, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b128, some: [initial_state]}
+  - {B: 256, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b256, some: [initial_state]}
+  - {B: 512, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b512, some: [initial_state]}
   roofline:
     # Each transform the op may leave to the kernel: normalizing one head vector is its sum
     # of squares, the epsilon, the reciprocal square root and the scale; the gate is a bias,

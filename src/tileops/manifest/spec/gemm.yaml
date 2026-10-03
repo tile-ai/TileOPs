@@ -103,6 +103,20 @@ GemmFP8FwdOp:
   - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], some: [bias], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-bias}
   - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a}
   - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-blk}
+  - {M: 128, N: 576, K: 7168, SA: [128, 56], SB: [576, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m128-s1}
+  - {M: 128, N: 576, K: 7168, SA: [128, 56], SB: [5, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m128-s128}
+  - {M: 128, N: 24576, K: 1536, SA: [128, 12], SB: [24576, 12], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-q-b-m128-s1}
+  - {M: 128, N: 24576, K: 1536, SA: [128, 12], SB: [192, 12], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-q-b-m128-s128}
+  - {M: 128, N: 32768, K: 512, SA: [128, 4], SB: [32768, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m128-s1}
+  - {M: 128, N: 32768, K: 512, SA: [128, 4], SB: [256, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m128-s128}
+  - {M: 128, N: 7168, K: 16384, SA: [128, 128], SB: [7168, 128], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-o-proj-m128-s1}
+  - {M: 128, N: 7168, K: 16384, SA: [128, 128], SB: [56, 128], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-o-proj-m128-s128}
+  - {M: 128, N: 4096, K: 7168, SA: [128, 56], SB: [4096, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-mlp-up-m128-s1}
+  - {M: 128, N: 4096, K: 7168, SA: [128, 56], SB: [32, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-mlp-up-m128-s128}
+  - {M: 4096, N: 576, K: 7168, SA: [4096, 56], SB: [576, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m4096-s1}
+  - {M: 4096, N: 576, K: 7168, SA: [4096, 56], SB: [5, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m4096-s128}
+  - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [32768, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s1}
+  - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [256, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s128}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,

@@ -7,7 +7,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm import RMSNormKernel
+from tileops.kernels.norm import RMSNormKernel, RMSNormStreamingKernel
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.ops.op_base import Op
 
@@ -35,7 +35,10 @@ class RMSNormFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rms_norm": RMSNormKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "rms_norm": RMSNormKernel,
+        "rms_norm_streaming": RMSNormStreamingKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rms_norm": RMSNormFwdInterface}
 
     def __init__(

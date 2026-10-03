@@ -14,9 +14,11 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
+    FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
+    flashinfer_op,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -83,6 +85,7 @@ def _vllm_rope(
     query = x.reshape(num_tokens, -1).clone()
 
     def baseline_fn(positions_i, query_i):
+        query_i.copy_(x.reshape_as(query_i))
         fn(positions_i, query_i, None, head_dim, cache, True)
         return query_i
 
@@ -117,20 +120,33 @@ def _bench_rope(op_cls, call) -> None:
     def baseline_fn(t):
         return rotate(t, cos, sin)
 
+    apply_rope = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+    dim = x.shape[-1]
+    cache = torch.cat(
+        (cos.reshape(seq_len, dim)[:, : dim // 2], sin.reshape(seq_len, dim)[:, : dim // 2]), -1
+    ).float()
+    positions = torch.arange(seq_len, dtype=torch.int32, device=x.device)
+    if input_layout != "1d":
+        positions = positions.repeat(x.shape[0])
+    scratch = torch.empty((positions.numel(), dim), dtype=x.dtype, device=x.device)
+    neox = call.params.get("rope_layout", "neox") == "neox"
+
+    def flashinfer_fn(x):
+        rotated, _ = apply_rope(
+            positions, x.reshape(positions.numel(), -1), scratch, dim, cache, neox
+        )
+        return rotated.reshape_as(x)
+
+    functors = {
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+    # FlashInfer's RoPE kernels accept FP16/BF16 inputs only.
+    if x.dtype in (torch.float16, torch.bfloat16):
+        functors[FLASHINFER_TAG] = flashinfer_fn
     exact = Exact(rtol=2e-2, atol=2e-2, reference=baseline_fn)
-    bm.compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        x,
-        evidence={
-            "tileops": exact,
-            "torch-ref": exact,
-            TORCH_COMPILE_TAG: exact,
-        },
-    )
+    bm.compare(functors, x, evidence=dict.fromkeys(functors, exact))
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeFwdOp))

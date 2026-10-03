@@ -227,6 +227,27 @@ def test_no_weight_and_no_eps_match_torch() -> None:
     torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n,dtype,has_weight",
+    [
+        pytest.param(131072, torch.float16, True, id="wide-fp16"),
+        pytest.param(262144, torch.bfloat16, True, id="wide-bf16"),
+        pytest.param(131073, torch.bfloat16, False, id="tail-no-weight"),
+    ],
+)
+def test_rms_norm_rows_exceeding_shared_memory(n, dtype, has_weight) -> None:
+    x = torch.randn(3, n, device=run_device(), dtype=dtype)
+    weight = torch.randn(n, device=x.device, dtype=dtype) if has_weight else None
+    expected = F.rms_norm(x.float(), (n,), None if weight is None else weight.float(), eps=1e-6).to(
+        dtype
+    )
+    actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
+    torch.testing.assert_close(
+        actual, expected, rtol=1e-3 if dtype == torch.float16 else 1.6e-2, atol=1e-3
+    )
+
+
 class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):
     pass
 

@@ -785,11 +785,17 @@ class SSDChunkScanFwdCall(CallWorkload):
 
 
 class SSDDecodeFwdCall(CallWorkload):
-    """A manifest call of SSDRecurrentFwdOp with ``A <= 0`` and a positive ``dt``."""
+    """Mamba-2 decode: each head shares its decay rate and time step across channels.
+
+    Dense copies retain the op's input layout; the generic SSDDecodeWorkload also
+    covers independent channel/state rates.
+    """
 
     def gen_inputs(self):
         A, dt, x, B_in, C_in, state = super().gen_inputs()
-        return -A.abs(), _step_sizes(dt), x * 0.1, B_in * 0.1, C_in * 0.1, state * 0.1
+        A = -A[:, :1, :1].abs().expand_as(A).contiguous()
+        dt = _step_sizes(dt[:, :, :1]).expand_as(dt).contiguous()
+        return A, dt, x * 0.1, B_in * 0.1, C_in * 0.1, state * 0.1
 
     def ref_program(self, A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)

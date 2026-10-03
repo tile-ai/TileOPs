@@ -125,9 +125,7 @@ def test_gqa_bwd_bench(call) -> None:
 
 
 def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):
-    """Return the contiguous FA3 decode baseline where its defaults match."""
-    if workload.sm_scale != workload.dim**-0.5 or workload.softcap != 0.0:
-        return None
+    """FA3 decode with the same score scale and soft cap."""
     try:
         from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
@@ -138,7 +136,14 @@ def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):
     )
 
     def baseline_fn(q, k, v):
-        out = flash_attn_with_kvcache(q, k, v, cache_seqlens=cache_seqlens)
+        out = flash_attn_with_kvcache(
+            q,
+            k,
+            v,
+            cache_seqlens=cache_seqlens,
+            softmax_scale=workload.sm_scale,
+            softcap=workload.softcap,
+        )
         return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
@@ -151,11 +156,6 @@ def _flashinfer_gqa_dense_decode(
     v: torch.Tensor,
 ):
     """Set up FlashInfer's contiguous or synthetic-paged decode baseline."""
-    if workload.sm_scale != workload.dim**-0.5 or workload.softcap != 0.0:
-        return None
-    if workload.heads // workload.heads_kv > 8:
-        return None
-
     batch, _, heads, dim = q.shape
     heads_kv = k.shape[2]
     if batch == 1:
@@ -171,6 +171,8 @@ def _flashinfer_gqa_dense_decode(
                 v[0],
                 kv_layout="NHD",
                 use_tensor_cores=True,
+                sm_scale=workload.sm_scale,
+                logits_soft_cap=workload.softcap,
             )
             return out.view(1, 1, heads, dim)
 
@@ -191,7 +193,7 @@ def _flashinfer_gqa_dense_decode(
     indices = torch.arange(total_pages, dtype=torch.int32, device=q.device)
     last_page_len = torch.full((batch,), page_size, dtype=torch.int32, device=q.device)
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD", use_tensor_cores=True)
     wrapper.plan(
         indptr=indptr,
         indices=indices,
@@ -201,6 +203,8 @@ def _flashinfer_gqa_dense_decode(
         head_dim=dim,
         page_size=page_size,
         q_data_type=q.dtype,
+        sm_scale=workload.sm_scale,
+        logits_soft_cap=workload.softcap,
     )
 
     def run_fn(q, k, v):
@@ -245,11 +249,7 @@ def test_gqa_dense_decode_bench(call) -> None:
 
 @pytest.mark.parametrize("call", _dense_calls(optional_inputs=True))
 def test_gqa_dense_prefill_bench(call) -> None:
-    """Dense prefill through the op's optional inputs: FP8 scales, fused RoPE.
-
-    Read against the reference and its compiled form: FA3 and FlashInfer fuse
-    neither the per-KV-head dequantization nor a caller-supplied cos/sin table.
-    """
+    """Dense prefill with scaled inputs and caller-provided rotary tables."""
     workload = GroupedQueryAttentionDensePrefillCall(call)
     if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
         pytest.skip("native FP8 Dense GQA requires SM90")
@@ -264,14 +264,67 @@ def test_gqa_dense_prefill_bench(call) -> None:
         else reference_tolerance(workload.dtype)
     )
 
+    from flash_attn_interface import flash_attn_func
+
+    rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+    q, k, *_ = inputs
+    q_positions = (
+        torch.arange(k.shape[1] - q.shape[1], k.shape[1], device=q.device).int().repeat(q.shape[0])
+    )
+    k_positions = torch.arange(k.shape[1], device=q.device).int().repeat(k.shape[0])
+    q_scratch = torch.empty(
+        (k_positions.numel(), workload.dim), device=q.device, dtype=workload.out_dtype
+    )
+    k_scratch = torch.empty(
+        (q_positions.numel(), workload.dim), device=q.device, dtype=workload.out_dtype
+    )
+
+    def fa3_fn(q, k, v, q_scale, k_scale, v_scale, cos, sin):
+        if q_scale is not None:
+            q = (
+                q.float()
+                * q_scale.repeat_interleave(workload.heads // workload.heads_kv, 1)[
+                    :, None, :, None
+                ]
+            ).to(workload.out_dtype)
+            k = (k.float() * k_scale[:, None, :, None]).to(workload.out_dtype)
+            v = (v.float() * v_scale[:, None, :, None]).to(workload.out_dtype)
+        if cos is not None:
+            cache = torch.cat((cos, sin), -1).float()
+            q_rot, _ = rotate(
+                q_positions,
+                q.reshape(q_positions.numel(), -1),
+                k_scratch,
+                workload.dim,
+                cache,
+                workload.rope_layout == "neox",
+            )
+            _, k_rot = rotate(
+                k_positions,
+                q_scratch,
+                k.reshape(k_positions.numel(), -1),
+                workload.dim,
+                cache,
+                workload.rope_layout == "neox",
+            )
+            q, k = q_rot.reshape_as(q), k_rot.reshape_as(k)
+        return flash_attn_func(
+            q,
+            k,
+            v,
+            causal=workload.is_causal,
+            softmax_scale=workload.sm_scale,
+            softcap=workload.softcap,
+        )
+
+    functors = {
+        "tileops": op,
+        "fa3": fa3_fn,
+        "torch-ref": workload.ref_program,
+        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+    }
     bm.compare(
-        {
-            "tileops": op,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
-        evidence={"tileops": Exact(**tolerance), TORCH_COMPILE_TAG: Exact(**tolerance)},
+        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, Exact(**tolerance))
     )
 
 
@@ -474,32 +527,55 @@ def test_gqa_varlen_scaled_bench(call) -> None:
     bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, checked))
 
 
-def _fa3_gqa_prefill_paged(workload, cache_dtype, fuse_rope, softcap):
-    """FlashAttention-3 over the same paged cache, or None where it cannot serve the row.
+def _fa3_gqa_prefill_paged(workload, inputs):
+    """FA3 paged append, including rotation and FP8 cache adaptation when required."""
+    from flash_attn_interface import flash_attn_with_kvcache
 
-    It reads the pages, appends the new KV in place and applies the softcap in one launch,
-    so it times the work the op does rather than a materialized reference.
-    """
-    if fuse_rope or cache_dtype is not None:
-        return None
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
-        return None
-
-    shape = (
-        workload.batch * workload.max_pages_per_req,
-        workload.page_size,
-        workload.heads_kv,
-        workload.dim,
+    q, _, _, _, _, _, _, _, _, table = inputs
+    page = workload.page_size
+    shape = (-1, page, workload.heads_kv, workload.dim)
+    positions = torch.cat(
+        [
+            torch.arange(old, old + length, device=q.device)
+            for old, length in zip(workload.cache_lens, workload.q_lens, strict=True)
+        ]
+    ).int()
+    requests = torch.repeat_interleave(
+        torch.arange(workload.batch, device=q.device),
+        torch.tensor(workload.q_lens, device=q.device),
     )
+    rows = table[requests, positions.long() // page].long() * page + positions % page
+    rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+    rotary_cache = None
+    if workload.fuse_rope:
+        rotary_dim = workload.rotary_dim or workload.dim
+        half = rotary_dim // 2
+        frequency = workload.rope_base ** (-torch.arange(half, device=q.device).float() / half)
+        angles = (
+            torch.arange(
+                max(a + b for a, b in zip(workload.cache_lens, workload.q_lens, strict=True)),
+                device=q.device,
+            )[:, None]
+            * frequency
+        )
+        rotary_cache = torch.cat((angles.cos().to(q.dtype), angles.sin().to(q.dtype)), -1).float()
 
-    def _run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table):
-        del k_scale, v_scale
+    def run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table):
+        if rotary_cache is not None:
+            q_rot, k_rot = rotate(
+                positions, q.flatten(1), k_new.flatten(1), workload.dim, rotary_cache, True
+            )
+            q, k_new = q_rot.reshape_as(q), k_rot.reshape_as(k_new)
+        quantized = k_pages.dtype == torch.float8_e4m3fn
+        if quantized:
+            keys = (k_pages.float() * k_scale[0]).to(q.dtype)
+            values = (v_pages.float() * v_scale[0]).to(q.dtype)
+        else:
+            keys, values = k_pages, v_pages
         out = flash_attn_with_kvcache(
-            q=q,
-            k_cache=k_pages.view(shape),
-            v_cache=v_pages.view(shape),
+            q,
+            keys.view(shape),
+            values.view(shape),
             k=k_new,
             v=v_new,
             cache_seqlens=seqlens,
@@ -508,11 +584,16 @@ def _fa3_gqa_prefill_paged(workload, cache_dtype, fuse_rope, softcap):
             cu_seqlens_k_new=cu_q,
             max_seqlen_q=workload.max_seqlen_q,
             causal=workload.is_causal,
-            softcap=float(softcap or 0.0),
+            softmax_scale=workload.sm_scale,
+            softcap=float(workload.softcap or 0.0),
         )
+        if quantized:
+            # Persist only newly appended tokens in the caller's quantized cache.
+            k_pages[rows] = (k_new.float() / k_scale[0]).to(k_pages.dtype)
+            v_pages[rows] = (v_new.float() / v_scale[0]).to(v_pages.dtype)
         return out[0] if isinstance(out, tuple) else out
 
-    return _run
+    return run
 
 
 @pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp))
@@ -521,11 +602,10 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    cache_dtype = None if workload.cache_dtype == workload.dtype else workload.cache_dtype
     # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
     # depends on what those slots held, so every tag shares the pages.
     functors = {"tileops": op, "torch-ref": workload.ref_program}
-    fa3_fn = _fa3_gqa_prefill_paged(workload, cache_dtype, workload.fuse_rope, workload.softcap)
+    fa3_fn = _fa3_gqa_prefill_paged(workload, inputs)
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
     bm.compare(functors, *inputs)
