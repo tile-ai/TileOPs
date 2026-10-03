@@ -173,7 +173,9 @@ def _warn_off_calibration_board(device_index: Optional[int]) -> None:
 
 
 def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] = None):
-    """Every tile the builder accepts for this shape; stream-K variants only when ``sms`` is given."""
+    """Every tile the builder accepts for a shape the signature admits; stream-K variants only
+    when ``sms`` is given. The signature requires ``k`` a multiple of ``group_size`` and the
+    builder raises without it, so this enumeration assumes it rather than testing it."""
     for block_m in _CONFIG_SPACE.block_ms:
         if block_m > max(8, 2 * m) or -(-m // block_m) > _CONFIG_SPACE.max_m_tiles:
             continue
