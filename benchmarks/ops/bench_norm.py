@@ -1,11 +1,4 @@
-"""Benchmarks for RMSNorm / LayerNorm and their fused-add variants.
-
-Normalization is where the serving stacks ship hand-written kernels, so every row
-takes the ones that cover it, plus torch eager and inductor: RMSNorm all three of
-flag_gems, flashinfer and vllm; LayerNorm the two with a kernel for it, flag_gems
-and flashinfer; fused-add RMSNorm the two fused kernels, flashinfer's and vllm's;
-fused-add LayerNorm none, which nobody fuses.
-"""
+"""Normalization benchmarks against vendor, QuACK and compiled PyTorch kernels."""
 
 import pytest
 import torch
@@ -14,11 +7,13 @@ import torch.nn.functional as F
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     FLASHINFER_TAG,
+    QUACK_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
     flaggems_op,
     flashinfer_op,
+    quack_op,
     reference_tolerance,
     vllm_op,
 )
@@ -74,15 +69,14 @@ def _in_place_fused_add(fn, args: tuple, eps: float):
     Both kernels overwrite input and residual, and sharing them would hand every
     later tag a different tensor than the reference read.
 
-    The residual therefore grows across iterations, by at most ``max|weight|`` each
-    — under 10 for a standard-normal weight, against an fp16 range of 65504 over a
-    few hundred iterations. The kernel reads and writes the same bytes regardless,
-    which is what the row reports.
+    Restore both buffers inside the callable; the timer excludes these reset copies.
     """
     x, residual, weight = args
     private = (x.clone(), residual.clone(), weight)
 
     def baseline_fn(x_i, residual_i, weight_i):
+        x_i.copy_(x)
+        residual_i.copy_(residual)
         fn(x_i, residual_i, weight_i, eps)
         return x_i, residual_i
 
@@ -117,6 +111,10 @@ def test_rms_norm_bench(call) -> None:
             FLASHINFER_TAG: _flashinfer_rms_norm(eps),
             VLLM_TAG: _vllm_rms_norm(x, eps),
         }
+
+    if len(shape) == 1:
+        quack_rms = quack_op("rmsnorm")
+        library[QUACK_TAG] = lambda x, weight: quack_rms(x, weight, eps=eps)
 
     functors = {
         "tileops": op,
@@ -190,6 +188,19 @@ def test_layer_norm_bench(call) -> None:
             return flashinfer_layer_norm(x, weight, bias, eps)
 
         library = {FLAGGEMS_TAG: flaggems_fn, FLASHINFER_TAG: flashinfer_fn}
+    if len(shape) == 1 and weight is not None:
+        quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+
+        def quack_fn(x, weight, bias):
+            out = quack_ln(
+                x.reshape(-1, x.shape[-1]),
+                weight.float(),
+                None if bias is None else bias.float(),
+                eps=eps,
+            )
+            return out.reshape_as(x)
+
+        library[QUACK_TAG] = quack_fn
 
     functors = {
         "tileops": op,
@@ -218,9 +229,24 @@ def test_fused_add_layer_norm_bench(call) -> None:
         n = x.shape[-1]
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=eps), add_result
 
-    # flashinfer's and vllm's fused-add kernels are RMSNorm only, so this row is
-    # torch against itself, eager and compiled.
+    from flash_attn.ops.triton.layer_norm import layer_norm_fn
+
+    def flash_attention_fn(x, residual, weight, bias):
+        # The contract rounds the residual sum to the input dtype before normalization.
+        added = x + residual
+        return layer_norm_fn(added, weight, bias, eps=eps), added
+
+    quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+
+    def quack_fn(x, residual, weight, bias):
+        added = x + residual
+        return quack_ln(
+            added.reshape(-1, added.shape[-1]), weight.float(), bias.float(), eps=eps
+        ).reshape_as(x), added
+
     functors = {
+        "flash-attn": flash_attention_fn,
+        QUACK_TAG: quack_fn,
         "tileops": op,
         "torch-ref": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),

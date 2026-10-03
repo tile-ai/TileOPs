@@ -353,6 +353,16 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
   - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
   - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
   - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
+  - {B: 1, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-single-request}
+  - {B: 12, H: 128, H_kv: 1, N_kv: 6144, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-serving-batch}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-4096}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 8192, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-8192}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 16384, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-16384}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-32768}
+  - {B: 1, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch1}
+  - {B: 2, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch2}
+  - {B: 6, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch6}
+  - {B: 64, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch64}
   roofline:
     # Per key and query head, QK over D + PE, PV over D and the softmax (5); per output
     # element, the softmax's divide.

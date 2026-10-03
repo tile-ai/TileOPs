@@ -1,16 +1,9 @@
-"""Benchmark for the FP8 lightning indexer op.
-
-Workload shapes come from the ops manifest; roofline FLOP and byte counts
-come from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
-
-The reference materializes the ``[batch, heads, seq_len, seq_len_kv]`` scores the op
-folds into its matmul epilogue, and peaks near 104 GB on these rows. A device that
-cannot hold that fails in the reference rather than in the op.
-"""
+"""FP8 indexer against DeepGEMM, with complete chunked-reference validation."""
 
 import pytest
+import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.verification import Custom, assert_normalized_error, zeroed_input
 from tileops.ops import FP8LightningIndexerFwdOp
@@ -25,6 +18,33 @@ def test_fp8_lightning_indexer_bench(call) -> None:
     op = FP8LightningIndexerFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
+    logits = deepgemm_op("fp8_mqa_logits")
+
+    def deepgemm_fn(q, k, weights, start, end, k_scale):
+        if k_scale is None:
+            q = q.to(torch.float8_e4m3fn)
+            scale = k.float().abs().amax(-1, keepdim=True).clamp(min=1e-4) / 448.0
+            k = (k.float() / scale).to(torch.float8_e4m3fn)
+            k_scale = scale.squeeze(-1)
+        # DeepGEMM handles one batch and KV group per invocation.
+        batches = []
+        groups = k.shape[2]
+        heads = q.shape[2] // groups
+        for batch in range(q.shape[0]):
+            scores = [
+                logits(
+                    q[batch, :, group * heads : (group + 1) * heads].contiguous(),
+                    (k[batch, :, group].contiguous(), k_scale[batch, :, group].contiguous()),
+                    weights[:, group * heads : (group + 1) * heads].contiguous(),
+                    start,
+                    end,
+                    clean_logits=True,
+                )
+                for group in range(groups)
+            ]
+            batches.append(scores[0].unsqueeze(-1) if groups == 1 else torch.stack(scores, -1))
+        return batches[0].unsqueeze(0) if len(batches) == 1 else torch.stack(batches)
+
     checked = Custom(
         assert_normalized_error,
         "symmetric normalized squared error <= 1e-3; nonfinite values match",
@@ -33,9 +53,10 @@ def test_fp8_lightning_indexer_bench(call) -> None:
     bm.compare(
         {
             "tileops": op,
+            DEEPGEMM_TAG: deepgemm_fn,
             "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
-        evidence={"tileops": checked, TORCH_COMPILE_TAG: checked},
+        count_copies=True,
+        evidence={"tileops": checked, DEEPGEMM_TAG: checked},
     )

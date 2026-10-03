@@ -25,6 +25,17 @@ RMSNormFwdOp:
   - {B: [1], normalized_shape: [16384], eps: 1.0e-6, some: [weight], dtype_cases: [{T: bfloat16}], label: llama-405b-decode}
   - {B: [2048], normalized_shape: [5120], some: [weight], dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
   - {B: [4, 2048], normalized_shape: [128], dtype_cases: [{T: bfloat16}], label: qk-norm-head}
+  - {B: [32768], normalized_shape: [256], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-256}
+  - {B: [32768], normalized_shape: [512], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-512}
+  - {B: [32768], normalized_shape: [1024], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-1024}
+  - {B: [32768], normalized_shape: [2048], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-2048}
+  - {B: [32768], normalized_shape: [4096], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-4096}
+  - {B: [32768], normalized_shape: [8192], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-8192}
+  - {B: [32768], normalized_shape: [16384], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-16384}
+  - {B: [32768], normalized_shape: [32768], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-32768}
+  - {B: [32768], normalized_shape: [65536], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-65536}
+  - {B: [16384], normalized_shape: [131072], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-131072}
+  - {B: [8192], normalized_shape: [262144], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-262144}
   roofline:
     # Square and accumulate (2), normalize (1), and the weight (1) when present.
     flops: "(4 if present(weight) else 3) * prod(B) * prod(normalized_shape)"

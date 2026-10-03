@@ -8,8 +8,10 @@ import torch
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
+    QUACK_TAG,
     assert_matches_reference,
     flaggems_op,
+    quack_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -86,10 +88,16 @@ def test_bmm_bench(call) -> None:
         flaggems_bmm, workload.ref_program, a, b, **reference_tolerance(a.dtype)
     )
 
+    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+
+    def quack_fn(a, b):
+        return quack_gemm(a, b)
+
     bm.compare(
         {
             "tileops": op,
             FLAGGEMS_TAG: flaggems_bmm,
+            QUACK_TAG: quack_fn,
             "torch-cublas": workload.ref_program,
         },
         a,
