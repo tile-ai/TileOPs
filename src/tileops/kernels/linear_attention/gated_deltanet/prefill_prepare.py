@@ -47,7 +47,11 @@ def prefill_chunk_local_cumsum_bthd_tl(
     softplus_threshold = 20.0
     # The staged chunk dominates the block's shared memory; the tile holds it at 16 KiB
     # for a 64-row chunk whatever the head count.
-    head_tile = min(head, 64)
+    # An odd head count costs the walk 4x to 8x in per-element address work, not in access
+    # width: the SASS issues the same scalar loads either way, over a division by a head
+    # count that is not a power of two. Four elements per thread share that arithmetic and
+    # issue their loads together; an even head keeps the schedule it had.
+    head_tile = 64 if head % 2 else min(head, 64)
     num_head_slabs = tilelang.cdiv(head, head_tile)
 
     @tilelang.jit(
@@ -69,6 +73,10 @@ def prefill_chunk_local_cumsum_bthd_tl(
             acc_s = T.alloc_shared([head_tile], "float32")
             rate_s = T.alloc_shared([head_tile], "float32")
             shift_s = T.alloc_shared([head_tile], "float32")
+            if head % 2:
+                raw_l = T.alloc_local([4], dtype)
+                load_l = T.alloc_local([4], "float32")
+                store_l = T.alloc_local([4], "float32")
 
             tiling.cumsum_offsets(cu_seqlens, tile_cum)
             if cid < tile_cum[num_sequences]:
@@ -86,27 +94,52 @@ def prefill_chunk_local_cumsum_bthd_tl(
                                 rate_s[hid] = -T.exp(a_log[first_head + hid])
                                 shift_s[hid] = dt_bias[first_head + hid]
 
-                    # The walk is serial in the row, so a load or a predicate left in it
-                    # costs one global latency per row.
-                    for i, hid in T.Parallel(chunk_size, head_tile):
-                        inside = (
-                            tirx.all(base + i < end, first_head + hid < head)
-                            if short
-                            else base + i < end
-                        )
-                        raw = T.if_then_else(
-                            inside,
-                            T.cast(g[0, base + i, first_head + hid], "float32"),
-                            T.float32(0.0),
-                        )
-                        if gate_in_kernel:
-                            biased = raw + shift_s[hid]
-                            softplus = T.log(T.float32(1.0) + T.exp(biased))
-                            chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
-                                biased > softplus_threshold, biased, softplus
+                    if head % 2:
+                        for group in T.Parallel(chunk_size * head_tile // 4):
+                            for v in T.Serial(4):
+                                lin = group * 4 + v
+                                i = lin // head_tile
+                                hid = lin % head_tile
+                                inside = tirx.all(base + i < end, first_head + hid < head)
+                                raw_l[v] = T.if_then_else(
+                                    inside,
+                                    g[0, base + i, first_head + hid],
+                                    T.cast(0.0, dtype),
+                                )
+                                raw = T.cast(raw_l[v], "float32")
+                                if gate_in_kernel:
+                                    biased = raw + shift_s[hid]
+                                    softplus = T.log(T.float32(1.0) + T.exp(biased))
+                                    load_l[v] = rate_s[hid] * T.if_then_else(
+                                        biased > softplus_threshold, biased, softplus
+                                    )
+                                else:
+                                    load_l[v] = raw
+                            for v in T.vectorized(4):
+                                lin = group * 4 + v
+                                chunk_s[lin // head_tile, lin % head_tile] = load_l[v]
+                    else:
+                        # The walk is serial in the row, so a load or a predicate left in
+                        # it costs one global latency per row.
+                        for i, hid in T.Parallel(chunk_size, head_tile):
+                            inside = (
+                                tirx.all(base + i < end, first_head + hid < head)
+                                if short
+                                else base + i < end
                             )
-                        else:
-                            chunk_s[i, hid] = raw
+                            raw = T.if_then_else(
+                                inside,
+                                T.cast(g[0, base + i, first_head + hid], "float32"),
+                                T.float32(0.0),
+                            )
+                            if gate_in_kernel:
+                                biased = raw + shift_s[hid]
+                                softplus = T.log(T.float32(1.0) + T.exp(biased))
+                                chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
+                                    biased > softplus_threshold, biased, softplus
+                                )
+                            else:
+                                chunk_s[i, hid] = raw
 
                     for hid in T.Parallel(head_tile):
                         acc_s[hid] = T.float32(0.0)
@@ -115,14 +148,26 @@ def prefill_chunk_local_cumsum_bthd_tl(
                             acc_s[hid] = acc_s[hid] + chunk_s[i, hid]
                             chunk_s[i, hid] = acc_s[hid]
 
-                    for i, hid in T.Parallel(chunk_size, head_tile):
-                        stored = (
-                            tirx.all(base + i < end, first_head + hid < head)
-                            if short
-                            else base + i < end
-                        )
-                        if stored:
-                            out[0, base + i, first_head + hid] = T.cast(chunk_s[i, hid], dtype)
+                    if head % 2:
+                        for group in T.Parallel(chunk_size * head_tile // 4):
+                            for v in T.vectorized(4):
+                                lin = group * 4 + v
+                                store_l[v] = chunk_s[lin // head_tile, lin % head_tile]
+                            for v in T.Serial(4):
+                                lin = group * 4 + v
+                                i = lin // head_tile
+                                hid = lin % head_tile
+                                if tirx.all(base + i < end, first_head + hid < head):
+                                    out[0, base + i, first_head + hid] = T.cast(store_l[v], dtype)
+                    else:
+                        for i, hid in T.Parallel(chunk_size, head_tile):
+                            stored = (
+                                tirx.all(base + i < end, first_head + hid < head)
+                                if short
+                                else base + i < end
+                            )
+                            if stored:
+                                out[0, base + i, first_head + hid] = T.cast(chunk_s[i, hid], dtype)
 
         if gate_in_kernel:
 
