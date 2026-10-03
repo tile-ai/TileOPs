@@ -82,7 +82,7 @@ def test_moe_experts_bench(call) -> None:
     bm = ManifestBenchmark(experts, workload)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
-        experts.forward(output, hidden, w1, w2, topk_weights, topk_ids)
+        experts(output, hidden, w1, w2, topk_weights, topk_ids)
         return output
 
     functors = {"tileops": _experts_fn}
@@ -132,7 +132,7 @@ def test_indexed_expert_mlp_bench(call) -> None:
     indexed = IndexedExpertMLPFwdOp(**call.arguments({}))
 
     def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
-        indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids)
+        indexed(output, hidden, w1, w2, topk_weights, topk_ids)
         return output
 
     # The staged pipeline is what the composite runs on every other shape, so it is the
