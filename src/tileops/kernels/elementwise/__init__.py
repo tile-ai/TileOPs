@@ -133,6 +133,9 @@ __all__ = [
     "CosFwdKernel",
     "DivFwdKernel",
     "DivTruncFwdKernel",
+    "DropoutCall",
+    "DropoutFwdInterface",
+    "DropoutKernel",
     "EluFwdKernel",
     "EqBoolStorageFwdKernel",
     "EqFwdKernel",
@@ -207,7 +210,4 @@ __all__ = [
     "UnaryKernel",
     "WhereFwdKernel",
     "coalesce_broadcast_dims",
-    "DropoutCall",
-    "DropoutFwdInterface",
-    "DropoutKernel",
 ]

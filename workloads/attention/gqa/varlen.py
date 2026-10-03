@@ -10,11 +10,11 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "GQAPrefillVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenScaledWorkload",
     "GroupedQueryAttentionSlidingWindowVarlenFwdWorkload",
     "GroupedQueryAttentionVarlenCall",
+    "GroupedQueryAttentionVarlenFwdWorkload",
     "GroupedQueryAttentionVarlenScaledCall",
+    "GroupedQueryAttentionVarlenScaledWorkload",
 ]
 
 

@@ -47,6 +47,9 @@ from tileops.kernels.attention.topk_select import (
 from tileops.kernels.attention.varlen_rope import VarlenKeyRoPE
 
 __all__ = [
+    "FP8LightningIndexerCall",
+    "FP8LightningIndexerFwdInterface",
+    "FP8LightningIndexerKernel",
     "FlashAttnBwdPreprocessKernel",
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeBs1Kernel",
@@ -55,9 +58,9 @@ __all__ = [
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
     "GQADenseFP8DecodeKernel",
-    "GQADenseWsKernel",
-    "GQADenseSlidingWindowKernel",
     "GQADenseFP8Kernel",
+    "GQADenseSlidingWindowKernel",
+    "GQADenseWsKernel",
     "GQAPagedVarlenFwdKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
@@ -80,11 +83,8 @@ __all__ = [
     "SparseMlaBasicKernel",
     "SparseMlaCall",
     "SparseMlaKernel",
-    "VarlenKeyRoPE",
-    "FP8LightningIndexerCall",
-    "FP8LightningIndexerFwdInterface",
-    "FP8LightningIndexerKernel",
     "TopkSelectorCall",
     "TopkSelectorFwdInterface",
     "TopkSelectorKernel",
+    "VarlenKeyRoPE",
 ]

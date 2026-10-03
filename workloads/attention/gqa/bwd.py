@@ -7,7 +7,7 @@ from workloads.attention.gqa.call_metadata import _dtype
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GroupedQueryAttentionBwdWorkload", "GroupedQueryAttentionBwdCall"]
+__all__ = ["GroupedQueryAttentionBwdCall", "GroupedQueryAttentionBwdWorkload"]
 
 
 def _compute_gqa_square_lse(

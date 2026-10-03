@@ -31,7 +31,8 @@ from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, Softm
 # --- VectorNormKernel ops ---
 from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
-__all__: list[str] = [
+# Grouped by the kernel that serves each op, which sorting would lose.
+__all__: list[str] = [  # noqa: RUF022
     # --- LogicalReduceKernel ops ---
     "AllFwdOp",
     "AnyFwdOp",

@@ -119,6 +119,8 @@ select = [
     "TID252",
     # docs/design/layer-boundaries.md §Test: a test does not import from benchmarks/.
     "TID253",
+    # `__all__` is sorted, so two branches appending to one do not collide.
+    "RUF022",
     # A `noqa` that suppresses nothing, or names a rule this config does not select.
     "RUF100",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage

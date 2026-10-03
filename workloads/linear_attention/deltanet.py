@@ -5,18 +5,18 @@ from workloads.linear_attention.input_values import _small, _step_sizes
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "DeltaNetFwdWorkload",
+    "DeltaNetChunkwiseCall",
+    "DeltaNetDecodeCall",
     "DeltaNetDecodeWorkload",
+    "DeltaNetFwdWorkload",
+    "DeltaNetInferenceCall",
     "DeltaNetInferenceWorkload",
     "compute_w_u_torch",
-    "kernel2_deltanet_torch",
-    "prepare_wy_repr_deltanet_torch",
-    "deltanet_differentiable_fwd_torch",
     "deltanet_autograd_bwd_torch",
     "deltanet_decode_torch",
-    "DeltaNetDecodeCall",
-    "DeltaNetChunkwiseCall",
-    "DeltaNetInferenceCall",
+    "deltanet_differentiable_fwd_torch",
+    "kernel2_deltanet_torch",
+    "prepare_wy_repr_deltanet_torch",
 ]
 
 

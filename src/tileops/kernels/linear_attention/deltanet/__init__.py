@@ -10,10 +10,10 @@ from tileops.kernels.linear_attention.deltanet.recurrent import (
 
 __all__ = [
     "DeltaNetBwdKernel",
-    "DeltaNetFwdKernel",
-    "DeltaNetDenseDecodeFwdKernel",
-    "DeltaNetDensePrefillFwdKernel",
+    "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
-    "DeltaNetDecodeFP32Kernel",
+    "DeltaNetDenseDecodeFwdKernel",
+    "DeltaNetDensePrefillFwdKernel",
+    "DeltaNetFwdKernel",
 ]

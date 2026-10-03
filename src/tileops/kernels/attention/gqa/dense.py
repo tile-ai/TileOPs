@@ -15,8 +15,8 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
-    "GQADenseWsKernel",
     "GQADenseSlidingWindowKernel",
+    "GQADenseWsKernel",
 ]
 
 

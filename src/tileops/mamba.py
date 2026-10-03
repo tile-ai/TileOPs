@@ -12,10 +12,10 @@ from tileops.ops.mamba import (
 
 __all__ = [
     "Mamba2FwdOp",
-    "SSDChunkCumsumFwdOp",
-    "SSDChunkStateFwdOp",
-    "SSDStatePassingFwdOp",
-    "SSDChunkScanFwdOp",
-    "SSDRecurrentFwdOp",
     "SSDChunkCouplingFwdOp",
+    "SSDChunkCumsumFwdOp",
+    "SSDChunkScanFwdOp",
+    "SSDChunkStateFwdOp",
+    "SSDRecurrentFwdOp",
+    "SSDStatePassingFwdOp",
 ]
