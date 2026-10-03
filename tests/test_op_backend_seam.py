@@ -14,7 +14,7 @@ from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from tileops.ops.pool import MaxPool2dFwdOp
+from tileops.ops.pool.max_pool import MaxPool2dFwdOp
 
 pytestmark = pytest.mark.smoke
 

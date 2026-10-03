@@ -7,9 +7,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.ops import GroupedQueryAttentionVarlenFwdOp
 from tileops.perf.formulas import visible_scores
-from workloads.attention.gqa import (
-    GroupedQueryAttentionVarlenFwdWorkload,
-)
+from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdWorkload
 
 
 class GroupedQueryAttentionVarlenFwdTest(GroupedQueryAttentionVarlenFwdWorkload, TestBase):

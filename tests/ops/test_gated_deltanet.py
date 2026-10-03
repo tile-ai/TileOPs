@@ -7,7 +7,7 @@ from tests.test_base import TestBase, allclose_compare
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
-from workloads.linear_attention import GatedDeltaNetFwdWorkload
+from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdWorkload
 
 pytestmark = pytest.mark.smoke
 

@@ -27,7 +27,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.deepseek_attention import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
+from workloads.attention.nsa import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
 
 def _setup(op_cls, workload_cls, call):

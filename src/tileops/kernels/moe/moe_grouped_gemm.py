@@ -10,8 +10,8 @@ import torch
 from tilelang.transform import PassConfigKey
 
 from tileops.kernels.elementwise._erf import erf
-from tileops.kernels.grouped_gemm.heuristics import ACTIVATIONS, GemmType
-from tileops.kernels.grouped_gemm.template import GemmTemplate
+from tileops.kernels.gemm.persistent.heuristics import ACTIVATIONS, GemmType
+from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, MGroupedGemmFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata

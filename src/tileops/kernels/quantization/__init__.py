@@ -1,6 +1,7 @@
 """Quantization and dequantization kernels and their call records."""
 
 from tileops.kernels.quantization.call_spec import (
+    DequantizeCall,
     FP8QuantPerBlockFwdInterface,
     INT4QuantPerGroupFwdInterface,
     INT8DequantPerBlockFwdInterface,
@@ -12,7 +13,6 @@ from tileops.kernels.quantization.call_spec import (
     QuantizeCall,
     SmoothQuantFwdInterface,
 )
-from tileops.kernels.quantization.dequant_call import DequantizeCall
 from tileops.kernels.quantization.fp8_quant import (
     FP8QuantCall,
     FP8QuantFwdInterface,

@@ -69,6 +69,8 @@ def gqa_decode_no_split_kernel(
 
         @T.macro
         def compute(Q, K, V, rope_cos, rope_sin, Output):
+            # Let TileLang synchronize shared RoPE writes after warp specialization;
+            # a fixed named barrier can alias the producer's generated barrier.
             with T.Kernel(batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
@@ -116,7 +118,6 @@ def gqa_decode_no_split_kernel(
                                 Q_shared[i, j] = Q[bid, hid * valid_block_H + i, j]
                         else:
                             Q_shared[i, j] = 0
-                    T.sync_threads(3, threads)
                 else:
                     T.copy(
                         Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :],
@@ -158,7 +159,6 @@ def gqa_decode_no_split_kernel(
                                     K_shared[i, j] = K[bid, position, cur_kv_head, j]
                             else:
                                 K_shared[i, j] = 0
-                        T.sync_threads(3, threads)
                     else:
                         T.copy(
                             K[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :],

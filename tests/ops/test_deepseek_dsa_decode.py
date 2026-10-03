@@ -6,7 +6,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek_attention import DsaDecodeWorkload
+from workloads.attention.dsa import DsaDecodeWorkload
 from workloads.device import run_device
 
 

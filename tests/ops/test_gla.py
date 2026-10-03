@@ -18,7 +18,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
 )
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
-from workloads.linear_attention import (
+from workloads.linear_attention.gla import (
     GLADecodeWorkload,
     GLAInferenceWorkload,
     gla_autograd_bwd_torch,

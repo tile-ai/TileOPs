@@ -244,7 +244,7 @@ def mean_pooling_chunk_index(
         ``offsets``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``indices``, one
         ``(sequence, chunk-within-sequence)`` pair per chunk.
     """
-    from workloads.attention.sequence_metadata import prepare_chunk_indices
+    from workloads.sequence_metadata import prepare_chunk_indices
 
     bounds = [0]
     for length in seq_lens:

@@ -9,7 +9,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.mamba.call_spec import CBProducerCall, CBProducerFwdInterface
-from tileops.kernels.mamba.cb_producer import CBProducerKernel
+from tileops.kernels.mamba.ssd_chunk_coupling import CBProducerKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 

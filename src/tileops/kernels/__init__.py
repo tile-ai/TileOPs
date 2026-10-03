@@ -36,11 +36,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     )
     from tileops.kernels.elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
     from tileops.kernels.elementwise.dropout import DropoutKernel
-    from tileops.kernels.engram import (
-        EngramDecodeKernel,
-        EngramGateConvBwdKernel,
-        EngramGateConvFwdKernel,
-    )
     from tileops.kernels.fft import FFTC2CDecomposedKernel, FFTC2COneCTAKernel
     from tileops.kernels.gemm import (
         BmmFp8Kernel,
@@ -56,7 +51,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemmTmaKernel,
         GemvKernel,
     )
-    from tileops.kernels.grouped_gemm import GroupedGemmKernel, GroupedGemmPersistentKernel
+    from tileops.kernels.gemm.grouped import GroupedGemmKernel, GroupedGemmPersistentKernel
     from tileops.kernels.kernel_base import Kernel
     from tileops.kernels.linear_attention import (
         DeltaNetBwdKernel,
@@ -74,7 +69,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLADensePrefillFwdKernel,
         GLAFwdKernel,
     )
-    from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
     from tileops.kernels.moe import MoePermuteAlignKernel
     from tileops.kernels.norm import (
         BatchNormBwdKernel,
@@ -105,6 +99,12 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         RopeNeoxPositionIdsKernel,
         RopeNonNeoxKernel,
     )
+    from tileops.kernels.sequence_modeling.engram import (
+        EngramDecodeKernel,
+        EngramGateConvBwdKernel,
+        EngramGateConvFwdKernel,
+    )
+    from tileops.kernels.sequence_modeling.mhc import MHCPostKernel, MHCPreKernel
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 _LAZY = {
@@ -139,9 +139,9 @@ _LAZY = {
     "DeltaNetDensePrefillFwdKernel": ".linear_attention",
     "DeltaNetFwdKernel": ".linear_attention",
     "DropoutKernel": ".elementwise.dropout",
-    "EngramDecodeKernel": ".engram",
-    "EngramGateConvBwdKernel": ".engram",
-    "EngramGateConvFwdKernel": ".engram",
+    "EngramDecodeKernel": ".sequence_modeling.engram",
+    "EngramGateConvBwdKernel": ".sequence_modeling.engram",
+    "EngramGateConvFwdKernel": ".sequence_modeling.engram",
     "FFTC2CDecomposedKernel": ".fft",
     "FFTC2COneCTAKernel": ".fft",
     "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
@@ -175,12 +175,12 @@ _LAZY = {
     "GroupConv2dKernel": ".convolution",
     "GroupConv3dKernel": ".convolution",
     "GroupNormKernel": ".norm",
-    "GroupedGemmKernel": ".grouped_gemm",
-    "GroupedGemmPersistentKernel": ".grouped_gemm",
+    "GroupedGemmKernel": ".gemm.grouped",
+    "GroupedGemmPersistentKernel": ".gemm.grouped",
     "Kernel": ".kernel_base",
     "LayerNormKernel": ".norm",
-    "MHCPostKernel": ".mhc",
-    "MHCPreKernel": ".mhc",
+    "MHCPostKernel": ".sequence_modeling.mhc",
+    "MHCPreKernel": ".sequence_modeling.mhc",
     "MLADecodeWsKernel": ".attention",
     "MaxPool1dKernel": ".pool",
     "MaxPool1dWithIndicesKernel": ".pool",
