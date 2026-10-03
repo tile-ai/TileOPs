@@ -12,8 +12,15 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
-from workloads.linear_attention import GLAChunkwiseCall, GLADecodeCall, GLAInferenceCall
+from workloads.linear_attention import (
+    GLAChunkwiseCall,
+    GLADecodeCall,
+    GLAInferenceCall,
+    gla_autograd_bwd_torch,
+    gla_fwd_chunked_torch,
+)
 
 try:
     from fla.ops.gla import fused_recurrent_gla
@@ -37,7 +44,18 @@ def test_gla_fwd_bench(call) -> None:
             q, k, v, g, scale=op.scale, initial_state=initial_state, output_final_state=True
         )
 
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
+    chunked = Exact(
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda q, k, v, g, s: (lambda o, state: (o.to(q.dtype), state.float()))(
+            *gla_fwd_chunked_torch(q, k, v, g, op.chunk_size, scale=op.scale, initial_state=s)
+        ),
+    )
+    bm.compare(
+        {"tileops": op, "fla": (fla_fwd, ())},
+        *inputs,
+        evidence={"tileops": chunked, "fla": chunked},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(GLAChunkBwdOp))
@@ -68,7 +86,27 @@ def test_gla_bwd_bench(call) -> None:
     def fla_bwd():
         return fla_backward(do_fla, None)[:4]
 
-    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, q, k, v, g, h, do, dht)
+    autograd = Exact(
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda q, k, v, g, _h, do, _dht: tuple(
+            t.float()
+            for t in gla_autograd_bwd_torch(
+                do, q, k, v, g, arguments["chunk_size"], scale=bwd_op.scale
+            )
+        ),
+    )
+    bm.compare(
+        {"tileops": bwd_op, "fla": (fla_bwd, ())},
+        q,
+        k,
+        v,
+        g,
+        h,
+        do,
+        dht,
+        evidence={"tileops": autograd, "fla": autograd},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(GLAInferenceFwdOp))

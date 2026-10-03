@@ -49,6 +49,12 @@ _PERF_KEYS = (
     "baseline_latency_ms",
     "baseline_tflops",
     "baseline_ratio",
+    # What established the row, and whether anything did. A measurement published without
+    # them reads as though a reference stood behind it.
+    "tileops_unverified",
+    "baseline_unverified",
+    "tileops_no_ratio",
+    "baseline_no_ratio",
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
@@ -561,6 +567,25 @@ def detect_previous_run_shifts(bench_ops: dict, history_runs: list[dict]) -> lis
     return out
 
 
+def _unverified_rows(bench_ops: dict) -> list[tuple[str, str, str]]:
+    """Rows no reference checked, as (op, config, note).
+
+    A row carries ``no_ratio`` where nothing established it: the workload has no reference,
+    the baseline computes a different function, or no reference runs at this shape. A
+    `Partial` row is excluded; its reference checked part of the result and its note names
+    what that leaves open.
+    """
+    found = []
+    for op, data in bench_ops.items():
+        for cfg in data["configs"]:
+            for tag in ("tileops", "baseline"):
+                if cfg.get(f"{tag}_no_ratio"):
+                    found.append(
+                        (op, cfg.get("config", ""), cfg.get(f"{tag}_unverified", "unestablished"))
+                    )
+    return found
+
+
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
     """Find configs where tileops is slower than its strongest baseline: one alert each."""
     alerts = []
@@ -958,6 +983,9 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
+    unverified = _unverified_rows(bench_ops or {})
+    if unverified:
+        lines.append(f"| **Rows no reference checked** | {_WARN} {len(unverified)} |")
     lines.append(f"| **History window** | {history_window} |")
     if have_gpu_profile:
         sol_icon = (

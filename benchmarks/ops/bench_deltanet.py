@@ -2,6 +2,8 @@
 manifest call, against FLA and torch.
 """
 
+import dataclasses
+
 import pytest
 
 from benchmarks.baselines import (
@@ -11,6 +13,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from benchmarks.verification import Exact, Partial
 from tileops.ops import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
@@ -21,6 +24,8 @@ from workloads.linear_attention import (
     DeltaNetChunkwiseCall,
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,
+    deltanet_autograd_bwd_torch,
+    deltanet_differentiable_fwd_torch,
 )
 
 
@@ -61,7 +66,24 @@ def test_deltanet_vs_fla_fwd(call) -> None:
     def fla_fwd():
         return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)
 
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
+    chunked = Partial(
+        outputs=1,
+        reason="S, Aw, Au, w and u are the chunk buffers the backward reads; the "
+        "differentiable reference computes o without materialising them",
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda q, k, v, beta: deltanet_differentiable_fwd_torch(
+            q.float(), k.float(), v.float(), beta.float(), workload.arguments()["chunk_size"]
+        ).to(q.dtype),
+    )
+    fla_layout = dataclasses.replace(
+        chunked, reference=lambda *a, _r=chunked.reference: _r(*a).permute(0, 2, 1, 3).contiguous()
+    )
+    bm.compare(
+        {"tileops": op, "fla": (fla_fwd, ())},
+        *inputs,
+        evidence={"tileops": chunked, "fla": fla_layout},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkBwdOp))
@@ -89,7 +111,30 @@ def test_deltanet_vs_fla_bwd(call) -> None:
         dq, dk, dv, dbeta = fla_backward(do_fla, None)[:4]
         return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), dbeta.transpose(1, 2)
 
-    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
+    autograd = Exact(
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda do, q, k, v, beta, *_saved: tuple(
+            t.to(q.dtype)
+            for t in deltanet_autograd_bwd_torch(
+                do, q, k, v, beta, workload.arguments()["chunk_size"]
+            )
+        ),
+    )
+    bm.compare(
+        {"tileops": bwd_op, "fla": (fla_bwd, ())},
+        do,
+        q,
+        k,
+        v,
+        beta,
+        S,
+        Aw,
+        Au,
+        w,
+        u,
+        evidence={"tileops": autograd, "fla": autograd},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(DeltaNetRecurrentFwdOp))
