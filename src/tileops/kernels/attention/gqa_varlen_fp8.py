@@ -327,24 +327,20 @@ def _gqa_varlen_fp8_ws_kernel(
     block_m = 2 * half_m
     # Threads of the two compute warpgroups, which the turn-passing barriers count.
     compute_threads = 2 * WARPGROUP_THREADS
-    # Every thread of the block, which the claim handshake counts. Barriers 1 and 2 pass
-    # the turn between the compute warpgroups and 3 and 4 close each one's query tile and
-    # epilogue, so the handshake takes the next two.
+    # Named barriers in use: 1 and 2 pass the turn between the compute warpgroups, 3 and
+    # 4 close each one's query tile and epilogue, 5 and 6 bracket the claim.
     block_threads = 3 * WARPGROUP_THREADS
     claim_read_barrier = 5
     claim_write_barrier = 6
-    # Key and value tiles in flight. Three is what the 227 KB an SM90 block may use
-    # holds beside the query and output buffers once the value transpose runs in place;
-    # it is one more than either compute warpgroup needs, which is what lets one of
-    # them be a tile ahead of the other.
+    # Key and value tiles in flight: one more than either compute warpgroup needs, so
+    # one of them can be a tile ahead of the other. A fourth does not fit beside the
+    # query and output buffers; ``_shared_bytes`` is what prices that.
     stages = 3
     # A tile holds the group's query heads side by side, so it spans this many query
     # positions and its causal bound advances once every ``groups`` rows. The tiling
     # therefore counts positions, not rows: FlashAttention-3's ``PackGQA`` traversal.
     positions_per_tile = block_m // groups
     positions_per_half = half_m // groups
-    # The output store walks the same packed rows, so it takes the span as a template
-    # argument rather than a uniform row stride.
     packed_store = f"tl::fp8_fa3_o_smem_store_global_packed_64x128<{positions_per_half}>"
     packed_store_tail = f"tl::fp8_fa3_o_smem_store_global_packed_64x128_tail<{positions_per_half}>"
     attention_scale = dim**-0.5 if sm_scale is None else sm_scale
@@ -455,9 +451,9 @@ def _gqa_varlen_fp8_ws_kernel(
         @T.macro
         def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta):
             """Fill meta for item *work*: KV head, offsets, lengths, first position, key tiles."""
-            # Query tiles are walked from the last one of the call: under the causal
-            # mask a later tile scans more keys, so the longest items start first and
-            # the closing wave carries the short ones.
+            # Items are handed out from the last query tile of the call. Under the causal
+            # mask a later tile scans more keys, so the longest go first and the closing
+            # wave carries the short ones; claiming in the opposite order costs 8%.
             q_tiling.decode(
                 tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row
             )
@@ -505,8 +501,7 @@ def _gqa_varlen_fp8_ws_kernel(
             Claim: T.Tensor([_CLAIM_SLOTS], "int32"),  # type: ignore
             O: T.Tensor([total_q, heads, dim], out_dtype),  # type: ignore
         ) -> None:
-            # Which items a CTA runs follows the order its claims land in, so the block
-            # index names nothing the program reads.
+            # A CTA's items come off the claim counter, so the block index names nothing.
             with T.Kernel(num_ctas, threads=3 * WARPGROUP_THREADS) as _cta:
                 q_shared_1 = T.alloc_shared([half_m, dim], _FP8_DTYPE)
                 q_shared_2 = T.alloc_shared([half_m, dim], _FP8_DTYPE)
@@ -570,8 +565,6 @@ def _gqa_varlen_fp8_ws_kernel(
                 tx = T.get_thread_binding()
                 if tx < 128:
                     T.dec_max_nreg(24)
-                    # Tiles issued and tiles transposed, counted across every item this
-                    # CTA walks, so the slot and the barrier phase follow from them.
                     issued = T.alloc_var("int32", init=0)
                     folded = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=0)
@@ -642,9 +635,8 @@ def _gqa_varlen_fp8_ws_kernel(
                             )
                             T.barrier_arrive(k_full[issued % stages])
                             issued = issued + 1
-                            # The transform runs after both descriptors are out, so a
-                            # tile's transfers are in flight while the previous tile's
-                            # value tile is turned into its operand.
+                            # Both descriptors are out first, so this tile's transfers are
+                            # in flight while the previous tile's value is transformed.
                             if issued - folded >= stages:
                                 transpose_value_tile(
                                     folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
