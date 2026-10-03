@@ -736,6 +736,49 @@ def test_gqa_bwd_regions(heads_kv: int, dim: int, seq_len: int, expected: str) -
     assert GroupedQueryAttentionBwdOp().select_implementation("gqa_bwd", call) == expected
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("dim, dtype", [(24, torch.float16), (40, torch.bfloat16)])
+def test_gqa_bwd_mma_rejects_before_preprocess(
+    monkeypatch: pytest.MonkeyPatch, dim: int, dtype: torch.dtype
+) -> None:
+    """The public op reports an unsupported MMA contraction before compiling preprocess."""
+    import tileops.utils
+
+    test = GroupedQueryAttentionBwdTest(1, 8, 2, 128, dim, True, dtype)
+    inputs = test.gen_inputs()
+    # Only selection runs: emulate SM89 so this regression also runs on SM90 CI.
+    monkeypatch.setattr(tileops.utils, "device_facts", lambda index=None: (89, None, 1, 101376))
+
+    def unexpected_preprocess(*args, **kwargs):
+        pytest.fail("preprocess was compiled before the backward call was rejected")
+
+    monkeypatch.setattr(gqa_bwd, "_flashattn_bwd_preprocess_kernel", unexpected_preprocess)
+    with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
+        GroupedQueryAttentionBwdOp(target=BUILTIN)(*inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_bwd_wgmma_head_dim_16_override() -> None:
+    """A valid 128-thread configuration must not inherit the default's dim-32 restriction."""
+
+    class ConfiguredWgmmaKernel(gqa_bwd.GQABwdWgmmaPipelinedKernel):
+        @property
+        def default_config(self) -> dict:
+            return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128}
+
+    torch.manual_seed(123)
+    test = GroupedQueryAttentionBwdTest(1, 8, 2, 128, 16, True, torch.float16)
+    op = GroupedQueryAttentionBwdOp(
+        target=BUILTIN, kernel_map={"gqa_bwd_kernel": ConfiguredWgmmaKernel}
+    )
+    test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-3)
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke

@@ -24,10 +24,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-_FLOAT_SHAPE = (2, 4, 8)
-_LOGICAL_SHAPE = (2, 4, 8)
-
-
 def _make_float(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(*shape, dtype=dtype, device=run_device())
 
@@ -44,7 +40,9 @@ def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
 def test_sum_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = SumFwdOp()
     y = op(x)
     assert y.shape == torch.sum(x).shape
@@ -54,7 +52,9 @@ def test_sum_default_dim_full_reduction() -> None:
 def test_mean_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = MeanFwdOp()
     y = op(x)
     assert y.shape == torch.mean(x).shape
@@ -64,7 +64,9 @@ def test_mean_default_dim_full_reduction() -> None:
 def test_amax_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = AmaxFwdOp()
     y = op(x)
     assert y.shape == torch.amax(x).shape
@@ -74,7 +76,9 @@ def test_amax_default_dim_full_reduction() -> None:
 def test_amin_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import AminFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = AminFwdOp()
     y = op(x)
     assert y.shape == torch.amin(x).shape
@@ -84,7 +88,9 @@ def test_amin_default_dim_full_reduction() -> None:
 def test_var_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = VarFwdOp()
     y = op(x)
     assert y.shape == torch.var(x).shape
@@ -94,7 +100,9 @@ def test_var_default_dim_full_reduction() -> None:
 def test_std_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = StdFwdOp()
     y = op(x)
     assert y.shape == torch.std(x).shape
@@ -104,7 +112,9 @@ def test_std_default_dim_full_reduction() -> None:
 def test_var_mean_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
-    x = _make_float(_FLOAT_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_float(shape, torch.float16)
     op = VarMeanFwdOp()
     var_out, mean_out = op(x)
     ref_var, ref_mean = torch.var_mean(x)
@@ -116,7 +126,9 @@ def test_var_mean_default_dim_full_reduction() -> None:
 def test_all_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_logical(shape, torch.float16)
     op = AllFwdOp()
     y = op(x)
     assert y.shape == torch.all(x.bool()).shape
@@ -127,7 +139,9 @@ def test_all_default_dim_full_reduction() -> None:
 def test_any_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_logical(shape, torch.float16)
     op = AnyFwdOp()
     y = op(x)
     assert y.shape == torch.any(x.bool()).shape
@@ -138,7 +152,9 @@ def test_any_default_dim_full_reduction() -> None:
 def test_count_nonzero_default_dim_full_reduction() -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_logical(shape, torch.float16)
     op = CountNonzeroFwdOp()
     y = op(x)
     assert y.shape == torch.count_nonzero(x).shape
@@ -153,7 +169,9 @@ def test_count_nonzero_default_dim_full_reduction() -> None:
 def test_all_empty_dim_noop(empty_dim) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_logical(shape, torch.float16)
     op = AllFwdOp(dim=empty_dim)
     y = op(x)
     assert y.shape == x.shape
@@ -166,7 +184,9 @@ def test_all_empty_dim_noop(empty_dim) -> None:
 def test_any_empty_dim_noop(empty_dim) -> None:
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    shape = (2, 4, 8)
+
+    x = _make_logical(shape, torch.float16)
     op = AnyFwdOp(dim=empty_dim)
     y = op(x)
     assert y.shape == x.shape
@@ -187,7 +207,9 @@ def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
     """
     import tileops.ops.reduction.logical_reduce as logical_reduce
 
-    x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
+    shape = (2, 4, 8)
+
+    x = (torch.randint(-1, 2, shape)).to(torch.float16)  # cpu
     op = getattr(logical_reduce, op_name)(dim=[])
 
     out = op(x)

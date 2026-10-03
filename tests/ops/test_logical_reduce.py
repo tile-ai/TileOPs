@@ -453,18 +453,18 @@ def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 # Each uses a single-param fixture so the framework's "exactly 1 smoke per
 # test function" constraint is satisfied while giving broad dtype coverage.
 
-_DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
-
 
 def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
     """Create a single-param smoke fixture for the given dtype."""
+    m = 64
+    n = 512
     dt_name = str(dt).split(".")[-1]
 
     class _Fixture(FixtureBase):
         PARAMS = [
             (
                 "m, n, dtype",
-                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.smoke)],
+                [pytest.param(m, n, dt, marks=pytest.mark.smoke)],
             )
         ]
 
@@ -658,9 +658,6 @@ def test_logical_reduce_autotune() -> None:
 
 # Manifest dtype contract: bool input + int64 / bool output dtypes.
 
-_M = 64
-_N = 256
-
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
@@ -669,12 +666,15 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
     """All / Any must accept bool inputs (manifest dtype contract)."""
     import tileops.ops.reduction as mod
 
+    rows = 64
+    cols = 256
+
     cls = getattr(mod, op_name)
     op = cls(dim=-1)
-    x = torch.randint(0, 2, (_M, _N), device=run_device()).bool()
+    x = torch.randint(0, 2, (rows, cols), device=run_device()).bool()
     out = op(x)
     assert out.dtype == torch.bool
-    assert out.shape == (_M,)
+    assert out.shape == (rows,)
 
 
 @pytest.mark.smoke
@@ -682,8 +682,11 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
 def test_count_nonzero_returns_int64() -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
+    rows = 64
+    cols = 256
+
     op = CountNonzeroFwdOp(dim=-1)
-    x = torch.randn(_M, _N, dtype=torch.float16, device=run_device())
+    x = torch.randn(rows, cols, dtype=torch.float16, device=run_device())
     out = op(x)
     assert out.dtype == torch.int64, f"CountNonzero output dtype {out.dtype} != int64"
 
@@ -694,9 +697,12 @@ def test_count_nonzero_returns_int64() -> None:
 def test_logical_reduce_returns_bool(op_name: str) -> None:
     import tileops.ops.reduction as mod
 
+    rows = 64
+    cols = 256
+
     cls = getattr(mod, op_name)
     op = cls(dim=-1)
-    x = torch.randn(_M, _N, dtype=torch.float16, device=run_device())
+    x = torch.randn(rows, cols, dtype=torch.float16, device=run_device())
     out = op(x)
     assert out.dtype == torch.bool
 

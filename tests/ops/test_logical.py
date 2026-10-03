@@ -75,11 +75,6 @@ def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
 
 # Broadcast pattern tests for binary logical ops (L3)
 
-_BROADCAST_PATTERNS = [
-    ((2, 64, 128), (1, 1, 128)),  # bias-add
-    ((2, 64, 128), (2, 64, 1)),  # row broadcast
-    ((64, 128), (1, 1)),  # scalar broadcast
-]
 
 _LOGICAL_OPS = [
     ("logical_and", LogicalAndFwdOp, torch.logical_and),
@@ -88,23 +83,30 @@ _LOGICAL_OPS = [
 
 
 class LogicalBroadcastFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_name, op_cls, ref_fn, a_shape, b_shape",
-            [
-                pytest.param(
-                    name,
-                    cls,
-                    ref,
-                    a_s,
-                    b_s,
-                    marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
-                )
-                for j, (name, cls, ref) in enumerate(_LOGICAL_OPS)
-                for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        patterns = [
+            ((2, 64, 128), (1, 1, 128)),  # bias-add
+            ((2, 64, 128), (2, 64, 1)),  # row broadcast
+            ((64, 128), (1, 1)),  # scalar broadcast
+        ]
+        return [
+            (
+                "op_name, op_cls, ref_fn, a_shape, b_shape",
+                [
+                    pytest.param(
+                        name,
+                        cls,
+                        ref,
+                        a_s,
+                        b_s,
+                        marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
+                    )
+                    for j, (name, cls, ref) in enumerate(_LOGICAL_OPS)
+                    for i, (a_s, b_s) in enumerate(patterns)
+                ],
+            ),
+        ]
 
 
 @LogicalBroadcastFixture

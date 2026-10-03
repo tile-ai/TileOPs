@@ -12,11 +12,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.test_base import standard_tolerance
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
 pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only]
-
-_ATOL = _RTOL = 1e-3  # fp16, matching the norm op tests
 
 
 @pytest.mark.parametrize(
@@ -54,7 +53,9 @@ def test_affine_multi_row_block(n: int, c: int, spatial: tuple, g: int, block_m:
         bias=bias.float(),
         eps=1e-5,
     ).to(dtype)
-    assert torch.allclose(y, y_ref, atol=_ATOL, rtol=_RTOL), f"max err: {(y - y_ref).abs().max()}"
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+        f"max err: {(y - y_ref).abs().max()}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,4 +91,6 @@ def test_no_affine_multi_row_block(m: int, d: int, block_m: int) -> None:
         .to(dtype)
     )
     assert y.shape == x.shape, f"expected {tuple(x.shape)}, got {tuple(y.shape)}"
-    assert torch.allclose(y, y_ref, atol=_ATOL, rtol=_RTOL), f"max err: {(y - y_ref).abs().max()}"
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+        f"max err: {(y - y_ref).abs().max()}"
+    )

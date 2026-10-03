@@ -7,39 +7,40 @@ import torch
 
 from workloads.device import run_device, run_device_available
 
-_N = 1024 * 16
-
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_float_unary_kernel_rejects_fp8():
     """ReluFwdKernel raises ValueError for fp8 (not in narrowed _FLOAT_DTYPES)."""
+    numel = 1024 * 16
     from tileops.kernels.elementwise import ReluFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        ReluFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+        ReluFwdKernel(N_total=numel, dtype=torch.float8_e4m3fn)
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_bitwise_kernel_rejects_fp8():
     """BitwiseNotFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
+    numel = 1024 * 16
     from tileops.kernels.elementwise import BitwiseNotFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        BitwiseNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+        BitwiseNotFwdKernel(N_total=numel, dtype=torch.float8_e4m3fn)
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_binary_bitwise_kernel_rejects_fp8():
     """BitwiseAndFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
+    numel = 1024 * 16
     from tileops.kernels.elementwise import BitwiseAndFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         BitwiseAndFwdKernel(
-            a_shape=(_N,),
-            b_shape=(_N,),
+            a_shape=(numel,),
+            b_shape=(numel,),
             dtype=torch.float8_e4m3fn,
         )
 
@@ -52,12 +53,13 @@ def test_binary_arith_kernel_rejects_fp8():
     Regression sentinel: prevents MulFwdKernel.SUPPORTED_DTYPES from drifting
     back to a dtype set that admits fp8 (e.g. None or _FLOAT_DTYPES superset).
     """
+    numel = 1024 * 16
     from tileops.kernels.elementwise import MulFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         MulFwdKernel(
-            a_shape=(_N,),
-            b_shape=(_N,),
+            a_shape=(numel,),
+            b_shape=(numel,),
             dtype=torch.float8_e4m3fn,
         )
 
@@ -121,7 +123,8 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
 
 
 def _binary_kwargs(dtype):
-    return {"a_shape": (_N,), "b_shape": (_N,), "dtype": dtype}
+    numel = 1024 * 16
+    return {"a_shape": (numel,), "b_shape": (numel,), "dtype": dtype}
 
 
 @pytest.mark.cuda_only
@@ -200,10 +203,11 @@ def test_logical_binary_family_kernel_rejects_fp8():
 @pytest.mark.smoke
 def test_logical_unary_kernel_rejects_fp8():
     """LogicalNotFwdKernel (LogicalUnaryKernel base) rejects fp8."""
+    numel = 1024 * 16
     from tileops.kernels.elementwise import LogicalNotFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
-        LogicalNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+        LogicalNotFwdKernel(N_total=numel, dtype=torch.float8_e4m3fn)
 
 
 @pytest.mark.cuda_only

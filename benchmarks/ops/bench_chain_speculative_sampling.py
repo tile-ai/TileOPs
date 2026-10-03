@@ -20,13 +20,6 @@ from benchmarks.verification import Custom
 from tileops.sampling import ChainSpeculativeSamplingFwdOp
 from workloads.sampling import ChainSpeculativeSamplingWorkload
 
-# Standard deviations of the difference between two batches of accepted lengths that one is
-# allowed to sit from the other, plus a constant covering the lengths a batch this size
-# expects a handful of. The chain stops where the draws put it, so two implementations of one
-# rule agree on the distribution of that length, never on the batch they drew.
-_LENGTH_SIGMAS = 5.0
-_LENGTH_SLACK = 5.0
-
 
 def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
     """The accepted prefix length of each row of an ``[B, N + 1]`` output padded after the draw.
@@ -40,6 +33,12 @@ def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
 
 def _assert_same_acceptance(result, reference: torch.Tensor, num_draft: int, batch: int) -> None:
     """Accepted lengths distributed as the reference's, length by length, in int32 ``[B, N+1]``."""
+    # Standard deviations of the difference between two batches of accepted lengths that one is
+    # allowed to sit from the other, plus a constant covering the lengths a batch this size
+    # expects a handful of. The chain stops where the draws put it, so two implementations of one
+    # rule agree on the distribution of that length, never on the batch they drew.
+    length_sigmas = 5.0
+    length_slack = 5.0
     tokens = result[0] if isinstance(result, tuple) else result
     assert tokens.shape == (batch, num_draft + 1), tokens.shape
     assert tokens.dtype == torch.int32, tokens.dtype
@@ -48,7 +47,7 @@ def _assert_same_acceptance(result, reference: torch.Tensor, num_draft: int, bat
     want = torch.bincount(reference.long(), minlength=bins).double()
     share = want / batch
     # Two independent batches of the same length distribution, so twice one batch's variance.
-    bound = _LENGTH_SIGMAS * (2 * batch * share * (1 - share)).sqrt() + _LENGTH_SLACK
+    bound = length_sigmas * (2 * batch * share * (1 - share)).sqrt() + length_slack
     assert ((got - want).abs() <= bound).all(), (got, want, bound)
 
 

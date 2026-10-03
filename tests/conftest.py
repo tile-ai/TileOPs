@@ -50,18 +50,16 @@ def setup() -> None:
         torch.cuda.manual_seed_all(1235)
 
 
-# Eight xdist workers share one GPU in CI, and the caching allocator holds every block a worker
-# ever took until it exits, so the card must fit the sum of eight high-water marks. Releasing
-# bounds a worker to its current case; it does not bound eight concurrent cases, a few of which
-# are tens of GiB alone. The threshold is a cost gate, not a limit: zero is equally correct.
-_CACHE_RELEASE_BYTES = 2 << 30
-
-
 def pytest_runtest_teardown() -> None:
     """Return a worker's cached CUDA blocks to the driver, after its fixtures have torn down."""
+    # Eight xdist workers share one GPU in CI, and the caching allocator holds every block a worker
+    # ever took until it exits, so the card must fit the sum of eight high-water marks. Releasing
+    # bounds a worker to its current case; it does not bound eight concurrent cases, a few of which
+    # are tens of GiB alone. The threshold is a cost gate, not a limit: zero is equally correct.
+    cache_release_bytes = 2 << 30
     if not torch.cuda.is_available():
         return
-    if torch.cuda.memory_reserved() < _CACHE_RELEASE_BYTES:
+    if torch.cuda.memory_reserved() < cache_release_bytes:
         return
     gc.collect()
     torch.cuda.empty_cache()

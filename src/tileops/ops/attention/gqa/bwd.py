@@ -113,9 +113,11 @@ class GroupedQueryAttentionBwdOp(Op):
         """
         do = do.contiguous()
         call = self._attention_call(q, k)
+        # Reject unsupported backward calls before compiling or launching preprocess.
+        backward = self.kernel_for("gqa_bwd", call)
         delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(o, do)
         inputs = (q, k, v, do, lse, delta, dq_accum)
-        return self.kernel_for("gqa_bwd", call)(*inputs)
+        return backward(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

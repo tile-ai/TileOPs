@@ -458,7 +458,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
                 <= cap
             ),
             _NARROW,
-        )
+        ).copy()
 
     @property
     def autotune_configs(self) -> list[dict]:

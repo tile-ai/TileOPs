@@ -20,12 +20,6 @@ from benchmarks.verification import Custom
 from tileops.sampling import SamplingFromProbsFwdOp
 from workloads.sampling import SamplingFromProbsWorkload
 
-# Draws the distribution check makes, and the row it makes them from. Six sigma of a
-# binomial count plus a constant that covers the tokens expected a handful of times.
-_DRAWS = 65536
-_TOKENS = 64
-_SIGMAS = 6
-
 
 @pytest.mark.parametrize("call", manifest_calls(SamplingFromProbsFwdOp))
 def test_sampling_from_probs_bench(call) -> None:
@@ -42,19 +36,22 @@ def test_sampling_from_probs_bench(call) -> None:
     # expectation and every zero-weight token undrawn. A candidate that read the row it was
     # handed and then ignored it fails this; the shape and positive-weight checks the timed
     # rows carry would not catch that.
+    draws = 65536
+    num_tokens = 64
+    sigmas = 6
     device = probs.device
     torch.manual_seed(20258)
-    weights = torch.rand(_TOKENS, device=device)
+    weights = torch.rand(num_tokens, device=device)
     weights[::4] = 0
     share = (weights / weights.sum()).double()
-    trial = (weights / weights.sum()).expand(_DRAWS, _TOKENS).contiguous()
-    bound = _SIGMAS * (_DRAWS * share * (1 - share)).sqrt() + 5 * (share > 0)
+    trial = (weights / weights.sum()).expand(draws, num_tokens).contiguous()
+    bound = sigmas * (draws * share * (1 - share)).sqrt() + 5 * (share > 0)
 
     def follows_the_row(draw, tag: str) -> None:
         tokens = draw(trial, seed, offset)
-        assert tokens.shape == (_DRAWS,), tag
-        count = torch.bincount(tokens.long(), minlength=_TOKENS).double()
-        assert ((count - _DRAWS * share).abs() <= bound).all(), (tag, count, _DRAWS * share)
+        assert tokens.shape == (draws,), tag
+        count = torch.bincount(tokens.long(), minlength=num_tokens).double()
+        assert ((count - draws * share).abs() <= bound).all(), (tag, count, draws * share)
 
     def drawn_from(tokens: torch.Tensor, tag: str) -> None:
         assert tokens.shape == (call.ix["B"],), tag

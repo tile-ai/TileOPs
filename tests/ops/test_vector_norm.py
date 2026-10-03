@@ -416,18 +416,17 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
-_DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
-
-
 def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
     """Create a single-param smoke fixture for the given dtype."""
+    m = 64
+    n = 512
     dt_name = str(dt).split(".")[-1]
 
     class _Fixture(FixtureBase):
         PARAMS = [
             (
                 "m, n, dtype",
-                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.smoke)],
+                [pytest.param(m, n, dt, marks=pytest.mark.smoke)],
             )
         ]
 

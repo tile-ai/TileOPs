@@ -40,63 +40,64 @@ class WelfordNonAlignedTest(RandnWorkload, TestBase):
 
 # Fixtures — non-aligned N values (not multiples of 256)
 
-# N values chosen to exercise zero-padding edge cases:
-#   7   — small prime, heavy padding
-#   100 — non-power-of-two, moderate padding
-#   255 — one below alignment boundary
-#   257 — one above alignment boundary
-#   513 — one above 2*256, second tile partially filled
-#   33  — small non-power-of-two, odd padding amount
-_NON_ALIGNED_N = [7, 33, 100, 255, 257, 513]
-
 
 class WelfordNonAlignedFixture(FixtureBase):
     """2D input with non-aligned N values."""
 
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                # One representative smoke case (one above alignment boundary)
-                pytest.param(
-                    32,
-                    257,
-                    torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="m32_n257_fp16",
-                ),
-                pytest.param(
-                    32,
-                    257,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="m32_n257_bf16",
-                ),
-            ]
-            + [
-                pytest.param(
-                    32,
-                    n,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id=f"m32_n{n}_fp16",
-                )
-                for n in _NON_ALIGNED_N
-                if n != 257
-            ]
-            + [
-                pytest.param(
-                    32,
-                    n,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id=f"m32_n{n}_bf16",
-                )
-                for n in _NON_ALIGNED_N
-                if n != 257
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        # N values chosen to exercise zero-padding edge cases:
+        #   7   — small prime, heavy padding
+        #   100 — non-power-of-two, moderate padding
+        #   255 — one below alignment boundary
+        #   257 — one above alignment boundary
+        #   513 — one above 2*256, second tile partially filled
+        #   33  — small non-power-of-two, odd padding amount
+        non_aligned_n = [7, 33, 100, 255, 257, 513]
+        return [
+            (
+                "m, n, dtype",
+                [
+                    # One representative smoke case (one above alignment boundary)
+                    pytest.param(
+                        32,
+                        257,
+                        torch.float16,
+                        marks=pytest.mark.smoke,
+                        id="m32_n257_fp16",
+                    ),
+                    pytest.param(
+                        32,
+                        257,
+                        torch.bfloat16,
+                        marks=pytest.mark.smoke,
+                        id="m32_n257_bf16",
+                    ),
+                ]
+                + [
+                    pytest.param(
+                        32,
+                        n,
+                        torch.float16,
+                        marks=pytest.mark.full,
+                        id=f"m32_n{n}_fp16",
+                    )
+                    for n in non_aligned_n
+                    if n != 257
+                ]
+                + [
+                    pytest.param(
+                        32,
+                        n,
+                        torch.bfloat16,
+                        marks=pytest.mark.full,
+                        id=f"m32_n{n}_bf16",
+                    )
+                    for n in non_aligned_n
+                    if n != 257
+                ],
+            ),
+        ]
 
 
 class WelfordNonAligned3DFixture(FixtureBase):

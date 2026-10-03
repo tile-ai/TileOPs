@@ -96,11 +96,6 @@ def test_bitwise_xor_op(n_total: int) -> None:
 
 # Broadcast pattern tests for binary bitwise ops (L3)
 
-_BROADCAST_PATTERNS = [
-    ((2, 64, 128), (1, 1, 128)),  # bias-add
-    ((2, 64, 128), (2, 64, 1)),  # row broadcast
-    ((64, 128), (1, 1)),  # scalar broadcast
-]
 
 _BITWISE_OPS = [
     ("bitwise_and", BitwiseAndFwdOp, torch.bitwise_and),
@@ -110,23 +105,30 @@ _BITWISE_OPS = [
 
 
 class BitwiseBroadcastFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_name, op_cls, ref_fn, a_shape, b_shape",
-            [
-                pytest.param(
-                    name,
-                    cls,
-                    ref,
-                    a_s,
-                    b_s,
-                    marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
-                )
-                for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
-                for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        patterns = [
+            ((2, 64, 128), (1, 1, 128)),  # bias-add
+            ((2, 64, 128), (2, 64, 1)),  # row broadcast
+            ((64, 128), (1, 1)),  # scalar broadcast
+        ]
+        return [
+            (
+                "op_name, op_cls, ref_fn, a_shape, b_shape",
+                [
+                    pytest.param(
+                        name,
+                        cls,
+                        ref,
+                        a_s,
+                        b_s,
+                        marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
+                    )
+                    for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
+                    for i, (a_s, b_s) in enumerate(patterns)
+                ],
+            ),
+        ]
 
 
 @BitwiseBroadcastFixture

@@ -50,10 +50,6 @@ def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
 
 
-# Big enough that the grid-filling shrink leaves the dtype-driven width alone.
-_WIDE_N = 1 << 24
-
-
 @pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
@@ -67,11 +63,13 @@ _WIDE_N = 1 << 24
 @pytest.mark.parametrize("kernel_cls", INDEPENDENT_KERNELS_SIMPLE)
 def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expected_npt):
     """Representative independent kernels should preserve dtype-driven npt defaults."""
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     with (
         patch.object(kernel_cls, "_build_kernel", return_value=None),
         patch.object(kernel_cls, "init_config"),
     ):
-        kernel = kernel_cls(_WIDE_N, dtype)
+        kernel = kernel_cls(wide_n, dtype)
     assert kernel.default_config["num_per_thread"] == expected_npt
     assert kernel.default_config["threads"] == 256
 
@@ -87,11 +85,13 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
 )
 def test_same_shape_binary_default_npt(kernel_cls, dtype, expected_npt):
     """Same-shape binary threads carry eight elements, at most two vectors; heavy bodies keep one."""
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     with (
         patch.object(kernel_cls, "_build_kernel", return_value=None),
         patch.object(kernel_cls, "init_config"),
     ):
-        kernel = kernel_cls((_WIDE_N,), (_WIDE_N,), dtype)
+        kernel = kernel_cls((wide_n,), (wide_n,), dtype)
     cfg = kernel.default_config
     assert (cfg["strategy"], cfg["num_per_thread"]) == ("register_copy", expected_npt)
 
@@ -112,6 +112,8 @@ def test_multi_input_kernels_take_the_shared_launch_config(dtype, expected_npt):
     They all stage their per-element inputs the way ``register_copy`` does, so none of
     them states a thread count of its own.
     """
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     subclasses = MultiInputElementwiseKernel.__subclasses__()
     assert subclasses, "no several-input kernel was imported"
     for kernel_cls in subclasses:
@@ -120,7 +122,7 @@ def test_multi_input_kernels_take_the_shared_launch_config(dtype, expected_npt):
         kernel = kernel_cls.__new__(kernel_cls)
         kernel.dtype = dtype
         kernel.output_dtype = dtype
-        kernel.N_total = _WIDE_N
+        kernel.N_total = wide_n
         assert kernel.default_config == {"threads": 128, "num_per_thread": expected_npt}, (
             kernel_cls.__name__
         )

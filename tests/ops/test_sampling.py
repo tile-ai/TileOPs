@@ -38,11 +38,6 @@ from workloads.sampling import (
 pytestmark = pytest.mark.smoke
 
 _DTYPES = ["float16", "bfloat16", "float32"]
-_V = 32000
-# k = 1, a k that bf16 ties overrun, k == V and k > V.
-_K = [1, 50, _V, _V + 7]
-# Reference and kernel round the threshold differently; a token this close to it may differ.
-_MARGIN = 1e-4
 _INF = float("inf")
 
 
@@ -63,15 +58,15 @@ def _assert_top_set(masked, logits):
     assert (highest_masked <= lowest_kept).all()
 
 
-def _assert_nucleus(masked, logits, p):
+def _assert_nucleus(masked, logits, p, *, margin):
     """The kept tokens hold at least ``p``, less than ``p`` without their least probable value,
     and every token of that value."""
     _assert_top_set(masked, logits)
     kept = masked != -_INF
     probs = logits.float().softmax(-1)
     lowest = probs.masked_fill(~kept, _INF).amin(-1, keepdim=True)
-    assert ((probs * kept).sum(-1) >= p - _MARGIN).all()
-    assert ((probs * (kept & (probs > lowest))).sum(-1) < p + _MARGIN).all()
+    assert ((probs * kept).sum(-1) >= p - margin).all()
+    assert ((probs * (kept & (probs > lowest))).sum(-1) < p + margin).all()
     # Tokens tied with the least probable kept one are kept with it.
     assert not (~kept & (probs == lowest)).any()
 
@@ -103,13 +98,17 @@ def _tie_at_the_boundary(logits, p):
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_mask(dtype):
-    workload = TopKMaskWorkload(sampling_call("TopKMaskFwdOp", {"T": dtype}, V=_V, k_list=_K))
+    vocab = 32000
+    # k = 1, a k that bf16 ties overrun, k == vocab and k > vocab.
+    workload = TopKMaskWorkload(
+        sampling_call("TopKMaskFwdOp", {"T": dtype}, V=vocab, k_list=[1, 50, vocab, vocab + 7])
+    )
     logits, k = workload.gen_inputs()
     ref = workload.ref_program(logits, k)
     _assert_top_set(ref, logits)
     kept = (ref != -_INF).sum(-1)
-    assert (kept >= k.clamp(max=_V)).all()
-    assert torch.equal(kept[k >= _V], torch.full_like(kept[k >= _V], _V))
+    assert (kept >= k.clamp(max=vocab)).all()
+    assert torch.equal(kept[k >= vocab], torch.full_like(kept[k >= vocab], vocab))
     out = _run(TopKMaskFwdOp(), logits, k)
     assert out.dtype == logits.dtype and torch.equal(out, ref)
 
@@ -177,17 +176,20 @@ def test_top_k_mask_refuses_a_call_int32_cannot_index():
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_min_p_mask(dtype):
-    workload = MinPMaskWorkload(sampling_call("MinPMaskFwdOp", {"T": dtype}, B=4, V=_V))
+    # Allow threshold-rounding differences only for tokens this close to the cutoff.
+    margin = 1e-4
+    vocab = 32000
+    workload = MinPMaskWorkload(sampling_call("MinPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
     logits, min_p = workload.gen_inputs()
     ref = workload.ref_program(logits, min_p)
     _assert_top_set(ref, logits)
     probs = logits.float().softmax(-1)
     relative = probs / probs.amax(-1, keepdim=True) - min_p[:, None]
-    assert (relative[ref == -_INF] < _MARGIN).all() and (relative[ref != -_INF] > -_MARGIN).all()
+    assert (relative[ref == -_INF] < margin).all() and (relative[ref != -_INF] > -margin).all()
     out = _run(MinPMaskFwdOp(), logits, min_p)
     values = logits.float()
     threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
-    _assert_same_mask(out, ref, logits, (values - threshold).abs() <= _MARGIN)
+    _assert_same_mask(out, ref, logits, (values - threshold).abs() <= margin)
 
 
 def test_min_p_mask_rows_without_a_finite_threshold():
@@ -198,7 +200,7 @@ def test_min_p_mask_rows_without_a_finite_threshold():
     of 16-byte vectors, which is read and written element by element.
     """
     device = run_device()
-    for vocab in (_V, 512, 4099):
+    for vocab in (32000, 512, 4099):
         logits = torch.randn(5, vocab, device=device)
         logits[1] = -_INF
         logits[2, vocab // 2] = float("nan")
@@ -211,14 +213,17 @@ def test_min_p_mask_rows_without_a_finite_threshold():
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_p_mask(dtype):
-    workload = TopPMaskWorkload(sampling_call("TopPMaskFwdOp", {"T": dtype}, B=4, V=_V))
+    # Allow threshold-rounding differences only for tokens this close to the cutoff.
+    margin = 1e-4
+    vocab = 32000
+    workload = TopPMaskWorkload(sampling_call("TopPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
     logits, p = workload.gen_inputs()
     _tie_at_the_boundary(logits, p)
     ref = workload.ref_program(logits, p)
-    _assert_nucleus(ref, logits, p)
+    _assert_nucleus(ref, logits, p, margin=margin)
     out = _run(TopPMaskFwdOp(), logits, p)
     above = probability_above(logits.float().softmax(-1))
-    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= _MARGIN)
+    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= margin)
 
 
 @pytest.mark.in_tree_kernels
@@ -240,7 +245,7 @@ def test_top_p_mask_rows_at_the_contract_endpoints():
     """
     device = run_device()
     p = torch.tensor([0.0, 1.0, 0.5], device=device)
-    for vocab in (_V, 512, 4099):
+    for vocab in (32000, 512, 4099):
         logits = torch.randn(3, vocab, device=device)
         out = _run(TopPMaskFwdOp(), logits, p)
         assert (out[0] == -_INF).all(), vocab
@@ -255,17 +260,22 @@ def test_top_p_mask_rows_at_the_contract_endpoints():
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_top_p_mask(dtype):
-    call = sampling_call("TopKTopPMaskFwdOp", {"T": dtype}, V=_V, k_list=_K)
+    # Allow threshold-rounding differences only for tokens this close to the cutoff.
+    margin = 1e-4
+    vocab = 32000
+    call = sampling_call(
+        "TopKTopPMaskFwdOp", {"T": dtype}, V=vocab, k_list=[1, 50, vocab, vocab + 7]
+    )
     workload = TopKTopPMaskWorkload(call)
     logits, k, p = workload.gen_inputs()
     _tie_at_the_boundary(logits, p)
     ref = workload.ref_program(logits, k, p)
     top_k = top_k_mask(logits, k)
     assert ((ref != -_INF) <= (top_k != -_INF)).all()
-    _assert_nucleus(ref, top_k, p)
+    _assert_nucleus(ref, top_k, p, margin=margin)
     out = _run(TopKTopPMaskFwdOp(), logits, k, p)
     above = probability_above(top_k.float().softmax(-1))
-    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= _MARGIN)
+    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= margin)
 
 
 @pytest.mark.parametrize(
@@ -282,6 +292,8 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
     have no finite largest logit once ``k`` leaves them whole, so the reference's
     probabilities are NaN, top-p removes nothing and the kept sets have to agree exactly.
     The NaN row is cut both ways: at a ``k`` that drops its NaNs and at one that keeps them."""
+    # Allow threshold-rounding differences only for tokens this close to the cutoff.
+    margin = 1e-4
     logits = _special_rows(vocab, dtype)
     device = logits.device
     p = torch.tensor([0.9, 0.95, 0.8, 0.95, 0.6, 0.5], dtype=torch.float32, device=device)
@@ -295,7 +307,7 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
         above = probability_above(top_k_mask(logits, k).float().softmax(-1))
         kept = out != -_INF
         # A row of NaN probabilities is near no boundary, so its kept set agrees exactly.
-        assert not (((ref != -_INF) ^ kept) & ~((above - p[:, None]).abs() <= _MARGIN)).any()
+        assert not (((ref != -_INF) ^ kept) & ~((above - p[:, None]).abs() <= margin)).any()
         # Bit patterns, so that -0.0 kept where the reference keeps 0.0 is a failure. A NaN
         # a row keeps comes back as a quiet NaN, not its own payload.
         passed = kept & ~logits.isnan()

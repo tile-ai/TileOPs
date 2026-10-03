@@ -19,11 +19,6 @@ from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import MinPMaskFwdOp
 from workloads.sampling import MinPMaskWorkload
 
-# Disagreement with the reference is allowed only this close to the threshold, as a
-# relative probability: vLLM softmaxes and compares in the logits' dtype, so a token
-# whose probability sits within one rounding of ``min_p`` may fall either way.
-_MARGIN = 2e-2
-
 
 @pytest.mark.parametrize("call", manifest_calls(MinPMaskFwdOp))
 def test_min_p_mask_bench(call) -> None:
@@ -49,7 +44,11 @@ def test_min_p_mask_bench(call) -> None:
 
     relative = logits.float().softmax(-1)
     relative = relative / relative.amax(-1, keepdim=True) - min_p[:, None]
-    near = relative.abs() <= _MARGIN
+    # Disagreement with the reference is allowed only this close to the threshold, as a
+    # relative probability: vLLM softmaxes and compares in the logits' dtype, so a token
+    # whose probability sits within one rounding of ``min_p`` may fall either way.
+    margin = 2e-2
+    near = relative.abs() <= margin
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,

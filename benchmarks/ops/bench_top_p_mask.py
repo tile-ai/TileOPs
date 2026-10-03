@@ -19,18 +19,17 @@ from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import TopPMaskFwdOp
 from workloads.sampling import TopPMaskWorkload, probability_above
 
-# Rows vLLM's Triton path takes: it asserts float32 logits, and it is the path
-# ``apply_top_k_top_p`` chooses at this many rows or more. Below it the sort path runs,
-# which takes the logits' own dtype.
-_VLLM_TRITON_ROWS = 8
-# Disagreement with the reference is allowed only this close to the cut, as probability
-# mass: vLLM's kernel stops its threshold search after a bounded number of rounds, so a
-# token whose above-mass sits within one round of ``p`` may fall either way.
-_MARGIN = 2e-2
-
 
 @pytest.mark.parametrize("call", manifest_calls(TopPMaskFwdOp))
 def test_top_p_mask_bench(call) -> None:
+    # Rows vLLM's Triton path takes: it asserts float32 logits, and it is the path
+    # ``apply_top_k_top_p`` chooses at this many rows or more. Below it the sort path runs,
+    # which takes the logits' own dtype.
+    vllm_triton_rows = 8
+    # Disagreement with the reference is allowed only this close to the cut, as probability
+    # mass: vLLM's kernel stops its threshold search after a bounded number of rounds, so a
+    # token whose above-mass sits within one round of ``p`` may fall either way.
+    margin = 2e-2
     workload = TopPMaskWorkload(call)
     logits, p = workload.gen_inputs()
 
@@ -59,7 +58,7 @@ def test_top_p_mask_bench(call) -> None:
     # A row vLLM cannot take in the manifest's dtype carries no vLLM tag: converting the
     # workload to float32 for it would charge the row half its bytes and return an output
     # of another dtype than the entry declares.
-    if logits.shape[0] < _VLLM_TRITON_ROWS or logits.dtype is torch.float32:
+    if logits.shape[0] < vllm_triton_rows or logits.dtype is torch.float32:
         # vllm masks its argument in place and its threshold search runs longer on an
         # unmasked row: over a 256x128256 float32 row it takes 1863 us on a fresh row
         # against 1131 on one it has already masked. Each call therefore refills a private
@@ -71,7 +70,7 @@ def test_top_p_mask_bench(call) -> None:
         def vllm_mask(logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
             return apply_top_k_top_p(vllm_logits.copy_(logits), None, p)
 
-        near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= _MARGIN
+        near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= margin
         evidence[VLLM_TAG] = Custom(
             logit_mask_validator(logits, near), "mask ties within nucleus rounding boundary"
         )

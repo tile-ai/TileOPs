@@ -35,8 +35,6 @@ pytestmark = pytest.mark.skipif(
 
 _SM90 = 90
 _SM80 = 80
-# Multiprocessors of the board the GLA inference regions are read against.
-_SM_COUNT = 132
 
 
 def _serves(op, call: GemmCall) -> type:
@@ -255,9 +253,11 @@ def test_gla_decode_dispatch(dtype: torch.dtype, expected: str) -> None:
 def _inference_call(
     seq_len: int, varlen: bool = False, dim: int = 64, heads: int = 4, sequences: int = 1
 ) -> GLAInferenceCallSpec:
+    # Multiprocessors of the board the GLA inference regions are read against.
+    sm_count = 132
     return GLAInferenceCallSpec(
         arch=_SM90,
-        sm_count=_SM_COUNT,
+        sm_count=sm_count,
         batch=1,
         seq_len=seq_len,
         heads=heads,

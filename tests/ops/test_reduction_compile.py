@@ -39,8 +39,6 @@ from tileops.ops.reduction import (
 from workloads.device import run_device
 
 _DTYPE = torch.float16
-_ROWS = 8
-_COLS = 256
 
 _OP_CLASSES = (
     SumFwdOp,
@@ -75,7 +73,7 @@ def _x(*shape, dtype=_DTYPE):
 def _cases():
     """One builder per op. Built inside the test, not at import: this module is imported on
     the CPU-only runner that enforces the compile-contract gate."""
-    rows = (_ROWS, _COLS)
+    rows = (8, 256)
 
     def one_tensor(op_cls, *args, **kwargs):
         return lambda: (op_cls(*args, **kwargs), (_x(*rows),))
@@ -106,7 +104,7 @@ def _cases():
         # result must still be a tensor of its own.
         "all-empty-dim-bool": lambda: (
             AllFwdOp(dim=[]),
-            (torch.randint(2, (_ROWS, _COLS), dtype=torch.bool, device=run_device()),),
+            (torch.randint(2, rows, dtype=torch.bool, device=run_device()),),
         ),
         "any": one_tensor(AnyFwdOp, dim=-1),
         # int64 out.
