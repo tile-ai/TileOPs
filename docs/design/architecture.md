@@ -134,12 +134,5 @@ Design documents are authored during development and published alongside auto-ge
 
 The Module reference table above maps each module to its directory (Key Artifact column). Top-level layout: `src/tileops/` (manifest, kernels, ops, perf, and `csrc/` for the C++/CUDA sources kernels compile in), `workloads/`, `tests/`, `benchmarks/`, `docs/`, `scripts/`. This doc does not track the file inventory — consult the tree itself.
 
-Concrete op modules belong to the family named by their manifest entry. A family can be a
-module or a package; within a package, group by algorithm and then by call contract. The
-public import remains `tileops.<family>.<Op>` regardless of the implementation's depth.
-
-Ops, kernels and workloads use the same family and algorithm vocabulary, with file boundaries
-set by each layer's responsibilities. Kernel variants may share a workload, and a shared
-kernel or helper belongs with its implementation's owner even when another family uses it.
-Within an algorithm, distinguish the call's semantics (such as recurrent state or KV-cache
-append) from its implementation strategy (such as warp specialization).
+Ops, kernels and workloads use the manifest's family names; module boundaries follow each
+layer's responsibilities.
