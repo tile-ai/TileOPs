@@ -409,7 +409,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
     # ``draft_token_ids`` indexes a row, so a value outside ``[0, V)`` reads out of bounds.
     autotune_accepts_random_int_inputs: bool = False

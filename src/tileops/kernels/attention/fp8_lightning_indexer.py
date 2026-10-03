@@ -10,6 +10,7 @@ from tilelang import language as T
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.utils import get_shared_memory_optin
 
 __all__ = [
     "FP8LightningIndexerCall",
@@ -317,7 +318,41 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         if clean_logits:
             _clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
+    # Queries a block takes by default, widest first.
+    _BLOCK_QS = (4, 2, 1)
+    _BLOCK_N = 64
+    _NUM_STAGES = 2
+    _THREADS = 128
+
+    @classmethod
+    def applies(cls, call: FP8LightningIndexerCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
+        """Why the call cannot fit the device's shared memory at one query a block, or ``None``."""
+        if not call.smem_budget:
+            return None
+        need = cls._shared_bytes(1, call.heads, call.index_dim, call.kv_group)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs {need} bytes of shared memory per block at {call.heads} heads of dim "
+            f"{call.index_dim} in {call.kv_group} groups; the device gives {call.smem_budget}"
+        )
+
+    @classmethod
+    def _shared_bytes(cls, block_q: int, heads: int, index_dim: int, kv_group: int) -> int:
+        """Shared memory of the default program, a byte an element: the block's queries, a key
+        tile a pipeline stage (one tile at one query, which runs unpipelined), with several
+        groups one group's keys and queries, and a reduction workspace of 4 bytes a thread."""
+        stages = cls._NUM_STAGES if block_q >= _MIN_PIPELINED_BLOCK_Q else 1
+        n = cls._BLOCK_N
+        tiles = block_q * heads * index_dim + stages * n * kv_group * index_dim
+        if kv_group > 1:
+            tiles += n * index_dim + block_q * (heads // kv_group) * index_dim
+        return tiles + 4 * cls._THREADS
 
     @classmethod
     def entry_for(cls, call: FP8LightningIndexerCall) -> Entry:
@@ -373,16 +408,34 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {"block_N": 64, "num_stages": 2, "threads": 128, "block_Q": 4}
+        budget = get_shared_memory_optin(self.device_index)
+        block_q = next(
+            (
+                q
+                for q in self._BLOCK_QS
+                if self._shared_bytes(q, self.heads, self.index_dim, self.kv_group) <= budget
+            ),
+            self._BLOCK_QS[-1],
+        )
+        return {
+            "block_N": self._BLOCK_N,
+            "num_stages": self._NUM_STAGES,
+            "threads": self._THREADS,
+            "block_Q": block_q,
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
         block_N = [32, 64, 128]
         num_stages = [0, 1, 2]
         threads = [128, 256]
-        # Omit block_Q == 1: unsafe to pipeline (above) and never wins.
-        block_Q = [bq for bq in (1, 2, 4) if bq >= _MIN_PIPELINED_BLOCK_Q]
-        _configs = list(itertools.product(block_N, num_stages, threads, block_Q))
+        block_Q = [1, 2, 4]
+        # block_Q == 1 runs unpipelined (above), so it is tried at num_stages 0 alone.
+        _configs = [
+            c
+            for c in itertools.product(block_N, num_stages, threads, block_Q)
+            if c[3] >= _MIN_PIPELINED_BLOCK_Q or c[1] == 0
+        ]
 
         configs = [
             {

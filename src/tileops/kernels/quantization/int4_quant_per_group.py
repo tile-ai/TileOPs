@@ -217,7 +217,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
 class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     """What the two per-group kernels share: the calls they refuse and how they launch."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     # The integer tensors are outputs, written before anything reads them.
     autotune_accepts_random_int_inputs = True
 

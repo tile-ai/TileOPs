@@ -325,7 +325,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
 
     # Threads of a block. Fixed rather than fitted: it is one of the two group sizes the

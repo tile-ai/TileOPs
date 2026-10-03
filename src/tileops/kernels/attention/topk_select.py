@@ -375,7 +375,7 @@ class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
             batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype
         )(BLOCK_SIZE)(index_score, starts, ends)
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: TopkSelectorCall) -> Entry:

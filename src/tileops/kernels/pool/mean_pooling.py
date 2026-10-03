@@ -208,7 +208,7 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
         return pooled.view(batch_size, chunks_per_batch, heads, dim)
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: MeanPoolingCall) -> Entry:

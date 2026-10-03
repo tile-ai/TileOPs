@@ -10,6 +10,7 @@ import torch
 
 from tileops.backend import OpNotAvailableError
 from tileops.kernels.sampling import SamplingCall
+from tileops.kernels.sampling.radix_select import cluster_plan
 from tileops.sampling import (
     ChainSpeculativeSamplingFwdOp,
     MinPMaskFwdOp,
@@ -311,6 +312,23 @@ def test_top_k_top_p_mask_selects_its_one_implementation():
     wide = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
     with pytest.raises(ValueError, match="B \\* V"):
         op.select_implementation("top_k_top_p_mask_fwd", wide)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("op", "name"),
+    [(TopKMaskFwdOp, "top_k_mask_fwd"), (TopKTopPMaskFwdOp, "top_k_top_p_mask_fwd")],
+)
+def test_top_k_masks_keep_a_row_in_one_cta_below_sm90(op, name):
+    """A 128256-wide bfloat16 row fits one CTA of 16 slots; a 262144-wide one needs a cluster."""
+    row = {"sm_count": 128, "batch": 1, "dtype": torch.bfloat16}
+    kernel = op.kernel_types[name]
+    llama = SamplingCall(arch=89, vocab=128256, **row)
+    assert op().select_implementation(name, llama) == name
+    assert cluster_plan(llama, kernel._THREADS, kernel._MAX_SLOTS)["cluster"] == 1
+    assert op().select_implementation(name, SamplingCall(arch=90, vocab=262144, **row)) == name
+    with pytest.raises(ValueError, match="holds a row"):
+        op().select_implementation(name, SamplingCall(arch=89, vocab=262144, **row))
 
 
 @pytest.mark.in_tree_kernels

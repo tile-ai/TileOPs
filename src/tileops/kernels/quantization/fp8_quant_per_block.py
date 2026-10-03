@@ -187,7 +187,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
 class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
     """What the two tile kernels share: the calls they refuse and how they launch."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
 
     _aligned: ClassVar[bool]
 

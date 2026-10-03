@@ -347,7 +347,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
 
     # Threads of a block, one block per SM so that a split row's barriers have the grid

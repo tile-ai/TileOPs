@@ -152,7 +152,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
             batch, seq_len_kv, kv_group, index_dim
         )
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
 
     # This kernel's launch, not the device's. A block reducing a row across its threads
     # runs _LANE_THREADS of them; a block reducing a row inside one thread runs _ROW_THREADS.

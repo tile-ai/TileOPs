@@ -435,7 +435,7 @@ class _INT8QuantPerRowKernel(Kernel):
     correctly rounded.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     # The one integer tensor is ``q``, written before anything reads it.
     autotune_accepts_random_int_inputs = True
 
