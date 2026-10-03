@@ -18,6 +18,7 @@ from tileops.kernels.attention import (
     GQAVarlenFP8FwdKernel,
 )
 from tileops.kernels.attention.gqa.decode import (
+    gqa_decode_no_split_kernel,
     gqa_decode_no_split_run,
     gqa_decode_split_run,
 )
@@ -406,6 +407,69 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     kernels = list(op.iter_kernels())
     assert len(kernels) == 1
     assert isinstance(kernels[0], kernel_type)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, dtype, rope_layout, rotary_dim, num_stages",
+    [
+        pytest.param(1, torch.float16, "neox", 64, 2, id="bs1-fp16-neox-partial"),
+        pytest.param(1, torch.bfloat16, "interleaved", 64, 3, id="bs1-bf16-interleaved-partial"),
+        pytest.param(2, torch.float16, "neox", 128, 3, id="batched-fp16-neox-full"),
+        pytest.param(2, torch.bfloat16, "interleaved", 128, 2, id="batched-bf16-interleaved-full"),
+    ],
+)
+def test_gqa_rope_no_split_pipeline_matches_reference(
+    batch: int, dtype: torch.dtype, rope_layout: str, rotary_dim: int, num_stages: int
+) -> None:
+    """Exercise ring reuse and masked tails; also run this test under CUDA synccheck/racecheck."""
+    heads, heads_kv, dim = 8, 2, 128
+    seq_lens = (127, 128, 129, 271, 641)
+    angles = torch.randn(max(seq_lens), rotary_dim // 2, device="cuda") * 0.1
+    rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
+    kernel = gqa_decode_no_split_kernel(
+        batch,
+        heads,
+        heads_kv,
+        dim,
+        dim**-0.5,
+        0.0,
+        str(dtype).removeprefix("torch."),
+        True,
+        max(seq_lens),
+        rotary_dim,
+        rope_layout,
+    )(64, 128, num_stages, 128)
+
+    for seq_len in seq_lens:
+        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
+        k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=dtype)
+        v = torch.randn_like(k)
+        q_ref = apply_dense_rope(
+            q,
+            torch.tensor([seq_len - 1], device="cuda"),
+            rope_cos,
+            rope_sin,
+            rotary_dim=rotary_dim,
+            layout=rope_layout,
+        )
+        k_ref = apply_dense_rope(
+            k,
+            torch.arange(seq_len, device="cuda"),
+            rope_cos,
+            rope_sin,
+            rotary_dim=rotary_dim,
+            layout=rope_layout,
+        )
+        output = kernel(q.squeeze(1), k, v, rope_cos, rope_sin).unsqueeze(1)
+        torch.testing.assert_close(
+            output,
+            dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+            atol=1.6e-2 if dtype == torch.bfloat16 else 5e-3,
+            rtol=1.6e-2 if dtype == torch.bfloat16 else 1e-5,
+        )
 
 
 @pytest.mark.smoke
