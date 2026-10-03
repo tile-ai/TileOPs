@@ -8,6 +8,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
+    GQABwdMmaKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -17,6 +18,7 @@ from tileops.kernels.attention import (
     GQADenseWsKernel,
     GQAVarlenFP8FwdKernel,
 )
+from tileops.kernels.attention.gqa import bwd as gqa_bwd
 from tileops.kernels.attention.gqa.decode import (
     gqa_decode_no_split_kernel,
     gqa_decode_no_split_run,
@@ -33,6 +35,7 @@ from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
 from workloads.attention.gqa.dense import dense_gqa_ref
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenScaledWorkload
+from workloads.device import run_device
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
@@ -853,3 +856,68 @@ def test_gqa_varlen_regions(
             op.select_implementation("gqa_varlen", call)
     else:
         assert op.select_implementation("gqa_varlen", call) == expected
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("budget", "dim", "block_n"),
+    [
+        pytest.param(101376, 128, 32, id="sm89-d128"),
+        pytest.param(101376, 256, 16, id="sm89-d256"),
+        pytest.param(101376, 272, None, id="sm89-d272-refused"),
+        pytest.param(166912, 192, 32, id="sm80-d192"),
+    ],
+)
+def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
+    monkeypatch: pytest.MonkeyPatch, budget: int, dim: int, block_n: Optional[int]
+) -> None:
+    """The query block and the refusal each follow their bound at a budget."""
+    from tileops.kernels.attention.call_spec import AttentionCall
+
+    call = AttentionCall(
+        arch=89,
+        sm_count=1,
+        smem_budget=budget,
+        dtype=torch.float16,
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        dim=dim,
+        max_seqlen_q=1024,
+        seqlen_kv=1024,
+        is_causal=True,
+    )
+    if block_n is None:
+        assert "needs at least" in GQABwdMmaKernel.refusal(call)
+        return
+    assert GQABwdMmaKernel.refusal(call) is None
+    monkeypatch.setattr(GQABwdMmaKernel, "_check_arch", lambda self: None)
+    monkeypatch.setattr(gqa_bwd, "get_shared_memory_optin", lambda index=None: budget)
+    kernel = GQABwdMmaKernel(1, 8, 2, 1024, dim, True, torch.float16)
+    assert kernel.config["block_n"] == block_n
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_bwd_mma_builds_per_device() -> None:
+    """The default reads the device's shared memory, so each device builds its own kernel."""
+    from tileops.kernels.attention.call_spec import AttentionCall
+
+    shape = {"dtype": torch.float16, "batch": 1, "heads": 8, "heads_kv": 8, "dim": 288}
+    shape |= {"max_seqlen_q": 1024, "seqlen_kv": 1024, "is_causal": True}
+    first, _ = GQABwdMmaKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 0)))
+    second, _ = GQABwdMmaKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 1)))
+    assert first != second
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("heads_kv", [8, 2])
+def test_gqa_bwd_mma_head_dim_256(heads_kv: int) -> None:
+    """Head dim 256 takes 16-row query blocks on 99 KB of shared memory."""
+    if get_sm_version(torch.device(run_device()).index) not in GQABwdMmaKernel.supported_archs:
+        pytest.skip("the MMA backward serves SM80, SM86 and SM89")
+    test = GroupedQueryAttentionBwdTest(1, 8, heads_kv, 512, 256, True, torch.float16)
+    op = GroupedQueryAttentionBwdOp(True)
+    test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-3)

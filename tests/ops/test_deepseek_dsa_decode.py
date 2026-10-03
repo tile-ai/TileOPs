@@ -5,6 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
+from tileops.kernels.attention.dsa import decode as dsa_decode
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DsaDecodeWorkload
 from workloads.device import run_device
@@ -153,13 +154,12 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
 
 
 @pytest.mark.smoke
-def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
-    """64 heads per block at d=512 need at least 100 KB on SM89, over its 99 KB.
-
-    A call that fits once TileLang reuses buffer space is not refused (16 heads at d=1024
-    compile to 99,840 bytes on SM89). The region is sized for the default config whether or
-    not the op tunes: at d=1024 on SM90 it needs at least 264 KB.
-    """
+def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On SM89 the heads per block and the refusal follow the default config's shared memory,
+    tuned or not: 16 heads at d=1024 with a 16-wide tail take 99,840 bytes over one KV tile
+    (topk 32), served, and 101,888 over two (topk 64), refused."""
     call = SparseMlaCall(
         arch=89,
         sm_count=1,
@@ -173,13 +173,18 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
         topk=2048,
         kv_stride=1,
     )
-    assert "shared memory" in SparseMlaBasicKernel.refusal(call)
-    assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, heads=32)) is None
+    monkeypatch.setattr(SparseMlaBasicKernel, "_check_arch", lambda self: None)
+    monkeypatch.setattr(dsa_decode, "get_sm_version", lambda index=None: 89)
+    for tail_dim, block_h in ((64, 32), (512, 16)):
+        assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, tail_dim=tail_dim)) is None
+        kernel = SparseMlaBasicKernel(1, 1, 2048, 64, 512, tail_dim, torch.float16, 2048, 1, 2047)
+        assert kernel.config["block_h"] == block_h
     tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
     assert SparseMlaBasicKernel.refusal(tight) is None
+    assert "101888" in SparseMlaBasicKernel.refusal(dataclasses.replace(tight, topk=64))
     assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
-    wide = dataclasses.replace(call, arch=90, dim=1024)
-    assert "shared memory" in SparseMlaBasicKernel.refusal(wide)
+    for wide in (dataclasses.replace(call, dim=2048), dataclasses.replace(call, tail_dim=1024)):
+        assert "shared memory" in SparseMlaBasicKernel.refusal(wide)
 
 
 @pytest.mark.smoke

@@ -216,7 +216,7 @@ def _nsa_topk_varlen_kernel(
 
 
 class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
     def entry_for(cls, call: NSACall) -> Entry:

@@ -9,8 +9,57 @@ import torch
 from tileops.kernels.attention.call_spec import MlaDecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
-__all__ = ["MLADecodeWsKernel"]
+__all__ = ["MLADecodeMmaKernel", "MLADecodeWsKernel"]
+
+
+def _split_combine(batch, heads, num_split, dim, dtype, lse_dtype):
+    """Merge the splits' partial outputs, each weighted by its share of the log-sum-exp."""
+    accum_dtype = "float"
+
+    @T.macro
+    def combine(
+        glse: T.Tensor([batch, heads, num_split], lse_dtype),
+        Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
+        Output: T.Tensor([batch, heads, dim], dtype),
+    ):
+        with T.Kernel(heads, batch, threads=128) as (hid, bz):
+            po_local = T.alloc_fragment([dim], dtype)
+            o_accum_local = T.alloc_fragment([dim], accum_dtype)
+            lse_local_split = T.alloc_local([1], accum_dtype)
+            lse_logsum_local = T.alloc_local([1], accum_dtype)
+            lse_max_local = T.alloc_local([1], accum_dtype)
+            scale_local = T.alloc_local([1], accum_dtype)
+
+            T.annotate_layout(
+                {
+                    lse_logsum_local: T.Fragment(
+                        lse_logsum_local.shape, forward_thread_fn=lambda i: i
+                    ),
+                }
+            )
+
+            T.clear(lse_logsum_local)
+            T.clear(o_accum_local)
+            lse_max_local[0] = -T.infinity(accum_dtype)
+            for k in T.serial(num_split):
+                lse_max_local[0] = T.max(lse_max_local[0], glse[bz, hid, k])
+            for k in T.Pipelined(num_split, num_stages=1):
+                lse_local_split[0] = glse[bz, hid, k]
+                lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_max_local[0])
+            lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_max_local[0]
+            for k in T.serial(num_split):
+                for i in T.Parallel(dim):
+                    po_local[i] = Output_partial[bz, hid, k, i]
+                lse_local_split[0] = glse[bz, hid, k]
+                scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
+                for i in T.Parallel(dim):
+                    o_accum_local[i] += po_local[i] * scale_local[0]
+            for i in T.Parallel(dim):
+                Output[bz, hid, i] = o_accum_local[i]
+
+    return combine
 
 
 @functools.lru_cache(maxsize=32)
@@ -556,46 +605,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         )
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
-        @T.macro
-        def combine(
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
-            Output: T.Tensor([batch, heads, dim], dtype),
-        ):
-            with T.Kernel(heads, batch, threads=128) as (hid, bz):
-                po_local = T.alloc_fragment([dim], dtype)
-                o_accum_local = T.alloc_fragment([dim], accum_dtype)
-                lse_local_split = T.alloc_local([1], accum_dtype)
-                lse_logsum_local = T.alloc_local([1], accum_dtype)
-                lse_max_local = T.alloc_local([1], accum_dtype)
-                scale_local = T.alloc_local([1], accum_dtype)
-
-                T.annotate_layout(
-                    {
-                        lse_logsum_local: T.Fragment(
-                            lse_logsum_local.shape, forward_thread_fn=lambda i: i
-                        ),
-                    }
-                )
-
-                T.clear(lse_logsum_local)
-                T.clear(o_accum_local)
-                lse_max_local[0] = -T.infinity(accum_dtype)
-                for k in T.serial(num_split):
-                    lse_max_local[0] = T.max(lse_max_local[0], glse[bz, hid, k])
-                for k in T.Pipelined(num_split, num_stages=1):
-                    lse_local_split[0] = glse[bz, hid, k]
-                    lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_max_local[0])
-                lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_max_local[0]
-                for k in T.serial(num_split):
-                    for i in T.Parallel(dim):
-                        po_local[i] = Output_partial[bz, hid, k, i]
-                    lse_local_split[0] = glse[bz, hid, k]
-                    scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
-                    for i in T.Parallel(dim):
-                        o_accum_local[i] += po_local[i] * scale_local[0]
-                for i in T.Parallel(dim):
-                    Output[bz, hid, i] = o_accum_local[i]
+        combine = _split_combine(batch, heads, num_split, dim, dtype, dtype)
 
         @T.prim_func
         def main_split(
@@ -630,8 +640,158 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     return _mla_decode_ws_func
 
 
+@functools.lru_cache(maxsize=32)
+def _mla_decode_mma_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype="float16"):
+    sm_scale = (1.0 / (dim + pe_dim)) ** 0.5 * LOG2E
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[6],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _mla_decode_mma_func(block_H, block_N, num_split, num_stages, threads=128):
+        # A length that does not fill every tile masks the keys past its split's end; loads
+        # past the cache read zero.
+        kv_per_split = tilelang.cdiv(seqlen_kv, num_split)
+        ragged = seqlen_kv % (num_split * block_N) != 0
+        may_leave_a_split_empty = (num_split - 1) * kv_per_split >= seqlen_kv
+
+        @T.macro
+        def flash_attn(
+            Q: T.Tensor([batch, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
+            K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
+            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
+            Output: T.Tensor([batch, heads, dim], dtype),
+        ):
+            # Head blocks vary fastest, so the blocks reading one request's cache run together.
+            with T.Kernel(T.ceildiv(heads, block_H), batch, num_split, threads=threads) as (
+                hid,
+                bid,
+                bz,
+            ):
+                Q_shared = T.alloc_shared([block_H, dim], dtype)
+                Q_pe_shared = T.alloc_shared([block_H, pe_dim], dtype)
+                KV_shared = T.alloc_shared([block_N, dim], dtype)
+                K_pe_shared = T.alloc_shared([block_N, pe_dim], dtype)
+                S_shared = T.alloc_shared([block_H, block_N], dtype)
+                O_shared = Q_shared
+
+                acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
+                acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
+                sumexp = T.alloc_fragment([block_H], accum_dtype)
+                sumexp_i = T.alloc_fragment([block_H], accum_dtype)
+                alpha = T.alloc_fragment([block_H], accum_dtype)
+                m_i = T.alloc_fragment([block_H], accum_dtype)
+                m_i_prev = T.alloc_fragment([block_H], accum_dtype)
+
+                kv_start = kv_per_split * bz
+                kv_end = T.min(kv_start + kv_per_split, seqlen_kv)
+
+                T.copy(Q[bid, hid * block_H : (hid + 1) * block_H, :], Q_shared)
+                T.copy(Q_pe[bid, hid * block_H : (hid + 1) * block_H, :], Q_pe_shared)
+                T.fill(sumexp, 0)
+                T.fill(m_i, -(2**30))  # avoid -inf - inf to cause nan
+                T.fill(acc_o, 0)
+
+                for k in T.Pipelined(T.ceildiv(kv_per_split, block_N), num_stages=num_stages):
+                    tile_start = kv_start + k * block_N
+                    T.copy(KV[bid, tile_start : tile_start + block_N, 0, :], KV_shared)
+                    T.copy(K_pe[bid, tile_start : tile_start + block_N, 0, :], K_pe_shared)
+                    if ragged:
+                        for h_i, n_i in T.Parallel(block_H, block_N):
+                            acc_s[h_i, n_i] = T.if_then_else(
+                                tile_start + n_i < kv_end, 0, -T.infinity(accum_dtype)
+                            )
+                    else:
+                        T.clear(acc_s)
+                    T.gemm(
+                        Q_shared,
+                        KV_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullCol,
+                    )
+                    T.gemm(
+                        Q_pe_shared,
+                        K_pe_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullCol,
+                    )
+
+                    T.copy(m_i, m_i_prev)
+                    T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                    for h_i in T.Parallel(block_H):
+                        alpha[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
+                    for h_i, n_i in T.Parallel(block_H, block_N):
+                        acc_s[h_i, n_i] = T.exp2(acc_s[h_i, n_i] * sm_scale - m_i[h_i] * sm_scale)
+                    T.reduce_sum(acc_s, sumexp_i, dim=1)
+                    for h_i in T.Parallel(block_H):
+                        sumexp[h_i] = sumexp[h_i] * alpha[h_i] + sumexp_i[h_i]
+                    for h_i, d_i in T.Parallel(block_H, dim):
+                        acc_o[h_i, d_i] *= alpha[h_i]
+
+                    T.copy(acc_s, S_shared)
+                    T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+
+                if num_split == 1:
+                    for h_i, d_i in T.Parallel(block_H, dim):
+                        acc_o[h_i, d_i] /= sumexp[h_i]
+                    T.copy(acc_o, O_shared)
+                    T.copy(O_shared, Output[bid, hid * block_H : (hid + 1) * block_H, :])
+                else:
+                    if may_leave_a_split_empty:
+                        # An empty split has no key to divide by; its zero weight in the combine
+                        # needs a finite partial.
+                        for h_i, d_i in T.Parallel(block_H, dim):
+                            acc_o[h_i, d_i] = T.if_then_else(
+                                sumexp[h_i] > 0, acc_o[h_i, d_i] / sumexp[h_i], 0
+                            )
+                    else:
+                        for h_i, d_i in T.Parallel(block_H, dim):
+                            acc_o[h_i, d_i] /= sumexp[h_i]
+                    for h_i in T.Parallel(block_H):
+                        sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
+                    T.copy(sumexp, glse[bid, hid * block_H : (hid + 1) * block_H, bz])
+                    T.copy(acc_o, O_shared)
+                    T.copy(
+                        O_shared, Output_partial[bid, hid * block_H : (hid + 1) * block_H, bz, :]
+                    )
+
+        # The split log-sum-exps stay in float32; rounded to the operand type they would
+        # shift each split's weight in the combine.
+        combine = _split_combine(batch, heads, num_split, dim, dtype, accum_dtype)
+
+        @T.prim_func
+        def main(
+            Q: T.Tensor([batch, heads, dim], dtype),
+            Q_pe: T.Tensor([batch, heads, pe_dim], dtype),
+            KV: T.Tensor([batch, seqlen_kv, kv_head_num, dim], dtype),
+            K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
+            Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
+            Output: T.Tensor([batch, heads, dim], dtype),
+        ):
+            flash_attn(Q, Q_pe, KV, K_pe, glse, Output_partial, Output)
+            if num_split > 1:
+                combine(glse, Output_partial, Output)
+
+        return main
+
+    return _mla_decode_mma_func
+
+
 class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
     supported_archs: list[int] = [90]
+    # Where both run, a caller's replacement of this key wins over the MMA kernel.
+    preferred_over = frozenset({"mla_decode_mma_kernel"})
+    _build = staticmethod(_mla_decode_ws_kernel)
 
     @classmethod
     def applies(cls, call: MlaDecodeCall) -> bool:
@@ -686,7 +846,7 @@ class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
         self.pe_dim = pe_dim
         self.dtype = dtype
 
-        self.kernel = _mla_decode_ws_kernel(
+        self.kernel = self._build(
             self.batch,
             self.heads,
             self.kv_head_num,
@@ -697,6 +857,10 @@ class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
         )
 
         self.init_config(config, tune)
+
+    @property
+    def lse_dtype(self) -> torch.dtype:
+        return self.dtype
 
     @property
     def default_config(self) -> dict:
@@ -737,25 +901,105 @@ class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
                 (self.batch, self.heads, self.dim), dtype=self.dtype, device=q.device
             )
         glse = torch.empty(
-            (self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=q.device
+            (self.batch, self.heads, self.config["num_split"]),
+            dtype=self.lse_dtype,
+            device=q.device,
         )
         Output_partial = torch.empty(
             (self.batch, self.heads, self.config["num_split"], self.dim),
             dtype=self.dtype,
             device=q.device,
         )
-        return _mla_decode_ws_kernel(
-            self.batch,
-            self.heads,
-            self.kv_head_num,
-            self.seqlen_kv,
-            self.dim,
-            self.pe_dim,
-            self.dtype_str,
-        )(
+        return self.kernel(
             self.config["block_H"],
             self.config["block_N"],
             self.config["num_split"],
             self.config["num_stages"],
             self.config["threads"],
         )(q, q_pe, k, k_pe, glse, Output_partial)
+
+
+class MLADecodeMmaKernel(MLADecodeWsKernel):
+    """The same decode on MMA, for GPUs without WGMMA."""
+
+    supported_archs: list[int] = [80, 86, 89]
+    preferred_over = frozenset()
+    _build = staticmethod(_mla_decode_mma_kernel)
+    # Head rows of the default block, widest first, over a 32-key tile and four warps.
+    _BLOCK_HS = (32, 16)
+    _BLOCK_N = 32
+    _THREADS = 128
+    _NUM_SPLIT = 2
+
+    @classmethod
+    def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
+        """Why *call* is outside the shapes this schedule serves. An empty cache builds no program;
+        otherwise shared memory is read at the narrowest head block."""
+        if call.heads_kv != 1:
+            return f"serves one KV head, got {call.heads_kv}"
+        if call.seqlen_kv == 0:
+            return None
+        if call.pe_dim % 16 != 0:
+            return f"the score GEMM steps pe_dim by 16, got {call.pe_dim}"
+        # The output GEMM splits dim over the four warps, 8 columns at a time; TileLang lays a
+        # warp's share out only up to 32 columns, or in multiples of 32.
+        if call.dim % 32 != 0 or (call.dim > 128 and call.dim % 128 != 0):
+            return f"dim must be a multiple of 32 up to 128, or of 128 past it; got {call.dim}"
+        need = cls._shared_bytes(
+            cls._BLOCK_HS[-1], call.dim, call.pe_dim, call.dtype.itemsize, call.seqlen_kv
+        )
+        if call.smem_budget and need > call.smem_budget:
+            return (
+                f"needs {need} bytes of shared memory per block at dim {call.dim}, "
+                f"pe_dim {call.pe_dim} in {call.dtype}; the device gives {call.smem_budget}"
+            )
+        return None
+
+    @property
+    def lse_dtype(self) -> torch.dtype:
+        return torch.float32
+
+    @property
+    def default_config(self) -> dict:
+        budget = get_shared_memory_optin(self.device_index)
+        itemsize = self.dtype.itemsize
+        block_h = next(
+            (
+                h
+                for h in self._BLOCK_HS
+                if self._shared_bytes(h, self.dim, self.pe_dim, itemsize, self.seqlen_kv) <= budget
+            ),
+            self._BLOCK_HS[-1],
+        )
+        return {
+            "block_H": block_h,
+            "block_N": self._BLOCK_N,
+            "num_split": self._NUM_SPLIT,
+            "num_stages": 1,
+            "threads": self._THREADS,
+        }
+
+    @classmethod
+    def _shared_bytes(
+        cls, block_h: int, dim: int, pe_dim: int, itemsize: int, seqlen_kv: int
+    ) -> int:
+        """Shared memory of the default program: the query and key rows with their rope parts and
+        the scores, plus the two reductions' workspaces of 4 bytes a thread, which TileLang folds
+        into freed space when a split runs one key tile (both) or two (one)."""
+        n = cls._BLOCK_N
+        tiles = tilelang.cdiv(tilelang.cdiv(seqlen_kv, cls._NUM_SPLIT), n)
+        workspaces = max(min(tiles, 3) - 1, 0)
+        return (
+            (block_h + n) * (dim + pe_dim) * itemsize
+            + block_h * n * itemsize
+            + workspaces * 4 * cls._THREADS
+        )
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # Four warps: with eight, or a 16-key tile, the score and output GEMMs split the
+        # head rows differently and the row statistics have no common layout.
+        return [
+            {"block_H": h, "block_N": n, "num_split": s, "num_stages": st, "threads": 128}
+            for h, n, s, st in itertools.product([16, 32], [32, 64], [1, 2, 4], [1, 2])
+        ]

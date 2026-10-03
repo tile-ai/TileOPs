@@ -151,7 +151,7 @@ def _nsa_cmp_fwd_varlen_kernel(
 
 
 class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     # Chunks one tile holds.
     _BC = 32
 

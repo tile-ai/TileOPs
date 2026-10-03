@@ -7,6 +7,7 @@ from tileops.kernels.attention.fp8_lightning_indexer import (
 )
 from tileops.kernels.attention.gqa.bwd import (
     FlashAttnBwdPreprocessKernel,
+    GQABwdMmaKernel,
     GQABwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.attention.gqa.decode import GQADecodeKernel, GQADecodeLongContextKernel
@@ -33,7 +34,7 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
 )
 from tileops.kernels.attention.mha.bwd_ws import MHABwdWsKernel
 from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWsKernel
-from tileops.kernels.attention.mla.decode import MLADecodeWsKernel
+from tileops.kernels.attention.mla.decode import MLADecodeMmaKernel, MLADecodeWsKernel
 from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKernel
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
 from tileops.kernels.attention.nsa.compressed_varlen import NSACmpFwdVarlenKernel
@@ -48,6 +49,7 @@ from tileops.kernels.attention.varlen_rope import VarlenKeyRoPE
 
 __all__ = [
     "FlashAttnBwdPreprocessKernel",
+    "GQABwdMmaKernel",
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
@@ -69,6 +71,7 @@ __all__ = [
     "GQAVarlenFP8WSFwdKernel",
     "MHABwdWsKernel",
     "MHADecodePagedWsKernel",
+    "MLADecodeMmaKernel",
     "MLADecodeWsKernel",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",

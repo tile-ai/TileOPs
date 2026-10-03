@@ -2,6 +2,7 @@
 
 from tileops.kernels.attention.gqa.bwd import (
     FlashAttnBwdPreprocessKernel,
+    GQABwdMmaKernel,
     GQABwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.attention.gqa.decode import (
@@ -51,6 +52,7 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
 
 __all__ = [
     "FlashAttnBwdPreprocessKernel",
+    "GQABwdMmaKernel",
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
