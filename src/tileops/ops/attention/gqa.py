@@ -15,6 +15,7 @@ from tileops.kernels.attention import (
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
+    GQAPagedVarlenFwdKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
@@ -566,16 +567,17 @@ class GroupedQueryAttentionPagedFwdOp(Op):
     Packed Q and its cumulative sequence lengths cover both prefill and decode.
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
-    remain runtime responsibilities. The in-tree kernels serve a call in which
-    every request carries the same number of query tokens, Q and KV share a
-    float16 or bfloat16 dtype, and no window, RoPE or FP8 is requested; they
-    refuse any other call.
+    remain runtime responsibilities. The in-tree kernels serve a call in which Q
+    and the cache share a float16 or bfloat16 dtype, over any positive page size
+    and any mix of per-request query lengths, a request with no query token
+    included; they refuse RoPE and FP8.
     """
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
+        "gqa_paged_varlen_kernel": GQAPagedVarlenFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
@@ -746,7 +748,14 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
         call = self.paged_call(q, k_pages, page_table, cu_seqlens_q)
-        inputs = (q, k_pages.flatten(0, 1), v_pages.flatten(0, 1), cache_seqlens, page_table)
+        inputs = (
+            q,
+            k_pages.flatten(0, 1),
+            v_pages.flatten(0, 1),
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+        )
         return self.kernel_for("gqa_paged", call)(*inputs)
 
 

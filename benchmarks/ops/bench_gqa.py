@@ -471,42 +471,85 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     bm.compare(functors, *inputs)
 
 
-def _fa3_gqa_paged_decode(workload):
-    """FA3 over the same pages, scale and softcap, or None where it cannot serve the row.
+def _fa3_gqa_paged(workload):
+    """FA3 over the same pages, window, scale and softcap, or None when FA3 is not installed.
 
-    FA3 requires a page size that is a multiple of 256.
+    It takes the packed queries directly through ``cu_seqlens_q``, so one call serves a
+    uniform and a ragged row alike, and it reads a page table of any page size.
     """
-    if workload.page_size % 256 != 0:
-        return None
     try:
         from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
         return None
 
-    batch, seqlen_q = len(workload.q_lens), max(workload.q_lens)
+    window = (workload.window_size_left, workload.window_size_right)
+    max_seqlen_q = max(workload.q_lens)
 
-    def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, *_unused):
+    def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q, *_unused):
         out = flash_attn_with_kvcache(
-            q.view(batch, seqlen_q, *q.shape[1:]),
+            q,
             k_pages,
             v_pages,
             cache_seqlens=cache_seqlens,
             page_table=page_table,
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
             softmax_scale=workload.sm_scale,
             causal=workload.is_causal,
+            window_size=window,
             softcap=float(workload.softcap or 0.0),
         )
-        out = out[0] if isinstance(out, tuple) else out
-        return out.view(q.shape)
+        return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
 
 
+def _flashinfer_gqa_paged_prefill(workload, inputs):
+    """FlashInfer's packed-query paged attention, or None where it cannot serve the row.
+
+    Its prefill wrapper takes ragged queries over a paged cache with a left window; it has no
+    right window, so a row restricting one drops the tag.
+    """
+    if workload.window_size_right >= 0:
+        return None
+    q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = inputs[:6]
+    page_size = workload.page_size
+    pages_per_request = ((cache_seqlens + page_size - 1) // page_size).tolist()
+    indptr = torch.tensor([0, *accumulate(pages_per_request)], dtype=torch.int32, device=q.device)
+    indices = torch.cat([page_table[b, :n] for b, n in enumerate(pages_per_request)])
+    workspace = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = flashinfer_op("prefill.BatchPrefillWithPagedKVCacheWrapper")(
+        workspace, kv_layout="NHD"
+    )
+    wrapper.plan(
+        qo_indptr=cu_seqlens_q,
+        paged_kv_indptr=indptr,
+        paged_kv_indices=indices,
+        paged_kv_last_page_len=(cache_seqlens - 1) % page_size + 1,
+        num_qo_heads=workload.heads,
+        num_kv_heads=workload.heads_kv,
+        head_dim_qk=workload.dim,
+        page_size=page_size,
+        causal=workload.is_causal,
+        sm_scale=workload.sm_scale,
+        window_left=workload.window_size_left,
+        logits_soft_cap=workload.softcap,
+        q_data_type=workload.dtype,
+    )
+
+    def run_fn(q, k_pages, v_pages, *_unused):
+        return wrapper.run(q, (k_pages, v_pages))
+
+    return run_fn
+
+
 def _flashinfer_gqa_paged_decode(workload, inputs):
-    """FlashInfer paged decode planned with the row's scale and softcap, or None where it
-    cannot serve the row: its decode kernel takes one query token per request and a
-    query-to-KV head ratio up to 8."""
-    if workload.heads // workload.heads_kv > 8 or max(workload.q_lens) != 1:
+    """FlashInfer paged decode planned with the row's window, scale and softcap, or None where
+    it cannot serve the row: its decode kernel takes one query token per request, a
+    query-to-KV head ratio up to 8, and no right window."""
+    if workload.heads // workload.heads_kv > 8 or set(workload.q_lens) != {1}:
+        return None
+    if workload.window_size_right >= 0:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens = inputs[:5]
     page_size = workload.page_size
@@ -525,6 +568,7 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
         page_size=page_size,
         q_data_type=workload.dtype,
         sm_scale=workload.sm_scale,
+        window_left=workload.window_size_left,
         logits_soft_cap=workload.softcap,
     )
 
@@ -534,29 +578,28 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     return run_fn
 
 
+def _flashinfer_gqa_paged(workload, inputs):
+    """FlashInfer's own entry for this row's shape: its decode wrapper where every request
+    carries one query token, its packed-query prefill wrapper otherwise."""
+    return _flashinfer_gqa_paged_decode(workload, inputs) or _flashinfer_gqa_paged_prefill(
+        workload, inputs
+    )
+
+
 @pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPagedFwdOp))
 def test_gqa_paged_fwd_bench(call) -> None:
     workload = GroupedQueryAttentionPagedCall(call)
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionPagedFwdOp(**workload.arguments())
-    q, k_pages, _, page_table, _, cu_seqlens_q = inputs[:6]
-    if op.paged_call(q, k_pages, page_table, cu_seqlens_q).paged_decode_refusal is not None:
-        # FIXME(staged-rollout): a row outside the paged-decode region is not run.
-        #
-        # Broken invariant: every manifest workload row records a result.
-        # Why: the in-tree kernels serve one query length shared by every request;
-        #   uneven packed prefill and windows of the 16-bit contract have no kernel yet.
-        # Cleanup: an in-tree kernel serves every 16-bit row.
-        pytest.skip("outside the in-tree paged-decode region")
     bm = ManifestBenchmark(op, workload)
     tolerance = reference_tolerance(workload.dtype)
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
-    fa3_fn = _fa3_gqa_paged_decode(workload)
+    fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
         assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
         functors["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_paged_decode(workload, inputs)
+    flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
     if flashinfer_fn is not None:
         assert_matches_reference(flashinfer_fn, workload.ref_program, *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn

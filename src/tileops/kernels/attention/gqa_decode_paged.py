@@ -707,8 +707,13 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         V: torch.Tensor,
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
+        cu_seqlens_q: Optional[torch.Tensor] = None,
     ):
-        """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache."""
+        """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache.
+
+        ``cu_seqlens_q`` is unread: this kernel serves one query length shared by every
+        request, which ``seqlen_q`` already states.
+        """
         c = self.config
         # A cache shorter than one tile per split is not worth splitting.
         real_max = int(real_seqlen_kv.max().item())
