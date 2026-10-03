@@ -24,7 +24,6 @@ from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT
 
 __all__ = [
-    "CANDIDATE_THREADS_BY_WIDTH",
     "NARROW_ROW",
     "make_row_reduce",
     "make_shifted_row_reduce",
@@ -42,7 +41,7 @@ _CANDIDATE_THREADS = (128, 256, 512, 1024)
 
 # The widths a short row may also use. Separate from :data:`_CANDIDATE_THREADS`
 # so a block narrower than one warp reaches only the kernels that ask for it.
-CANDIDATE_THREADS_BY_WIDTH = (32, 64) + _CANDIDATE_THREADS
+_CANDIDATE_THREADS_BY_WIDTH = (32, 64) + _CANDIDATE_THREADS
 
 # Row width at or below which a block narrower than 128 is offered. Above it a
 # narrow block hands one thread hundreds of columns, which layout inference
@@ -72,7 +71,7 @@ def row_padding(n: int, elem_bytes: int) -> int:
 
 def widths_for_row(n_padded: int) -> tuple:
     """Block widths a row of *n_padded* columns may be split across."""
-    return CANDIDATE_THREADS_BY_WIDTH if n_padded <= NARROW_ROW else _CANDIDATE_THREADS
+    return _CANDIDATE_THREADS_BY_WIDTH if n_padded <= NARROW_ROW else _CANDIDATE_THREADS
 
 
 def select_row_config() -> dict:

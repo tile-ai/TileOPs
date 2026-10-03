@@ -9,7 +9,7 @@ WARP_LANES: int = 32
 # Butterfly shuffle steps that reduce one warp: log2(WARP_LANES).
 WARP_SHUFFLE_STAGES: int = WARP_LANES.bit_length() - 1
 
-str2dtype = {
+STR_TO_DTYPE = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,

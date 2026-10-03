@@ -21,7 +21,7 @@ from tileops.kernels.gemm.heuristics import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.trace import trace
-from tileops.utils import get_sm_count, get_sm_version, str2dtype
+from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
 __all__ = [
     "GemmCpAsyncKernel",
@@ -2851,7 +2851,7 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
         reduce_threads: int = 128,
         num_stages: int = 4,
     ) -> Callable:
-        tile_k = 128 // (str2dtype[dtype].itemsize * 8)
+        tile_k = 128 // (STR_TO_DTYPE[dtype].itemsize * 8)
         block_k = reduce_threads * tile_k
         b_evict = "evict_first"  # one N range per CTA, so B is read once
 

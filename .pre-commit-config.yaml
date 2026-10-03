@@ -98,6 +98,12 @@ repos:
         language: python
         files: ^src/tileops/kernels/.*\.py$
 
+      - id: module-constant-lint
+        name: module constant name lint
+        entry: python scripts/lint/module_constant_lint.py
+        language: python
+        files: ^src/tileops/.*\.py$
+
       - id: op-naming-lint
         name: manifest op name lint
         entry: python scripts/lint/op_naming_lint.py

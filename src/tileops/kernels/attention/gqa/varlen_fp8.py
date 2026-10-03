@@ -39,6 +39,11 @@ from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
 from tileops.kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
+    TMA_DTYPE_UINT8,
+    TMA_INTERLEAVE_NONE,
+    TMA_L2_PROMOTION_128B,
+    TMA_OOB_FILL_NONE,
+    TMA_SWIZZLE_128B,
     VECTOR_ACCESS_BYTES,
     WARPGROUP_THREADS,
     WGMMA_ROWS,
@@ -57,13 +62,6 @@ _FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
 # CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
 # every launch and no call has to clear it.
 _CLAIM_SLOTS = 2
-# The tensor-map fields the raw value transfer needs; the helper takes the FP8 bytes
-# as unsigned chars, with the 128-byte swizzle the FA3 operand layout assumes.
-_TMA_DTYPE_UINT8 = 0
-_TMA_INTERLEAVE_NONE = 0
-_TMA_SWIZZLE_128B = 3
-_TMA_L2_PROMOTION_128B = 2
-_TMA_OOB_FILL_NONE = 0
 
 
 @functools.lru_cache(maxsize=32)
@@ -583,7 +581,7 @@ def _gqa_varlen_fp8_ws_kernel(
                             if tx == 0:
                                 T.mbarrier_expect_tx(v_raw_full[issued % stages], dim * block_n)
                                 v_desc = T.create_tma_descriptor(
-                                    _TMA_DTYPE_UINT8,
+                                    TMA_DTYPE_UINT8,
                                     4,
                                     V.data,
                                     dim,
@@ -602,10 +600,10 @@ def _gqa_varlen_fp8_ws_kernel(
                                     1,
                                     1,
                                     1,
-                                    _TMA_INTERLEAVE_NONE,
-                                    _TMA_SWIZZLE_128B,
-                                    _TMA_L2_PROMOTION_128B,
-                                    _TMA_OOB_FILL_NONE,
+                                    TMA_INTERLEAVE_NONE,
+                                    TMA_SWIZZLE_128B,
+                                    TMA_L2_PROMOTION_128B,
+                                    TMA_OOB_FILL_NONE,
                                 )
                                 T.call_extern(
                                     "handle",

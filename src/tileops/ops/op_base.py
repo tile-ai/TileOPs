@@ -32,6 +32,7 @@ from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import IMPLEMENTATIONS, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops.ops._signature_codegen import check_result
 from tileops.ops.compile_boundary import register_instance
 
@@ -821,7 +822,7 @@ class Op(ABC):
             AttributeError: The op declares a manifest param it keeps under another name.
                 The manifest is the contract, so the op is what changes.
         """
-        names = getattr(self, "__manifest_param_names__", None)
+        names = getattr(self, PARAM_NAMES_ATTRIBUTE, None)
         if names is None:
             return {}
         values = {}
@@ -951,7 +952,7 @@ class Op(ABC):
         Only an op with no tensor input declares one, and ``None`` there leaves the
         choice to the target.
         """
-        if "device" not in getattr(self, "__manifest_param_names__", ()):
+        if "device" not in getattr(self, PARAM_NAMES_ATTRIBUTE, ()):
             return None
         device = getattr(self, "device", None)
         return None if device is None else torch.device(device)

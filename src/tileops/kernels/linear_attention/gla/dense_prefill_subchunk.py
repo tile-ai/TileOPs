@@ -8,6 +8,7 @@ import torch
 
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.kernel_base import Entry
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
@@ -235,6 +236,10 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterfac
 
     supported_archs = [90]
     general = True
+
+    @classmethod
+    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:

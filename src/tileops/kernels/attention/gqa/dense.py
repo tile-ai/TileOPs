@@ -20,7 +20,6 @@ __all__ = [
 ]
 
 
-# Dense Q/K RoPE preprocessing.
 _PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -46,22 +45,6 @@ _NSK = 2
 _NSV = 2
 _THREADS = 384
 _NMMA = 256
-_pc = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-}
-_cf = [
-    "-O3",
-    "--use_fast_math",
-    "-Wno-deprecated-declarations",
-    "-U__CUDA_NO_HALF_OPERATORS__",
-    "-U__CUDA_NO_HALF_CONVERSIONS__",
-    "-U__CUDA_NO_HALF2_OPERATORS__",
-    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-    "--expt-relaxed-constexpr",
-    "--expt-extended-lambda",
-    "-DNDEBUG",
-]
 
 
 @functools.lru_cache(maxsize=32)
@@ -225,7 +208,7 @@ def make_dense_qk_rope_preprocessor(
 
 
 @functools.lru_cache(maxsize=32)
-@tilelang.jit(out_idx=[3], pass_configs=_pc, compile_flags=_cf)
+@tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_ws_kernel(
     B,
     H,

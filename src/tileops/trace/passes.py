@@ -65,7 +65,7 @@ __all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
 _HELPER = Path(csrc_path("trace_helper.h")).read_text()
 
 # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
-HEADER_WORDS = 2
+_HEADER_WORDS = 2
 
 # PrimFunc attr that carries the host-map registry key onto the lowered func; it
 # rides through tilelang.jit onto kernel.prim_func so lookup_meta resolves a
@@ -104,7 +104,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         ``slots`` int64 param and every marker rewritten into writer-gated,
         clamped emit code, plus the derived flat CTA count.
     """
-    slot_words = (max_events + HEADER_WORDS) * 2
+    slot_words = (max_events + _HEADER_WORDS) * 2
 
     # 1) Collect thread/block binding For nodes (the loop var IS the blockIdx /
     #    threadIdx, the For extent IS the grid / block dimension). Every blockIdx
@@ -168,7 +168,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         # No-stomp #1: hard-clamp the write index to the last legal event slot
         # so a collapsed guard can never address past this slot's event region.
         idx = tx.Min(i, max_events - 1)
-        base = HEADER_WORDS + idx * 2
+        base = _HEADER_WORDS + idx * 2
         ts = T.call_extern("uint64", "__tl_now")
         w1 = pack_w1_tir(event_id, kind, lane, payload_expr)
         store_w0 = tx.BufferStore(slots_buf, tx.Cast("int64", ts), [cta_flat, gid, base])

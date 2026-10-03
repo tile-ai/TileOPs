@@ -21,7 +21,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall, DeltaNetFwdInterface
+from tileops.kernels.linear_attention.call_spec import (
+    DeltaNetChunkCall,
+    DeltaNetFwdInterface,
+    head_count_refusal,
+)
 from tileops.kernels.linear_attention.deltanet.autotune import (
     default_h_block_v,
     default_h_threads,
@@ -222,6 +226,14 @@ def _output_o_tl(
 
 
 class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
+    @classmethod
+    def applies(cls, call: DeltaNetChunkCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
+        return head_count_refusal(call.heads)
+
     @staticmethod
     def _deltanet_fwd_run(
         batch: int,
