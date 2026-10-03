@@ -425,14 +425,18 @@ def _spread(props: dict) -> float | None:
     return hi - lo if lo is not None and hi is not None else None
 
 
-def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) -> str | None:
+def _alias_name(
+    runs: list[dict], op: str, config_name: str, work: _WorkCounts, current: frozenset[str]
+) -> str | None:
     """The unique prior display name of this row in history, or None.
 
     A name is adopted only when its recorded FLOP and byte counts equal the
-    current row's exactly, its case id names the same dtypes, and it never shares
-    a run with the current name: a renamed row and its new name never co-occur,
-    while another variant of the same workload does. Equal counts do not tell two
-    dtypes of one width apart.
+    current row's exactly, its case id names the same dtypes, and it shares a run
+    with the current name neither in history nor in *current*: a renamed row and
+    its new name never co-occur, while another variant of the same workload does.
+    A variant added in the same run as the row it resembles is only caught by
+    *current*, because the row itself is in no historical run. Equal counts do not
+    tell two dtypes of one width apart.
     """
     if not work.flops_recorded or work.flops is None or work.nbytes is None:
         return None
@@ -458,19 +462,24 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
                 and _dtypes_of(name) == dtypes
             ):
                 candidates.add(name)
-    candidates -= excluded
+    candidates -= excluded | current
     return candidates.pop() if len(candidates) == 1 else None
 
 
 def _config_readings(
-    runs: list[dict], op: str, config_name: str, key: str, work: _WorkCounts
+    runs: list[dict],
+    op: str,
+    config_name: str,
+    key: str,
+    work: _WorkCounts,
+    current: frozenset[str],
 ) -> list[_Reading]:
     """Workload-matched positive readings for one row, oldest first.
 
     Per run the current display name wins; a run that recorded the row only
     under its prior name (see ``_alias_name``) contributes that reading.
     """
-    alias = _alias_name(runs, op, config_name, work)
+    alias = _alias_name(runs, op, config_name, work, current)
     readings = []
     for run in runs:
         cfgs = run.get("ops", {}).get(op, {})
@@ -501,13 +510,14 @@ def _reportable(delta_ms: float, base: _Reading, curr_spread: float | None) -> b
 def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
     """Yield one verdict input per config with a positive reading and history."""
     for op, data in bench_ops.items():
+        current = frozenset(_case_id(cfg["name"]) for cfg in data["configs"])
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
             if lat is None or lat <= 0:
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
-            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work)
+            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work, current)
             if readings:
                 yield op, cfg, lat, _spread(props), readings
 

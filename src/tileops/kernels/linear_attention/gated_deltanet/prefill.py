@@ -325,6 +325,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             l2norm=self.l2norm,
             beta_sigmoid=self.beta_sigmoid,
             allow_neg_eigval=self.allow_neg_eigval,
+            uniform_seq_len=0 if self.varlen else seq_len,
         )
         initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
