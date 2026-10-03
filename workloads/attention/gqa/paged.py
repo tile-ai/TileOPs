@@ -7,7 +7,7 @@ from workloads.device import run_device
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GroupedQueryAttentionPagedFwdWorkload", "GroupedQueryAttentionPagedCall"]
+__all__ = ["GroupedQueryAttentionPagedCall", "GroupedQueryAttentionPagedFwdWorkload"]
 
 
 def _cache_scale(scale: torch.Tensor, request: int) -> torch.Tensor:

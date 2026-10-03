@@ -14,14 +14,14 @@ from tileops.ops.norm import (
 )
 
 __all__ = [
-    "LayerNormFwdOp",
-    "FusedAddLayerNormFwdOp",
-    "RMSNormFwdOp",
-    "FusedAddRMSNormFwdOp",
     "AdaLayerNormFwdOp",
     "AdaLayerNormZeroFwdOp",
-    "BatchNormFwdOp",
     "BatchNormBwdOp",
+    "BatchNormFwdOp",
+    "FusedAddLayerNormFwdOp",
+    "FusedAddRMSNormFwdOp",
     "GroupNormFwdOp",
     "InstanceNormFwdOp",
+    "LayerNormFwdOp",
+    "RMSNormFwdOp",
 ]

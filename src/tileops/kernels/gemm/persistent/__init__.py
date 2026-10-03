@@ -9,9 +9,9 @@ from tileops.kernels.gemm.persistent.template import (
 
 __all__ = [
     "GemmDesc",
-    "GemmType",
-    "Major",
     "GemmTemplate",
-    "GroupedGemmTemplate",
+    "GemmType",
     "GroupedGemmSpec",
+    "GroupedGemmTemplate",
+    "Major",
 ]

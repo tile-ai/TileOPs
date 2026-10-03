@@ -6,11 +6,11 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "dense_gqa_ref",
-    "GroupedQueryAttentionDenseDecodeWorkload",
-    "GroupedQueryAttentionDensePrefillWorkload",
     "GroupedQueryAttentionDenseDecodeCall",
+    "GroupedQueryAttentionDenseDecodeWorkload",
     "GroupedQueryAttentionDensePrefillCall",
+    "GroupedQueryAttentionDensePrefillWorkload",
+    "dense_gqa_ref",
 ]
 
 

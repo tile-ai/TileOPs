@@ -8,7 +8,11 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import GLAChunkCall, GLAFwdInterface
+from tileops.kernels.linear_attention.call_spec import (
+    GLAChunkCall,
+    GLAFwdInterface,
+    head_count_refusal,
+)
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
@@ -596,7 +600,9 @@ class GLAFwdKernel(GLAChunkedFwdKernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
-        return cls.region_refusal(call.dim_k, call.dim_v, call.chunk_size)
+        return head_count_refusal(call.heads) or cls.region_refusal(
+            call.dim_k, call.dim_v, call.chunk_size
+        )
 
     @classmethod
     def entry_for(cls, call: GLAChunkCall) -> Entry:

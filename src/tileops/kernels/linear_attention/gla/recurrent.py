@@ -23,7 +23,11 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import GLADecodeCall, GLADecodeFwdInterface
+from tileops.kernels.linear_attention.call_spec import (
+    GLADecodeCall,
+    GLADecodeFwdInterface,
+    head_count_refusal,
+)
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
@@ -161,6 +165,14 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     supported_archs: list[int] = [80, 89, 90]
     general = True
+
+    @classmethod
+    def applies(cls, call: GLADecodeCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GLADecodeCall) -> Optional[str]:
+        return head_count_refusal(call.heads)
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:
@@ -383,7 +395,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
 
     @classmethod
     def applies(cls, call: GLADecodeCall) -> bool:
-        return call.dtype == torch.float32
+        return call.dtype == torch.float32 and head_count_refusal(call.heads) is None
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:

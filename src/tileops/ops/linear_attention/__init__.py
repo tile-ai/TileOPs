@@ -11,12 +11,12 @@ from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 
 __all__: list[str] = [
     "DeltaNetChunkBwdOp",
-    "DeltaNetRecurrentFwdOp",
     "DeltaNetChunkFwdOp",
     "DeltaNetInferenceFwdOp",
-    "GatedDeltaNetFwdOp",
+    "DeltaNetRecurrentFwdOp",
     "GLAChunkBwdOp",
-    "GLARecurrentFwdOp",
     "GLAChunkFwdOp",
     "GLAInferenceFwdOp",
+    "GLARecurrentFwdOp",
+    "GatedDeltaNetFwdOp",
 ]

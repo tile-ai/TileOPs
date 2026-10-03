@@ -7,7 +7,7 @@ from workloads.device import run_device
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GQAPrefillPagedWithKVCacheFwdWorkload", "GQAPrefillPagedWithKVCacheFwdCall"]
+__all__ = ["GQAPrefillPagedWithKVCacheFwdCall", "GQAPrefillPagedWithKVCacheFwdWorkload"]
 
 
 class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):

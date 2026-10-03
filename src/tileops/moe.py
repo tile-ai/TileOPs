@@ -15,15 +15,15 @@ from tileops.ops.moe import (
 )
 
 __all__ = [
-    "FusedTopKFwdOp",
-    "MoEPrePermuteFwdOp",
-    "MoEPermuteAlignFwdOp",
-    "MoEGroupedGemmFwdOp",
-    "MoEExpertMLPFwdOp",
-    "MoEPostPermuteFwdOp",
     "FusedMoEExpertsFwdOp",
-    "IndexedExpertMLPFwdOp",
     "FusedMoEFwdOp",
     "FusedMoESharedExpertFwdOp",
+    "FusedTopKFwdOp",
+    "IndexedExpertMLPFwdOp",
+    "MoEExpertMLPFwdOp",
+    "MoEGroupedGemmFwdOp",
+    "MoEPermuteAlignFwdOp",
+    "MoEPostPermuteFwdOp",
+    "MoEPrePermuteFwdOp",
     "SharedExpertMLPFwdOp",
 ]

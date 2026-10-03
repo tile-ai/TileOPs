@@ -17,17 +17,17 @@ from tileops.ops.attention import (
 )
 
 __all__ = [
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
+    "FP8LightningIndexerFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACompressedVarlenFwdOp",
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
-    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "FP8LightningIndexerFwdOp",
     "TopKSelectFwdOp",
 ]

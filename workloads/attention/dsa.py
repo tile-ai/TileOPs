@@ -3,7 +3,7 @@ import torch
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["DsaDecodeWorkload", "DsaDecodeCall"]
+__all__ = ["DsaDecodeCall", "DsaDecodeWorkload"]
 
 
 class DsaDecodeWorkload(WorkloadBase):

@@ -45,6 +45,9 @@ from tileops.kernels.quantization.int8_quant_per_tensor import INT8QuantPerTenso
 
 __all__ = [
     "DequantizeCall",
+    "FP8QuantCall",
+    "FP8QuantFwdInterface",
+    "FP8QuantKernel",
     "FP8QuantPerBlockFwdInterface",
     "FP8QuantPerBlockFwdKernel",
     "FP8QuantPerBlockUnalignedFwdKernel",
@@ -69,7 +72,4 @@ __all__ = [
     "QuantizeCall",
     "SmoothQuantFwdInterface",
     "SmoothQuantFwdKernel",
-    "FP8QuantCall",
-    "FP8QuantFwdInterface",
-    "FP8QuantKernel",
 ]

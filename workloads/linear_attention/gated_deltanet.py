@@ -4,7 +4,7 @@ from workloads.device import run_device
 from workloads.linear_attention.input_values import _log_gates, _small, _step_sizes
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GatedDeltaNetFwdWorkload", "GatedDeltaNetFwdCall"]
+__all__ = ["GatedDeltaNetFwdCall", "GatedDeltaNetFwdWorkload"]
 
 
 class GatedDeltaNetFwdWorkload(WorkloadBase):

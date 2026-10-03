@@ -10,6 +10,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceCall,
     DeltaNetInferenceFwdInterface,
+    head_count_refusal,
 )
 from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
@@ -40,6 +41,9 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         packed, with a row that is not a whole chunk, and with the Q/K L2 normalization
         taken in kernel.
         """
+        heads = head_count_refusal(call.heads)
+        if heads is not None:
+            return heads
         unsupported = [
             name
             for name, present in (

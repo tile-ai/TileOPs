@@ -9,9 +9,9 @@ from tileops.ops.sequence_modeling import (
 )
 
 __all__ = [
-    "MHCPreFwdOp",
-    "MHCPostFwdOp",
     "EngramDecodeFwdOp",
     "EngramGateConvBwdOp",
     "EngramGateConvFwdOp",
+    "MHCPostFwdOp",
+    "MHCPreFwdOp",
 ]

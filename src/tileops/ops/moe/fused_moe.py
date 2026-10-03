@@ -26,7 +26,7 @@ from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["FusedMoe", "FusedMoEFwdOp"]
+__all__ = ["FusedMoEFwdOp", "FusedMoe"]
 
 
 class FusedMoe(Op):

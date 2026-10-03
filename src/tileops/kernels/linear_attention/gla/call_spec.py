@@ -9,6 +9,7 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, KernelInterface
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 
 __all__ = [
     "GLAInferenceCallSpec",
@@ -78,9 +79,10 @@ def serves_dense(call: GLAInferenceCallSpec) -> bool:
 
 
 def serves_extents(call: GLAInferenceCallSpec) -> bool:
-    """Whether the in-tree GLA kernels compile *call*'s head widths and activation dtype."""
+    """Whether the in-tree GLA kernels compile *call*'s head count, widths and dtype."""
     return (
-        call.dim_k == call.dim_v
+        head_count_refusal(call.heads) is None
+        and call.dim_k == call.dim_v
         and call.dim_k in (64, 128)
         and call.dtype in (torch.float16, torch.bfloat16)
     )

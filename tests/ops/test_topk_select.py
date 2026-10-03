@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopKSelectFwdOp
-from tileops.utils import str2dtype
+from tileops.utils import STR_TO_DTYPE
 from workloads.attention.topk_select import TopkSelectorWorkload
 from workloads.device import run_device
 
@@ -61,8 +61,8 @@ def test_topk_select_op(
     out_dtype_str: str,
     tune: bool,
 ) -> None:
-    in_dtype = str2dtype[in_dtype_str]
-    out_dtype = str2dtype[out_dtype_str]
+    in_dtype = STR_TO_DTYPE[in_dtype_str]
+    out_dtype = STR_TO_DTYPE[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     op = TopKSelectFwdOp(topk=topk, tune=tune)
     inputs = test.gen_inputs()

@@ -15,6 +15,7 @@ import torch
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
@@ -492,6 +493,10 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
     # no branch, which is why the sequence's last chunk is taken outside it. Re-fit with the
     # manifest rows over 2 to 6; more stages cost shared memory the state tile also needs.
     _state_stages = 4
+
+    @classmethod
+    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:

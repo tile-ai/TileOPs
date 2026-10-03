@@ -67,3 +67,15 @@ FP8_E4M3_MAX: float = 448.0
 # a run along K for the INT8 and FP8 activation forms, both axes of a tile for the FP8
 # weight form.
 QUANT_SCALE_BLOCK: int = 128
+
+
+# Fields of the CUDA tensor-map descriptor, as ``cuTensorMapEncodeTiled`` encodes them:
+# the element type, the interleave, swizzle and L2-promotion modes, and the fill an
+# out-of-bounds read returns.
+TMA_DTYPE_UINT8: int = 0
+TMA_DTYPE_BFLOAT16: int = 9
+TMA_INTERLEAVE_NONE: int = 0
+TMA_SWIZZLE_NONE: int = 0
+TMA_SWIZZLE_128B: int = 3
+TMA_L2_PROMOTION_128B: int = 2
+TMA_OOB_FILL_NONE: int = 0
