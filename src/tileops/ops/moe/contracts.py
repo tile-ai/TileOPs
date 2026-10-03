@@ -10,9 +10,9 @@ from typing import TypeAlias
 import torch
 
 __all__ = [
+    "ContiguousLayoutSpec",
     "ContiguousMetadata",
     "ContiguousPacking",
-    "ContiguousLayoutSpec",
     "MGroupedLayoutSpec",
     "MaskedLayoutSpec",
     "RoutingEpilogueSpec",

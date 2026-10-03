@@ -54,6 +54,7 @@ __all__ = [
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
+    "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
     "GQADenseFP8DecodeKernel",
@@ -69,5 +70,4 @@ __all__ = [
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
     "GQAVarlenFP8FwdKernel",
     "GQAVarlenFP8WSFwdKernel",
-    "GQADecodeLongContextKernel",
 ]

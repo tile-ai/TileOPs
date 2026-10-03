@@ -6,12 +6,12 @@ from workloads.sequence_metadata import prepare_chunk_offsets, prepare_token_ind
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "NsaFwdWorkload",
-    "NsaCmpFwdWorkload",
-    "NsaTopkWorkload",
     "NsaCmpFwdCall",
-    "NsaTopkCall",
+    "NsaCmpFwdWorkload",
     "NsaFwdCall",
+    "NsaFwdWorkload",
+    "NsaTopkCall",
+    "NsaTopkWorkload",
 ]
 
 

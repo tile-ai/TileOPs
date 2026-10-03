@@ -21,6 +21,7 @@ from tileops.ops.attention.topk_select import TopKSelectFwdOp
 
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
+    "FP8LightningIndexerFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
@@ -30,8 +31,7 @@ __all__ = [
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "MultiHeadLatentAttentionVarlenFwdOp",
     "NSACompressedVarlenFwdOp",
-    "NSAVarlenFwdOp",
     "NSATopKVarlenFwdOp",
-    "FP8LightningIndexerFwdOp",
+    "NSAVarlenFwdOp",
     "TopKSelectFwdOp",
 ]

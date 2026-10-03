@@ -27,11 +27,11 @@ from tileops.utils import get_sm_count
 
 __all__ = [
     "GemmDesc",
-    "GemmType",
-    "Major",
     "GemmTemplate",
-    "GroupedGemmTemplate",
+    "GemmType",
     "GroupedGemmSpec",
+    "GroupedGemmTemplate",
+    "Major",
 ]
 
 
