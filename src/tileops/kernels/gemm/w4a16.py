@@ -1064,10 +1064,11 @@ class GemmW4A16MmaKernel(GemmW4A16Kernel):
 
     @staticmethod
     def _region_refusal(call: GemmW4A16Call) -> Optional[str]:
-        if call.group_size != GROUP_SIZE:
-            return f"requires group_size {GROUP_SIZE}"
-        if call.k % GROUP_SIZE:
-            return f"requires k a multiple of {GROUP_SIZE}, got {call.k}"
+        step_k = W4A16_LAYOUT.mma_step_k
+        if call.group_size != step_k:
+            return f"needs one {step_k}-wide group per K step, got group_size {call.group_size}"
+        if call.k % step_k:
+            return f"requires k a multiple of {step_k}, got {call.k}"
         return None
 
     def __init__(

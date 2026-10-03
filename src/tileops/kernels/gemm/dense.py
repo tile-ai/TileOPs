@@ -379,8 +379,7 @@ def _gemm_fp8_kernel(
     has_bias: bool = False,
     b_scale_rows: int = 1,
 ) -> Callable:
-    """FP8 MMA loses precision accumulating a long K loop, so each K tile's product is
-    added into ``c_local`` in fp32."""
+    """Each K tile's product is added into ``c_local`` in fp32, as the block-scaled path does."""
     accum_dtype = "float"
 
     @tilelang.jit(
