@@ -690,25 +690,33 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         else:
             held = [n for n in (128, 64, 48, 32) if page % n == 0]
             block_n = held[0] if held else 64
-            # A key tile below one WGMMA's rows leaves the score accumulator small enough that
-            # the wide query tile still compiles to two consumer warpgroups, which is half
-            # again the warp slots; above it the tile gets one warpgroup and is only padding.
             wide = self.rows_fill_tile or block_n < WGMMA_ROWS
-        tile = (
-            {
+        if wide and block_n < WGMMA_ROWS:
+            # A key tile below one WGMMA's rows leaves the score accumulator small enough that
+            # the wide query tile still fills two consumer warpgroups, which is half again the
+            # warp slots.
+            tile = {
                 "block_M": 2 * WGMMA_ROWS,
                 "block_N": block_n,
                 "num_stages": 3,
                 "threads": 2 * WARPGROUP_THREADS,
             }
-            if wide
-            else {
+        elif wide:
+            # A key tile of a whole WGMMA's rows leaves the second warpgroup only padding, and
+            # one warpgroup over the wide query tile also refuses the producer.
+            tile = {
+                "block_M": 2 * WGMMA_ROWS,
+                "block_N": block_n,
+                "num_stages": 2,
+                "threads": WARPGROUP_THREADS,
+            }
+        else:
+            tile = {
                 "block_M": WGMMA_ROWS,
                 "block_N": block_n,
                 "num_stages": 2,
                 "threads": WARPGROUP_THREADS,
             }
-        )
         # Zero reads the chunk count from the launch geometry; a positive value pins it.
         tile["num_split"] = 0
         candidates = [
