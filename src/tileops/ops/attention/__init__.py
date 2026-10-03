@@ -1,12 +1,12 @@
 from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.attention.gqa import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionPagedFwdOp,
+from tileops.ops.attention.gqa.backward import GroupedQueryAttentionBwdOp
+from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
+from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
+from tileops.ops.attention.gqa.prefill_paged_kv_append import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
 )
+from tileops.ops.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdOp
 from tileops.ops.attention.mha import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from tileops.ops.attention.mla import (
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,

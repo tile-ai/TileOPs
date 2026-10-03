@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, List, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.engram import EngramDecodeCall, EngramDecodeFwdInterface, EngramDecodeKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.sequence_modeling.engram import (
+    EngramDecodeCall,
+    EngramDecodeFwdInterface,
+    EngramDecodeKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["EngramDecodeFwdOp"]

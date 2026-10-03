@@ -23,13 +23,13 @@ from tests.compile_contract import (
 )
 from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.attention.gqa import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionPagedFwdOp,
+from tileops.ops.attention.gqa.backward import GroupedQueryAttentionBwdOp
+from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
+from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
+from tileops.ops.attention.gqa.prefill_paged_kv_append import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
 )
+from tileops.ops.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdOp
 from tileops.ops.attention.mha import (
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
@@ -57,7 +57,7 @@ from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
-from tileops.ops.pool import MeanPoolingFwdOp
+from tileops.ops.pool.mean_pooling import MeanPoolingFwdOp
 from tileops.ops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -86,23 +86,19 @@ from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
-from workloads.attention.deepseek_attention import (
-    DsaDecodeWorkload,
-    MlaDecodeWorkload,
-    NsaCmpFwdWorkload,
-    NsaFwdWorkload,
-    NsaTopkWorkload,
-)
+from workloads.attention.dsa import DsaDecodeWorkload
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
-from workloads.attention.gqa import (
-    GQAPrefillPagedWithKVCacheFwdWorkload,
+from workloads.attention.gqa.backward import GroupedQueryAttentionBwdWorkload
+from workloads.attention.gqa.dense import GroupedQueryAttentionDenseDecodeWorkload
+from workloads.attention.gqa.paged import GroupedQueryAttentionPagedFwdWorkload
+from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
+from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
-    GroupedQueryAttentionBwdWorkload,
-    GroupedQueryAttentionDenseDecodeWorkload,
-    GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
 from workloads.attention.mha import MhaDecodePagedWorkload
+from workloads.attention.mla import MlaDecodeWorkload
+from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 from workloads.attention.paged_kv_cache import make_unit_cache_scales
 from workloads.device import run_device
 from workloads.quantization.int8_dequant import (

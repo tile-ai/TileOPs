@@ -14,7 +14,7 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from benchmarks.verification import Exact
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
-from workloads.linear_attention import (
+from workloads.linear_attention.gla import (
     GLAChunkwiseCall,
     GLADecodeCall,
     GLAInferenceCall,

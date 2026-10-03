@@ -20,7 +20,7 @@ from tileops.ops import (
     DeltaNetInferenceFwdOp,
     DeltaNetRecurrentFwdOp,
 )
-from workloads.linear_attention import (
+from workloads.linear_attention.deltanet import (
     DeltaNetChunkwiseCall,
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,

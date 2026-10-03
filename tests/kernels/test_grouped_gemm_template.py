@@ -6,14 +6,14 @@ import math
 import pytest
 import torch
 
-from tileops.kernels.grouped_gemm.heuristics import (
+from tileops.kernels.gemm.grouped.heuristics import (
     GemmDesc,
     GroupedGemmSpec,
     get_best_config,
     layout_candidates,
     spec_from_config,
 )
-from tileops.kernels.grouped_gemm.template import GemmTemplate, GemmType, Major
+from tileops.kernels.gemm.grouped.template import GemmTemplate, GemmType, Major
 from workloads.device import run_device
 
 pytestmark = pytest.mark.sm90

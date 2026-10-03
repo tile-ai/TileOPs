@@ -9,9 +9,9 @@ import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTmaKernel
+from tileops.kernels.gemm.grouped.heuristics import GemmType
+from tileops.kernels.gemm.grouped.template import GemmTemplate
 from tileops.kernels.gemm.heuristics import small_m_splitk_config
-from tileops.kernels.grouped_gemm.heuristics import GemmType
-from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import SharedExpertMLPCall, SharedExpertMLPFwdInterface
 from tileops.utils import get_sm_count, get_sm_version

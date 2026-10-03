@@ -28,12 +28,14 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.attention.gqa import (
-    GQAPrefillPagedWithKVCacheFwdCall,
-    GroupedQueryAttentionBwdCall,
+from workloads.attention.gqa.backward import GroupedQueryAttentionBwdCall
+from workloads.attention.gqa.dense import (
     GroupedQueryAttentionDenseDecodeCall,
     GroupedQueryAttentionDensePrefillCall,
-    GroupedQueryAttentionPagedCall,
+)
+from workloads.attention.gqa.paged import GroupedQueryAttentionPagedCall
+from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdCall
+from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenCall,
     GroupedQueryAttentionVarlenScaledCall,
 )

@@ -28,12 +28,10 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.attention.gqa import (
-    GroupedQueryAttentionBwdWorkload,
-    GroupedQueryAttentionVarlenScaledWorkload,
-    apply_dense_rope,
-    dense_gqa_ref,
-)
+from workloads.attention.gqa.backward import GroupedQueryAttentionBwdWorkload
+from workloads.attention.gqa.dense import dense_gqa_ref
+from workloads.attention.gqa.rope import apply_dense_rope
+from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenScaledWorkload
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):

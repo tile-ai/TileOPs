@@ -5,7 +5,7 @@ import pytest
 from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GatedDeltaNetFwdOp
-from workloads.linear_attention import GatedDeltaNetFwdCall
+from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall
 
 
 @pytest.mark.parametrize("call", manifest_calls(GatedDeltaNetFwdOp))

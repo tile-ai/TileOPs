@@ -1,8 +1,4 @@
-"""Dense matmul kernels: unbatched, batched, and weight-only-quantized.
-
-The grouped forms are a separate family in ``kernels.grouped_gemm``: they schedule
-over a group offset table rather than a single ``(m, n, k)``.
-"""
+"""Dense and grouped matrix multiplication kernels."""
 
 from tileops.kernels.gemm.bmm import (
     BmmFp8Kernel,

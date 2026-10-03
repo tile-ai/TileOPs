@@ -5,7 +5,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.device import run_device
-from workloads.sequence_modeling import (
+from workloads.sequence_modeling.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
     EngramGateConvFwdWorkload,

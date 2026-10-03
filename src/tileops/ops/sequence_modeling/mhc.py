@@ -5,7 +5,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.mhc import (
+from tileops.kernels.sequence_modeling.mhc import (
     MHCPostCall,
     MHCPostFwdInterface,
     MHCPostKernel,
