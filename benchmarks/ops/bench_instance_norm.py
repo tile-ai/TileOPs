@@ -20,7 +20,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
-from workloads.normalization import RunningStatsCall
+from workloads.norm import RunningStatsCall
 
 
 @pytest.mark.parametrize("call", manifest_calls(InstanceNormFwdOp))

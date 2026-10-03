@@ -2,6 +2,7 @@
 
 # --- INT8 dequantize ops ---
 # --- Quantize ops ---
+from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
 from tileops.ops.quantization.fp8_quant_per_block import FP8QuantPerBlockFwdOp
 from tileops.ops.quantization.int4_quant_per_group import INT4QuantPerGroupFwdOp
 from tileops.ops.quantization.int8_dequant import (
@@ -24,4 +25,5 @@ __all__ = [
     "INT8QuantPerChannelFwdOp",
     "INT8QuantPerTensorFwdOp",
     "SmoothQuantFwdOp",
+    "FP8QuantFwdOp",
 ]

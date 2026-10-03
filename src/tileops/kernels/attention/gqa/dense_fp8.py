@@ -16,7 +16,7 @@ from tileops.kernels.attention.fp8_fa3_layouts import (
     fa3_qk_acc_column,
     fa3_qk_row_fragment,
 )
-from tileops.kernels.attention.gqa_dense import make_dense_qk_rope_preprocessor
+from tileops.kernels.attention.gqa.dense import make_dense_qk_rope_preprocessor
 from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel

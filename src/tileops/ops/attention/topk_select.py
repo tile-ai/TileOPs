@@ -3,12 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.topk_selector import (
+from tileops.kernels.attention.topk_select import (
     TopkSelectorCall,
     TopkSelectorFwdInterface,
     TopkSelectorKernel,
 )
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
 __all__ = ["TopKSelectFwdOp"]

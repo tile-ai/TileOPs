@@ -24,7 +24,7 @@ from tileops.quantization import (
 )
 from workloads.device import run_device
 from workloads.gemm import unrepack_w4a16_weight
-from workloads.quantization import (
+from workloads.quantization.quantize import (
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
     INT8QuantPerBlockWorkload,

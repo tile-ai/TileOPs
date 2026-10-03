@@ -86,6 +86,10 @@ illegal.
 
 The shared layer, and the only one both tests and benchmarks import.
 
+Organize workloads by the same family names as the manifest, using a module or a family
+package. Input generators and reference computations stay together at their shared semantic
+boundary; a kernel implementation variant does not require a separate workload module.
+
 **Provides**: `WorkloadBase` (`gen_inputs`), `FixtureMeta` / `FixtureBase`
 (parametrize), and one workload class per op — or one parameterized class a
 family shares.

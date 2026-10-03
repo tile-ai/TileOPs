@@ -3,8 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.fp8_quant import FP8QuantCall, FP8QuantFwdInterface, FP8QuantKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization.fp8_quant import (
+    FP8QuantCall,
+    FP8QuantFwdInterface,
+    FP8QuantKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["FP8QuantFwdOp"]

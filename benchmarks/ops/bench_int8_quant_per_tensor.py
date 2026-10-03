@@ -17,7 +17,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT8QuantPerTensorFwdOp
-from workloads.quantization import INT8QuantPerTensorWorkload
+from workloads.quantization.quantize import INT8QuantPerTensorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.

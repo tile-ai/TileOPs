@@ -18,7 +18,7 @@ from tileops.kernels.norm.call_spec import (
 )
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
-from workloads.normalization import (
+from workloads.norm import (
     BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,

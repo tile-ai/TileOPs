@@ -11,7 +11,7 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT8QuantPerChannelFwdOp
-from workloads.quantization import INT8QuantPerChannelWorkload
+from workloads.quantization.quantize import INT8QuantPerChannelWorkload
 
 
 def _assert_within_one_code(fn, workload, w: torch.Tensor) -> None:

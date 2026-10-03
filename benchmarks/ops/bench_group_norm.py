@@ -15,7 +15,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.norm.group_norm import GroupNormFwdOp
-from workloads.normalization import NormCall
+from workloads.norm import NormCall
 
 _CALLS = manifest_calls(GroupNormFwdOp)
 

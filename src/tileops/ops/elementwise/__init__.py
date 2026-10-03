@@ -61,6 +61,7 @@ from tileops.ops.elementwise.comparison import (
     LtFwdOp,
     NeFwdOp,
 )
+from tileops.ops.elementwise.dropout import DropoutFwdOp
 from tileops.ops.elementwise.logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from tileops.ops.elementwise.masked_fill import MaskedFillScalarFwdOp, MaskedFillTensorFwdOp
 from tileops.ops.elementwise.math_unary import (
@@ -160,4 +161,5 @@ __all__ = [
     "TruncFwdOp",
     "UnaryOp",
     "WhereFwdOp",
+    "DropoutFwdOp",
 ]

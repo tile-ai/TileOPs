@@ -11,7 +11,7 @@ from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
-from workloads.normalization import FusedAddRMSNormWorkload, RMSNormWorkload
+from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload
 
 register_compile_contract(RMSNormFwdOp)
 

@@ -19,14 +19,14 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops.kernels.attention.gqa_decode_bs1_common import (
+from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
     GQADecodeBs1KernelMixin,
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
-from tileops.kernels.attention.gqa_decode_paged import (
+from tileops.kernels.attention.gqa.decode_paged import (
     gqa_decode_no_split_paged_kernel,
     gqa_decode_paged_block_ns,
 )

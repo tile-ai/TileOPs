@@ -19,7 +19,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.normalization import BatchNormBwdCall, RunningStatsCall
+from workloads.norm import BatchNormBwdCall, RunningStatsCall
 
 
 def _flaggems_bn_fwd(running_mean, running_var, training: bool, momentum: float, eps: float):

@@ -20,6 +20,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         SparseMlaBasicKernel,
         SparseMlaKernel,
     )
+    from tileops.kernels.attention.fp8_lightning_indexer import FP8LightningIndexerKernel
+    from tileops.kernels.attention.topk_select import TopkSelectorKernel
     from tileops.kernels.convolution import (
         Conv1dKernel,
         Conv1dPointwiseKernel,
@@ -32,16 +34,14 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GroupConv2dKernel,
         GroupConv3dKernel,
     )
-    from tileops.kernels.dropout import DropoutKernel
     from tileops.kernels.elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
+    from tileops.kernels.elementwise.dropout import DropoutKernel
     from tileops.kernels.engram import (
         EngramDecodeKernel,
         EngramGateConvBwdKernel,
         EngramGateConvFwdKernel,
     )
     from tileops.kernels.fft import FFTC2CDecomposedKernel, FFTC2COneCTAKernel
-    from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
-    from tileops.kernels.fp8_quant import FP8QuantKernel
     from tileops.kernels.gemm import (
         BmmFp8Kernel,
         BmmFp8PersistentKernel,
@@ -99,12 +99,12 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MaxPool3dWithIndicesKernel,
         MeanPoolingFwdKernel,
     )
+    from tileops.kernels.quantization.fp8_quant import FP8QuantKernel
     from tileops.kernels.rope import (
         RopeNeoxKernel,
         RopeNeoxPositionIdsKernel,
         RopeNonNeoxKernel,
     )
-    from tileops.kernels.topk_selector import TopkSelectorKernel
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 _LAZY = {
@@ -138,14 +138,14 @@ _LAZY = {
     "DeltaNetDenseDecodeFwdKernel": ".linear_attention",
     "DeltaNetDensePrefillFwdKernel": ".linear_attention",
     "DeltaNetFwdKernel": ".linear_attention",
-    "DropoutKernel": ".dropout",
+    "DropoutKernel": ".elementwise.dropout",
     "EngramDecodeKernel": ".engram",
     "EngramGateConvBwdKernel": ".engram",
     "EngramGateConvFwdKernel": ".engram",
     "FFTC2CDecomposedKernel": ".fft",
     "FFTC2COneCTAKernel": ".fft",
-    "FP8LightningIndexerKernel": ".fp8_lightning_indexer",
-    "FP8QuantKernel": ".fp8_quant",
+    "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
+    "FP8QuantKernel": ".quantization.fp8_quant",
     "FlashAttnBwdPreprocessKernel": ".attention",
     "FusedGatedKernel": ".elementwise",
     "GLABwdKernel": ".linear_attention",
@@ -199,7 +199,7 @@ _LAZY = {
     "RopeNonNeoxKernel": ".rope",
     "SparseMlaBasicKernel": ".attention",
     "SparseMlaKernel": ".attention",
-    "TopkSelectorKernel": ".topk_selector",
+    "TopkSelectorKernel": ".attention.topk_select",
     "UnaryKernel": ".elementwise",
 }
 

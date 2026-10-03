@@ -17,7 +17,7 @@ from tileops.kernels.attention import (
     GQADenseWsKernel,
     GQAVarlenFP8FwdKernel,
 )
-from tileops.kernels.attention.gqa_decode import (
+from tileops.kernels.attention.gqa.decode import (
     gqa_decode_no_split_run,
     gqa_decode_split_run,
 )
@@ -28,7 +28,7 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.gqa import (
+from workloads.attention.gqa import (
     GroupedQueryAttentionBwdWorkload,
     GroupedQueryAttentionVarlenScaledWorkload,
     apply_dense_rope,
@@ -494,9 +494,9 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
         calls.append(("no_split", 0))
         return gqa_decode_no_split_run(*args, **kwargs)
 
-    monkeypatch.setattr("tileops.kernels.attention.gqa_decode.gqa_decode_split_run", split_spy)
+    monkeypatch.setattr("tileops.kernels.attention.gqa.decode.gqa_decode_split_run", split_spy)
     monkeypatch.setattr(
-        "tileops.kernels.attention.gqa_decode.gqa_decode_no_split_run", no_split_spy
+        "tileops.kernels.attention.gqa.decode.gqa_decode_no_split_run", no_split_spy
     )
 
     # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two

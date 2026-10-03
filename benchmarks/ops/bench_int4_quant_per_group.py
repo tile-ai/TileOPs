@@ -10,7 +10,7 @@ import pytest
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT4QuantPerGroupFwdOp
-from workloads.quantization import INT4QuantPerGroupWorkload
+from workloads.quantization.quantize import INT4QuantPerGroupWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.

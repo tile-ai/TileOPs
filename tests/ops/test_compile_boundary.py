@@ -21,13 +21,8 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops.ops.attention.deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from tileops.ops.attention.deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from tileops.ops.attention.deepseek_nsa import (
-    NSACompressedVarlenFwdOp,
-    NSATopKVarlenFwdOp,
-    NSAVarlenFwdOp,
-)
+from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -38,19 +33,24 @@ from tileops.ops.attention.gqa import (
 from tileops.ops.attention.mha import (
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
+from tileops.ops.attention.mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.nsa import (
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
+    NSAVarlenFwdOp,
+)
+from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
-from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.fp8_quant import FP8QuantFwdOp
 from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
 from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
-from tileops.ops.linear_attention.deltanet import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
-from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrent import DeltaNetRecurrentFwdOp
+from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
+from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
-from tileops.ops.linear_attention.gla_recurrent import GLARecurrentFwdOp
+from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -69,6 +69,7 @@ from tileops.ops.quantization import (
     INT8QuantPerTensorFwdOp,
     SmoothQuantFwdOp,
 )
+from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
 from tileops.ops.rope import (
     RopeFwdOp,
     RopeLlama31FwdOp,
@@ -85,17 +86,15 @@ from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
-from tileops.ops.topk_select import TopKSelectFwdOp
-from workloads.deepseek_attention import (
+from workloads.attention.deepseek_attention import (
     DsaDecodeWorkload,
     MlaDecodeWorkload,
     NsaCmpFwdWorkload,
     NsaFwdWorkload,
     NsaTopkWorkload,
 )
-from workloads.device import run_device
-from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
-from workloads.gqa import (
+from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
+from workloads.attention.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
@@ -103,14 +102,15 @@ from workloads.gqa import (
     GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
-from workloads.int8_dequant import (
+from workloads.attention.mha import MhaDecodePagedWorkload
+from workloads.attention.paged_kv_cache import make_unit_cache_scales
+from workloads.device import run_device
+from workloads.quantization.int8_dequant import (
     INT8DequantPerBlockWorkload,
     INT8DequantPerChannelWorkload,
     INT8DequantPerTensorWorkload,
 )
-from workloads.mha import MhaDecodePagedWorkload
-from workloads.paged_kv_cache import make_unit_cache_scales
-from workloads.quantization import (
+from workloads.quantization.quantize import (
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
     INT8QuantPerBlockWorkload,

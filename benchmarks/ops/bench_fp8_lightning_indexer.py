@@ -13,7 +13,7 @@ import pytest
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import FP8LightningIndexerFwdOp
-from workloads.fp8_lightning_indexer import FP8LightningIndexerCall
+from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
 
 
 @pytest.mark.parametrize("call", manifest_calls(FP8LightningIndexerFwdOp))

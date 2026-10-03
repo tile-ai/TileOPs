@@ -54,7 +54,7 @@ class FP8QuantFwdInterface(KernelInterface):
         """
 
 
-# workloads/fp8_quant.py clamps a row's absolute maximum to this before dividing.
+# workloads/quantization/fp8_quant.py clamps a row's absolute maximum to this before dividing.
 _AMAX_FLOOR = 1e-4
 
 

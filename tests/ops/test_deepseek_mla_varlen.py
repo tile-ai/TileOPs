@@ -4,7 +4,7 @@ Input construction and the reference belong in ``workloads/`` once an entry has
 workload rows, so that a benchmark reads the same definition. This entry is
 still ``spec-only`` and has neither, so they are module-level helpers here:
 there is no second consumer to drift from yet, and promoting the entry moves
-them to ``workloads/deepseek_attention.py`` along with the benchmark that will
+them to ``workloads/attention/deepseek_attention.py`` along with the benchmark that will
 read them. The reference itself is the semantics
 ``tests/test_spec_reference.py`` already states for the entry -- expand ``k_pe``
 to every head, then attend per request in float32.

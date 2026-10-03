@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.deepseek_attention import MlaDecodeWorkload
+from workloads.attention.deepseek_attention import MlaDecodeWorkload
 
 
 class MlaDecodeTest(MlaDecodeWorkload, TestBase):

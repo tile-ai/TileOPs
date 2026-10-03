@@ -9,9 +9,9 @@ from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_t
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall
-from tileops.kernels.linear_attention.deltanet import deltanet_bwd
-from tileops.kernels.linear_attention.deltanet.deltanet_bwd import DeltaNetBwdKernel
-from tileops.kernels.linear_attention.deltanet_recurrence import (
+from tileops.kernels.linear_attention.deltanet import chunk_bwd as deltanet_bwd
+from tileops.kernels.linear_attention.deltanet.chunk_bwd import DeltaNetBwdKernel
+from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.linear_attention import (
