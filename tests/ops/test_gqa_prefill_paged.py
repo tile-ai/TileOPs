@@ -6,7 +6,6 @@ import torch
 from tests.test_base import served_in_tree
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
-from workloads.attention.gqa.sequence_metadata import make_cu_seqlens
 from workloads.attention.paged_kv_cache import (
     fill_paged_cache_from_logical,
     make_fragmented_block_table,
@@ -15,6 +14,7 @@ from workloads.attention.paged_kv_cache import (
     paged_cache_row,
 )
 from workloads.device import run_device
+from workloads.sequence_metadata import make_cu_seqlens
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),

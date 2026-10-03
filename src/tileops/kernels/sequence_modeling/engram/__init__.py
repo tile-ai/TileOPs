@@ -5,9 +5,9 @@ from tileops.kernels.sequence_modeling.engram.call_spec import (
     EngramGateConvCall,
     EngramGateConvFwdInterface,
 )
-from tileops.kernels.sequence_modeling.engram.engram_bwd import EngramGateConvBwdKernel
-from tileops.kernels.sequence_modeling.engram.engram_decode import EngramDecodeKernel
-from tileops.kernels.sequence_modeling.engram.engram_fwd import EngramGateConvFwdKernel
+from tileops.kernels.sequence_modeling.engram.decode import EngramDecodeKernel
+from tileops.kernels.sequence_modeling.engram.gate_conv_bwd import EngramGateConvBwdKernel
+from tileops.kernels.sequence_modeling.engram.gate_conv_fwd import EngramGateConvFwdKernel
 
 __all__ = [
     "EngramDecodeCall",

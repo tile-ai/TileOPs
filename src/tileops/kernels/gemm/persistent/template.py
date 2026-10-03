@@ -1,4 +1,4 @@
-"""Persistent grouped GEMM template for grouped, batched, and MoE layouts.
+"""Persistent GEMM template for dense, grouped, batched, and MoE layouts.
 
 Inputs and output shapes are documented by ``GemmTemplate``.
 """
@@ -11,7 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._erf import erf
-from tileops.kernels.gemm.grouped.heuristics import (
+from tileops.kernels.gemm.persistent.heuristics import (
     ACTIVATIONS,
     PER_GROUP_TYPES,
     PER_ROW_TYPES,

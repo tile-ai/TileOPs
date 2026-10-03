@@ -23,7 +23,7 @@ from tests.compile_contract import (
 )
 from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.attention.gqa.backward import GroupedQueryAttentionBwdOp
+from tileops.ops.attention.gqa.bwd import GroupedQueryAttentionBwdOp
 from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
 from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
 from tileops.ops.attention.gqa.prefill_paged_kv_append import (
@@ -88,7 +88,7 @@ from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
 from workloads.attention.dsa import DsaDecodeWorkload
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
-from workloads.attention.gqa.backward import GroupedQueryAttentionBwdWorkload
+from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
 from workloads.attention.gqa.dense import GroupedQueryAttentionDenseDecodeWorkload
 from workloads.attention.gqa.paged import GroupedQueryAttentionPagedFwdWorkload
 from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload

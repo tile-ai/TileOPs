@@ -1,7 +1,7 @@
 import torch
 
+from workloads.attention.gqa.call_metadata import _dtype
 from workloads.attention.gqa.rope import apply_dense_rope
-from workloads.attention.gqa.sequence_metadata import _dtype
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 

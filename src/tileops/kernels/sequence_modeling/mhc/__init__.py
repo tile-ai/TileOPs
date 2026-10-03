@@ -4,8 +4,8 @@ from tileops.kernels.sequence_modeling.mhc.call_spec import (
     MHCPreCall,
     MHCPreFwdInterface,
 )
-from tileops.kernels.sequence_modeling.mhc.mhc_post import MHCPostKernel
-from tileops.kernels.sequence_modeling.mhc.mhc_pre import MHCPreKernel
+from tileops.kernels.sequence_modeling.mhc.post import MHCPostKernel
+from tileops.kernels.sequence_modeling.mhc.pre import MHCPreKernel
 
 __all__ = [
     "MHCPostCall",

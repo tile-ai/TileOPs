@@ -1,8 +1,8 @@
 import torch
 from einops import einsum, repeat
 
-from workloads.attention.sequence_metadata import prepare_chunk_offsets, prepare_token_indices
 from workloads.device import run_device
+from workloads.sequence_metadata import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [

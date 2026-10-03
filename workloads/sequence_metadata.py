@@ -1,5 +1,9 @@
+from itertools import accumulate
+
 import tilelang
 import torch
+
+from workloads.device import run_device
 
 
 def prepare_lens(offsets: torch.LongTensor) -> torch.LongTensor:
@@ -30,3 +34,8 @@ def prepare_chunk_indices(offsets: torch.LongTensor, chunk_size: int) -> torch.L
         [torch.arange(n) for n in tilelang.cdiv(prepare_lens(offsets), chunk_size).tolist()]
     )
     return torch.stack([prepare_sequence_ids(indices), indices], 1).to(offsets)
+
+
+def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
+    """Exclusive prefix sum of *lengths*, the packed-varlen offset vector."""
+    return torch.tensor([0, *accumulate(lengths)], device=run_device(), dtype=torch.int32)

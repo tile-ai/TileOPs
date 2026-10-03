@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from tileops.kernels.gemm.dense import GemmTmaKernel
-from tileops.kernels.gemm.grouped.template import GemmTemplate
+from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp

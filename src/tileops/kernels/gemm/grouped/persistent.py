@@ -9,8 +9,8 @@ from tileops.kernels.gemm.grouped.call_spec import (
     GroupedGemmFwdInterface,
     grouped_gemm_entry,
 )
-from tileops.kernels.gemm.grouped.heuristics import GemmType
-from tileops.kernels.gemm.grouped.template import GemmTemplate
+from tileops.kernels.gemm.persistent.heuristics import GemmType
+from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GroupedGemmPersistentKernel"]

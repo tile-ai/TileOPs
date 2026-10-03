@@ -1,4 +1,4 @@
-from workloads.attention.gqa.backward import (
+from workloads.attention.gqa.bwd import (
     GroupedQueryAttentionBwdCall,
     GroupedQueryAttentionBwdWorkload,
 )
@@ -18,7 +18,6 @@ from workloads.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
 )
 from workloads.attention.gqa.rope import apply_dense_rope, apply_packed_rope
-from workloads.attention.gqa.sequence_metadata import make_cu_seqlens
 from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
@@ -27,6 +26,7 @@ from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenScaledCall,
     GroupedQueryAttentionVarlenScaledWorkload,
 )
+from workloads.sequence_metadata import make_cu_seqlens
 
 __all__ = [
     "make_cu_seqlens",

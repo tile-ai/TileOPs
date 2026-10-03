@@ -19,8 +19,8 @@ from tileops.kernels.gemm.call_spec import (
     BmmFp8TransposeFwdInterface,
     BmmFwdInterface,
 )
-from tileops.kernels.gemm.grouped.heuristics import GemmType
-from tileops.kernels.gemm.grouped.template import GemmTemplate
+from tileops.kernels.gemm.persistent.heuristics import GemmType
+from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count, get_sm_version
 

@@ -1,9 +1,10 @@
 import torch
 
+from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.attention.gqa.rope import apply_dense_rope
-from workloads.attention.gqa.sequence_metadata import _dtype, _segments, make_cu_seqlens
 from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
+from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["GroupedQueryAttentionPagedFwdWorkload", "GroupedQueryAttentionPagedCall"]

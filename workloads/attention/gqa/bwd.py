@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from workloads.attention.gqa.sequence_metadata import _dtype
+from workloads.attention.gqa.call_metadata import _dtype
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
