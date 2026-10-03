@@ -11,6 +11,7 @@ from typing import Any, Generic, Optional, TypeVar
 import pytest
 import torch
 
+from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import (
     _MAX_ITERS,
@@ -23,6 +24,14 @@ from benchmarks.timing import (
     _sample_spread_ms,
     bench_kernel,
     median_busy_ms,
+)
+from benchmarks.verification import (
+    Evidence,
+    Exact,
+    Unestablished,
+    describe,
+    ratio_allowed,
+    verifying,
 )
 from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_key
 from tileops.manifest.plan import entry_plan
@@ -222,11 +231,95 @@ class OpBenchmark(BenchmarkBase[W]):
     def calculate_memory(self) -> Optional[float]:
         return self._get_roofline()[1]
 
+    def _resolve_evidence(self, plan: dict, declared: dict) -> dict:
+        """Evidence for every tag: `Exact` by default, `Unestablished` where no oracle exists.
+
+        A tag whose workload carries no reference cannot be checked, here or under the
+        verification step. The row is still timed, so that a family which has not been
+        converted keeps publishing, and it carries no ratio and a note saying so.
+        """
+        stray = set(declared) - set(plan)
+        if stray:
+            raise ValueError(
+                f"evidence names {sorted(stray)}, which this call does not time; "
+                "a declaration matching no tag protects nothing"
+            )
+        resolved = {tag: declared.get(tag, Exact()) for tag in plan}
+        if getattr(self.workload, "ref_program", None) is not None:
+            return resolved
+        return {
+            tag: Unestablished() if mark.kind == "exact" and mark.reference is None else mark
+            for tag, mark in resolved.items()
+        }
+
+    def _verify(self, plan: dict, evidence: dict, inputs: tuple) -> None:
+        """Check each tag against the reference. Runs only under the verification step.
+
+        The reference takes the call's own inputs. A tag given as ``(callable, args)`` has
+        already folded what it needs into that closure, and those args are the library's
+        calling convention rather than the op's.
+        """
+        reference = getattr(self.workload, "ref_program", None)
+        # Most workloads carry no dtype; the call sites that assert take it off an input,
+        # and the default tolerance is far tighter than fp16 accumulation reaches.
+        dtype = getattr(self.workload, "dtype", None)
+        if not isinstance(dtype, torch.dtype):
+            dtype = next(
+                (t.dtype for t in inputs if torch.is_tensor(t) and t.is_floating_point()), None
+            )
+        tolerance = reference_tolerance(dtype) if dtype is not None else {}
+        pristine = tuple(t.clone() if torch.is_tensor(t) else t for t in inputs)
+
+        def restore():
+            for live, original in zip(inputs, pristine, strict=True):
+                if torch.is_tensor(live):
+                    live.copy_(original)
+
+        for tag, (functor, args) in plan.items():
+            mark = evidence[tag]
+            oracle = getattr(mark, "reference", None) or reference
+            if oracle is None or mark.kind in ("noncomparable", "reference_infeasible"):
+                continue
+            if functor is oracle or getattr(functor, "__func__", None) is getattr(
+                oracle, "__func__", oracle
+            ):
+                continue
+            # Each side reads the inputs as the call made them: a tag that writes an input
+            # would otherwise hand what it wrote to its own oracle and agree with itself.
+            restore()
+            produced = functor(*args)
+            restore()
+            expected = oracle(*inputs)
+            if mark.kind == "custom":
+                mark.validator(produced, expected)
+                continue
+            width = len(produced) if isinstance(produced, tuple) else 1
+            covered = len(expected) if isinstance(expected, tuple) else 1
+            claimed = getattr(mark, "outputs", width)
+            # assert_matches_reference compares only what the reference returns, so a
+            # shorter reference leaves the rest unchecked. Exact claims the whole result.
+            if mark.kind == "exact" and covered < width:
+                raise ValueError(
+                    f"{tag}: the reference establishes {covered} of {width} outputs; declare "
+                    f"Partial(outputs={covered}, reason=...) naming what the rest leaves open"
+                )
+            if claimed > covered:
+                raise ValueError(
+                    f"{tag}: Partial claims {claimed} outputs, the reference establishes {covered}"
+                )
+            assert_matches_reference(
+                lambda *_i, _p=produced: _p,
+                lambda *_i, _e=expected: _e,
+                *inputs,
+                **mark.tolerance(tolerance),
+            )
+
     def compare(
         self,
         functors: dict[str, Any],
         *inputs: Any,
         count_copies: bool = False,
+        evidence: Optional[dict[str, Evidence]] = None,
     ) -> dict[str, dict]:
         """Time several implementations forward then reversed, and record them.
 
@@ -245,11 +338,25 @@ class OpBenchmark(BenchmarkBase[W]):
         case where an implementation computes part of the result with one. It belongs to
         the case rather than the tag: reading one side with copies and the other without
         compares two instruments.
+
+        Every tag carries evidence that it computes what the op computes, defaulting to
+        `Exact`. ``evidence`` names the tags that something else establishes — a validator
+        for an op whose output is a draw, `Noncomparable` for an implementation of a
+        different function, `ReferenceInfeasible` where no reference runs at this shape.
+        The reference is run under the nightly verification step, not here: a reference
+        resident while the timer runs perturbs the measurement it exists to take.
+
+        Raises:
+            ValueError: ``evidence`` names a tag this call does not time.
         """
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
             for tag, value in functors.items()
         }
+        evidence = self._resolve_evidence(plan, evidence or {})
+        if verifying():
+            self._verify(plan, evidence, inputs)
+            return {}
         tags = list(plan)
         order = tags + tags[::-1]
         # Split the budget across the two passes rather than spending it twice:
@@ -284,7 +391,14 @@ class OpBenchmark(BenchmarkBase[W]):
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
         params = self.case_params()
         for tag in tags:
-            BenchmarkReport.record(self.op, params, results[tag], tag=tag)
+            BenchmarkReport.record(
+                self.op,
+                params,
+                results[tag],
+                tag=tag,
+                unverified=describe(evidence[tag]) or "",
+                ratio=ratio_allowed(evidence[tag]),
+            )
         return results
 
 

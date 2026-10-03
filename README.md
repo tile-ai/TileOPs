@@ -104,8 +104,7 @@ CUDA-capable GPU is required.
 - PyTorch 2.13
 - CUDA Toolkit 13.2
 - A GPU of compute capability 9.0 (SM90), tested on H200
-- [TileLang](https://github.com/tile-ai/tilelang) 0.1.12; a source checkout instead runs the
-  pinned main snapshot — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
+- [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs

@@ -20,6 +20,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact, Noncomparable, ReferenceInfeasible
 from tileops.ops.rope import (
     RopeFwdOp,
     RopeLlama31FwdOp,
@@ -104,8 +105,14 @@ def _vllm_rope(
     return baseline_fn, (positions, query)
 
 
-def _bench_rope(op_cls, call) -> None:
-    """Profile the op on one manifest call against the torch rotation baseline."""
+def _bench_rope(op_cls, call, *, rescales_frequencies=lambda call: False) -> None:
+    """Profile the op on one manifest call against the torch rotation baseline.
+
+    ``rescales_frequencies`` reads the call: a variant that derives its frequencies from its
+    own parameters rotates by different angles than this base-table baseline, so that
+    baseline is timed and publishes no ratio. LongRoPE only rescales on a call that passes
+    ``rescale_factors``, so the question is per call rather than per op.
+    """
     workload = CallWorkload(call)
     tensors = call.materialize(run_device())
     op = op_cls(**call.arguments(tensors))
@@ -122,6 +129,22 @@ def _bench_rope(op_cls, call) -> None:
     def baseline_fn(t):
         return rotate(t, cos, sin)
 
+    exact = Exact(rtol=2e-2, atol=2e-2, reference=baseline_fn)
+    if rescales_frequencies(call):
+        # This baseline rotates by the base table while the op derives its frequencies from
+        # its own parameters, so neither side can be checked against it. tests/ops/test_rope.py
+        # asserts the op against each variant's own reference.
+        baseline_mark = Noncomparable(
+            "the op derives its frequencies from its own scaling parameters; this baseline "
+            "rotates by the base table, so the two rotate by different angles"
+        )
+        op_mark = ReferenceInfeasible(
+            "this variant's own reference on the workload",
+            "the benchmark holds only the base-table rotation, which is not this variant's "
+            "semantics; tests/ops/test_rope.py asserts the op against its own reference",
+        )
+    else:
+        baseline_mark = op_mark = exact
     bm.compare(
         {
             "tileops": op,
@@ -129,6 +152,11 @@ def _bench_rope(op_cls, call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         x,
+        evidence={
+            "tileops": op_mark,
+            "torch-ref": baseline_mark,
+            TORCH_COMPILE_TAG: baseline_mark,
+        },
     )
 
 
@@ -139,17 +167,22 @@ def test_rope_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLlama31FwdOp))
 def test_rope_llama31_bench(call) -> None:
-    _bench_rope(RopeLlama31FwdOp, call)
+    _bench_rope(RopeLlama31FwdOp, call, rescales_frequencies=lambda _c: True)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeYarnFwdOp))
 def test_rope_yarn_bench(call) -> None:
-    _bench_rope(RopeYarnFwdOp, call)
+    _bench_rope(RopeYarnFwdOp, call, rescales_frequencies=lambda _c: True)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLongRopeFwdOp))
 def test_rope_longrope_bench(call) -> None:
-    _bench_rope(RopeLongRopeFwdOp, call)
+    _bench_rope(
+        RopeLongRopeFwdOp,
+        call,
+        # LongRoPE at its defaults rescales nothing, so its frequencies are the base table's.
+        rescales_frequencies=lambda c: "rescale_factors" in c.tensors,
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeNeoxPositionIdsFwdOp))
@@ -167,25 +200,29 @@ def test_rope_neox_position_ids_bench(call) -> None:
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
-    # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they
-    # agree to one rounding step of the storage dtype, which is what the default
-    # tolerances allow.
-    check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
-    torch.testing.assert_close(
-        check_fn(*check_args).view(x.shape),
-        baseline_fn(x, position_ids),
-        rtol=1e-2,
-        atol=2e-2,
-    )
     vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
 
+    # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they agree
+    # to one rounding step of it.
+    rotation = Exact(rtol=1e-2, atol=2e-2, reference=baseline_fn)
+    # vllm returns the rotation flattened; the check compares it in the op's shape.
+    vllm_shaped = (
+        lambda *a, _f=vllm_fn, _a=vllm_args: _f(*_a).view(x.shape),
+        (),
+    )
     bm.compare(
         {
             "tileops": op,
-            VLLM_TAG: (vllm_fn, vllm_args),
+            VLLM_TAG: vllm_shaped,
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         x,
         position_ids,
+        evidence={
+            "tileops": rotation,
+            VLLM_TAG: rotation,
+            "torch-ref": rotation,
+            TORCH_COMPILE_TAG: rotation,
+        },
     )

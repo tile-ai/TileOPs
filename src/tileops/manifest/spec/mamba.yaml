@@ -283,10 +283,10 @@ CausalConv1dFwdOp:
   roofline:
     flops: "2 * D * Tt * W"
   workloads:
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-4k}
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-pf4k-nost}
-    - {D: 5376, W: 4, Tt: 32768, seq_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-32k}
-    - {D: 8192, W: 4, Tt: 8192, seq_lens: [4096, 4096], dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-8k}
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-4k}
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-pf4k-nost}
+    - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-32k}
+    - {D: 8192, W: 4, Tt: 8192, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-8k}
 
 CausalConv1dUpdateFwdOp:
   family: mamba
