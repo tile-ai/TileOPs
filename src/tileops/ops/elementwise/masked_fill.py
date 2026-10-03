@@ -20,7 +20,7 @@ from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
 
-class MaskedFillFwdOp(Op):
+class MaskedFillTensorFwdOp(Op):
     """MaskedFill with 0-dim Tensor value (``torch.Tensor.masked_fill(mask, value: Tensor)``).
 
     Output shape is the bidirectional broadcast of ``input`` and ``mask``;

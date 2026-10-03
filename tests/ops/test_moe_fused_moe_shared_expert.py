@@ -1,7 +1,7 @@
-"""Tests for FusedMoeSharedExpertFwdOp — FusedMoE with shared expert support.
+"""Tests for FusedMoESharedExpertFwdOp — FusedMoE with shared expert support.
 
 Verifies:
-  - FusedMoeSharedExpertFwdOp returns (shared_output, routed_output) tuple
+  - FusedMoESharedExpertFwdOp returns (shared_output, routed_output) tuple
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoe output
   - Without the shared weights, shared_output is None
@@ -14,8 +14,8 @@ import torch
 from tileops.kernels.gemm.dense import GemmTmaKernel
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
-from tileops.ops.moe import FusedMoeSharedExpertFwdOp, SharedExpertMLPFwdOp
-from tileops.ops.moe.fused_moe import FusedMoeFwdOp
+from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
+from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
 from workloads.moe import SharedExpertMLPWorkload, moe_call
@@ -38,7 +38,7 @@ def test_the_shared_expert_matches_its_reference(dtype):
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
 def test_fused_moe_shared_expert_basic(num_tokens):
-    """FusedMoeSharedExpertFwdOp with shared expert kernel."""
+    """FusedMoESharedExpertFwdOp with shared expert kernel."""
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
@@ -51,7 +51,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeSharedExpertFwdOp(
+    op = FusedMoESharedExpertFwdOp(
         top_k=K,
         scoring_func="softmax",
         renormalize=False,
@@ -88,7 +88,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
             assert isinstance(wide._gemm_down, GemmTemplate)
 
     # routed_out matches FusedMoe
-    op_routed = FusedMoeFwdOp(
+    op_routed = FusedMoEFwdOp(
         top_k=K,
         scoring_func="softmax",
         renormalize=False,
@@ -110,7 +110,7 @@ def test_fused_moe_shared_expert_none():
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeSharedExpertFwdOp(
+    op = FusedMoESharedExpertFwdOp(
         top_k=K,
     )
 
@@ -163,7 +163,7 @@ def test_fused_moe_shared_expert_tp():
         partial_sum_ref += act @ down_shard.float().T  # [T, H]
 
     # routed reference (not affected by TP)
-    op_routed = FusedMoeFwdOp(
+    op_routed = FusedMoEFwdOp(
         top_k=K,
         scoring_func="softmax",
         renormalize=False,
@@ -173,7 +173,7 @@ def test_fused_moe_shared_expert_tp():
     # TP: accumulate partial outputs to simulate all-reduce
     partial_sum = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
-        op_tp = FusedMoeSharedExpertFwdOp(
+        op_tp = FusedMoESharedExpertFwdOp(
             top_k=K,
             scoring_func="softmax",
             renormalize=False,
@@ -206,7 +206,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
     dtype = torch.bfloat16
     dev = run_device()
 
-    op = FusedMoeSharedExpertFwdOp(
+    op = FusedMoESharedExpertFwdOp(
         top_k=K,
         scoring_func="softmax",
         renormalize=False,
@@ -260,7 +260,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
             super().__init__(**kwargs)
 
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
-    op = FusedMoeSharedExpertFwdOp(
+    op = FusedMoESharedExpertFwdOp(
         top_k=K,
         kernel_map={"shared_expert_mlp": Replacement},
     )

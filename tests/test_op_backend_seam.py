@@ -473,12 +473,12 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
 
 # --------------------------------------------------------------------------------------
-# Two optional inputs at the seam: ClampFwdOp's min and max
+# Two optional inputs at the seam: ClampTensorFwdOp's min and max
 # --------------------------------------------------------------------------------------
 
 
 class _ClampRecorder:
-    """A target for ClampFwdOp; its kernel takes whatever the op hands over."""
+    """A target for ClampTensorFwdOp; its kernel takes whatever the op hands over."""
 
     def __init__(self):
         self.calls = []
@@ -503,24 +503,24 @@ def _clamp_inputs(rows=4, cols=8, dtype=DTYPE, device="cpu"):
 def test_an_absent_optional_input_keeps_its_slot():
     """The slot says which input is missing; how many slots there are cannot."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
-    from tileops.ops.elementwise import ClampFwdOp
+    _register(recorder, op="ClampTensorFwdOp")
+    from tileops.ops.elementwise import ClampTensorFwdOp
 
     input, lower, _ = _clamp_inputs()
-    ClampFwdOp()(input, lower, None)
+    ClampTensorFwdOp()(input, lower, None)
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(input), TensorSpec.of(lower), None)
-    assert params == {}, "ClampFwdOp declares no manifest params"
+    assert params == {}, "ClampTensorFwdOp declares no manifest params"
 
 
 def test_the_two_one_sided_clamps_are_two_kernels():
     """Both hand over two tensors of one shape; only the slot tells them apart."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
-    from tileops.ops.elementwise import ClampFwdOp
+    _register(recorder, op="ClampTensorFwdOp")
+    from tileops.ops.elementwise import ClampTensorFwdOp
 
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     input, lower, upper = _clamp_inputs()
 
     op(input, lower, None)
@@ -534,12 +534,12 @@ def test_the_two_one_sided_clamps_are_two_kernels():
 
 def test_a_clamp_with_neither_bound_never_reaches_the_backend():
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
-    from tileops.ops.elementwise import ClampFwdOp
+    _register(recorder, op="ClampTensorFwdOp")
+    from tileops.ops.elementwise import ClampTensorFwdOp
 
     input, _, _ = _clamp_inputs()
     with pytest.raises(ValueError, match="ClampOut"):
-        ClampFwdOp()(input)
+        ClampTensorFwdOp()(input)
     assert recorder.calls == []
 
 
@@ -864,19 +864,19 @@ def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():
     op, inputs = _mamba2()
     registry.register_detector("acme", lambda device: False)
 
-    with pytest.raises(OpNotAvailableError, match="no kernel builder for DaCumsumFwdOp"):
+    with pytest.raises(OpNotAvailableError, match="no kernel builder for SSDChunkCumsumFwdOp"):
         op(*inputs)
 
 
 def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
     from tileops.ops.moe.contracts import ContiguousLayoutSpec
-    from tileops.ops.moe.staged import MoeGroupedGemmFwdOp
+    from tileops.ops.moe.staged import MoEGroupedGemmFwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "MoeGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: out
+        "MoEGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: out
     )
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)
     meta = torch.zeros(4, dtype=torch.int32)
 
@@ -904,18 +904,18 @@ def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
 
 def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     """``bias`` takes the output's dtype: the op states that dtype, and it binds the input."""
-    from tileops.ops.gemm.gemm import GemmFp8FwdOp
+    from tileops.ops.gemm.gemm import GemmFP8FwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "GemmFp8FwdOp",
+        "GemmFP8FwdOp",
         "acme",
         lambda *specs, **params: lambda *tensors: torch.empty(16, 16, dtype=torch.bfloat16),
     )
     fp8 = torch.float8_e4m3fn
     a, b = torch.empty(16, 32, dtype=fp8), torch.empty(16, 32, dtype=fp8)
     scale = torch.ones(1, 1)
-    op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
+    op = GemmFP8FwdOp(out_dtype=torch.bfloat16)
 
     op(a, b, scale, scale, torch.empty(16, dtype=torch.bfloat16))
     with pytest.raises(ValueError, match="bias"):

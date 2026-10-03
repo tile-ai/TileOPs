@@ -705,7 +705,7 @@ def _step_sizes(like: torch.Tensor) -> torch.Tensor:
 
 
 class DaCumsumFwdCall(CallWorkload):
-    """A manifest call of DaCumsumFwdOp with a negative decay ``A``."""
+    """A manifest call of SSDChunkCumsumFwdOp with a negative decay ``A``."""
 
     def gen_inputs(self):
         dt, A, dt_bias = super().gen_inputs()
@@ -727,7 +727,7 @@ class DaCumsumFwdCall(CallWorkload):
 
 
 class CBProducerFwdCall(CallWorkload):
-    """A manifest call of CBProducerFwdOp."""
+    """A manifest call of SSDChunkCouplingFwdOp."""
 
     def gen_inputs(self):
         return tuple(t * 0.1 for t in super().gen_inputs())
@@ -785,7 +785,7 @@ class SSDChunkScanFwdCall(CallWorkload):
 
 
 class SSDDecodeFwdCall(CallWorkload):
-    """A manifest call of SSDDecodeFwdOp with ``A <= 0`` and a positive ``dt``."""
+    """A manifest call of SSDRecurrentFwdOp with ``A <= 0`` and a positive ``dt``."""
 
     def gen_inputs(self):
         A, dt, x, B_in, C_in, state = super().gen_inputs()

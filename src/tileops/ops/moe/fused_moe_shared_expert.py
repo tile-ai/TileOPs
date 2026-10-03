@@ -1,9 +1,9 @@
-"""FusedMoeSharedExpertFwdOp — FusedMoE with shared expert support.
+"""FusedMoESharedExpertFwdOp — FusedMoE with shared expert support.
 
 Combines routed experts (via FusedMoe) with the shared expert (SharedExpertMLPFwdOp).
 
 Usage (single GPU, tp_size=1):
-    op = FusedMoeSharedExpertFwdOp(top_k=K)
+    op = FusedMoESharedExpertFwdOp(top_k=K)
     shared_out, routed_out = op(
         hidden, gating, w_gate_up, w_down,
         shared_w_gate_up=shared_w_gate_up,  # [2*F_s, H]
@@ -11,7 +11,7 @@ Usage (single GPU, tp_size=1):
     )
 
 Usage (TP, tp_size>1):
-    op = FusedMoeSharedExpertFwdOp(top_k=K, tp_size=tp_size, tp_rank=tp_rank)
+    op = FusedMoESharedExpertFwdOp(top_k=K, tp_size=tp_size, tp_rank=tp_rank)
     # Pass complete weights; op shards them internally per tp_rank.
     # shared_out is a partial result — caller must all-reduce across TP ranks.
     shared_out_partial, routed_out = op(
@@ -34,10 +34,10 @@ from tileops.ops.moe.fused_moe import FusedMoe
 from tileops.ops.moe.shared_expert_mlp import SharedExpertMLPFwdOp
 from tileops.ops.op_base import Op
 
-__all__ = ["FusedMoeSharedExpertFwdOp"]
+__all__ = ["FusedMoESharedExpertFwdOp"]
 
 
-class FusedMoeSharedExpertFwdOp(FusedMoe):
+class FusedMoESharedExpertFwdOp(FusedMoe):
     """FusedMoE with shared expert support, optionally TP-aware.
 
     Extends FusedMoe to compute both shared and routed expert outputs. Passing the

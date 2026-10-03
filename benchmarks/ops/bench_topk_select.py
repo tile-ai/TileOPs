@@ -20,8 +20,8 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import TopkSelectorFwdOp
-from workloads.topk_selector import TopkSelectorCall
+from tileops.ops import TopKSelectFwdOp
+from workloads.topk_select import TopkSelectorCall
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -67,12 +67,12 @@ def _assert_selects_same_scores(fn, reference, *inputs: torch.Tensor) -> None:
     torch.testing.assert_close(selected(fn(*inputs)), selected(reference(*inputs)))
 
 
-@pytest.mark.parametrize("call", manifest_calls(TopkSelectorFwdOp))
-def test_topk_selector_bench(call) -> None:
+@pytest.mark.parametrize("call", manifest_calls(TopKSelectFwdOp))
+def test_topk_select_bench(call) -> None:
     workload = TopkSelectorCall(call)
     inputs = workload.gen_inputs()
 
-    op = TopkSelectorFwdOp(**workload.arguments(), tune=_TUNE)
+    op = TopKSelectFwdOp(**workload.arguments(), tune=_TUNE)
     bm = ManifestBenchmark(op, workload)
 
     functors = {

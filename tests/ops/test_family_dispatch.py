@@ -19,14 +19,14 @@ from tileops.kernels.linear_attention import (
     GLADecodeCall,
 )
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
-from tileops.ops.gemm.bmm import BmmFp8FwdOp
+from tileops.ops.gemm.bmm import BmmFP8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
+from tileops.ops.linear_attention.deltanet_recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
+from tileops.ops.linear_attention.gla import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
-from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
+from tileops.ops.linear_attention.gla_recurrent import GLARecurrentFwdOp
 from workloads.device import run_device_available
 
 pytestmark = pytest.mark.skipif(
@@ -163,7 +163,7 @@ _DELTANET_ROWS = [
 def test_deltanet_decode_dispatch(
     dtype: torch.dtype, dim_k: int, dim_v: int, arch: int, expected: str
 ) -> None:
-    op = DeltaNetDecodeFwdOp()
+    op = DeltaNetRecurrentFwdOp()
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
     assert op.select_implementation("deltanet_decode", call) == expected
@@ -178,7 +178,7 @@ def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
     )
 
     with pytest.raises(ValueError, match="multiple of 16"):
-        DeltaNetDecodeFwdOp().select_implementation("deltanet_decode", call)
+        DeltaNetRecurrentFwdOp().select_implementation("deltanet_decode", call)
 
 
 # --- Chunked GLA: the extents the three-pass forward and the two-pass backward tile, the
@@ -215,8 +215,8 @@ def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64)
 )
 def test_gla_chunked_dispatch(call: GLAChunkCall, serves_fwd: bool, serves_bwd: bool) -> None:
     for op, interface, serves in (
-        (GLAFwdOp(chunk_size=call.chunk_size), "gla_fwd", serves_fwd),
-        (GLABwdOp(chunk_size=call.chunk_size), "gla_bwd", serves_bwd),
+        (GLAChunkFwdOp(chunk_size=call.chunk_size), "gla_fwd", serves_fwd),
+        (GLAChunkBwdOp(chunk_size=call.chunk_size), "gla_bwd", serves_bwd),
     ):
         if serves:
             assert op.select_implementation(interface, call) == interface
@@ -239,7 +239,7 @@ def test_gla_chunked_dispatch(call: GLAChunkCall, serves_fwd: bool, serves_bwd: 
     ],
 )
 def test_gla_decode_dispatch(dtype: torch.dtype, expected: str) -> None:
-    op = GLADecodeFwdOp()
+    op = GLARecurrentFwdOp()
     call = GLADecodeCall(arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128, dtype=dtype)
 
     assert op.select_implementation("gla_decode", call) == expected
@@ -497,7 +497,7 @@ def test_bmm_fp8_dispatch(batch: int, m: int, n: int, k: int, expected: str) -> 
         out_dtype=torch.bfloat16,
     )
 
-    op = BmmFp8FwdOp()
+    op = BmmFP8FwdOp()
     assert op.kernel_map[op.select_implementation("bmm_fp8", call)].__name__ == expected
 
 

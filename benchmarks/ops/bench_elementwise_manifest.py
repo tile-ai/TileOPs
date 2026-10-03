@@ -22,8 +22,8 @@ from tileops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampFwdOp,
     ClampScalarFwdOp,
+    ClampTensorFwdOp,
     CosFwdOp,
     DivFwdOp,
     DropoutFwdOp,
@@ -45,7 +45,7 @@ from tileops.elementwise import (
     IsnanFwdOp,
     LeakyReluFwdOp,
     LeFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     Log1pFwdOp,
     LogFwdOp,
@@ -53,8 +53,8 @@ from tileops.elementwise import (
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillFwdOp,
     MaskedFillScalarFwdOp,
+    MaskedFillTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -103,11 +103,11 @@ def test_prelu_bench(call) -> None:
     _bench(PreluFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaskedFillFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MaskedFillTensorFwdOp))
 def test_masked_fill_bench(call) -> None:
     # The baseline is a clone plus an in-place fill, and the clone is a copy, not a
     # kernel; counting copies is what puts all of it in the reading.
-    _bench(MaskedFillFwdOp, call, count_copies=True)
+    _bench(MaskedFillTensorFwdOp, call, count_copies=True)
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaskedFillScalarFwdOp))
@@ -150,9 +150,9 @@ def test_floor_divide_bench(call) -> None:
     _bench(FloorDivideFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LerpFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(LerpScalarFwdOp))
 def test_lerp_bench(call) -> None:
-    _bench(LerpFwdOp, call)
+    _bench(LerpScalarFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaximumFwdOp))
@@ -295,9 +295,9 @@ def test_softplus_bench(call) -> None:
     _bench(SoftplusFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ClampFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(ClampTensorFwdOp))
 def test_clamp_bench(call) -> None:
-    _bench(ClampFwdOp, call)
+    _bench(ClampTensorFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(ClampScalarFwdOp))

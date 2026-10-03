@@ -48,8 +48,8 @@ def test_case_id_is_label_then_dtype_cases_then_dtype_parameters():
     sig = entry_plan("Pair", entry, _ADTS)
     call = instantiate(sig, entry["workloads"][0], entry["workloads"][0]["dtype_cases"][0])
     assert call.case_id == "r-bfloat16-float16"
-    plan = entry_plan("GemmFp8FwdOp", _ENTRIES["GemmFp8FwdOp"], _ADTS)
-    row = _ENTRIES["GemmFp8FwdOp"]["workloads"][1]
+    plan = entry_plan("GemmFP8FwdOp", _ENTRIES["GemmFP8FwdOp"], _ADTS)
+    row = _ENTRIES["GemmFP8FwdOp"]["workloads"][1]
     assert instantiate(plan, row, {}).case_id == f"{row['label']}-float16"
 
 
@@ -57,7 +57,7 @@ def test_an_unimportable_constructor_class_is_a_row_error():
     adts = copy.deepcopy(_ADTS)
     for ctor in adts["MGroupedLayout"]["sum"].values():
         ctor["python"] = "nonexistent_module.Layout"
-    errors = check_workloads("MoePrePermuteFwdOp", _entry("MoePrePermuteFwdOp"), adts)
+    errors = check_workloads("MoEPrePermuteFwdOp", _entry("MoEPrePermuteFwdOp"), adts)
     assert any("a constructor class" in e for e in errors), errors
 
 
@@ -72,7 +72,7 @@ def test_arguments_are_constructor_values():
 
     pooling = _first_call("MeanPoolingFwdOp")
     assert pooling.arguments(pooling.materialize("cpu"))["accum_dtype"] is torch.float32
-    moe = _first_call("MoePrePermuteFwdOp")
+    moe = _first_call("MoEPrePermuteFwdOp")
     layout = moe.arguments(moe.materialize("cpu"))["layout"]
     assert isinstance(layout, ContiguousLayoutSpec) and layout.packing is ContiguousPacking.TIGHT
     entry = _with_param(
@@ -152,8 +152,8 @@ def test_full_fills_its_shape():
 
 
 def test_generated_metadata_is_deterministic_and_materializes():
-    sig = entry_plan("MoePrePermuteFwdOp", _ENTRIES["MoePrePermuteFwdOp"], _ADTS)
-    row = _ENTRIES["MoePrePermuteFwdOp"]["workloads"][0]
+    sig = entry_plan("MoEPrePermuteFwdOp", _ENTRIES["MoEPrePermuteFwdOp"], _ADTS)
+    row = _ENTRIES["MoEPrePermuteFwdOp"]["workloads"][0]
     first, second = (instantiate(sig, row, {"T": "float16"}) for _ in range(2))
     assert first.specs["local_expert_ids"].values == second.specs["local_expert_ids"].values
     tensors = first.materialize(device="cpu")
@@ -363,9 +363,9 @@ _ENTRY_ERRORS = [
         "repeats",
     ),
     (
-        "ClampFwdOp",
+        "ClampTensorFwdOp",
         _entry(
-            "ClampFwdOp",
+            "ClampTensorFwdOp",
             status="implemented",
             workloads=[
                 {
@@ -381,9 +381,9 @@ _ENTRY_ERRORS = [
         "no row omits optional tensor 'max'",
     ),
     (
-        "ClampFwdOp",
+        "ClampTensorFwdOp",
         _entry(
-            "ClampFwdOp",
+            "ClampTensorFwdOp",
             status="implemented",
             workloads=[{"A": [4], "dtype_cases": [{"T": "float16"}], "label": "x"}],
         ),

@@ -10,10 +10,10 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
 from benchmarks.baselines import VLLM_TAG, flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import (
-    MoeExpertMLPFwdOp,
-    MoeGroupedGemmFwdOp,
-    MoePostPermuteFwdOp,
-    MoePrePermuteFwdOp,
+    MoEExpertMLPFwdOp,
+    MoEGroupedGemmFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEPrePermuteFwdOp,
 )
 from workloads.moe import (
     MoeExpertMLPWorkload,
@@ -25,11 +25,11 @@ from workloads.moe import (
 )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoePrePermuteFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEPrePermuteFwdOp))
 def test_moe_pre_permute_bench(call) -> None:
     workload = MoePrePermuteWorkload(call)
     hidden_states, local_ids = workload.gen_inputs()
-    op = MoePrePermuteFwdOp(**call.arguments({}))
+    op = MoEPrePermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
     expert_input, ends, inverse = op(hidden_states, local_ids)
     ref_input, ref_ends, ref_inverse = workload.ref_program(hidden_states, local_ids)
@@ -49,11 +49,11 @@ def test_moe_pre_permute_bench(call) -> None:
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoePostPermuteFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEPostPermuteFwdOp))
 def test_moe_post_permute_bench(call) -> None:
     workload = MoePostPermuteWorkload(call)
     expert_output, weights, inverse = workload.gen_inputs()
-    op = MoePostPermuteFwdOp(**call.arguments({}))
+    op = MoEPostPermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
     torch.testing.assert_close(
         op(expert_output, weights, inverse),
@@ -116,11 +116,11 @@ def _tight_psum(op) -> bool:
     return layout.kind == "contiguous" and layout.packing.value == "tight"
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoeGroupedGemmFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEGroupedGemmFwdOp))
 def test_moe_grouped_gemm_bench(call) -> None:
     workload = MoeGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
-    op = MoeGroupedGemmFwdOp(**call.arguments({}))
+    op = MoEGroupedGemmFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
     valid = valid_rows(op.layout, metadata, a.numel() // a.shape[-1], b.shape[0])
     ref = workload.ref_program(a, b, metadata)
@@ -140,11 +140,11 @@ def test_moe_grouped_gemm_bench(call) -> None:
     benchmark.compare(functors, a, b, metadata)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoeExpertMLPFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEExpertMLPFwdOp))
 def test_moe_expert_mlp_bench(call) -> None:
     workload = MoeExpertMLPWorkload(call)
     x, w_gate_up, w_down, metadata = workload.gen_inputs()
-    op = MoeExpertMLPFwdOp(**call.arguments({}))
+    op = MoEExpertMLPFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
     valid = valid_rows(op.layout, metadata, x.numel() // x.shape[-1], w_down.shape[0])
     ref = workload.ref_program(x, w_gate_up, w_down, metadata)

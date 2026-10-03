@@ -2,10 +2,10 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import TopkSelectorFwdOp
+from tileops.ops import TopKSelectFwdOp
 from tileops.utils import str2dtype
 from workloads.device import run_device
-from workloads.topk_selector import TopkSelectorWorkload
+from workloads.topk_select import TopkSelectorWorkload
 
 
 class TopkSelectorTest(TopkSelectorWorkload, TestBase):
@@ -51,7 +51,7 @@ class TopkSelectorFixture(FixtureBase):
 
 
 @TopkSelectorFixture
-def test_topk_selector_op(
+def test_topk_select_op(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -64,7 +64,7 @@ def test_topk_selector_op(
     in_dtype = str2dtype[in_dtype_str]
     out_dtype = str2dtype[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
-    op = TopkSelectorFwdOp(topk=topk, tune=tune)
+    op = TopKSelectFwdOp(topk=topk, tune=tune)
     inputs = test.gen_inputs()
 
     def compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -80,19 +80,19 @@ def test_topk_selector_op(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("width", [0, 5, 32], ids=["empty", "short", "exactly-topk"])
-def test_topk_selector_returns_a_short_window_whole(width: int) -> None:
+def test_topk_select_returns_a_short_window_whole(width: int) -> None:
     """A window with at most ``topk`` keys selects all of them and pads with ``seq_len_kv``."""
     batch, seq_len, seq_len_kv, topk = 2, 16, 256, 32
     scores = torch.randn(batch, seq_len, seq_len_kv, 1, device=run_device())
     starts = torch.full((batch, seq_len), 7, dtype=torch.int32, device=run_device())
     ends = starts + width
-    out = TopkSelectorFwdOp(topk=topk)(scores, starts, ends)
+    out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
     expected = list(range(7, 7 + width)) + [seq_len_kv] * (topk - width)
     assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()
 
 
 @pytest.mark.smoke
-def test_topk_selector_threshold_bucket_past_staging() -> None:
+def test_topk_select_threshold_bucket_past_staging() -> None:
     """More keys share the topk-th score's bucket than the kernel stages; none is dropped."""
     seq_len_kv, topk = 8192, 100
     # Every score in [1, 1.03), one float16 bucket, and all distinct in float32.
@@ -100,6 +100,6 @@ def test_topk_selector_threshold_bucket_past_staging() -> None:
     scores = (1.0 + perm / (1 << 18)).reshape(1, 1, seq_len_kv, 1)
     starts = torch.zeros(1, 1, dtype=torch.int32, device=run_device())
     ends = torch.full((1, 1), seq_len_kv, dtype=torch.int32, device=run_device())
-    out = TopkSelectorFwdOp(topk=topk)(scores, starts, ends)
+    out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
     expected = torch.topk(scores.flatten(), topk).indices.sort().values
     assert torch.equal(out.flatten().long().sort().values, expected)

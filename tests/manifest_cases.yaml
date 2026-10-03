@@ -71,7 +71,7 @@ entries:
       trans_b: false
       dtype_cases:
       - T: bfloat16
-  ClampFwdOp:
+  ClampTensorFwdOp:
     signature:
       types:
         ClampOut:
@@ -542,7 +542,7 @@ entries:
       ceil_mode: true
       dtype_cases:
       - T: float32
-  GemmFp8FwdOp:
+  GemmFP8FwdOp:
     signature:
       forall:
         M: Dim
@@ -685,7 +685,7 @@ entries:
       dim_tail: 64
       dtype_cases:
       - T: float16
-  FusedMoeSharedExpertFwdOp:
+  FusedMoESharedExpertFwdOp:
     signature:
       forall:
         E: Dim
@@ -735,7 +735,7 @@ entries:
       hidden_size: 4096
       dtype_cases:
       - T: bfloat16
-  MoePrePermuteFwdOp:
+  MoEPrePermuteFwdOp:
     signature:
       types:
         ExpertRows:
@@ -946,12 +946,12 @@ entries:
       types:
         RopeX:
           params:
-            layout: '''1d'' | ''2d'''
+            input_layout: '''1d'' | ''2d'''
             B: Dim
             S: Dim
             H: Dim
             D: Dim
-          match: layout
+          match: input_layout
           cases:
           - when: 1d
             is: '[S, D]'
@@ -965,7 +965,7 @@ entries:
         T: DType[float16 | bfloat16 | float32]
         R: DType[float32 | float16 | bfloat16]
       params:
-        layout:
+        input_layout:
           type: '''1d'' | ''2d'''
         rescale_factors:
           dtype: R
@@ -974,22 +974,22 @@ entries:
       inputs:
         x:
           dtype: T
-          shape: RopeX[layout, B, S, H, D]
+          shape: RopeX[input_layout, B, S, H, D]
       outputs:
         output:
           dtype: T
-          shape: RopeX[layout, B, S, H, D]
+          shape: RopeX[input_layout, B, S, H, D]
       shape_rules:
       - D % 2 == 0
     workloads:
     - label: ropelongrope-0
-      layout: 1d
+      input_layout: 1d
       S: 8192
       D: 128
       dtype_cases:
       - T: bfloat16
     - label: ropelongrope-1
-      layout: 1d
+      input_layout: 1d
       S: 8192
       D: 128
       some:
@@ -998,7 +998,7 @@ entries:
       - T: bfloat16
         R: float32
     - label: ropelongrope-2
-      layout: 2d
+      input_layout: 2d
       B: 1
       S: 4096
       H: 32
@@ -1009,7 +1009,7 @@ entries:
       - T: float16
         R: float16
     - label: ropelongrope-3
-      layout: 1d
+      input_layout: 1d
       S: 8192
       D: 128
       some:
@@ -1019,7 +1019,7 @@ entries:
         R: float8_e4m3fn
       expect_fail: true
     - label: ropelongrope-4
-      layout: 1d
+      input_layout: 1d
       S: 8192
       D: 128
       dtype_cases:
@@ -1027,7 +1027,7 @@ entries:
         R: float32
       expect_fail: true
     - label: ropelongrope-5
-      layout: 1d
+      input_layout: 1d
       S: 8192
       D: 128
       some:

@@ -1,4 +1,4 @@
-"""Benchmark for MoePermuteAlignFwdOp vs Triton and sgl-kernel baselines.
+"""Benchmark for MoEPermuteAlignFwdOp vs Triton and sgl-kernel baselines.
 
 Baselines:
   - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
@@ -22,7 +22,7 @@ except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.moe import MoePermuteAlignFwdOp
+from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -138,11 +138,11 @@ def _triton_permute_align(
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoePermuteAlignFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEPermuteAlignFwdOp))
 def test_permute_align_bench(call) -> None:
     workload = MoePermuteAlignWorkload(call)
     inputs = workload.gen_inputs()
-    op = MoePermuteAlignFwdOp(**call.arguments({}))
+    op = MoEPermuteAlignFwdOp(**call.arguments({}))
     num_experts, block_size = op.num_experts, op.block_size
     numel = inputs[0].numel()
     bm = ManifestBenchmark(op, workload)

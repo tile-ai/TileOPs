@@ -11,10 +11,10 @@ from tileops.kernels.topk_selector import (
 )
 from tileops.ops.op_base import Op
 
-__all__ = ["TopkSelectorFwdOp"]
+__all__ = ["TopKSelectFwdOp"]
 
 
-class TopkSelectorFwdOp(Op):
+class TopKSelectFwdOp(Op):
     """The ``topk`` highest-scoring key positions of each query row's own window.
 
     Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``.

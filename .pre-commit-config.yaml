@@ -98,6 +98,14 @@ repos:
         language: python
         files: ^src/tileops/kernels/.*\.py$
 
+      - id: op-naming-lint
+        name: manifest op name lint
+        entry: python scripts/lint/op_naming_lint.py
+        language: python
+        additional_dependencies: [pyyaml]
+        pass_filenames: false
+        files: ^src/tileops/manifest/spec/.*\.yaml$
+
       - id: manifest-spec-layout
         name: manifest spec layout
         entry: "manifest YAML goes directly in src/tileops/manifest/spec/ as .yaml, the only place the loader reads"

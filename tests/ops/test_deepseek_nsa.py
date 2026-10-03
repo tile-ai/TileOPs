@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
+from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.deepseek_attention import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
 
@@ -168,7 +168,7 @@ def test_nsa_cmp_fwd_varlen_op(
     test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
 
-    op = NSACmpVarlenFwdOp(scale=scale, bs=bs, tune=tune)
+    op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)
 
 
@@ -256,7 +256,7 @@ def test_nsa_topk_varlen_op(
 
     test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
     inputs = test.gen_inputs()
-    op = NSATopkVarlenFwdOp(
+    op = NSATopKVarlenFwdOp(
         scale=scale,
         selected_block_num=selected_block_num,
         bs=bs,

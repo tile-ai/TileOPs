@@ -129,7 +129,7 @@ def _routing_flops(call) -> int:
 def _routed_flops(tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
     """The routed experts over ``routes`` (token, expert) pairs: the gate/up and down GEMMs,
     the gated activation, the weighted combine into each token (a multiply and an add per
-    route and hidden element, as MoePostPermuteFwdOp prices it) and the scale per output
+    route and hidden element, as MoEPostPermuteFwdOp prices it) and the scale per output
     element when the scaling factor is not one."""
     flops = routes * (6 * ffn * hidden + _GATED_ACTIVATION * ffn + 2 * hidden)
     return flops + (tokens * hidden if scaled else 0)

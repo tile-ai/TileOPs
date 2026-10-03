@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
-from tileops.ops.moe.fused_moe import FusedMoeFwdOp
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
+from tileops.ops.moe.fused_moe import FusedMoEFwdOp
+from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from tileops.utils import get_sm_version
@@ -229,21 +229,21 @@ class TestFusedMoeActivationInjection:
     @pytest.mark.smoke
     def test_injection_with_conflicting_activation_raises(self):
         with pytest.raises(ValueError, match="activation conflicts"):
-            FusedMoeFwdOp(2, experts=FusedMoEExpertsFwdOp(), activation="gelu_and_mul")
+            FusedMoEFwdOp(2, experts=FusedMoEExpertsFwdOp(), activation="gelu_and_mul")
 
     @pytest.mark.smoke
     def test_injection_takes_the_experts_activation(self):
         experts = FusedMoEExpertsFwdOp(activation="gelu_and_mul")
-        assert FusedMoeFwdOp(2, experts=experts, activation="gelu_and_mul").activation == (
+        assert FusedMoEFwdOp(2, experts=experts, activation="gelu_and_mul").activation == (
             "gelu_and_mul"
         )
-        assert FusedMoeFwdOp(2, experts=experts).activation == "gelu_and_mul"
+        assert FusedMoEFwdOp(2, experts=experts).activation == "gelu_and_mul"
 
     @pytest.mark.smoke
     def test_default_path_activation_forwarded(self):
-        moe = FusedMoeFwdOp(2, activation="gelu_and_mul")
+        moe = FusedMoEFwdOp(2, activation="gelu_and_mul")
         assert moe._experts.activation == "gelu_and_mul"
-        shared = FusedMoeSharedExpertFwdOp(2, activation="gelu_and_mul")
+        shared = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
         assert shared._experts.activation == "gelu_and_mul"
 
     @pytest.mark.smoke
@@ -274,7 +274,7 @@ class TestFusedMoeActivationInjection:
                 return WeightedReduceNoOp()
 
         with pytest.raises(ValueError, match="missing the required `.activation`"):
-            FusedMoeFwdOp(2, experts=ExpertsWithoutActivation())
+            FusedMoEFwdOp(2, experts=ExpertsWithoutActivation())
 
 
 @pytest.mark.smoke
@@ -282,7 +282,7 @@ def test_the_shared_expert_refuses_a_non_silu_activation():
     """The shared-expert kernel applies silu_and_mul; with gelu routed experts the two halves
     would disagree, so a call passing the shared weights is refused."""
     T, E, H, F, S = 4, 4, 128, 128, 128
-    op = FusedMoeSharedExpertFwdOp(2, activation="gelu_and_mul")
+    op = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
     args = (
         torch.randn(T, H, dtype=torch.bfloat16, device=run_device()),
         torch.randn(T, E, device=run_device()),

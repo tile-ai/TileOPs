@@ -28,7 +28,7 @@ _INPLACE_PARAMETRIC_OPS = (
     "HardtanhFwdOp",
 )
 
-_CLAMP_OPS = ("ClampFwdOp", "ClampScalarFwdOp")
+_CLAMP_OPS = ("ClampTensorFwdOp", "ClampScalarFwdOp")
 
 
 def _torch_reference(op_name: str):
@@ -89,7 +89,7 @@ def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     )
     x = torch.randn(2, 4, device="cuda", dtype=torch.float16)
     bound = torch.zeros_like(x)
-    inst(x, bound) if op_name == "ClampFwdOp" else inst(x)
+    inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
     ((built,),) = [tuple(inst.built_kernels(ELEMENTWISE).values())]
     assert isinstance(built, MarkerKernel), (
         f"{op_name}: kernel_map override class was not used to build the "

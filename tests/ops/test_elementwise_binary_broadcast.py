@@ -61,7 +61,7 @@ _BROADCAST_OPS = [
         _rand_pos,
         lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
     ),
-    ("LerpFwdOp", _F16, _randn, _randn, lambda a, b: torch.lerp(a, b, 0.5)),
+    ("LerpScalarFwdOp", _F16, _randn, _randn, lambda a, b: torch.lerp(a, b, 0.5)),
     ("MaximumFwdOp", _F16, _randn, _randn, lambda a, b: torch.maximum(a, b)),
     ("MinimumFwdOp", _F16, _randn, _randn, lambda a, b: torch.minimum(a, b)),
     ("EqFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: a == b),

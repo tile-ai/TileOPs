@@ -17,7 +17,7 @@ from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 from tileops.ops.op_base import Op
 
 
-class ClampFwdOp(Op):
+class ClampTensorFwdOp(Op):
     """Clamp with Tensor lower and/or upper bounds (broadcasting).
 
     Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``

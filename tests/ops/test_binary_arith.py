@@ -22,7 +22,7 @@ from tileops.ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
     FloorDivideFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
@@ -222,7 +222,7 @@ _ARITH_BROADCAST_OPS = [
     ),
     (
         "lerp",
-        LerpFwdOp,
+        LerpScalarFwdOp,
         lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
         lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
         lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
@@ -556,7 +556,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         atol, rtol = 1.6e-2, 1.6e-2
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
-        op = LerpFwdOp(weight=weight)
+        op = LerpScalarFwdOp(weight=weight)
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
@@ -816,7 +816,7 @@ class FloatOnlyBinaryRejectFixture(FixtureBase):
                 pytest.param(RemainderFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.smoke),
-                pytest.param(LerpFwdOp, torch.int32, marks=pytest.mark.smoke),
+                pytest.param(LerpScalarFwdOp, torch.int32, marks=pytest.mark.smoke),
             ],
         ),
     ]

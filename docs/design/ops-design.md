@@ -282,7 +282,7 @@ Contract for every op registered for `fullgraph=True` compilation while resolvin
 - `forward` only chooses which operator to call. The operator's eager body runs the generated checks once, then the in-tree kernels (`_eager_forward`) or the target; its fake comes from the signature.
 - An op's operators write exactly the inputs the manifest marks `mutated`; the validator holds them equal.
 - The operator's name is derived from the family and the class; an op does not choose it.
-- The boundary covers forward-only compilation. An op whose compiled graph must backpropagate also needs an autograd formula for its operator.
+- The boundary covers forward-only compilation. No operator carries an autograd formula, so a backward op's operator refuses an input that tracks history; a caller that needs to backpropagate wires its own `torch.autograd.Function` around the forward and backward ops.
 - An op with no tensor input has no node to own and registers no boundary. An op that builds no kernel in `forward` does not need the boundary; the invariant still applies to it.
 
 ## Family-Base Refactoring

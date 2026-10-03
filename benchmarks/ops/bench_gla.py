@@ -12,7 +12,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
+from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.linear_attention import GLAChunkwiseCall, GLADecodeCall, GLAInferenceCall
 
 try:
@@ -23,13 +23,13 @@ except ImportError:
 
 # Chunkwise: FLA's chunk_gla is required; a torch reference is not a comparison worth recording.
 # TileOPs and FLA both use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
-@pytest.mark.parametrize("call", manifest_calls(GLAFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GLAChunkFwdOp))
 def test_gla_fwd_bench(call) -> None:
     from fla.ops.gla import chunk_gla
 
     workload = GLAChunkwiseCall(call)
     q, k, v, g, initial_state = inputs = workload.gen_inputs()
-    op = GLAFwdOp(**workload.arguments())
+    op = GLAChunkFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
     def fla_fwd():
@@ -40,7 +40,7 @@ def test_gla_fwd_bench(call) -> None:
     bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GLABwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GLAChunkBwdOp))
 def test_gla_bwd_bench(call) -> None:
     from fla.ops.gla import chunk_gla
 
@@ -49,13 +49,13 @@ def test_gla_bwd_bench(call) -> None:
     arguments = workload.arguments()
 
     # The per-chunk states are the forward's, so the backward reads what it would in training.
-    fwd_op = GLAFwdOp(arguments["chunk_size"], arguments["scale"])
+    fwd_op = GLAChunkFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
     (fwd_kernel,) = fwd_op.built_kernels("gla_fwd").values()
     h = fwd_kernel._h_out
     dht = torch.zeros_like(_dht)
 
-    bwd_op = GLABwdOp(**arguments)
+    bwd_op = GLAChunkBwdOp(**arguments)
     bm = ManifestBenchmark(bwd_op, workload)
 
     # FLA's backward recomputes h internally (not saved from fwd), so this measures
@@ -84,11 +84,11 @@ def test_gla_inference_bench(call) -> None:
 # Decode: against FLA's fused_recurrent_gla at T=1 when it is installed, and torch.
 
 
-@pytest.mark.parametrize("call", manifest_calls(GLADecodeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GLARecurrentFwdOp))
 def test_gla_decode_bench(call) -> None:
     workload = GLADecodeCall(call)
     inputs = workload.gen_inputs()
-    op = GLADecodeFwdOp(**workload.arguments())
+    op = GLARecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 

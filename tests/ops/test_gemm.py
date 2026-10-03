@@ -25,7 +25,7 @@ from tileops.kernels.gemm.heuristics import (
     small_m_splitk_config,
 )
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, _select_config, _stage_meta_per_tile
-from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFp8Workload,
@@ -625,7 +625,7 @@ def test_gemm_fp8(
     bias: bool,
 ) -> None:
     test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
-    op = GemmFp8FwdOp(out_dtype=out_dtype)
+    op = GemmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     if dtype != torch.float8_e4m3fn:
         with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
@@ -688,7 +688,7 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
-    op = GemmFp8FwdOp()
+    op = GemmFP8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
     if served_in_tree(op):
         assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
@@ -766,7 +766,7 @@ def test_gemm_fp8_block_scale_selection(
         out_dtype=out_dtype,
         has_bias=bias,
     )
-    op = GemmFp8FwdOp(out_dtype=out_dtype)
+    op = GemmFP8FwdOp(out_dtype=out_dtype)
     assert op.kernel_map[op.select_implementation("gemm_fp8", call)].__name__ == expected
 
 
@@ -790,7 +790,7 @@ def test_gemm_fp8_serves_sm89_by_scale_grid() -> None:
             scale_b_shape=scale_b_shape,
             out_dtype=torch.bfloat16,
         )
-        assert GemmFp8FwdOp().select_implementation("gemm_fp8", call) == expected
+        assert GemmFP8FwdOp().select_implementation("gemm_fp8", call) == expected
 
 
 @pytest.mark.cuda_only

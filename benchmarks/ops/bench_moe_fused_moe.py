@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.moe import FusedMoeFwdOp, FusedMoeSharedExpertFwdOp, SharedExpertMLPFwdOp
+from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from workloads.moe import (
     FusedMoeSharedExpertWorkload,
     FusedMoeWorkload,
@@ -49,12 +49,12 @@ except ImportError:
 # bias, passed when a row lists it in `some`).
 
 
-@pytest.mark.parametrize("call", manifest_calls(FusedMoeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(FusedMoEFwdOp))
 def test_fused_moe_fwd_bench(call) -> None:
     workload = FusedMoeWorkload(call)
     inputs = workload.gen_inputs()
     hidden, gating, w_gate_up, w_down, correction_bias = inputs
-    op = FusedMoeFwdOp(**call.arguments({}))
+    op = FusedMoEFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
     torch.testing.assert_close(
         op(*inputs).float(), workload.ref_program(*inputs).float(), rtol=3e-2, atol=3e-2
@@ -90,12 +90,12 @@ def test_fused_moe_fwd_bench(call) -> None:
 # row is recorded.
 
 
-@pytest.mark.parametrize("call", manifest_calls(FusedMoeSharedExpertFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(FusedMoESharedExpertFwdOp))
 def test_fused_moe_shared_expert_bench(call) -> None:
     workload = FusedMoeSharedExpertWorkload(call)
     inputs = workload.gen_inputs()
     hidden, gating, w_gate_up, w_down, correction_bias, shared_w_gate_up, shared_w_down = inputs
-    op = FusedMoeSharedExpertFwdOp(**call.arguments({}))
+    op = FusedMoESharedExpertFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
     for actual, expected in zip(op(*inputs), workload.ref_program(*inputs), strict=True):
         if expected is None:
@@ -137,7 +137,7 @@ def test_fused_moe_shared_expert_bench(call) -> None:
         # No baseline rather than a misleading one: the per-expert Python loop is a
         # correctness reference, so timing against it measures neither implementation.
         warnings.warn(
-            "No baseline recorded for FusedMoeSharedExpertFwdOp: vLLM is not installed, or the "
+            "No baseline recorded for FusedMoESharedExpertFwdOp: vLLM is not installed, or the "
             "row is routed-only and the vLLM path here always builds a shared expert.",
             stacklevel=2,
         )

@@ -32,7 +32,7 @@ PreluFwdOp:
     # compare-and-select(1) + mul(1) = 2 per elem.
     flops: "2 * prod(S)"
 
-MaskedFillFwdOp:
+MaskedFillTensorFwdOp:
   # Primary entry: PyTorch's torch.Tensor.masked_fill(mask, value: Tensor)
   # where ``value`` is a 0-dim Tensor. The out-of-place
   # ``Tensor.masked_fill`` returns a new tensor whose shape is the
@@ -67,7 +67,7 @@ MaskedFillFwdOp:
 
 MaskedFillScalarFwdOp:
   # PyTorch's torch.Tensor.masked_fill(mask, value: Number). `value` is a scalar
-  # param here and a 0-dim tensor input in MaskedFillFwdOp above: two signatures,
+  # param here and a 0-dim tensor input in MaskedFillTensorFwdOp above: two signatures,
   # so two entries.
   ref_api: "torch.Tensor.masked_fill"
   family: elementwise
@@ -285,7 +285,7 @@ FloorDivideFwdOp:
   roofline:
     flops: "2 * prod(broadcast(A, B))"
 
-LerpFwdOp:
+LerpScalarFwdOp:
   # Scalar-weight variant: PyTorch's torch.lerp also accepts a Tensor
   # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
   # slice that the existing kernel implements.

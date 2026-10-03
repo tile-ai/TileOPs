@@ -741,7 +741,7 @@ class DsaDecodeCall(CallWorkload, DsaDecodeWorkload):
 
 
 class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):
-    """A manifest call of NSACmpVarlenFwdOp."""
+    """A manifest call of NSACompressedVarlenFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
@@ -764,7 +764,7 @@ class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):
 
 
 class NsaTopkCall(CallWorkload, NsaTopkWorkload):
-    """A manifest call of NSATopkVarlenFwdOp."""
+    """A manifest call of NSATopKVarlenFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)

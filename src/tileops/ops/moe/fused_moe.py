@@ -1,13 +1,13 @@
 """Routed Mixture-of-Experts (MoE) FFN operators.
 
-``FusedMoeFwdOp`` is routing + expert FFN. Passing ``correction_bias`` adds the
+``FusedMoEFwdOp`` is routing + expert FFN. Passing ``correction_bias`` adds the
 per-expert bias during top-k selection (Kimi K2 style); withholding it selects
 straight from the gating scores (Qwen3 / DeepSeek-V3 style).
 
 The shared core (`FusedMoe`) wires `FusedTopKFwdOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
 `FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
-expert handling belongs to `FusedMoeSharedExpertFwdOp`.
+expert handling belongs to `FusedMoESharedExpertFwdOp`.
 """
 
 from typing import ClassVar, Dict, Mapping, Optional
@@ -26,14 +26,14 @@ from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["FusedMoe", "FusedMoeFwdOp"]
+__all__ = ["FusedMoe", "FusedMoEFwdOp"]
 
 
 class FusedMoe(Op):
     """Shared composite implementation for routed MoE FFN ops.
 
-    The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the
-    routing-and-expert pipeline below is shared with `FusedMoeSharedExpertFwdOp`.
+    The concrete manifest identity (`FusedMoEFwdOp`) subclasses this; the
+    routing-and-expert pipeline below is shared with `FusedMoESharedExpertFwdOp`.
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
@@ -122,7 +122,7 @@ class FusedMoe(Op):
         return output
 
 
-class FusedMoeFwdOp(FusedMoe):
+class FusedMoEFwdOp(FusedMoe):
     """Routed MoE FFN.
 
     Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations where
