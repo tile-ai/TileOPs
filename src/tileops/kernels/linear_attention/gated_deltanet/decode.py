@@ -8,6 +8,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GatedDeltaNetCall,
     GatedDeltaNetFwdInterface,
+    head_count_refusal,
 )
 from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
 
@@ -38,6 +39,9 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         One token continuing a 64- or 128-wide square state, in either layout, under
         any combination of the recurrence flags the operator fixes.
         """
+        heads = head_count_refusal(call.heads, call.value_heads)
+        if heads is not None:
+            return heads
         unsupported = [
             name
             for name, present in (

@@ -74,7 +74,6 @@ from tileops.ops.elementwise import (
 )
 
 __all__ = [
-    "DropoutFwdOp",
     "AbsFwdOp",
     "AddFwdOp",
     "AlibiFwdOp",
@@ -83,10 +82,11 @@ __all__ = [
     "BitwiseOrFwdOp",
     "BitwiseXorFwdOp",
     "CeilFwdOp",
-    "ClampTensorFwdOp",
     "ClampScalarFwdOp",
+    "ClampTensorFwdOp",
     "CosFwdOp",
     "DivFwdOp",
+    "DropoutFwdOp",
     "EluFwdOp",
     "EqFwdOp",
     "ErfFwdOp",
@@ -115,8 +115,8 @@ __all__ = [
     "LogicalNotFwdOp",
     "LogicalOrFwdOp",
     "LtFwdOp",
-    "MaskedFillTensorFwdOp",
     "MaskedFillScalarFwdOp",
+    "MaskedFillTensorFwdOp",
     "MaximumFwdOp",
     "MinimumFwdOp",
     "MishFwdOp",

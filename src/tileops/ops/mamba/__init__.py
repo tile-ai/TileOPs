@@ -7,9 +7,9 @@ from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 
 __all__: list[str] = [
+    "Mamba2FwdOp",
     "SSDChunkCouplingFwdOp",
     "SSDChunkCumsumFwdOp",
-    "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
     "SSDChunkStateFwdOp",
     "SSDRecurrentFwdOp",

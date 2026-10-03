@@ -11,13 +11,13 @@ from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload, mhc
 
 __all__ = [
     "CONV_KERNEL_SIZE",
-    "EngramGateConvFwdWorkload",
-    "EngramGateConvBwdWorkload",
     "EngramDecodeWorkload",
-    "engram_gate_conv_fwd_torch",
-    "ref_engram_gate_conv_bwd",
-    "engram_decode_step_torch",
-    "MHCPreWorkload",
+    "EngramGateConvBwdWorkload",
+    "EngramGateConvFwdWorkload",
     "MHCPostWorkload",
+    "MHCPreWorkload",
+    "engram_decode_step_torch",
+    "engram_gate_conv_fwd_torch",
     "mhc_pre_ref",
+    "ref_engram_gate_conv_bwd",
 ]

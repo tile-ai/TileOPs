@@ -17,6 +17,9 @@ from tileops.ops.pool.max_pool import (
 from tileops.ops.pool.mean_pooling import MeanPoolingFwdOp
 
 __all__ = [
+    "AdaptiveAvgPool2dFwdOp",
+    "AdaptiveMaxPool2dFwdOp",
+    "AdaptiveMaxPool2dIndicesFwdOp",
     "AvgPool1dFwdOp",
     "AvgPool2dFwdOp",
     "AvgPool3dFwdOp",
@@ -26,8 +29,5 @@ __all__ = [
     "MaxPool2dIndicesFwdOp",
     "MaxPool3dFwdOp",
     "MaxPool3dIndicesFwdOp",
-    "AdaptiveAvgPool2dFwdOp",
-    "AdaptiveMaxPool2dFwdOp",
-    "AdaptiveMaxPool2dIndicesFwdOp",
     "MeanPoolingFwdOp",
 ]

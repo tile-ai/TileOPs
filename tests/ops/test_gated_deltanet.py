@@ -269,7 +269,9 @@ def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict, atol: floa
 def test_gated_deltanet_decode_groups_value_heads_over_a_64_wide_state() -> None:
     """A batch and head counts that are neither powers of two nor warp multiples."""
     torch.manual_seed(42)
-    test = GatedDeltaNetFwdTest(17, 1, 3, 64, torch.bfloat16, has_initial_state=True, value_heads=6)
+    test = GatedDeltaNetFwdTest(
+        17, 1, 6, 64, torch.bfloat16, has_initial_state=True, value_heads=12
+    )
     test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1e-5, rtol=1e-5)
 
 

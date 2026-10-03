@@ -5,15 +5,15 @@ from workloads.linear_attention.input_values import _log_gates, _small
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "GLADecodeWorkload",
+    "GLAChunkwiseCall",
     "GLAChunkwiseWorkload",
+    "GLADecodeCall",
+    "GLADecodeWorkload",
+    "GLAInferenceCall",
     "GLAInferenceWorkload",
-    "gla_fwd_chunked_torch",
     "gla_autograd_bwd_torch",
     "gla_decode_torch",
-    "GLADecodeCall",
-    "GLAChunkwiseCall",
-    "GLAInferenceCall",
+    "gla_fwd_chunked_torch",
 ]
 
 

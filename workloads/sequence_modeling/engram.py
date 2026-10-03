@@ -6,12 +6,12 @@ from workloads.workload_base import WorkloadBase
 
 __all__ = [
     "CONV_KERNEL_SIZE",
-    "EngramGateConvFwdWorkload",
-    "EngramGateConvBwdWorkload",
     "EngramDecodeWorkload",
+    "EngramGateConvBwdWorkload",
+    "EngramGateConvFwdWorkload",
+    "engram_decode_step_torch",
     "engram_gate_conv_fwd_torch",
     "ref_engram_gate_conv_bwd",
-    "engram_decode_step_torch",
 ]
 
 

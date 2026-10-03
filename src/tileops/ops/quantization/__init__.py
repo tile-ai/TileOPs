@@ -16,6 +16,7 @@ from tileops.ops.quantization.int8_quant_per_tensor import INT8QuantPerTensorFwd
 from tileops.ops.quantization.smooth_quant import SmoothQuantFwdOp
 
 __all__ = [
+    "FP8QuantFwdOp",
     "FP8QuantPerBlockFwdOp",
     "INT4QuantPerGroupFwdOp",
     "INT8DequantPerBlockFwdOp",
@@ -25,5 +26,4 @@ __all__ = [
     "INT8QuantPerChannelFwdOp",
     "INT8QuantPerTensorFwdOp",
     "SmoothQuantFwdOp",
-    "FP8QuantFwdOp",
 ]

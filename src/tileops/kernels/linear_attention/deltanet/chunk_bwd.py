@@ -22,7 +22,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import DeltaNetBwdInterface, DeltaNetChunkCall
+from tileops.kernels.linear_attention.call_spec import (
+    DeltaNetBwdInterface,
+    DeltaNetChunkCall,
+    head_count_refusal,
+)
 from tileops.kernels.linear_attention.v_tile import min_gemm_n
 from tileops.utils import get_shared_memory_optin
 
@@ -441,13 +445,16 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
 
     @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
-        """Why the call cannot fit the device's shared memory, or ``None``.
+        """Why no program serves this call, or ``None``.
 
         Reads lower bounds of the three programs at their smallest configuration (the
         recurrence at one stage): a refused call fits no placement TileLang could choose. A
         call between a lower bound and the size TileLang compiles is built, and fits or not
         as TileLang places it.
         """
+        heads = head_count_refusal(call.heads)
+        if heads is not None:
+            return heads
         if not call.smem_budget:
             return None
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize

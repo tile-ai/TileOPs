@@ -5,7 +5,7 @@ import torch
 from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
-__all__ = ["MHCPreWorkload", "MHCPostWorkload", "mhc_pre_ref"]
+__all__ = ["MHCPostWorkload", "MHCPreWorkload", "mhc_pre_ref"]
 
 
 class MHCPreWorkload(WorkloadBase):

@@ -13,13 +13,13 @@ from tileops.ops.linear_attention import (
 )
 
 __all__ = [
+    "DeltaNetChunkBwdOp",
     "DeltaNetChunkFwdOp",
     "DeltaNetInferenceFwdOp",
-    "DeltaNetChunkBwdOp",
     "DeltaNetRecurrentFwdOp",
-    "GatedDeltaNetFwdOp",
+    "GLAChunkBwdOp",
     "GLAChunkFwdOp",
     "GLAInferenceFwdOp",
-    "GLAChunkBwdOp",
     "GLARecurrentFwdOp",
+    "GatedDeltaNetFwdOp",
 ]

@@ -14,7 +14,6 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
-    "DELTANET_DECODE_K_TILE",
     "DeltaNetBwdInterface",
     "DeltaNetChunkCall",
     "DeltaNetDecodeCall",
@@ -29,10 +28,21 @@ __all__ = [
     "GLAFwdInterface",
     "GatedDeltaNetCall",
     "GatedDeltaNetFwdInterface",
+    "head_count_refusal",
 ]
 
-# The key-dimension tile every TileLang DeltaNet decode program splits its state by.
-DELTANET_DECODE_K_TILE = 16
+
+def head_count_refusal(*counts: int) -> Optional[str]:
+    """Why no in-tree linear-attention kernel serves these head counts, or ``None``.
+
+    Every model that runs a gated delta rule, a delta rule or GLA splits its state into an
+    even number of heads, or into a single one, so an odd count above one is declined
+    rather than tuned for.
+    """
+    for count in counts:
+        if count != 1 and count % 2:
+            return f"requires an even head count or a single head, got {count}"
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,17 +67,6 @@ class DeltaNetDecodeCall(CallSpec):
     dim_k: int = 0
     dim_v: int = 0
     dtype: Optional[torch.dtype] = None
-
-    @property
-    def k_tile_refusal(self) -> Optional[str]:
-        """Why no TileLang decode program can split this key dim into tiles, or ``None``.
-
-        Tuning falls back to the default tile when no candidate divides the key dim, so
-        the default tile is what decides it.
-        """
-        if self.dim_k % DELTANET_DECODE_K_TILE != 0:
-            return f"requires dim_k a multiple of {DELTANET_DECODE_K_TILE}, got {self.dim_k}"
-        return None
 
 
 @dataclasses.dataclass(frozen=True)

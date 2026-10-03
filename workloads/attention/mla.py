@@ -5,7 +5,7 @@ from einops import einsum, rearrange
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["MlaDecodeWorkload", "MlaDecodeCall"]
+__all__ = ["MlaDecodeCall", "MlaDecodeWorkload"]
 
 
 class MlaDecodeWorkload(WorkloadBase):

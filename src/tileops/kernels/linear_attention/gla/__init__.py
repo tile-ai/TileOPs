@@ -13,12 +13,12 @@ from tileops.kernels.linear_attention.gla.varlen_prefill_partitioned import (
 
 __all__ = [
     "GLABwdKernel",
+    "GLADecodeFP32Kernel",
+    "GLADecodeKernel",
     "GLADenseDecodeFwdKernel",
     "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
     "GLAFwdKernel",
     "GLAVarlenPrefillFwdKernel",
     "GLAVarlenPrefillPartitionedFwdKernel",
-    "GLADecodeKernel",
-    "GLADecodeFP32Kernel",
 ]

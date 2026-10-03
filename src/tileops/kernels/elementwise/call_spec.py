@@ -20,8 +20,8 @@ from tileops.kernels.kernel_base import KernelInterface
 __all__ = [
     "AlibiCall",
     "AlibiFwdInterface",
-    "AlphaScaledCall",
     "AlphaScaledBinaryFwdInterface",
+    "AlphaScaledCall",
     "BinaryElementwiseFwdInterface",
     "BinaryPredicateFwdInterface",
     "BoundedUnaryFwdInterface",

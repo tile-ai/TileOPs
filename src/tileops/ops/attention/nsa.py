@@ -20,8 +20,8 @@ from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
     "NSACompressedVarlenFwdOp",
-    "NSAVarlenFwdOp",
     "NSATopKVarlenFwdOp",
+    "NSAVarlenFwdOp",
 ]
 
 
