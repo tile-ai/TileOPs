@@ -403,8 +403,22 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
     - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
-  - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: ds-v32-kv2k}
-  - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: ds-v32-kv4k}
+  - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v32-kv2k}
+  - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v32-kv4k}
+  # FlashMLA sparse-prefill performance shapes; no attention sink.
+  - {B: 1, S: 4096, S_kv: 8192, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 4096, dtype_cases: [{T: bfloat16}], label: mla-d576-h128-kv8k}
+  - {B: 1, S: 4096, S_kv: 32768, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 28672, dtype_cases: [{T: bfloat16}], label: mla-d576-h128-kv32k}
+  - {B: 1, S: 4096, S_kv: 65536, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d576-h128-kv64k}
+  - {B: 1, S: 4096, S_kv: 98304, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 94208, dtype_cases: [{T: bfloat16}], label: mla-d576-h128-kv96k}
+  - {B: 1, S: 4096, S_kv: 131072, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 126976, dtype_cases: [{T: bfloat16}], label: mla-d576-h128-kv128k}
+  - {B: 1, S: 4096, S_kv: 8192, H: 64, H_kv: 1, D: 512, K: 512, dim_tail: 0, stride_kv: 1, q_start_index_s: 4096, dtype_cases: [{T: bfloat16}], label: mla-d512-h64-kv8k}
+  - {B: 1, S: 4096, S_kv: 32768, H: 64, H_kv: 1, D: 512, K: 512, dim_tail: 0, stride_kv: 1, q_start_index_s: 28672, dtype_cases: [{T: bfloat16}], label: mla-d512-h64-kv32k}
+  - {B: 1, S: 4096, S_kv: 49152, H: 64, H_kv: 1, D: 512, K: 512, dim_tail: 0, stride_kv: 1, q_start_index_s: 45056, dtype_cases: [{T: bfloat16}], label: mla-d512-h64-kv48k}
+  - {B: 1, S: 4096, S_kv: 65536, H: 64, H_kv: 1, D: 512, K: 512, dim_tail: 0, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d512-h64-kv64k}
+  - {B: 1, S: 4096, S_kv: 8192, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 4096, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv8k}
+  - {B: 1, S: 4096, S_kv: 32768, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 28672, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv32k}
+  - {B: 1, S: 4096, S_kv: 49152, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 45056, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv48k}
+  - {B: 1, S: 4096, S_kv: 65536, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv64k}
   roofline:
     func: tileops.perf.formulas.dsa_decode_roofline
 

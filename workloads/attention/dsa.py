@@ -104,31 +104,24 @@ class DsaDecodeWorkload(WorkloadBase):
         return mask
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-        q = q.float()
-        kv = kv.float()
         b, sq, h, dim_q = q.shape
-        b, sk, g, _ = kv.shape
-
-        assert kv.shape[-1] == self.dim + self.dim_tail, "you should assign dim otherwise"
-        dim = self.dim
-        k = kv
-        v = kv[..., :dim]
-
-        b, _, _, dim_v = v.shape
-        g_index = g
-        h_index = h // g
-        mask = self.selection_mask(indices).view(b, g_index, 1, sq, sk)
-
-        q = q.view(b, sq, g, -1, dim_q)
-        score = torch.einsum("bmghd,bngd->bghmn", q, k)
+        _, sk, g, _ = kv.shape
+        assert dim_q == self.dim + self.dim_tail, "you should assign dim otherwise"
+        mask = self.selection_mask(indices).view(b, g, 1, sq, sk)
+        k = kv.float()
+        v = k[..., : self.dim]
         sm_scale = dim_q**-0.5 if self.sm_scale is None else self.sm_scale
-        score = score.masked_fill(~mask, float("-inf")).mul(sm_scale)
-        p = score.softmax(dim=-1)
-        p = p.view(b, g_index, h_index, -1, sq, sk)
-        p = p.view(b, g, -1, sq, sk)
-        o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
-        o = o.reshape(b, sq, h, dim_v)
-        return o.to(torch.float16)
+        # Bound each FP32 score tensor to 256 MiB for long-context workloads.
+        chunk = max(1, (256 * 1024**2) // (b * h * sk * 4))
+        output = torch.empty((b, sq, h, self.dim), dtype=q.dtype, device=q.device)
+        for start in range(0, sq, chunk):
+            stop = min(start + chunk, sq)
+            query = q[:, start:stop].float().reshape(b, stop - start, g, h // g, dim_q)
+            score = torch.einsum("bmghd,bngd->bghmn", query, k)
+            score = score.mul(sm_scale).masked_fill(~mask[..., start:stop, :], float("-inf"))
+            out = torch.einsum("bghmn,bngd->bmghd", score.softmax(-1), v)
+            output[:, start:stop] = out.reshape(b, stop - start, h, self.dim)
+        return output
 
 
 class DsaDecodeCall(CallWorkload, DsaDecodeWorkload):
