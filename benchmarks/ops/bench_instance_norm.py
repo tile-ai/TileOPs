@@ -13,12 +13,12 @@ import torch.nn.functional as F
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_group_norm,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.norm import RunningStatsCall
 
@@ -41,8 +41,6 @@ def test_instance_norm_bench(call) -> None:
         )
 
     tolerance = reference_tolerance(x.dtype)
-    reference_inputs = tuple(t if t is None else t.clone() for t in inputs)
-    assert_matches_reference(op, baseline_fn, *reference_inputs, **tolerance)
     functors = {"tileops": op}
     # One group per channel is instance norm by the input's statistics; flag_gems' group
     # norm neither reads nor writes running statistics, so only such a row carries it.
@@ -53,8 +51,11 @@ def test_instance_norm_bench(call) -> None:
         def flaggems_fn(x, running_mean, running_var, weight, bias):
             return group_norm_fn(x, weight, bias)
 
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )

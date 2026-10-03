@@ -13,13 +13,13 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_dims,
     flaggems_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 from workloads.reduction import ReductionCall
 
@@ -50,11 +50,14 @@ def _bench(op_cls: type, call) -> None:
         def flaggems_fn(x):
             return fn(x, p["ord"], dims, p["keepdim"])
 
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(VectorNormFwdOp))

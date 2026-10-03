@@ -106,6 +106,16 @@ def test_available_reference_is_checked_without_an_explicit_declaration(bench):
     assert resolved["tileops"].kind == "exact"
 
 
+def test_local_reference_checks_compiled_tag_without_workload_reference(bench):
+    inputs = (torch.tensor([1.0]),)
+    plan = {"torch-compile": (lambda x: x + 1, inputs)}
+    declared = {"torch-compile": bench.Exact(reference=lambda x: x)}
+    resolved = bench.resolve(_workload(), plan, declared)
+    assert resolved["torch-compile"].kind == "exact"
+    with pytest.raises(AssertionError):
+        bench.verify(_workload(), plan, resolved, inputs)
+
+
 def test_reference_runs_once_and_input_is_restored_after_failure(bench):
     inputs = (torch.tensor([1.0]),)
     calls = []

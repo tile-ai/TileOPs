@@ -87,17 +87,18 @@ def test_batch_norm_fwd_bench(call):
 
     # cuDNN and the kernels reduce over N*H*W in fp32; agreement is at the storage dtype's.
     tolerance = reference_tolerance(inputs[0].dtype)
-    reference_inputs = tuple(t if t is None else t.clone() for t in inputs)
-    assert_matches_reference(op, torch_fn, *reference_inputs, **tolerance)
     functors = {"tileops": op}
     # flag_gems' entry point takes every tensor; a row omitting one has no tag.
     if all(t is not None for t in inputs):
         flaggems_fn = _flaggems_bn_fwd(inputs[1], inputs[2], training, momentum, eps)
-        assert_matches_reference(flaggems_fn, torch_fn, *inputs, **tolerance)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch-cudnn"] = torch_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=torch_fn, **tolerance)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(BatchNormBwdOp))

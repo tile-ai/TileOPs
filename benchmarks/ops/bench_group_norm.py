@@ -8,12 +8,12 @@ import torch.nn.functional as F
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_group_norm,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.norm import NormCall
 
@@ -36,16 +36,17 @@ def _bench(call) -> None:
     n, c, *spatial = x.shape
     flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), groups, eps)
     tolerance = reference_tolerance(x.dtype)
-    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
-    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
     )
 
 

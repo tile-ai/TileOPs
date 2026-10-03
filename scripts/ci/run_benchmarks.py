@@ -280,6 +280,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--warn-after",
+        type=float,
+        help="warn once after this many sweep seconds without interrupting tests",
+    )
+    parser.add_argument(
         "--pytest-arg",
         action="append",
         default=[],
@@ -307,6 +312,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.progress_interval <= 0:
         parser.error("--progress-interval must be positive")
+    if args.warn_after is not None and args.warn_after <= 0:
+        parser.error("--warn-after must be positive")
 
     dump_dir = Path(args.dump_dir)
     suites: list[ET.Element] = []
@@ -353,9 +360,9 @@ def main() -> int:
                 pending.append(spawn_at(spawned))
                 spawned += 1
 
-        run_deadline = (
-            time.monotonic() + args.total_budget if args.total_budget is not None else None
-        )
+        run_start = time.monotonic()
+        run_deadline = run_start + args.total_budget if args.total_budget is not None else None
+        warned = False
         unrun: list[str] = []
 
         def budget_spent() -> bool:
@@ -384,6 +391,17 @@ def main() -> int:
                 running_node = "collecting tests"
                 out_of_budget = False
                 while True:
+                    if (
+                        args.warn_after is not None
+                        and not warned
+                        and time.monotonic() - run_start >= args.warn_after
+                    ):
+                        print(
+                            f"::warning::Benchmark sweep exceeded {args.warn_after:.0f}s; "
+                            f"continuing [{index + 1}/{len(bench_files)}] {rel}",
+                            flush=True,
+                        )
+                        warned = True
                     limit = (
                         stall_deadline
                         if run_deadline is None

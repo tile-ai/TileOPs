@@ -34,11 +34,11 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    # Warm-cache nightly includes correctness warmup and timing in the same sweep.
-    # Leave ten minutes beyond the sweep budget for reports and artifacts.
-    timeout-minutes: 120
+    # Six-hour safety ceiling, plus time to retain reports and artifacts.
+    timeout-minutes: 380
     runs-on: [self-hosted, tile-ops, bench]
     env:
+      BENCH_WARN_SECONDS: ${{ vars.NIGHTLY_BENCH_WARN_SECONDS || '7200' }}
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
       # before late large MoE input tensors allocate 14-21 GiB weight blocks.
       PYTORCH_ALLOC_CONF: expandable_segments:True
@@ -160,7 +160,8 @@ jobs:
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
             --stall-timeout 900 \
-            --total-budget 6600 \
+            --warn-after "${BENCH_WARN_SECONDS}" \
+            --total-budget 21600 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then

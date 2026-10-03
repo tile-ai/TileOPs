@@ -62,6 +62,25 @@ def _cases(out_xml: Path) -> dict[str, ET.Element]:
 
 
 @pytest.mark.smoke
+def test_runtime_warning_does_not_truncate_the_sweep(tmp_path):
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            "bench_slow.py": "import time\n\ndef test_slow():\n    time.sleep(1)\n",
+            "bench_tail.py": "def test_tail():\n    pass\n",
+        },
+    )
+    proc, out_xml, _ = _run_runner(
+        tmp_path, bench_dir, stall_timeout="120", extra=["--warn-after", "0.01"]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.count("::warning::Benchmark sweep exceeded") == 1
+    cases = _cases(out_xml)
+    assert len(cases) == 2
+    assert all(len(case) == 0 for case in cases.values())
+
+
+@pytest.mark.smoke
 def test_native_crash_loses_only_the_crashing_file(tmp_path):
     bench_dir = _write_bench_dir(
         tmp_path,

@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from workloads.attention.gqa.call_metadata import _dtype
 from workloads.device import run_device
@@ -106,6 +107,21 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             )
 
         return q, k, v, o, grad_output, lse
+
+    def ref_program(self, q, k, v, o, grad_output, lse):
+        """FP32 SDPA gradients in BSHD layout, rounded once to the input dtype."""
+        dtype = q.dtype
+        with torch.enable_grad(), sdpa_kernel(backends=[SDPBackend.MATH]):
+            q, k, v = (t.detach().float().requires_grad_(True) for t in (q, k, v))
+            out = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=self.is_causal,
+                enable_gqa=True,
+            ).transpose(1, 2)
+            gradients = torch.autograd.grad(out, (q, k, v), grad_output.float())
+            return tuple(grad.to(dtype) for grad in gradients)
 
 
 class GroupedQueryAttentionBwdCall(CallWorkload, GroupedQueryAttentionBwdWorkload):
