@@ -192,7 +192,7 @@ def _flashinfer_gqa_dense_decode(
     indptr = torch.arange(0, batch + 1, dtype=torch.int32, device=q.device) * pages_per_seq
     indices = torch.arange(total_pages, dtype=torch.int32, device=q.device)
     last_page_len = torch.full((batch,), page_size, dtype=torch.int32, device=q.device)
-    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    workspace = torch.empty(1024 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD", use_tensor_cores=True)
     wrapper.plan(
         indptr=indptr,

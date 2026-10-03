@@ -116,7 +116,9 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        self.zero_gate = torch.zeros((1, batch * seq_len, heads), dtype=dtype, device=device)
+        self.zero_gate = torch.zeros(
+            (1, batch * seq_len, heads), dtype=torch.float32, device=device
+        )
 
     @staticmethod
     @functools.lru_cache(maxsize=32)

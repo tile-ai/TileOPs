@@ -3,15 +3,6 @@
 import pytest
 import torch
 
-try:
-    from vllm.model_executor.layers.fused_moe.fused_moe import (
-        fused_experts as _vllm_fused_experts,
-    )
-
-    _VLLM_TRITON_AVAILABLE = True
-except ImportError:
-    _VLLM_TRITON_AVAILABLE = False
-
 from benchmarks.baselines import vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.moe_baselines import flashinfer_experts
@@ -40,25 +31,11 @@ def test_moe_experts_bench(call) -> None:
         experts(output, hidden, w1, w2, topk_weights, topk_ids)
         return output
 
-    functors = {"tileops": _experts_fn}
-
-    # -- vLLM Triton baseline -------------------------------------------------
-    if _VLLM_TRITON_AVAILABLE:
-
-        def _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids):
-            return _vllm_fused_experts(hidden, w1, w2, topk_weights, topk_ids)
-
-        functors["vllm-triton"] = _vllm_triton_fn
-
-    functors["flashinfer-cutlass"] = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1])
-
-    # -- Torch fallback -------------------------------------------------------
-    if not _VLLM_TRITON_AVAILABLE:
-
-        def _torch_fn(hidden, w1, w2, topk_weights, topk_ids):
-            return workload.ref_program(output, hidden, w1, w2, topk_weights, topk_ids)
-
-        functors["torch-ref"] = _torch_fn
+    functors = {
+        "tileops": _experts_fn,
+        "vllm-triton": vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe"),
+        "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1]),
+    }
 
     bm.compare(
         {tag: (fn, inputs[1:]) for tag, fn in functors.items()},

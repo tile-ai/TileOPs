@@ -36,7 +36,15 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    # The FP32 state must not inherit rounding of the chunk's cumulative log-gates.
+    test.check(
+        op,
+        *inputs,
+        compare=[
+            partial(allclose_compare, atol=atol, rtol=rtol),
+            partial(allclose_compare, atol=1e-4, rtol=1e-3),
+        ],
+    )
 
 
 @pytest.mark.sm90

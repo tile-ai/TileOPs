@@ -1,5 +1,7 @@
 """Normalization benchmarks against vendor, QuACK and compiled PyTorch kernels."""
 
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -48,11 +50,7 @@ def _flashinfer_rms_norm(eps: float):
 
 
 def _vllm_rms_norm(x: torch.Tensor, eps: float):
-    """vllm's kernel writes into a caller-allocated tensor, so allocate it here.
-
-    Allocating inside the callable would charge the tag for an ``empty_like`` the
-    other tags never pay.
-    """
+    """Bind vLLM's RMSNorm to a reusable output buffer."""
     fn = vllm_op("rms_norm")
     out = torch.empty_like(x)
 
@@ -64,13 +62,7 @@ def _vllm_rms_norm(x: torch.Tensor, eps: float):
 
 
 def _in_place_fused_add(fn, args: tuple, eps: float):
-    """Bind an in-place fused-add norm to its own copies of ``(x, residual)``.
-
-    Both kernels overwrite input and residual, and sharing them would hand every
-    later tag a different tensor than the reference read.
-
-    Restore both buffers inside the callable; the timer excludes these reset copies.
-    """
+    """Reset private inputs per call, excluding reset copies from kernel timing."""
     x, residual, weight = args
     private = (x.clone(), residual.clone(), weight)
 
@@ -112,9 +104,15 @@ def test_rms_norm_bench(call) -> None:
             VLLM_TAG: _vllm_rms_norm(x, eps),
         }
 
-    if len(shape) == 1:
-        quack_rms = quack_op("rmsnorm")
-        library[QUACK_TAG] = lambda x, weight: quack_rms(x, weight, eps=eps)
+    quack_rms = quack_op("rmsnorm")
+    width = math.prod(shape)
+
+    def quack_fn(x, weight):
+        return quack_rms(
+            x.reshape(-1, width), None if weight is None else weight.reshape(-1), eps=eps
+        ).reshape_as(x)
+
+    library[QUACK_TAG] = quack_fn
 
     functors = {
         "tileops": op,
@@ -188,19 +186,23 @@ def test_layer_norm_bench(call) -> None:
             return flashinfer_layer_norm(x, weight, bias, eps)
 
         library = {FLAGGEMS_TAG: flaggems_fn, FLASHINFER_TAG: flashinfer_fn}
-    if len(shape) == 1 and weight is not None:
-        quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+    quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+    unit_weight = (
+        torch.ones(math.prod(shape), dtype=torch.float32, device=x.device)
+        if weight is None
+        else None
+    )
 
-        def quack_fn(x, weight, bias):
-            out = quack_ln(
-                x.reshape(-1, x.shape[-1]),
-                weight.float(),
-                None if bias is None else bias.float(),
-                eps=eps,
-            )
-            return out.reshape_as(x)
+    def quack_fn(x, weight, bias):
+        out = quack_ln(
+            x.reshape(-1, math.prod(shape)),
+            unit_weight if weight is None else weight.float().reshape(-1),
+            None if bias is None else bias.float().reshape(-1),
+            eps=eps,
+        )
+        return out.reshape_as(x)
 
-        library[QUACK_TAG] = quack_fn
+    library[QUACK_TAG] = quack_fn
 
     functors = {
         "tileops": op,

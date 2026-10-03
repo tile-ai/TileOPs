@@ -111,6 +111,5 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        count_copies=True,
         evidence=dict.fromkeys(functors, Exact(**reference_tolerance(inputs[0].dtype))),
     )
