@@ -1,7 +1,7 @@
 """GLA (Gated Linear Attention) backward kernel — TileLang implementation.
 
 Two-pass architecture:
-  Pass 1 (sequential reverse, B*H blocks): Accumulate dh per chunk, store dh_out.
+  Pass 1 (sequential reverse, B*H*Vp*Kp blocks): Accumulate dh per chunk, store dh_out.
   Pass 2 (parallel, B*H*NC blocks): Given h[i_c] and dh[i_c], compute dq,dk,dv,dg.
     A (intra-chunk attention) is recomputed internally — no external input needed.
 
@@ -24,9 +24,32 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import GLABwdInterface, GLAChunkCall
 from tileops.kernels.linear_attention.gla.gla_fwd import gla_precompute_g_kernel
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
-from tileops.utils import get_sm_version
+from tileops.utils import get_sm_count, get_sm_version
 
 __all__ = ["GLABwdKernel"]
+
+
+def _dh_tile_refusal(dim_k_part: int, dim_v_part: int, threads: int) -> Optional[str]:
+    """Why the dh gemm does not take a ``dim_k_part`` by ``dim_v_part`` tile, or ``None``.
+
+    The bounds classify every compile probe over 64, 128 and 256 threads with 16, 32, 64
+    and 128-wide tiles. Outside those extents the warp mapping decides, so a tile there is
+    refused. Re-run the probes on a tilelang bump.
+    """
+    probed_extents = (16, 32, 64, 128)
+    accumulator_per_thread = 4  # one 16x8 tile over a warp's 32 threads
+
+    if dim_k_part not in probed_extents or dim_v_part not in probed_extents:
+        return f"a {dim_k_part}x{dim_v_part} tile is outside the extents probes cover"
+    floor_n = max(GEMM_MIN_N, min_gemm_n(threads))
+    if dim_v_part < floor_n:
+        return f"a {dim_v_part}-column B operand is below the {floor_n}-column floor"
+    if dim_k_part * dim_v_part < accumulator_per_thread * threads:
+        return (
+            f"a {dim_k_part}x{dim_v_part} accumulator leaves a thread of {threads} fewer "
+            f"than {accumulator_per_thread} elements"
+        )
+    return None
 
 
 # Pass 1: compute dh per chunk (reverse order, sequential)
@@ -44,12 +67,15 @@ def _gla_bwd_dh_kernel(
     has_initial_state: bool,
     dtype: str,
     num_v_partitions: int = 1,
+    num_k_partitions: int = 1,
 ) -> Callable:
     """Accumulate dh in reverse chunk order, store per-chunk dh.
 
-    Sequential (B*H*Vp blocks) because dh has inter-chunk dependency.
-    V-partition parallelism splits the V dimension across thread blocks.
-    Stores dh_out[i_c] = dh after adding chunk i_c's contribution (before decay).
+    dh carries from one chunk to the next, so the walk is sequential and the block count
+    is the only parallelism: ``batch * heads * Vp * Kp`` blocks, each owning one K slice
+    of one V slice. A row of dh decays under its own gate and takes its own gemm row, so
+    a K partition changes nothing the kernel computes.
+    Stores dh_out[i_c] = dh after adding chunk i_c's contribution, before decay.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
@@ -57,6 +83,11 @@ def _gla_bwd_dh_kernel(
         raise ValueError(
             f"dim_v ({dim_v}) is not divisible by num_v_partitions ({num_v_partitions})"
         )
+    if dim_k % num_k_partitions:
+        raise ValueError(
+            f"dim_k ({dim_k}) is not divisible by num_k_partitions ({num_k_partitions})"
+        )
+    dim_k_part = dim_k // num_k_partitions
     dim_v_part = dim_v // num_v_partitions
     if dim_v_part < GEMM_MIN_N:
         raise ValueError(
@@ -79,6 +110,14 @@ def _gla_bwd_dh_kernel(
                 f"gives a {dim_v_part}-column T.gemm B operand, below the minimum N "
                 f"extent ({min_gemm_n(threads)}) at {threads} threads"
             )
+        # The whole tile is exempt: it is what this kernel built before partitioning.
+        partitioned = (num_k_partitions, num_v_partitions) != (1, 1)
+        refusal = _dh_tile_refusal(dim_k_part, dim_v_part, threads) if partitioned else None
+        if refusal is not None:
+            raise ValueError(
+                f"dim_k ({dim_k}) over {num_k_partitions} partitions and dim_v ({dim_v}) "
+                f"over {num_v_partitions} at {threads} threads: {refusal}"
+            )
         q_shape = [batch, seq_len, heads, dim_k]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
         do_shape = [batch, seq_len, heads, dim_v]
@@ -95,28 +134,35 @@ def _gla_bwd_dh_kernel(
             dh_out: T.Tensor(dh_out_shape, accum_dtype),
             dh0: T.Tensor(dh0_shape, accum_dtype),
         ):
-            with T.Kernel(batch * heads * num_v_partitions, threads=threads) as bx:
-                i_b = bx // (heads * num_v_partitions)
-                i_h = (bx // num_v_partitions) % heads
-                i_vp = bx % num_v_partitions
+            parts = num_v_partitions * num_k_partitions
+            with T.Kernel(batch * heads * parts, threads=threads) as bx:
+                i_b = bx // (heads * parts)
+                i_h = (bx // parts) % heads
+                i_vp = (bx % parts) // num_k_partitions
+                i_kp = bx % num_k_partitions
                 v_offset = i_vp * dim_v_part
+                k_offset = i_kp * dim_k_part
 
-                dh_s = T.alloc_shared([dim_k, dim_v_part], accum_dtype)
-                g_cumsum_s = T.alloc_shared([chunk_size, dim_k], accum_dtype)
-                q_s = T.alloc_shared([chunk_size, dim_k], dtype)
+                dh_s = T.alloc_shared([dim_k_part, dim_v_part], accum_dtype)
+                g_cumsum_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
+                q_s = T.alloc_shared([chunk_size, dim_k_part], dtype)
                 do_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
-                q_gated_s = T.alloc_shared([chunk_size, dim_k], dtype)
+                q_gated_s = T.alloc_shared([chunk_size, dim_k_part], dtype)
 
-                # Load dht V-slice
-                for i_k, i_v in T.Parallel(dim_k, dim_v_part):
-                    dh_s[i_k, i_v] = dht[i_b, i_h, i_k, v_offset + i_v]
+                for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                    dh_s[i_k, i_v] = dht[i_b, i_h, k_offset + i_k, v_offset + i_v]
 
                 for t in T.Serial(num_chunks):
                     i_c = num_chunks - 1 - t
                     chunk_start = i_c * chunk_size
 
                     T.copy(
-                        q[i_b, chunk_start : chunk_start + chunk_size, i_h, :],
+                        q[
+                            i_b,
+                            chunk_start : chunk_start + chunk_size,
+                            i_h,
+                            k_offset : k_offset + dim_k_part,
+                        ],
                         q_s,
                         disable_tma=True,
                     )
@@ -131,17 +177,22 @@ def _gla_bwd_dh_kernel(
                         disable_tma=True,
                     )
                     T.copy(
-                        g_cumsum[i_b, chunk_start : chunk_start + chunk_size, i_h, :],
+                        g_cumsum[
+                            i_b,
+                            chunk_start : chunk_start + chunk_size,
+                            i_h,
+                            k_offset : k_offset + dim_k_part,
+                        ],
                         g_cumsum_s,
                         disable_tma=True,
                     )
 
-                    g_last = T.alloc_fragment([dim_k], accum_dtype)
-                    for i_k in T.Parallel(dim_k):
+                    g_last = T.alloc_fragment([dim_k_part], accum_dtype)
+                    for i_k in T.Parallel(dim_k_part):
                         g_last[i_k] = g_cumsum_s[chunk_size - 1, i_k]
 
-                    # q_gated (redundant across V-partitions)
-                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                    # q_gated, rebuilt in every partition that reads this chunk
+                    for i_t, i_k in T.Parallel(chunk_size, dim_k_part):
                         q_gated_s[i_t, i_k] = T.cast(
                             T.cast(q_s[i_t, i_k], accum_dtype)
                             * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E),
@@ -149,29 +200,29 @@ def _gla_bwd_dh_kernel(
                         )
 
                     # dh += scale * q_gated^T @ do_slice
-                    dh_delta = T.alloc_fragment([dim_k, dim_v_part], accum_dtype)
+                    dh_delta = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                     T.fill(dh_delta, 0.0)
                     T.gemm(
                         q_gated_s, do_s, dh_delta, transpose_A=True, policy=T.GemmWarpPolicy.FullRow
                     )
-                    for i_k, i_v in T.Parallel(dim_k, dim_v_part):
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         dh_s[i_k, i_v] = dh_s[i_k, i_v] + scale * dh_delta[i_k, i_v]
 
                     # Store dh BEFORE decay
-                    for i_k, i_v in T.Parallel(dim_k, dim_v_part):
-                        dh_out[i_b, i_c, i_h, i_k, v_offset + i_v] = dh_s[i_k, i_v]
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        dh_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = dh_s[i_k, i_v]
 
                     # Decay for next (earlier) chunk
-                    for i_k, i_v in T.Parallel(dim_k, dim_v_part):
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         dh_s[i_k, i_v] = dh_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2E)
 
                 # Write dh0
                 if has_initial_state:
-                    for i_k, i_v in T.Parallel(dim_k, dim_v_part):
-                        dh0[i_b, i_h, i_k, v_offset + i_v] = dh_s[i_k, i_v]
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        dh0[i_b, i_h, k_offset + i_k, v_offset + i_v] = dh_s[i_k, i_v]
                 else:
-                    for i_k, i_v in T.Parallel(dim_k, dim_v_part):
-                        dh0[i_b, i_h, i_k, v_offset + i_v] = 0.0
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        dh0[i_b, i_h, k_offset + i_k, v_offset + i_v] = 0.0
 
         return _main
 
@@ -536,7 +587,7 @@ def _gla_bwd_fused_kernel(
 class GLABwdKernel(Kernel, GLABwdInterface):
     """GLA backward kernel — two-pass architecture.
 
-    Pass 1 (sequential reverse, B*H blocks): Accumulate dh per chunk.
+    Pass 1 (sequential reverse, B*H*Vp*Kp blocks): Accumulate dh per chunk.
     Pass 2 (parallel, B*H*NC blocks): Fused intra+inter kernel computes
         dq, dk, dv, dg in a single pass using sub-chunk GEMM tiling.
 
@@ -613,8 +664,9 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         The fused pass runs its chunk GEMMs on four warps, which take whole 16-row
         tiles of ``chunk_size`` rows: 32 splits two by two, and otherwise all four
         split the rows, which takes a multiple of 64. The state gradient runs over
-        ``dim_k x (dim_v / 4)`` on eight warps, and the output GEMMs put ``dim_k`` on
-        the columns. On SM90 a 16-bit ``dim_k`` of at least 64 takes the warp-group
+        a partition of ``dim_k x dim_v`` that :meth:`_partitionings` bounds, and the
+        output GEMMs put ``dim_k`` on the columns. On SM90 a 16-bit ``dim_k`` of at
+        least 64 takes the warp-group
         instruction, which splits four warps over it and admits ``dim_k`` 64 past
         a multiple of 128; the per-warp instruction does not.
         """
@@ -645,19 +697,38 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             )
         return None
 
-    def _v_partitions(self, threads_seq: int, candidates: list[int]) -> list[int]:
-        """Return the candidates the dh kernel can build at *threads_seq*, widest first."""
-        floor = max(GEMM_MIN_N, min_gemm_n(threads_seq))
-        return [n for n in candidates if self.dim_v % n == 0 and self.dim_v // n >= floor]
+    def _partitionings(self, threads_seq: int) -> list[tuple[int, int]]:
+        """The (V, K) partitionings the dh kernel builds at *threads_seq*, finest first."""
+        counts = (1, 2, 4, 8)  # a power of two keeps a probed dimension a probed extent
+        pairs = [
+            (vp, kp)
+            for vp in counts
+            for kp in counts
+            if self.dim_v % vp == 0
+            and self.dim_k % kp == 0
+            and _dh_tile_refusal(self.dim_k // kp, self.dim_v // vp, threads_seq) is None
+        ]
+        # Ties go to the V split, the minor axis of every tensor a block reads and writes.
+        return sorted(pairs, key=lambda pair: (pair[0] * pair[1], pair[0]), reverse=True)
 
     @property
     def default_config(self) -> dict:
-        threads_seq = 256
+        # One warp group, then the finest partitioning whose blocks still fit one wave.
+        # A wider block splits the gemm's B operand across warp groups and doubles the V
+        # tile a partitioning must leave; past the SM count a further split only repeats
+        # the gated query.
+        threads_seq = 128
+        blocks = self.batch * self.heads
+        sm_count = get_sm_count(self.device_index)
+        admitted = self._partitionings(threads_seq) or [(1, 1)]
+        fitting = [pair for pair in admitted if blocks * pair[0] * pair[1] <= sm_count]
+        num_v_partitions, num_k_partitions = (fitting or admitted[-1:])[0]
         return {
             "num_stages": 1,
             "threads_par": 128,
             "threads_seq": threads_seq,
-            "num_v_partitions": self._v_partitions(threads_seq, [4, 2, 1])[0],
+            "num_v_partitions": num_v_partitions,
+            "num_k_partitions": num_k_partitions,
         }
 
     @property
@@ -666,13 +737,14 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         for ns in [1, 2, 3]:
             for t_par in [64, 128, 256]:
                 for t_seq in [64, 128, 256]:
-                    for nvp in self._v_partitions(t_seq, [1, 2, 4, 8]):
+                    for nvp, nkp in self._partitionings(t_seq):
                         configs.append(
                             {
                                 "num_stages": ns,
                                 "threads_par": t_par,
                                 "threads_seq": t_seq,
                                 "num_v_partitions": nvp,
+                                "num_k_partitions": nkp,
                             }
                         )
         return configs
@@ -683,6 +755,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         thr_seq = config.get("threads_seq", config.get("threads", 256))
         thr_par = config.get("threads_par", config.get("threads", 256))
         num_vp = config.get("num_v_partitions", 4)
+        num_kp = config.get("num_k_partitions", 1)
         self._g_fn = gla_precompute_g_kernel(
             self.batch,
             self.seq_len,
@@ -702,6 +775,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             False,
             self.dtype_name,
             num_v_partitions=num_vp,
+            num_k_partitions=num_kp,
         )(1, thr_seq)
         self._dh_fn_with_init = _gla_bwd_dh_kernel(
             self.batch,
@@ -714,6 +788,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             True,
             self.dtype_name,
             num_v_partitions=num_vp,
+            num_k_partitions=num_kp,
         )(1, thr_seq)
         self._fused_fn = _gla_bwd_fused_kernel(
             self.batch,

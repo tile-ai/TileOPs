@@ -159,6 +159,21 @@ def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(repor
     assert report.detect_regressions(_bench_ops(0.40, flops=5e9, bytes=1e6), runs) == []
 
 
+def test_variant_added_beside_its_sibling_is_not_a_rename(report):
+    """A row new in this run does not inherit a sibling that is still running.
+
+    The sibling is absent from no historical run, so only the current run's own row
+    set tells the two apart, and a new row with no history of its own has no verdict.
+    """
+    sibling = "test_foo_bench[sibling-bfloat16]"
+    runs = [_history_run(0.1, name="sibling-bfloat16", flops=5e9, bytes=1e6)]
+    bench_ops = _bench_ops(0.4, flops=5e9, bytes=1e6)
+    bench_ops[_OP]["configs"].append(
+        {"name": sibling, "tileops_device_busy_ms": 0.1, "tileops_flops": 5e9, "tileops_bytes": 1e6}
+    )
+    assert [r["config"] for r in report.detect_regressions(bench_ops, runs)] == []
+
+
 def test_history_is_keyed_by_case_id(report):
     """A renamed test function keeps its history key."""
     row = {

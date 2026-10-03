@@ -8,6 +8,7 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+import tvm.tirx as tirx
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
@@ -44,6 +45,10 @@ def prefill_chunk_local_cumsum_bthd_tl(
     num_chunks = tiling.tile_upper_bound(total_tokens)
     # Above this, softplus is the identity to float32 precision; torch's default.
     softplus_threshold = 20.0
+    # The staged chunk dominates the block's shared memory; the tile holds it at 16 KiB
+    # for a 64-row chunk whatever the head count.
+    head_tile = min(head, 64)
+    num_head_slabs = tilelang.cdiv(head, head_tile)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -60,9 +65,10 @@ def prefill_chunk_local_cumsum_bthd_tl(
             hi = T.alloc_local([1], "int32")
             seq = T.alloc_local([1], "int32")
             first = T.alloc_local([1], "int32")
-            acc_s = T.alloc_shared([head], "float32")
-            rate_s = T.alloc_shared([head], "float32")
-            shift_s = T.alloc_shared([head], "float32")
+            chunk_s = T.alloc_shared([chunk_size, head_tile], "float32")
+            acc_s = T.alloc_shared([head_tile], "float32")
+            rate_s = T.alloc_shared([head_tile], "float32")
+            shift_s = T.alloc_shared([head_tile], "float32")
 
             tiling.cumsum_offsets(cu_seqlens, tile_cum)
             if cid < tile_cum[num_sequences]:
@@ -70,26 +76,53 @@ def prefill_chunk_local_cumsum_bthd_tl(
                 base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                 end = T.cast(cu_seqlens[seq[0] + 1], "int32")
 
-                for hid in T.Parallel(head):
-                    acc_s[hid] = T.float32(0.0)
-                if gate_in_kernel:
-                    for hid in T.Parallel(head):
-                        rate_s[hid] = -T.exp(a_log[hid])
-                        shift_s[hid] = dt_bias[hid]
-                for i in T.Serial(chunk_size):
-                    for hid in T.Parallel(head):
-                        if base + i < end:
-                            raw = T.cast(g[0, base + i, hid], "float32")
-                            if gate_in_kernel:
-                                biased = raw + shift_s[hid]
-                                softplus = T.log(T.float32(1.0) + T.exp(biased))
-                                decay = rate_s[hid] * T.if_then_else(
-                                    biased > softplus_threshold, biased, softplus
-                                )
-                            else:
-                                decay = raw
-                            acc_s[hid] = acc_s[hid] + decay
-                            out[0, base + i, hid] = T.cast(acc_s[hid], dtype)
+                for slab in range(num_head_slabs):
+                    first_head = slab * head_tile
+                    # Only a last slab the tile does not fill carries the head predicate.
+                    short = first_head + head_tile > head
+                    if gate_in_kernel:
+                        for hid in T.Parallel(head_tile):
+                            if (not short) or first_head + hid < head:
+                                rate_s[hid] = -T.exp(a_log[first_head + hid])
+                                shift_s[hid] = dt_bias[first_head + hid]
+
+                    # The walk is serial in the row, so a load or a predicate left in it
+                    # costs one global latency per row.
+                    for i, hid in T.Parallel(chunk_size, head_tile):
+                        inside = (
+                            tirx.all(base + i < end, first_head + hid < head)
+                            if short
+                            else base + i < end
+                        )
+                        raw = T.if_then_else(
+                            inside,
+                            T.cast(g[0, base + i, first_head + hid], "float32"),
+                            T.float32(0.0),
+                        )
+                        if gate_in_kernel:
+                            biased = raw + shift_s[hid]
+                            softplus = T.log(T.float32(1.0) + T.exp(biased))
+                            chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
+                                biased > softplus_threshold, biased, softplus
+                            )
+                        else:
+                            chunk_s[i, hid] = raw
+
+                    for hid in T.Parallel(head_tile):
+                        acc_s[hid] = T.float32(0.0)
+                    for i in T.Serial(chunk_size):
+                        for hid in T.Parallel(head_tile):
+                            acc_s[hid] = acc_s[hid] + chunk_s[i, hid]
+                            chunk_s[i, hid] = acc_s[hid]
+
+                    for i, hid in T.Parallel(chunk_size, head_tile):
+                        stored = (
+                            tirx.all(base + i < end, first_head + hid < head)
+                            if short
+                            else base + i < end
+                        )
+                        if stored:
+                            out[0, base + i, first_head + hid] = T.cast(chunk_s[i, hid], dtype)
 
         if gate_in_kernel:
 
@@ -134,18 +167,31 @@ def _prefill_blocksolve_A_bthd_tl(
     l2norm: bool = False,
     beta_sigmoid: bool = False,
     allow_neg_eigval: bool = False,
+    uniform_seq_len: int = 0,
 ):
     if chunk_size != 64 or dim_k not in (64, 128):
         raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
     if head % key_head != 0:
         raise ValueError(f"head ({head}) must be a multiple of key_head ({key_head})")
+    if uniform_seq_len and num_sequences * uniform_seq_len != total_tokens:
+        raise ValueError(
+            f"uniform_seq_len ({uniform_seq_len}) over num_sequences ({num_sequences}) does "
+            f"not sum to total_tokens ({total_tokens})"
+        )
 
     # Recurrent heads sharing one key head. The solve reads the key at head ``hid // group``
     # rather than against a key widened to the recurrent head count, which would cross
     # memory once per recurrent head instead of once per key head.
     group = head // key_head
     tiling = GroupTiling(num_sequences, chunk_size)
-    num_chunks = tiling.tile_upper_bound(total_tokens)
+    # Rows of one length put a chunk's bounds within reach of arithmetic. Read from the
+    # offsets instead, a block waits out a load before it can address anything.
+    chunks_per_sequence = tilelang.cdiv(uniform_seq_len, chunk_size) if uniform_seq_len else 0
+    num_chunks = (
+        num_sequences * chunks_per_sequence
+        if uniform_seq_len
+        else tiling.tile_upper_bound(total_tokens)
+    )
     block_t = 64
     block_c = 16
     block_k = 64
@@ -207,10 +253,18 @@ def _prefill_blocksolve_A_bthd_tl(
                 G33 = T.alloc_fragment([block_c, block_c], accum_dtype)
                 tmp = T.alloc_fragment([block_c, block_c], accum_dtype)
 
-                tiling.cumsum_offsets(cu_seqlens, tile_cum)
-                tiling.decode(cid, tile_cum, lo, hi, seq, first)
-                base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
-                end = T.cast(cu_seqlens[seq[0] + 1], "int32")
+                if uniform_seq_len:
+                    row = cid // chunks_per_sequence * uniform_seq_len
+                    base = row + cid % chunks_per_sequence * chunk_size
+                    end = row + uniform_seq_len
+                else:
+                    tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                    # The grid covers the most chunks the offsets can describe; a block
+                    # past their count repeats the last one and writes its own bytes.
+                    last = tile_cum[num_sequences] - 1
+                    tiling.decode(T.min(cid, last), tile_cum, lo, hi, seq, first)
+                    base = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                    end = T.cast(cu_seqlens[seq[0] + 1], "int32")
                 # Recurrent head ``hid`` reads the key head it shares with its group.
                 khid = hid // group
 
@@ -612,6 +666,7 @@ def prefill_blocksolve_A_bthd(
     l2norm: bool = False,
     beta_sigmoid: bool = False,
     allow_neg_eigval: bool = False,
+    uniform_seq_len: int = 0,
 ) -> torch.Tensor:
     """The per-chunk triangular inverse the delta rule contracts against.
 
@@ -625,6 +680,8 @@ def prefill_blocksolve_A_bthd(
         l2norm: Take *k* unnormalized and L2-normalize each head vector here.
         beta_sigmoid: Take *beta* as raw logits and apply the sigmoid here.
         allow_neg_eigval: Double the step size the sigmoid produces.
+        uniform_seq_len: Row length where every row has one, which puts a chunk's
+            bounds within reach of arithmetic; 0 reads them from *cu_seqlens*.
 
     Returns:
         New ``(1, total_tokens, head, chunk_size)`` inverse in *k*'s dtype, and, where
@@ -650,6 +707,7 @@ def prefill_blocksolve_A_bthd(
         l2norm,
         beta_sigmoid,
         allow_neg_eigval,
+        uniform_seq_len,
     )
     kernel(k, g, beta, cu_seqlens, A, k_rnorm)
     return A, k_rnorm
