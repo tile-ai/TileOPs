@@ -32,7 +32,7 @@ class FusedTopKWorkload(CallWorkload):
 
 
 class MoePermuteAlignWorkload(CallWorkload):
-    """The routing ids of one ``MoePermuteAlignFwdOp`` call."""
+    """The routing ids of one ``MoEPermuteAlignFwdOp`` call."""
 
     def ref_program(
         self, topk_ids: torch.Tensor
@@ -42,7 +42,7 @@ class MoePermuteAlignWorkload(CallWorkload):
 
 
 class MoePrePermuteWorkload(CallWorkload):
-    """Hidden states and local expert ids of one ``MoePrePermuteFwdOp`` call."""
+    """Hidden states and local expert ids of one ``MoEPrePermuteFwdOp`` call."""
 
     def ref_program(
         self, hidden_states: torch.Tensor, local_expert_ids: torch.Tensor
@@ -160,7 +160,7 @@ class MoeExpertMLPWorkload(CallWorkload):
 
 
 class MoePostPermuteWorkload(CallWorkload):
-    """Expert outputs, routing weights and inverse indices of one ``MoePostPermuteFwdOp`` call."""
+    """Expert outputs, routing weights and inverse indices of one ``MoEPostPermuteFwdOp`` call."""
 
     def ref_program(
         self,
@@ -272,7 +272,7 @@ def ref_fused_topk(
 
 
 class FusedMoeWorkload(CallWorkload):
-    """Tokens, gating logits and expert weights for one ``FusedMoeFwdOp`` call.
+    """Tokens, gating logits and expert weights for one ``FusedMoEFwdOp`` call.
 
     The logits come from the workload's own generator: they decide the experts the call
     reads, which the roofline prices (docs/design/roofline.md §4.7).
@@ -298,7 +298,7 @@ class FusedMoeWorkload(CallWorkload):
 
 
 class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
-    """One ``FusedMoeSharedExpertFwdOp`` call: FusedMoe's inputs plus the shared weights."""
+    """One ``FusedMoESharedExpertFwdOp`` call: FusedMoe's inputs plus the shared weights."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         *routed, shared_w_gate_up, shared_w_down = super().gen_inputs()

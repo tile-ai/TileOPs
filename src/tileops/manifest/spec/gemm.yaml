@@ -53,7 +53,7 @@ GemmFwdOp:
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
-GemmFp8FwdOp:
+GemmFP8FwdOp:
   ref_api: "torch._scaled_mm"
   family: gemm
   status: implemented
@@ -216,7 +216,7 @@ GroupedGemmFwdOp:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
-GemmInt8W8A8FwdOp:
+GemmINT8W8A8FwdOp:
   family: gemm
   status: spec-only
   signature:

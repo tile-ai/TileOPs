@@ -13,10 +13,10 @@ from tileops.kernels.moe import (
 )
 from tileops.ops.op_base import Op
 
-__all__ = ["MoePermuteAlignFwdOp"]
+__all__ = ["MoEPermuteAlignFwdOp"]
 
 
-class MoePermuteAlignFwdOp(Op):
+class MoEPermuteAlignFwdOp(Op):
     """Route tokens to experts and pad each expert's token count to block_size.
 
     Takes ``topk_ids`` and produces the three index arrays required by MoE
@@ -25,7 +25,7 @@ class MoePermuteAlignFwdOp(Op):
 
     Example:
         ```python linenums="1"
-        op = MoePermuteAlignFwdOp(num_experts=8, block_size=16)
+        op = MoEPermuteAlignFwdOp(num_experts=8, block_size=16)
         sorted_ids, expert_ids, num_post_pad = op(topk_ids)
         ```
     """

@@ -28,7 +28,7 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GemmFP8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
 
 class GemmFwdOp(Op):
@@ -121,7 +121,7 @@ class GemmFwdOp(Op):
         return tensor_core_roof(self.last_call.ix["T"])
 
 
-class GemmFp8FwdOp(Op):
+class GemmFP8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
     ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
@@ -187,7 +187,7 @@ class GemmFp8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
+            op = GemmFP8FwdOp(out_dtype=torch.bfloat16)
             d = op(a, b, scale_a, scale_b)        # per-tensor scales
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```

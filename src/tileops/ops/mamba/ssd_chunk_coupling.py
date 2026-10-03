@@ -13,10 +13,10 @@ from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["CBProducerFwdOp"]
+__all__ = ["SSDChunkCouplingFwdOp"]
 
 
-class CBProducerFwdOp(Op):
+class SSDChunkCouplingFwdOp(Op):
     """CB (C@B) matrix producer operator.
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c*Q+l,g,n] * B[b,c*Q+s,g,n]

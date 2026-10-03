@@ -29,7 +29,7 @@ FP8LightningIndexerFwdOp:
   roofline:
     func: tileops.perf.formulas.fp8_lightning_indexer_roofline
 
-TopkSelectorFwdOp:
+TopKSelectFwdOp:
   # Unordered along the topk axis: a row selects the same positions every call and may
   # place them in different slots. A window holding fewer than topk positions fills the
   # rest with S_kv, which selects nothing.

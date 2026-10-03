@@ -18,7 +18,7 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
-from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
 from workloads.gemm import (
     GemmFp8Workload,
@@ -414,13 +414,13 @@ def test_gemm_bench(call) -> None:
     bm.compare(functors, a, b)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GemmFp8FwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GemmFP8FwdOp))
 def test_gemm_fp8_bench(call) -> None:
     workload = GemmFp8Workload.from_call(call)
     inputs = workload.gen_inputs()
     scale_mode, out_dtype = workload.scale_mode, workload.out_dtype
 
-    op = GemmFp8FwdOp(**call.arguments({}))
+    op = GemmFP8FwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
 
     functors = {"tileops": op, "torch-fp32-ref": workload.ref_program}

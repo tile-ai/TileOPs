@@ -14,10 +14,10 @@ from tileops.kernels.linear_attention import (
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GLABwdOp", "GLAFwdOp"]
+__all__ = ["GLAChunkBwdOp", "GLAChunkFwdOp"]
 
 
-class GLAFwdOp(Op):
+class GLAChunkFwdOp(Op):
     """GLA (Gated Linear Attention) forward operator.
 
     Chunked GLA forward: (q, k, v, g) -> (o, final_state).
@@ -115,7 +115,7 @@ class GLAFwdOp(Op):
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
-class GLABwdOp(Op):
+class GLAChunkBwdOp(Op):
     """GLA (Gated Linear Attention) backward operator.
 
     Computes gradients (dq, dk, dv, dg) given output gradient do.

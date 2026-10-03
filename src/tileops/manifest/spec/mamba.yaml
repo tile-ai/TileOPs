@@ -12,7 +12,7 @@
 # Workload shapes follow the public Mamba-2 model sizes
 # (780M: H=48, 1.3B: H=64, 2.7B: H=80; P=64, N=128, Q=256, G=1).
 
-DaCumsumFwdOp:
+SSDChunkCumsumFwdOp:
   # dt preprocessing (optional per-head bias, optional softplus, clamp) and the
   # chunk-local inclusive prefix sum of dA = dt * A. dA_cumsum is computed from
   # the float32 dt before dt_out is cast to out_dtype.
@@ -48,7 +48,7 @@ DaCumsumFwdOp:
     # (4 flops) when present.
     flops: "(3 + (1 if present(dt_bias) else 0) + (4 if dt_softplus else 0)) * B * S * H"
 
-CBProducerFwdOp:
+SSDChunkCouplingFwdOp:
   # Causal C@B coupling matrix per chunk and group:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n] for s <= l, else 0.
   family: mamba
@@ -164,7 +164,7 @@ SSDChunkScanFwdOp:
     # (Q x Q) @ (Q x P) per (batch, chunk, head), halved by the mask.
     flops: "2 * B * NC * Q * H * N * P + B * NC * H * Q * Q * P"
 
-SSDDecodeFwdOp:
+SSDRecurrentFwdOp:
   # Single-token Mamba-2 SSD decode step. y_out is the only returned tensor;
   # state is updated in place. The D * x skip connection and z-gate are not
   # fused here.
@@ -245,9 +245,9 @@ Mamba2FwdOp:
   composition:
     kind: composite
     stages:
-    - {name: da_cumsum_float16, op: DaCumsumFwdOp}
-    - {name: da_cumsum_bfloat16, op: DaCumsumFwdOp}
-    - {name: cb_producer, op: CBProducerFwdOp}
+    - {name: da_cumsum_float16, op: SSDChunkCumsumFwdOp}
+    - {name: da_cumsum_bfloat16, op: SSDChunkCumsumFwdOp}
+    - {name: cb_producer, op: SSDChunkCouplingFwdOp}
     - {name: chunk_state, op: SSDChunkStateFwdOp}
     - {name: state_passing, op: SSDStatePassingFwdOp}
     - {name: chunk_scan, op: SSDChunkScanFwdOp}

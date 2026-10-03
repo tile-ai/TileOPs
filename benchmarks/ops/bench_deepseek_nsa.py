@@ -26,7 +26,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.attention import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
+from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.deepseek_attention import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
 
@@ -83,9 +83,9 @@ def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(NSACmpVarlenFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(NSACompressedVarlenFwdOp))
 def test_nsa_cmp_fwd_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSACmpVarlenFwdOp, NsaCmpFwdCall, call)
+    workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
     fla_fn = _fla_nsa_cmp_fwd(workload)
 
     # fla writes a float32 lse, the manifest declares the input dtype. The conversion is this
@@ -104,9 +104,9 @@ def test_nsa_cmp_fwd_varlen_bench(call) -> None:
     bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(NSATopkVarlenFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(NSATopKVarlenFwdOp))
 def test_nsa_topk_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSATopkVarlenFwdOp, NsaTopkCall, call)
+    workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NsaTopkCall, call)
     # No fla comparator: its selection forces blocks 0, IC-1 and IC to importance 1.0 while this
     # op forces only IC, and it ranks raw scores where this op treats a gap under 1e-5 as a tie
     # and prefers the larger block id. The two select by different rules, so a ratio between them

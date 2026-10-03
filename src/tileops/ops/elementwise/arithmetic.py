@@ -190,7 +190,7 @@ class FloorDivideFwdOp(BinaryOp):
     kernel_types = {"floor_divide": FloorDivideFwdKernel}
 
 
-class LerpFwdOp(BinaryOp):
+class LerpScalarFwdOp(BinaryOp):
     """Element-wise lerp with broadcast: y = a + weight * (b - a).
 
     Unlike ``torch.lerp(a, b, weight)`` where weight is a runtime parameter,
@@ -263,7 +263,7 @@ class LerpTensorFwdOp(Op):
     Conforms to the Tensor-weight overload of ``torch.lerp`` —
     ``torch.lerp(input, end, weight: Tensor)`` where ``weight`` is a Tensor that
     broadcasts together with ``input`` and ``end`` to the output shape. The scalar-weight
-    overload is handled separately by ``LerpFwdOp``.
+    overload is handled separately by ``LerpScalarFwdOp``.
     """
 
     compile_boundary: ClassVar[bool] = True

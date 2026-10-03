@@ -64,9 +64,9 @@ from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedMoEExpertsFwdOp,
     IndexedExpertMLPFwdOp,
-    MoeExpertMLPFwdOp,
-    MoePostPermuteFwdOp,
-    MoePrePermuteFwdOp,
+    MoEExpertMLPFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
 from workloads.moe import IndexedExpertMLPWorkload, MoeExpertsWorkload
@@ -146,10 +146,10 @@ def test_indexed_expert_mlp_bench(call) -> None:
     # The staged pipeline is what the composite runs on every other shape, so it is the
     # comparator the indexed path has to beat.
     layout = ContiguousLayoutSpec.tight_physical_psum()
-    pre = MoePrePermuteFwdOp(layout, num_local_experts=w1.shape[0])
-    mlp = MoeExpertMLPFwdOp(layout)
+    pre = MoEPrePermuteFwdOp(layout, num_local_experts=w1.shape[0])
+    mlp = MoEExpertMLPFwdOp(layout)
     epilogue = RoutingEpilogueSpec(routed_scaling_factor=indexed.routed_scaling_factor)
-    post = MoePostPermuteFwdOp(layout, epilogue)
+    post = MoEPostPermuteFwdOp(layout, epilogue)
     staged_output = torch.empty_like(output)
 
     def _staged_fn(hidden, w1, w2, topk_weights, topk_ids):

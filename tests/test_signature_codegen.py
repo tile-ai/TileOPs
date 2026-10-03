@@ -73,7 +73,7 @@ def test_check_rejects(tensors, message):
         type(op)._signature.check(op, tensors)
 
 
-@pytest.mark.parametrize("name", ["ClampFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
+@pytest.mark.parametrize("name", ["ClampTensorFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
 def test_check_traces_on_symints(name):
     call = next(_calls(name))
     tensors = call.materialize(device="cpu")
@@ -110,7 +110,7 @@ def test_construction_checks_what_construction_decides():
     _op("DSADecodeFwdOp", {"dim_tail": -1})  # a signed offset carries no obligation of its own
     with pytest.raises(ValueError, match="axis 1 of hidden_states, hidden_size, is negative"):
         _op(
-            "FusedMoeSharedExpertFwdOp",
+            "FusedMoESharedExpertFwdOp",
             {"num_tokens": 2, "hidden_size": -1, "shared_ffn_size": None},
         )
 
@@ -358,8 +358,8 @@ def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
 def test_an_adt_parameter_must_be_its_declared_class():
     from tileops.ops.moe.contracts import MaskedLayoutSpec
 
-    cls = type("MoePrePermuteFwdOp", (), {})
-    install(cls, _ENTRIES["MoePrePermuteFwdOp"], _CASES["adts"])
+    cls = type("MoEPrePermuteFwdOp", (), {})
+    install(cls, _ENTRIES["MoEPrePermuteFwdOp"], _CASES["adts"])
     op = cls()
     vars(op).update(layout=MaskedLayoutSpec(max_m=4), num_local_experts=2)
     op._check_construction()
@@ -771,7 +771,7 @@ def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
     [
         ("norm", "RMSNormFwdOp", "norm_rms_norm_fwd"),
         ("convolution", "Conv2dFwdOp", "convolution_conv2d_fwd"),
-        ("moe", "MoePrePermuteFwdOp", "moe_pre_permute_fwd"),
+        ("moe", "MoEPrePermuteFwdOp", "moe_pre_permute_fwd"),
     ],
 )
 def test_the_operator_names_its_family_once(family: str, class_name: str, expected: str) -> None:
@@ -786,7 +786,7 @@ def test_the_operator_names_its_family_once(family: str, class_name: str, expect
         ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
         # A digit on each side of the capital.
         ("gemm", "GemmW4A16FwdOp", "gemm_w4a16_fwd"),
-        ("gemm", "GemmInt8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
+        ("gemm", "GemmINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
         # Two abbreviations, one of them the family's own name.
         ("fft", "FFTC2CFwdOp", "fft_c2c_fwd"),
         # Two abbreviations in a row.

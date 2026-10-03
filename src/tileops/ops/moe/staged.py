@@ -24,14 +24,14 @@ from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
-    "MoeExpertMLPFwdOp",
-    "MoeGroupedGemmFwdOp",
-    "MoePostPermuteFwdOp",
-    "MoePrePermuteFwdOp",
+    "MoEExpertMLPFwdOp",
+    "MoEGroupedGemmFwdOp",
+    "MoEPostPermuteFwdOp",
+    "MoEPrePermuteFwdOp",
 ]
 
 
-class MoePrePermuteFwdOp(Op):
+class MoEPrePermuteFwdOp(Op):
     """Materialize rank-grouped activations into a local expert layout.
 
     ``local_expert_ids`` must already be in ``[0, num_local_experts)``.
@@ -99,7 +99,7 @@ class MoePrePermuteFwdOp(Op):
         return kernel(hidden_states, local_expert_ids)
 
 
-class MoeGroupedGemmFwdOp(Op):
+class MoEGroupedGemmFwdOp(Op):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
     ``layout`` fixes how the rows of ``a`` are organised by expert and what the
@@ -226,7 +226,7 @@ class MoeGroupedGemmFwdOp(Op):
         return kernel(a, b, layout_metadata, out=out)
 
 
-class MoeExpertMLPFwdOp(Op):
+class MoEExpertMLPFwdOp(Op):
     """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
 
     ``out = (act(expert_input @ w_gate_up[g]^T)) @ w_down[g]^T`` per expert ``g``, where
@@ -237,8 +237,8 @@ class MoeExpertMLPFwdOp(Op):
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        "gate_up": MoeGroupedGemmFwdOp,
-        "down": MoeGroupedGemmFwdOp,
+        "gate_up": MoEGroupedGemmFwdOp,
+        "down": MoEGroupedGemmFwdOp,
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -302,7 +302,7 @@ class MoeExpertMLPFwdOp(Op):
         return self.down(activated, w_down, layout_metadata, out=out)
 
 
-class MoePostPermuteFwdOp(Op):
+class MoEPostPermuteFwdOp(Op):
     """Restore token order and apply the declared local routing epilogue."""
 
     compile_boundary: ClassVar[bool] = True

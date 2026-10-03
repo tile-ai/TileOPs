@@ -29,13 +29,13 @@ from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
-    MoeGroupedGemmFwdOp,
-    MoePermuteAlignFwdOp,
-    MoePostPermuteFwdOp,
-    MoePrePermuteFwdOp,
+    MoEGroupedGemmFwdOp,
+    MoEPermuteAlignFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEPrePermuteFwdOp,
     SharedExpertMLPFwdOp,
 )
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
+from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 
@@ -69,7 +69,7 @@ def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
 
 def _permute_align_case():
     def make():
-        return MoePermuteAlignFwdOp(_NUM_EXPERTS, block_size=4)
+        return MoEPermuteAlignFwdOp(_NUM_EXPERTS, block_size=4)
 
     topk_ids = torch.randint(
         0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=run_device()
@@ -81,7 +81,7 @@ def _permute_align_case():
 
 def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
     def make():
-        return MoePrePermuteFwdOp(
+        return MoEPrePermuteFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(),
             num_local_experts=_NUM_EXPERTS,
         )
@@ -96,7 +96,7 @@ def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
 
 def _aligned_pre_permute_case():
     def make():
-        return MoePrePermuteFwdOp(
+        return MoEPrePermuteFwdOp(
             ContiguousLayoutSpec.aligned_per_row(8),
             num_local_experts=_NUM_EXPERTS,
         )
@@ -113,7 +113,7 @@ def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: s
     numel, n, k = 64, 128, 128
 
     def make():
-        return MoeGroupedGemmFwdOp(
+        return MoEGroupedGemmFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(), activation=activation
         )
 
@@ -125,7 +125,7 @@ def _staged_grouped_gemm_masked_case():
     max_m, n, k = 32, 128, 128
 
     def make():
-        return MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
 
     a = torch.randn(_NUM_EXPERTS, max_m, k, dtype=torch.bfloat16, device=run_device())
     b = torch.randn(_NUM_EXPERTS, n, k, dtype=torch.bfloat16, device=run_device())
@@ -196,7 +196,7 @@ def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
     out = torch.empty(_TOKENS, _HIDDEN, dtype=dtype, device=run_device())
 
     def make():
-        return MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+        return MoEPostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
 
     assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices)
     assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices, out)
@@ -266,13 +266,13 @@ def test_the_shared_expert_composite_compiles_cold_to_its_leaves() -> None:
         torch.randn(2 * shared, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02,
         torch.randn(hidden, shared, dtype=torch.bfloat16, device=run_device()) * 0.02,
     )
-    calls = traced_call_targets(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
+    calls = traced_call_targets(FusedMoESharedExpertFwdOp(_TOP_K), *args)
     leaves = (FusedTopKFwdOp, IndexedExpertMLPFwdOp, SharedExpertMLPFwdOp)
     owners = {operator_overload(n): cls for cls in leaves for n in cls.compile_op_names}
     assert calls <= set(owners), sorted(str(c) for c in calls - set(owners))
     assert {owners[c] for c in calls} == set(leaves)
-    compiled = _compile_cold(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
-    for got, want in zip(compiled, FusedMoeSharedExpertFwdOp(_TOP_K)(*args), strict=True):
+    compiled = _compile_cold(FusedMoESharedExpertFwdOp(_TOP_K), *args)
+    for got, want in zip(compiled, FusedMoESharedExpertFwdOp(_TOP_K)(*args), strict=True):
         torch.testing.assert_close(got, want)
 
 
@@ -299,10 +299,10 @@ def test_the_indexed_op_compiles_cold_to_its_operator() -> None:
 for _op_cls in (
     FusedTopKFwdOp,
     IndexedExpertMLPFwdOp,
-    MoePermuteAlignFwdOp,
-    MoePrePermuteFwdOp,
-    MoePostPermuteFwdOp,
-    MoeGroupedGemmFwdOp,
+    MoEPermuteAlignFwdOp,
+    MoEPrePermuteFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEGroupedGemmFwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

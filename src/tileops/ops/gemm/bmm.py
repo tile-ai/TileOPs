@@ -1,4 +1,4 @@
-"""Batched GEMM ops (BmmFwdOp, BmmFp8FwdOp).
+"""Batched GEMM ops (BmmFwdOp, BmmFP8FwdOp).
 
 Strict 3D-3D batched matrix multiplication matching ``torch.bmm``: every
 batch item is an independent GEMM, no broadcasting.
@@ -28,7 +28,7 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["BmmFp8FwdOp", "BmmFwdOp"]
+__all__ = ["BmmFP8FwdOp", "BmmFwdOp"]
 
 
 class BmmFwdOp(Op):
@@ -103,7 +103,7 @@ class BmmFwdOp(Op):
         return tensor_core_roof(self.last_call.ix["T"])
 
 
-class BmmFp8FwdOp(Op):
+class BmmFP8FwdOp(Op):
     """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
 
     ``trans_b`` states which axis order ``b`` arrives in: ``False`` is torch.bmm's
@@ -180,7 +180,7 @@ class BmmFp8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = BmmFp8FwdOp(out_dtype=torch.bfloat16)      # b as [B, K, N]
+            op = BmmFP8FwdOp(out_dtype=torch.bfloat16)      # b as [B, K, N]
             d = op(a, b_kn, scale_a, scale_b)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -241,7 +241,7 @@ class BmmFp8FwdOp(Op):
             if shape_key not in self._kn_warned:
                 self._kn_warned.add(shape_key)
                 warnings.warn(
-                    f"BmmFp8FwdOp: b (shape={tuple(b.shape)}) does not lie "
+                    f"BmmFP8FwdOp: b (shape={tuple(b.shape)}) does not lie "
                     f"K-innermost, so it is transposed into a new buffer before "
                     f"the FP8 WGMMA kernel, which reads only that order. Passing "
                     f"b K-innermost skips the copy and is the faster call.",

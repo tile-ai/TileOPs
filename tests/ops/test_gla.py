@@ -16,7 +16,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
+from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
 from workloads.linear_attention import GLADecodeWorkload, GLAInferenceWorkload, gla_decode_torch
 
@@ -142,7 +142,7 @@ def test_gla_fwd(
         print(f"  FLA vs ref o: cosine={cos:.6f}")
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
         scale=scale,
         tune=tune,
@@ -264,7 +264,7 @@ def test_gla_bwd(
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
     # --- TileOPs kernel backward ---
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
         scale=scale,
         target=BUILTIN,
@@ -274,7 +274,7 @@ def test_gla_bwd(
     h = fwd_kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
@@ -306,11 +306,11 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
     v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLAFwdOp(chunk_size=64).forward(q, k, v, g)
+        GLAChunkFwdOp(chunk_size=64).forward(q, k, v, g)
     h = torch.zeros(B, 2, H, K, V, device="cuda")
     dht = torch.zeros(B, H, K, V, device="cuda")
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLABwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
+        GLAChunkBwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
 
 
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> None:
@@ -675,7 +675,7 @@ def test_gla_decode(
 ) -> None:
     torch.manual_seed(42)
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = GLADecodeFwdOp(tune=tune)
+    op = GLARecurrentFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -694,7 +694,7 @@ def test_gla_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = GLADecodeFwdOp(tune=tune)
+    op = GLARecurrentFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -741,7 +741,7 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    op = GLADecodeFwdOp(scale=scale, tune=tune)
+    op = GLARecurrentFwdOp(scale=scale, tune=tune)
     with torch.no_grad():
         o_tile, s_tile = op(q, k, v, gk, state)
 

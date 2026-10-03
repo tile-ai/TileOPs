@@ -14,10 +14,10 @@ from tileops.kernels.linear_attention import (
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["DeltaNetBwdOp", "DeltaNetFwdOp"]
+__all__ = ["DeltaNetChunkBwdOp", "DeltaNetChunkFwdOp"]
 
 
-class DeltaNetFwdOp(Op):
+class DeltaNetChunkFwdOp(Op):
     """DeltaNet forward operator (ungated).
 
     Pipeline: prepare_wy_repr(k, beta) -> (Aw, Au) -> deltanet_fwd(q, k, v, beta, Aw, Au) -> o.
@@ -115,7 +115,7 @@ class DeltaNetFwdOp(Op):
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
-class DeltaNetBwdOp(Op):
+class DeltaNetChunkBwdOp(Op):
     """DeltaNet backward operator (ungated).
 
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dbeta).

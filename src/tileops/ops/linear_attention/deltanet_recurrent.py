@@ -5,22 +5,24 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
-    GLADecodeCall,
-    GLADecodeFP32Kernel,
-    GLADecodeFwdInterface,
-    GLADecodeKernel,
+    DeltaNetDecodeCall,
+    DeltaNetDecodeFP32Kernel,
+    DeltaNetDecodeFwdInterface,
+    DeltaNetDecodeKernel,
+    DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.ops.op_base import Op
 
-__all__ = ["GLADecodeFwdOp"]
+__all__ = ["DeltaNetRecurrentFwdOp"]
 
 
-class GLADecodeFwdOp(Op):
-    """GLA (Gated Linear Attention) decode (single-step recurrence).
+class DeltaNetRecurrentFwdOp(Op):
+    """DeltaNet decode (single-step recurrence, ungated).
 
-    Computes one step of the gated linear attention recurrence:
-        S_new = diag(exp(gk)) @ S + outer(k, v)
-        o     = scale * q^T @ S_new
+    Computes one step of the delta rule (no gate):
+        v_new = beta * (v - S @ k)
+        o     = S @ q + (q . k) * v_new
+        S_new = S + outer(k, v_new)
 
     Layout: BHD (batch, head, dim).
     Supports float32, float16, and bfloat16 with fp32 accumulation.
@@ -31,16 +33,16 @@ class GLADecodeFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gla_decode": GLADecodeKernel,
-        "gla_decode_fp32": GLADecodeFP32Kernel,
+        "deltanet_decode": DeltaNetDecodeKernel,
+        "deltanet_decode_fp32": DeltaNetDecodeFP32Kernel,
+        "deltanet_decode_raw_cuda": DeltaNetDecodeRawCudaFlaStyleKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gla_decode": GLADecodeFwdInterface
+        "deltanet_decode": DeltaNetDecodeFwdInterface
     }
 
     def __init__(
         self,
-        scale: float = -1.0,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -49,13 +51,11 @@ class GLADecodeFwdOp(Op):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            scale: Query scale; a non-positive value means ``DK ** -0.5``.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.scale = scale
         self.tune = tune
         self.target = target
         self.dispatch_kernel(kernel_map)
@@ -65,7 +65,7 @@ class GLADecodeFwdOp(Op):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        gk: torch.Tensor,
+        beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run one decode step.
@@ -74,20 +74,20 @@ class GLADecodeFwdOp(Op):
             q: Query [B, H, DK].
             k: Key [B, H, DK].
             v: Value [B, H, DV].
-            gk: Log-space key gate [B, H, DK].
+            beta: Delta-rule step size [B, H].
             state: Recurrent state [B, H, DK, DV].
 
         Returns:
             ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
         """
-        return self._call_boundary(q, k, v, gk, state)
+        return self._call_boundary(q, k, v, beta, state)
 
     def _eager_forward(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        gk: torch.Tensor,
+        beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Resolve the kernel and launch, inside the operator.
@@ -95,13 +95,13 @@ class GLADecodeFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         batch, heads, dim_k = q.shape
-        call = GLADecodeCall(
+        call = DeltaNetDecodeCall(
             batch=batch,
             heads=heads,
             dim_k=dim_k,
             dim_v=v.shape[2],
-            scale=self.scale,
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("gla_decode", call)(q, k, v, gk, state)
+        kernel = self.kernel_for("deltanet_decode", call)
+        return kernel(q, k, v, beta, state)

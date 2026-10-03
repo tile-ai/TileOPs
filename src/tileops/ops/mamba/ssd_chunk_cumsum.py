@@ -7,10 +7,10 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.mamba import DaCumsumCall, DaCumsumFwdInterface, DaCumsumFwdKernel
 from tileops.ops.op_base import Op
 
-__all__ = ["DaCumsumFwdOp"]
+__all__ = ["SSDChunkCumsumFwdOp"]
 
 
-class DaCumsumFwdOp(Op):
+class SSDChunkCumsumFwdOp(Op):
     """Mamba-2 dA_cumsum forward operator.
 
     Applies optional per-head bias, optional softplus activation, and clamping to

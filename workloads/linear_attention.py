@@ -593,7 +593,7 @@ def _time_step_bias(like: torch.Tensor) -> torch.Tensor:
 
 
 class DeltaNetDecodeCall(CallWorkload):
-    """A manifest call of DeltaNetDecodeFwdOp."""
+    """A manifest call of DeltaNetRecurrentFwdOp."""
 
     def gen_inputs(self):
         q, k, v, beta, state = super().gen_inputs()
@@ -605,7 +605,7 @@ class DeltaNetDecodeCall(CallWorkload):
 
 
 class GLADecodeCall(CallWorkload):
-    """A manifest call of GLADecodeFwdOp."""
+    """A manifest call of GLARecurrentFwdOp."""
 
     def gen_inputs(self):
         q, k, v, gk, state = super().gen_inputs()
@@ -617,7 +617,7 @@ class GLADecodeCall(CallWorkload):
 
 
 class DeltaNetChunkwiseCall(CallWorkload):
-    """A manifest call of DeltaNetFwdOp or DeltaNetBwdOp.
+    """A manifest call of DeltaNetChunkFwdOp or DeltaNetChunkBwdOp.
 
     The backward's saved buffers come back random; a caller that needs the forward's
     values runs the forward on ``q, k, v, beta``.
@@ -629,7 +629,7 @@ class DeltaNetChunkwiseCall(CallWorkload):
 
 
 class GLAChunkwiseCall(CallWorkload):
-    """A manifest call of GLAFwdOp or GLABwdOp."""
+    """A manifest call of GLAChunkFwdOp or GLAChunkBwdOp."""
 
     def gen_inputs(self):
         tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))

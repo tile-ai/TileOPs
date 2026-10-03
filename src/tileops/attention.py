@@ -9,12 +9,12 @@ from tileops.ops.attention import (
     GroupedQueryAttentionVarlenFwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
-    NSACmpVarlenFwdOp,
-    NSATopkVarlenFwdOp,
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
 )
 from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.topk_selector import TopkSelectorFwdOp
+from tileops.ops.topk_select import TopKSelectFwdOp
 
 __all__ = [
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
@@ -24,10 +24,10 @@ __all__ = [
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "NSACmpVarlenFwdOp",
-    "NSATopkVarlenFwdOp",
+    "NSACompressedVarlenFwdOp",
+    "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "FP8LightningIndexerFwdOp",
-    "TopkSelectorFwdOp",
+    "TopKSelectFwdOp",
 ]

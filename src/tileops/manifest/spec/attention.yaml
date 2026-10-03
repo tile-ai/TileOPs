@@ -383,7 +383,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those
 # blocks only. `offsets` carries the request boundaries through all three.
-NSACmpVarlenFwdOp:
+NSACompressedVarlenFwdOp:
   family: attention
   status: implemented
   signature:
@@ -412,7 +412,7 @@ NSACmpVarlenFwdOp:
     # Each token scores its own request's closed chunks.
     func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
 
-NSATopkVarlenFwdOp:
+NSATopKVarlenFwdOp:
   family: attention
   status: implemented
   signature:

@@ -12,7 +12,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import BmmFp8FwdOp, BmmFwdOp
+from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFp8Workload, BmmWorkload
 
 # The tolerance tests/ops/test_bmm.py holds the FP8 op to against the same reference.
@@ -115,7 +115,7 @@ def test_bmm_bench(call) -> None:
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(BmmFp8FwdOp))
+@pytest.mark.parametrize("call", manifest_calls(BmmFP8FwdOp))
 def test_bmm_fp8_bench(call) -> None:
     """Both orders of ``b``: ``[B, K, N]`` reaches the kernel through a transpose,
     ``[B, N, K]`` (``trans_b``) lies K-innermost already."""
@@ -125,7 +125,7 @@ def test_bmm_fp8_bench(call) -> None:
     # view of the K-innermost one, which is flashinfer's column-major contract.
     b_kn = b.transpose(-2, -1) if workload.trans_b else b
 
-    op = BmmFp8FwdOp(**call.arguments({}), tune=True)
+    op = BmmFP8FwdOp(**call.arguments({}), tune=True)
     bm = ManifestBenchmark(op, workload)
     functors = {
         "tileops": (op, (a, b, scale_a, scale_b)),

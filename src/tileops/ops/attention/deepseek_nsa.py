@@ -19,13 +19,13 @@ from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
-    "NSACmpVarlenFwdOp",
+    "NSACompressedVarlenFwdOp",
     "NSAVarlenFwdOp",
-    "NSATopkVarlenFwdOp",
+    "NSATopKVarlenFwdOp",
 ]
 
 
-class NSATopkVarlenFwdOp(Op):
+class NSATopKVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) block selection over a ragged batch.
 
     Scores each compressed chunk against the query and returns, per token and per KV
@@ -138,7 +138,7 @@ class NSATopkVarlenFwdOp(Op):
 class NSAVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) sparse forward over a ragged batch.
 
-    Attends each token to the blocks ``NSATopkVarlenFwdOp`` selected for it. Sequence
+    Attends each token to the blocks ``NSATopKVarlenFwdOp`` selected for it. Sequence
     layout is packed: ``offsets`` marks the request boundaries, so the batch size and
     the block count come from the call rather than from construction.
 
@@ -253,11 +253,11 @@ class NSAVarlenFwdOp(Op):
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
-class NSACmpVarlenFwdOp(Op):
+class NSACompressedVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) compression forward over a ragged batch.
 
     Attends each token to the compressed chunk summaries of its own request and
-    returns both the output and the log-sum-exp ``NSATopkVarlenFwdOp`` scores against.
+    returns both the output and the log-sum-exp ``NSATopKVarlenFwdOp`` scores against.
 
     Sequence layout is packed: ``offsets`` marks the request boundaries, so the batch
     size and the chunk count come from the call rather than from construction.

@@ -3,7 +3,11 @@ from tileops.ops.attention.deepseek_mla import (
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
     MultiHeadLatentAttentionVarlenFwdOp,
 )
-from tileops.ops.attention.deepseek_nsa import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
+from tileops.ops.attention.deepseek_nsa import (
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
+    NSAVarlenFwdOp,
+)
 from tileops.ops.attention.gqa import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -23,7 +27,7 @@ __all__ = [
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "MultiHeadLatentAttentionVarlenFwdOp",
-    "NSACmpVarlenFwdOp",
+    "NSACompressedVarlenFwdOp",
     "NSAVarlenFwdOp",
-    "NSATopkVarlenFwdOp",
+    "NSATopKVarlenFwdOp",
 ]

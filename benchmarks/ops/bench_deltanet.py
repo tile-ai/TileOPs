@@ -12,10 +12,10 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops import (
-    DeltaNetBwdOp,
-    DeltaNetDecodeFwdOp,
-    DeltaNetFwdOp,
+    DeltaNetChunkBwdOp,
+    DeltaNetChunkFwdOp,
     DeltaNetInferenceFwdOp,
+    DeltaNetRecurrentFwdOp,
 )
 from workloads.linear_attention import (
     DeltaNetChunkwiseCall,
@@ -46,13 +46,13 @@ def test_deltanet_inference_bench(call) -> None:
     ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkFwdOp))
 def test_deltanet_vs_fla_fwd(call) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
     workload = DeltaNetChunkwiseCall(call)
     inputs = workload.gen_inputs()  # q, k, v, beta (BHSD)
-    op = DeltaNetFwdOp(**workload.arguments())
+    op = DeltaNetChunkFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
@@ -64,7 +64,7 @@ def test_deltanet_vs_fla_fwd(call) -> None:
     bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetBwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkBwdOp))
 def test_deltanet_vs_fla_bwd(call) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
@@ -72,10 +72,10 @@ def test_deltanet_vs_fla_bwd(call) -> None:
     do, q, k, v, beta, *_saved = workload.gen_inputs()
 
     # The saved buffers are the forward's, so the backward reads what it would in training.
-    fwd_op = DeltaNetFwdOp(workload.arguments()["chunk_size"])
+    fwd_op = DeltaNetChunkFwdOp(workload.arguments()["chunk_size"])
     _o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
 
-    bwd_op = DeltaNetBwdOp(**workload.arguments())
+    bwd_op = DeltaNetChunkBwdOp(**workload.arguments())
     bm = ManifestBenchmark(bwd_op, workload)
 
     q_fla, k_fla, v_fla, beta_fla = (
@@ -92,11 +92,11 @@ def test_deltanet_vs_fla_bwd(call) -> None:
     bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetDecodeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetRecurrentFwdOp))
 def test_deltanet_decode_bench(call) -> None:
     workload = DeltaNetDecodeCall(call)
     inputs = workload.gen_inputs()
-    op = DeltaNetDecodeFwdOp(**workload.arguments())
+    op = DeltaNetRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     bm.compare(
         {

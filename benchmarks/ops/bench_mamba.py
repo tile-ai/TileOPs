@@ -8,12 +8,12 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.mamba.cb_producer import CBProducerFwdOp
-from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     CBProducerFwdCall,
@@ -61,21 +61,21 @@ def _torch_baselines(functors: dict, ref_program) -> None:
     functors[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
 
 
-@pytest.mark.parametrize("call", manifest_calls(CBProducerFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDChunkCouplingFwdOp))
 def test_cb_producer_fwd_bench(call) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
     workload = CBProducerFwdCall(call)
     inputs = workload.gen_inputs()
-    op = CBProducerFwdOp(**workload.arguments())
+    op = SSDChunkCouplingFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     bm.compare({"tileops": op, "torch": (workload.ref_program, inputs)}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DaCumsumFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDChunkCumsumFwdOp))
 def test_da_cumsum_fwd_bench(call) -> None:
     workload = DaCumsumFwdCall(call)
     dt, A, dt_bias = inputs = workload.gen_inputs()
-    op = DaCumsumFwdOp(**workload.arguments())
+    op = SSDChunkCumsumFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
@@ -159,11 +159,11 @@ def test_ssd_state_passing_fwd_bench(call) -> None:
     bm.compare(functors, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDDecodeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDRecurrentFwdOp))
 def test_ssd_decode_bench(call) -> None:
     workload = SSDDecodeFwdCall(call)
     A, dt, x, B_in, C_in, state = workload.gen_inputs()
-    op = SSDDecodeFwdOp(**workload.arguments())
+    op = SSDRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
     # Each implementation updates its own copy of the state in place.

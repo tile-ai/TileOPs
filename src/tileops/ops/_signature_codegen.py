@@ -81,7 +81,7 @@ _ABBREVIATIONS = (
 
 def operator_name(family: str, class_name: str) -> str:
     """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
-    opens with the family, such as ``MoePrePermuteFwdOp``, names it once.
+    opens with the family, such as ``MoEPrePermuteFwdOp``, names it once.
 
     An abbreviation in `_ABBREVIATIONS` stays one word.
     """

@@ -49,7 +49,7 @@ class TopkSelectorWorkload(WorkloadBase):
 
 
 class TopkSelectorCall(CallWorkload, TopkSelectorWorkload):
-    """A manifest call of TopkSelectorFwdOp; the row's generators give the windows."""
+    """A manifest call of TopKSelectFwdOp; the row's generators give the windows."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
