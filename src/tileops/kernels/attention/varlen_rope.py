@@ -43,6 +43,7 @@ def make_varlen_query_rope(
     dtype: str,
     rope_dtype: str = "",
     tile_axes: int = 0,
+    positions: int = 0,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -57,12 +58,16 @@ def make_varlen_query_rope(
         dtype: Element type of the tile.
         rope_dtype: Element type of the table, which an FP8 call carries at 16 bits while
             the tile it rotates is 8. Empty means the tile's.
+        positions: Query positions the tile spans, which is fewer than its rows when a
+            KV group's query heads are packed into it: row ``i`` then carries position
+            ``i % positions``. Zero means one position per row.
         tile_axes: Axes in front of the tile's own two. A warp-specialized kernel holds
             its query tiles in a double-buffered, per-warpgroup array and passes 2, with
             the slot and the warpgroup as the two leading arguments of the macro; a
             kernel whose tile is the whole buffer passes 0.
     """
     half = rotary_dim // 2
+    span = positions or rows
     accum = "float"
     # Frequencies one thread owns: enough that the two channel runs the pair indexing
     # selects form one widest access together. Re-fit by changing the divisor.
@@ -74,7 +79,7 @@ def make_varlen_query_rope(
     @T.macro
     def rotate_query_tile(q_shared, rope_cos, rope_sin, base, slot=0, warpgroup=0):
         for i, chunk in T.Parallel(rows, half // run):
-            pos = T.min(base + i, max_position - 1)
+            pos = T.min(base + i % span, max_position - 1)
             for step in T.serial(run):
                 freq = chunk * run + step
                 d0, d1 = rope_channel_pair(rope_layout, half, freq)

@@ -885,6 +885,186 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         return torch.cat(outputs, dim=0)
 
 
+def apply_packed_rope(
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    *,
+    rotary_dim: int,
+    layout: str,
+) -> torch.Tensor:
+    """Rotate the first *rotary_dim* channels of a packed THD tensor at *positions*.
+
+    ``neox`` pairs channel ``i`` with ``i + rotary_dim // 2``, ``interleaved``
+    pairs adjacent channels, and channels past *rotary_dim* pass through.
+    """
+    half = rotary_dim // 2
+    x_rot = x[..., :rotary_dim].float()
+    c = cos[positions].view(x.shape[0], 1, half).float()
+    s = sin[positions].view(x.shape[0], 1, half).float()
+    if layout == "neox":
+        x0, x1 = x_rot[..., :half], x_rot[..., half:]
+    else:
+        x0, x1 = x_rot[..., 0::2], x_rot[..., 1::2]
+    y0, y1 = x0 * c - x1 * s, x1 * c + x0 * s
+    rotated = (
+        torch.cat((y0, y1), dim=-1)
+        if layout == "neox"
+        else torch.stack((y0, y1), dim=-1).flatten(-2)
+    )
+    return torch.cat((rotated, x[..., rotary_dim:].float()), dim=-1)
+
+
+class GroupedQueryAttentionVarlenScaledWorkload(GroupedQueryAttentionVarlenFwdWorkload):
+    """Packed varlen GQA through the op's optional inputs: FP8 scales, fused RoPE.
+
+    An FP8 ``dtype`` adds the per-request, per-KV-head scales and needs a 16-bit
+    ``out_dtype``; a ``rotary_dim`` adds the RoPE tables. ``gen_inputs`` emits the
+    ten tensor slots the op declares, in signature order, with ``None`` where the
+    call omits one.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        seqlens_q: list[int],
+        seqlens_k: list[int],
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        is_causal: bool,
+        wl: int,
+        wr: int,
+        dtype: torch.dtype,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
+        out_dtype: torch.dtype | None = None,
+        rotary_dim: int | None = None,
+        rope_layout: str = "neox",
+    ) -> None:
+        super().__init__(
+            batch,
+            seqlens_q,
+            seqlens_k,
+            heads,
+            heads_kv,
+            dim,
+            is_causal,
+            wl,
+            wr,
+            dtype,
+            sm_scale=sm_scale,
+            softcap=softcap,
+        )
+        self.out_dtype = dtype if out_dtype is None else out_dtype
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        total_q = sum(self.seqlens_q)
+        total_k = sum(self.seqlens_k)
+        shapes = (
+            (total_q, self.heads, self.dim),
+            (total_k, self.heads_kv, self.dim),
+            (total_k, self.heads_kv, self.dim),
+        )
+        if self.dtype == torch.float8_e4m3fn:
+            # The score spread in standard deviations is the draw's variance: the head
+            # dimension cancels against the default sm_scale. At 0.2 the spread is 0.04,
+            # the softmax is uniform to within 4%, and a kernel that never reads its
+            # query still agrees with the reference. At 2.0 the spread is 4, which
+            # separates a query-blind kernel by 38x to 58x on these rows. A wider draw
+            # separates them less: a sharper softmax amplifies the e4m3 score error
+            # faster than it sharpens the weights.
+            q, k = (
+                (torch.randn(shape, device=run_device()) * 2.0).to(self.dtype)
+                for shape in shapes[:2]
+            )
+            v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(self.dtype)
+            # Not one: a kernel that never reads a scale must not agree.
+            scales = tuple(
+                torch.rand(self.batch, self.heads_kv, device=run_device(), dtype=torch.float32)
+                * 0.5
+                + 0.75
+                for _ in range(3)
+            )
+        else:
+            q, k, v = (torch.randn(s, device=run_device(), dtype=self.dtype) for s in shapes)
+            scales = (None, None, None)
+
+        rope_cos = rope_sin = None
+        if self.rotary_dim is not None:
+            angles = (
+                torch.randn(self.max_seqlen_kv, self.rotary_dim // 2, device=run_device()) * 0.1
+            )
+            rope_cos = angles.cos().to(self.out_dtype)
+            rope_sin = angles.sin().to(self.out_dtype)
+        return (
+            q,
+            k,
+            v,
+            make_cu_seqlens(self.seqlens_q),
+            make_cu_seqlens(self.seqlens_k),
+            *scales,
+            rope_cos,
+            rope_sin,
+        )
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Dequantize, rotate, then attend with the inherited per-request reference."""
+        groups = self.heads // self.heads_kv
+        q_ref, k_ref, v_ref = (t.float() for t in (q, k, v))
+        if rope_cos is not None:
+            assert rope_sin is not None and self.rotary_dim is not None
+            q_positions = torch.cat(
+                [
+                    torch.arange(kv_len - q_len, kv_len, device=q.device)
+                    for q_len, kv_len in zip(self.seqlens_q, self.seqlens_k, strict=True)
+                ]
+            )
+            k_positions = torch.cat(
+                [torch.arange(kv_len, device=q.device) for kv_len in self.seqlens_k]
+            )
+            rope = {"rotary_dim": self.rotary_dim, "layout": self.rope_layout}
+            q_ref = apply_packed_rope(q_ref, q_positions, rope_cos, rope_sin, **rope)
+            k_ref = apply_packed_rope(k_ref, k_positions, rope_cos, rope_sin, **rope)
+        if q_scale is not None:
+            assert k_scale is not None and v_scale is not None
+            # Formed in FP32, as the kernel's accumulator does. A query head takes
+            # the scale of the KV head it attends to, and each request its own row.
+            q_rows = torch.repeat_interleave(
+                torch.arange(self.batch, device=q.device),
+                torch.as_tensor(self.seqlens_q, device=q.device),
+            )
+            k_rows = torch.repeat_interleave(
+                torch.arange(self.batch, device=q.device),
+                torch.as_tensor(self.seqlens_k, device=q.device),
+            )
+            q_ref = q_ref * q_scale.repeat_interleave(groups, dim=1)[q_rows].unsqueeze(-1)
+            k_ref = k_ref * k_scale[k_rows].unsqueeze(-1)
+            v_ref = v_ref * v_scale[k_rows].unsqueeze(-1)
+        return super().ref_program(
+            q_ref.to(self.out_dtype),
+            k_ref.to(self.out_dtype),
+            v_ref.to(self.out_dtype),
+            cu_seqlens_q,
+            cu_seqlens_kv,
+        )
+
+
 class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(GroupedQueryAttentionVarlenFwdWorkload):
     """Compatibility name for the superseded sliding-window public Op."""
 
@@ -992,6 +1172,43 @@ class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenF
         )
 
     gen_inputs = GroupedQueryAttentionVarlenFwdWorkload.gen_inputs
+
+
+class GroupedQueryAttentionVarlenScaledCall(
+    CallWorkload, GroupedQueryAttentionVarlenScaledWorkload
+):
+    """A manifest call of GroupedQueryAttentionVarlenFwdOp passing FP8 scales or RoPE tables.
+
+    FP8 values stay inside the format's range and the scales near one; the tables are
+    rotations.
+    """
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        q_lens = _segments(call.values("cu_seqlens_q"))
+        out_dtype = params["out_dtype"]
+        rope = params["pos_encoding_mode"] == "rope"
+        GroupedQueryAttentionVarlenScaledWorkload.__init__(
+            self,
+            len(q_lens),
+            q_lens,
+            _segments(call.values("cu_seqlens_kv")),
+            ix["H"],
+            ix["H_kv"],
+            ix["D"],
+            params["is_causal"],
+            params.get("window_size_left", -1),
+            params.get("window_size_right", -1),
+            _dtype(call, "q"),
+            sm_scale=params.get("sm_scale"),
+            softcap=params.get("softcap"),
+            out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
+            rotary_dim=ix["R"] if rope else None,
+            rope_layout=params["rope_layout"],
+        )
+
+    gen_inputs = GroupedQueryAttentionVarlenScaledWorkload.gen_inputs
 
 
 class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCacheFwdWorkload):

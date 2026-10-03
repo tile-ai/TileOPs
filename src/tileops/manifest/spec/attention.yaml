@@ -125,6 +125,12 @@ GroupedQueryAttentionVarlenFwdOp:
   - {T_q: 2048, T_kv: 2048, P: 512, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-rope-interleaved}
   - {T_q: 1018, T_kv: 2041, P: 1024, H: 32, H_kv: 8, D: 128, q_lens: [1, 0, 1000, 17], kv_lens: [1024, 0, 1000, 17], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-rope-partial}
   - {T_q: 3018, T_kv: 4017, P: 3000, H: 16, H_kv: 2, D: 128, q_lens: [3000, 1, 17], kv_lens: [3000, 1000, 17], is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: qwen-ragged-rope}
+  # FP8 Q/K/V carry one dequantization scale per request and KV head, and name a 16-bit
+  # out_dtype; bfloat16 is what the FP8 kernels of the comparison libraries return.
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-fp8-q-lt-kv}
+  - {T_q: 3017, T_kv: 6146, H: 32, H_kv: 4, D: 128, q_lens: [1, 17, 1000, 0, 1999], kv_lens: [1, 17, 1000, 3000, 2128], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-fp8-ragged}
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-w256}
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
 

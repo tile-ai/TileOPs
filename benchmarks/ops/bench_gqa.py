@@ -36,6 +36,7 @@ from workloads.gqa import (
     GroupedQueryAttentionDensePrefillCall,
     GroupedQueryAttentionPagedCall,
     GroupedQueryAttentionVarlenCall,
+    GroupedQueryAttentionVarlenScaledCall,
 )
 
 
@@ -322,7 +323,11 @@ def _fa3_gqa_varlen(
     window_size_right: int,
     rotate=None,
 ):
-    """FlashAttention-3 over the same packed-varlen layout; it has no kernel above head dim 256."""
+    """FlashAttention-3 over the same packed-varlen layout; it has no kernel above head dim 256.
+
+    An FP8 call hands it the same ``[batch, heads_kv]`` descales the op takes, which its
+    varlen entry dequantizes with.
+    """
     if workload.dim > 256:
         return None
     try:
@@ -330,7 +335,10 @@ def _fa3_gqa_varlen(
     except ImportError:
         return None
 
-    def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv, *_tables):
+    def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv, *optional):
+        # The op's optional inputs arrive in signature order: the three FP8 scales,
+        # then the rotation tables, which this baseline applies itself.
+        q_scale, k_scale, v_scale = (optional + (None,) * 3)[:3]
         if rotate is not None:
             q, k = rotate(q, k)
         out = flash_attn_varlen_func(
@@ -343,6 +351,9 @@ def _fa3_gqa_varlen(
             workload.max_seqlen_kv,
             causal=workload.is_causal,
             window_size=(window_size_left, window_size_right),
+            q_descale=q_scale,
+            k_descale=k_scale,
+            v_descale=v_scale,
         )
         return out[0] if isinstance(out, tuple) else out
 
@@ -383,7 +394,20 @@ def _flashinfer_gqa_varlen(
     return _run
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionVarlenFwdOp))
+def _varlen_calls(*, scaled: bool) -> list:
+    """The packed-varlen calls that pass the FP8 scales, or those that do not.
+
+    A rotating 16-bit call stays with the calls that pass neither: its rotation is a
+    baseline concern, which ``_varlen_rope`` covers there, not a different reference.
+    """
+    return [
+        param
+        for param in manifest_calls(GroupedQueryAttentionVarlenFwdOp)
+        if param.values[0].present("q_scale") is scaled
+    ]
+
+
+@pytest.mark.parametrize("call", _varlen_calls(scaled=False))
 def test_gqa_varlen_fwd_bench(call) -> None:
     workload = GroupedQueryAttentionVarlenCall(call)
     inputs = workload.gen_inputs()
@@ -408,6 +432,38 @@ def test_gqa_varlen_fwd_bench(call) -> None:
     if flashinfer_fn is not None:
         assert_matches_reference(flashinfer_fn, functors["torch-ref"], *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn
+    bm.compare(functors, *inputs)
+
+
+@pytest.mark.parametrize("call", _varlen_calls(scaled=True))
+def test_gqa_varlen_scaled_bench(call) -> None:
+    """Packed varlen over FP8 Q/K/V, dequantized by one scale per request and KV head.
+
+    FlashAttention-3 dequantizes the same per-request scales inside its own kernel, so it
+    is read against the same reference and timed on the same call. FlashInfer's ragged
+    prefill takes no FP8 query, and the per-request reference reads its offsets on the
+    host, so neither a FlashInfer nor a torch-compile tag can express the row.
+    """
+    workload = GroupedQueryAttentionVarlenScaledCall(call)
+    if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+        pytest.skip("FP8 packed-varlen GQA requires SM90")
+    inputs = workload.gen_inputs()
+    op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
+    # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no per-dtype one
+    # covers dequantization against a 16-bit reference.
+    tolerance = (
+        {"atol": 8e-2, "rtol": 2e-2}
+        if workload.dtype == torch.float8_e4m3fn
+        else reference_tolerance(workload.dtype)
+    )
+    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
+
+    functors = {"tileops": op, "torch-ref": workload.ref_program}
+    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
+    if fa3_fn is not None:
+        assert_matches_reference(fa3_fn, workload.ref_program, *inputs[:8], **tolerance)
+        functors["fa3"] = (fa3_fn, inputs[:8])
     bm.compare(functors, *inputs)
 
 

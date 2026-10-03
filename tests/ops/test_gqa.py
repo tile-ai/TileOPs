@@ -15,6 +15,7 @@ from tileops.kernels.attention import (
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
+    GQAVarlenFP8FwdKernel,
 )
 from tileops.kernels.attention.gqa_decode import (
     gqa_decode_no_split_run,
@@ -24,10 +25,12 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
+    GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
 from workloads.gqa import (
     GroupedQueryAttentionBwdWorkload,
+    GroupedQueryAttentionVarlenScaledWorkload,
     apply_dense_rope,
     dense_gqa_ref,
 )
@@ -666,3 +669,125 @@ def test_gqa_bwd_regions(heads_kv: int, dim: int, seq_len: int, expected: str) -
         is_causal=True,
     )
     assert GroupedQueryAttentionBwdOp().select_implementation("gqa_bwd", call) == expected
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("q_lens", "kv_lens", "params", "out_dtype"),
+    [
+        pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
+        pytest.param([256], [1024], {"is_causal": False}, torch.float16, id="non-causal"),
+        pytest.param(
+            [192, 64],
+            [192, 320],
+            # The cap has to sit inside the score range to be observable: these rows
+            # draw scores of magnitude about 2, and a cap of 30 is the identity on them.
+            {"sm_scale": 0.05, "softcap": 1.0},
+            torch.float16,
+            id="sm-scale-softcap",
+        ),
+        pytest.param(
+            [200] * 2,
+            [200] * 2,
+            {"is_causal": False, "window_size_left": 48, "window_size_right": 16},
+            torch.bfloat16,
+            id="window-both",
+        ),
+        # The window leaves the first key tile the block scans entirely invisible to
+        # its last rows, so that tile's scores are all -infinity while the running
+        # maximum still is: row 319 sees no key below 255, and the tile ends at 223.
+        pytest.param(
+            [320],
+            [320],
+            {"window_size_left": 64},
+            torch.bfloat16,
+            id="window-skips-first-tile",
+        ),
+        pytest.param(
+            [1, 17, 0, 129], [1, 17, 3000, 129], {}, torch.float16, id="ragged-with-empty"
+        ),
+        pytest.param([4, 4], [0, 0], {"is_causal": False}, torch.bfloat16, id="empty-kv"),
+        pytest.param(
+            [128, 1],
+            [384, 65],
+            {"pos_encoding_mode": "rope", "rotary_dim": 64, "rope_layout": "interleaved"},
+            torch.float16,
+            id="rope-partial-interleaved",
+        ),
+        pytest.param(
+            [128, 1], [384, 65], {"pos_encoding_mode": "rope"}, torch.bfloat16, id="rope-full-neox"
+        ),
+    ],
+)
+def test_gqa_varlen_fp8_matches_reference(
+    q_lens: list[int], kv_lens: list[int], params: dict, out_dtype: torch.dtype
+) -> None:
+    """Every branch the FP8 packed-varlen kernel serves agrees with the float32 reference."""
+    heads, heads_kv, dim = 16, 4, 128
+    workload = GroupedQueryAttentionVarlenScaledWorkload(
+        len(q_lens),
+        q_lens,
+        kv_lens,
+        heads,
+        heads_kv,
+        dim,
+        params.get("is_causal", True),
+        params.get("window_size_left", -1),
+        params.get("window_size_right", -1),
+        torch.float8_e4m3fn,
+        sm_scale=params.get("sm_scale"),
+        softcap=params.get("softcap"),
+        out_dtype=out_dtype,
+        rotary_dim=(
+            params.get("rotary_dim", dim) if params.get("pos_encoding_mode") == "rope" else None
+        ),
+        rope_layout=params.get("rope_layout", "neox"),
+    )
+    inputs = workload.gen_inputs()
+    op = GroupedQueryAttentionVarlenFwdOp(out_dtype=out_dtype, target=BUILTIN, **params)
+    output = op(*inputs)
+    reference = workload.ref_program(*inputs)
+    # One e4m3 rounding of the softmax weights, and one more of Q and K under fused
+    # rotation; the dense FP8 cases are held to the same bound.
+    tolerance = (
+        {"atol": 1.2e-1, "rtol": 4e-2} if workload.rotary_dim else {"atol": 8e-2, "rtol": 2e-2}
+    )
+    torch.testing.assert_close(output, reference, **tolerance)
+    assert isinstance(next(iter(op.iter_kernels())), GQAVarlenFP8FwdKernel)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dtype", "is_fp8", "dim", "expected"),
+    [
+        pytest.param(torch.bfloat16, True, 128, "gqa_varlen_fp8_ws", id="fp8"),
+        pytest.param(torch.float16, False, 128, "gqa_varlen_ws", id="sixteen-bit"),
+        pytest.param(torch.bfloat16, True, 64, None, id="fp8-dim-64"),
+    ],
+)
+def test_gqa_varlen_regions(
+    dtype: torch.dtype, is_fp8: bool, dim: int, expected: Optional[str]
+) -> None:
+    """The FP8 implementation serves FP8 calls at head dimension 128, and no other call."""
+    from tileops.kernels.attention.call_spec import AttentionCall
+
+    call = AttentionCall(
+        arch=90,
+        sm_count=132,
+        dtype=dtype,
+        batch=2,
+        heads=16,
+        heads_kv=4,
+        dim=dim,
+        is_causal=True,
+        is_fp8=is_fp8,
+        is_uniform=False,
+    )
+    op = GroupedQueryAttentionVarlenFwdOp()
+    if expected is None:
+        with pytest.raises(ValueError, match="requires head dimension 128"):
+            op.select_implementation("gqa_varlen", call)
+    else:
+        assert op.select_implementation("gqa_varlen", call) == expected

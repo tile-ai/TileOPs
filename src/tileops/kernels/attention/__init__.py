@@ -28,6 +28,10 @@ from tileops.kernels.attention.gqa_prefill_varlen_ws import GQAPrefillVarlenWSFw
 from tileops.kernels.attention.gqa_sliding_window_varlen_fwd import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
+from tileops.kernels.attention.gqa_varlen_fp8 import (
+    GQAVarlenFP8FwdKernel,
+    GQAVarlenFP8WSFwdKernel,
+)
 from tileops.kernels.attention.mha_bwd_ws import MHABwdWsKernel
 from tileops.kernels.attention.mha_decode_paged_ws import MHADecodePagedWsKernel
 from tileops.kernels.attention.varlen_rope import VarlenKeyRoPE
@@ -51,6 +55,8 @@ __all__ = [
     "GQAPrefillVarlenFwdKernel",
     "GQAPrefillVarlenWSFwdKernel",
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
+    "GQAVarlenFP8FwdKernel",
+    "GQAVarlenFP8WSFwdKernel",
     "MHABwdWsKernel",
     "MHADecodePagedWsKernel",
     "MLADecodeWsKernel",

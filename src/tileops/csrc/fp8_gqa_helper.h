@@ -601,4 +601,66 @@ __device__ __forceinline__ void fp8_fa3_o_smem_store_global_cute_64x128_tail(
     }
   }
 }
+// A packed tile row is the pair (query head row / Positions, position row %
+// Positions): a head owns one contiguous run of rows, so the tile is staged
+// from global with one transfer per head, and the output rows a head writes are
+// one token apart. The row mode of the output tensor carries that as a nested
+// shape, which leaves the column mode — and so the vector width of the copy —
+// untouched.
+template <int Positions, typename OutT>
+__device__ __forceinline__ auto fp8_fa3_packed_output_tensor(
+    OutT* output, int output_row_stride) {
+  using namespace cute;
+  return make_tensor(
+      make_gmem_ptr(output),
+      make_layout(
+          make_shape(make_shape(Int<Positions>{}, Int<64 / Positions>{}),
+                     _128{}),
+          make_stride(make_stride(output_row_stride, _128{}), _1{})));
+}
+
+template <int Positions, typename OutT>
+__device__ __forceinline__ void fp8_fa3_o_smem_store_global_packed_64x128(
+    OutT* o_smem, OutT* output, int output_row_stride) {
+  using namespace cute;
+  using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
+  using GmemLayoutAtom = Layout<Shape<_16, _8>, Stride<_8, _1>>;
+  using GmemTiledCopyO = decltype(make_tiled_copy(
+      Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, OutT>{},
+      GmemLayoutAtom{}, Layout<Shape<_1, _8>>{}));
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  Tensor sO =
+      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
+  Tensor gO =
+      fp8_fa3_packed_output_tensor<Positions>(output, output_row_stride);
+  GmemTiledCopyO gmem_tiled_copy_O;
+  auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tid);
+  Tensor tOsO = gmem_thr_copy_O.partition_S(sO);
+  Tensor tOgO = gmem_thr_copy_O.partition_D(gO);
+  Tensor tOrO = make_fragment_like(tOsO);
+  cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
+  cute::copy(gmem_tiled_copy_O, tOrO, tOgO);
+}
+
+template <int Positions, typename OutT>
+__device__ __forceinline__ void fp8_fa3_o_smem_store_global_packed_64x128_tail(
+    OutT* o_smem, OutT* output, int output_row_stride, int valid_positions) {
+  using namespace cute;
+  using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
+
+  Tensor sO =
+      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
+  Tensor gO =
+      fp8_fa3_packed_output_tensor<Positions>(output, output_row_stride);
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+#pragma unroll
+  for (int linear = tid; linear < 64 * 128; linear += 128) {
+    int const row = linear / 128;
+    int const col = linear % 128;
+    if (row % Positions < valid_positions) {
+      gO(row, col) = sO(row, col);
+    }
+  }
+}
 }  // namespace tl

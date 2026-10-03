@@ -22,6 +22,8 @@ from tileops.kernels.attention import (
     GQAPrefillVarlenFwdKernel,
     GQAPrefillVarlenWSFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    GQAVarlenFP8FwdKernel,
+    GQAVarlenFP8WSFwdKernel,
     MHABwdWsKernel,
 )
 from tileops.kernels.attention.call_spec import (
@@ -384,9 +386,13 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     ``cu_seqlens_q`` and ``cu_seqlens_kv`` delimit each request. The interface
     covers both prefill and decode; tensor geometry and sequence metadata come
     from each call, while mask, score, out_dtype, and RoPE semantics are fixed at
-    construction. The current BUILTIN path implements 16-bit regular and
-    sliding-window attention, with or without fused RoPE; FP8 remains part of the
-    public contract for a later kernel migration.
+    construction. The BUILTIN path implements 16-bit regular and sliding-window
+    attention, with or without fused RoPE.
+
+    ``float8_e4m3fn`` Q/K/V are dequantized by one ``q_scale``, ``k_scale`` and
+    ``v_scale`` per request and KV head, and name a 16-bit ``out_dtype``; the FP8
+    result carries the error of a single e4m3 rounding of the softmax weights, so it
+    agrees with the 16-bit path to about 2% relative.
     """
 
     compile_boundary = True
@@ -394,6 +400,8 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         "gqa_varlen": GQAPrefillVarlenFwdKernel,
         "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
         "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+        "gqa_varlen_fp8": GQAVarlenFP8FwdKernel,
+        "gqa_varlen_fp8_ws": GQAVarlenFP8WSFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gqa_varlen": GQAVarlenFwdInterface
