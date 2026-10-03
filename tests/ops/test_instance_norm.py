@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
-from workloads.normalization import InstanceNormWorkload
+from workloads.norm import InstanceNormWorkload
 
 
 class InstanceNormTest(InstanceNormWorkload, TestBase):

@@ -8,8 +8,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.gqa_decode_bs1_common import COMPILE_FLAGS
-from tileops.kernels.attention.gqa_fwd_fp8 import validate_fa3_gqa_descales
+from tileops.kernels.attention.gqa.decode_bs1_common import COMPILE_FLAGS
+from tileops.kernels.attention.gqa.dense_fp8 import validate_fa3_gqa_descales
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 

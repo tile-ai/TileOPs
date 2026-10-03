@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, standard_tolerance
 from tileops.ops import GroupedQueryAttentionPagedFwdOp
-from workloads.gqa import GroupedQueryAttentionPagedFwdWorkload
+from workloads.attention.gqa import GroupedQueryAttentionPagedFwdWorkload
 
 
 def _decode(

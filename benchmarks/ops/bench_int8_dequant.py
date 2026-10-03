@@ -15,7 +15,7 @@ from tileops.quantization import (
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
 )
-from workloads.int8_dequant import (
+from workloads.quantization.int8_dequant import (
     INT8DequantPerBlockWorkload,
     INT8DequantPerChannelWorkload,
     INT8DequantPerTensorWorkload,

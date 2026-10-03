@@ -30,7 +30,7 @@ from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.normalization import NormCall
+from workloads.norm import NormCall
 
 
 def _flaggems_rms_norm(n: int, eps: float):

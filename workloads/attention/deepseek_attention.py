@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from einops import einsum, rearrange, repeat
 
+from workloads.attention.sequence_metadata import prepare_chunk_offsets, prepare_token_indices
 from workloads.device import run_device
-from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 

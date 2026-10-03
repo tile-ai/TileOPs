@@ -15,12 +15,12 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSATopKVarlenFwdOp,
         NSAVarlenFwdOp,
     )
+    from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+    from tileops.ops.attention.topk_select import TopKSelectFwdOp
     from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
-    from tileops.ops.dropout import DropoutFwdOp
     from tileops.ops.elementwise import BinaryOp, FusedGatedOp, UnaryOp
+    from tileops.ops.elementwise.dropout import DropoutFwdOp
     from tileops.ops.fft import FFTC2CFwdOp
-    from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-    from tileops.ops.fp8_quant import FP8QuantFwdOp
     from tileops.ops.gemm import (
         BmmFP8FwdOp,
         BmmFwdOp,
@@ -94,6 +94,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         INT8QuantPerTensorFwdOp,
         SmoothQuantFwdOp,
     )
+    from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
     from tileops.ops.reduction import (
         AllFwdOp,
         AmaxFwdOp,
@@ -131,7 +132,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         TopPMaskFwdOp,
     )
     from tileops.ops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
-    from tileops.ops.topk_select import TopKSelectFwdOp
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 # Grouped by op family, simple to composite; within a group, base case before variants.
@@ -142,7 +142,7 @@ _LAZY = {
     "UnaryOp": ".elementwise",
     "BinaryOp": ".elementwise",
     "FusedGatedOp": ".elementwise",
-    "DropoutFwdOp": ".dropout",
+    "DropoutFwdOp": ".elementwise.dropout",
     # Reduction
     "SumFwdOp": ".reduction",
     "MeanFwdOp": ".reduction",
@@ -175,7 +175,7 @@ _LAZY = {
     "GroupNormFwdOp": ".norm",
     "InstanceNormFwdOp": ".norm",
     # Quantization
-    "FP8QuantFwdOp": ".fp8_quant",
+    "FP8QuantFwdOp": ".quantization.fp8_quant",
     "INT8DequantPerTensorFwdOp": ".quantization",
     "INT8DequantPerChannelFwdOp": ".quantization",
     "INT8DequantPerBlockFwdOp": ".quantization",
@@ -244,8 +244,8 @@ _LAZY = {
     "NSATopKVarlenFwdOp": ".attention",
     "NSAVarlenFwdOp": ".attention",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": ".attention",
-    "FP8LightningIndexerFwdOp": ".fp8_lightning_indexer",
-    "TopKSelectFwdOp": ".topk_select",
+    "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
+    "TopKSelectFwdOp": ".attention.topk_select",
     # Linear attention
     "DeltaNetChunkFwdOp": ".linear_attention",
     "DeltaNetChunkBwdOp": ".linear_attention",

@@ -1,6 +1,5 @@
 """The elementwise ops, at the public path ``tileops.elementwise``."""
 
-from tileops.ops.dropout import DropoutFwdOp
 from tileops.ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -14,6 +13,7 @@ from tileops.ops.elementwise import (
     ClampTensorFwdOp,
     CosFwdOp,
     DivFwdOp,
+    DropoutFwdOp,
     EluFwdOp,
     EqFwdOp,
     ErfFwdOp,

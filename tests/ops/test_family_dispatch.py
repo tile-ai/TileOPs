@@ -21,12 +21,12 @@ from tileops.kernels.linear_attention import (
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
 from tileops.ops.gemm.bmm import BmmFP8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
-from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrent import DeltaNetRecurrentFwdOp
+from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
-from tileops.ops.linear_attention.gla_recurrent import GLARecurrentFwdOp
+from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from workloads.device import run_device_available
 
 pytestmark = pytest.mark.skipif(

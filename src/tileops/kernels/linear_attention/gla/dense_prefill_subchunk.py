@@ -14,7 +14,7 @@ from tileops.kernels.linear_attention.gla.call_spec import (
     build_entry,
     serves_dense,
 )
-from tileops.kernels.linear_attention.gla.gla_fwd import (
+from tileops.kernels.linear_attention.gla.chunk_fwd import (
     GLAChunkedFwdKernel,
     gla_fwd_h_kernel,
     gla_precompute_g_kernel,

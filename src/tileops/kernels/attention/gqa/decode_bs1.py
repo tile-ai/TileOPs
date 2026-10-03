@@ -17,12 +17,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.gqa_decode import (
+from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
     gqa_decode_no_split_kernel,
     gqa_decode_no_split_run,
 )
-from tileops.kernels.attention.gqa_decode_bs1_common import (
+from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
     make_gqa_decode_bs1_combine,

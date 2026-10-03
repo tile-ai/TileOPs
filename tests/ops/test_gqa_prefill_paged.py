@@ -5,15 +5,15 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
-from workloads.device import run_device
-from workloads.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
-from workloads.paged_kv_cache import (
+from workloads.attention.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
+from workloads.attention.paged_kv_cache import (
     fill_paged_cache_from_logical,
     make_fragmented_block_table,
     make_interleaved_block_table,
     make_unit_cache_scales,
     paged_cache_row,
 )
+from workloads.device import run_device
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),

@@ -3,12 +3,12 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.constants import FP8_E4M3_MAX
-from tileops.kernels.fp8_lightning_indexer import (
+from tileops.kernels.attention.fp8_lightning_indexer import (
     FP8LightningIndexerCall,
     FP8LightningIndexerFwdInterface,
     FP8LightningIndexerKernel,
 )
+from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 

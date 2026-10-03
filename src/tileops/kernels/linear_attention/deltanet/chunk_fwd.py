@@ -21,13 +21,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.autotune import (
+from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall, DeltaNetFwdInterface
+from tileops.kernels.linear_attention.deltanet.autotune import (
     default_h_block_v,
     default_h_threads,
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
-from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall, DeltaNetFwdInterface
 from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
 )

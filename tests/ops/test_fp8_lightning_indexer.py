@@ -3,8 +3,8 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FP8LightningIndexerFwdOp
+from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
-from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 
 class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):

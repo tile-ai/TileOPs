@@ -6,8 +6,8 @@ from itertools import accumulate
 import torch
 import torch.nn.functional as F
 
+from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
-from workloads.paged_kv_cache import make_fragmented_block_table
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 

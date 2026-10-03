@@ -15,11 +15,11 @@ from tileops.kernels.linear_attention.gla.call_spec import (
     build_entry,
     serves_dense,
 )
-from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
-from tileops.kernels.linear_attention.gla.gla_fwd import (
+from tileops.kernels.linear_attention.gla.chunk_fwd import (
     GLAChunkedFwdKernel,
     gla_precompute_g_kernel,
 )
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
 
 
 @functools.lru_cache(maxsize=32)

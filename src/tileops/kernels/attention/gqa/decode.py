@@ -746,7 +746,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from tileops.kernels.attention.gqa_decode_bs1 import gqa_decode_bs1_ctx_kernel
+            from tileops.kernels.attention.gqa.decode_bs1 import gqa_decode_bs1_ctx_kernel
 
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device

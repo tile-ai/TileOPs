@@ -4,8 +4,8 @@ import math
 
 import torch
 
+from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
-from workloads.paged_kv_cache import make_fragmented_block_table
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 

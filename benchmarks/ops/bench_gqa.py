@@ -28,8 +28,7 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.device import run_device
-from workloads.gqa import (
+from workloads.attention.gqa import (
     GQAPrefillPagedWithKVCacheFwdCall,
     GroupedQueryAttentionBwdCall,
     GroupedQueryAttentionDenseDecodeCall,
@@ -38,6 +37,7 @@ from workloads.gqa import (
     GroupedQueryAttentionVarlenCall,
     GroupedQueryAttentionVarlenScaledCall,
 )
+from workloads.device import run_device
 
 
 def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall, lse: torch.Tensor):

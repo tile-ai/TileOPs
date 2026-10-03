@@ -133,3 +133,6 @@ Design documents are authored during development and published alongside auto-ge
 ## Directory Structure
 
 The Module reference table above maps each module to its directory (Key Artifact column). Top-level layout: `src/tileops/` (manifest, kernels, ops, perf, and `csrc/` for the C++/CUDA sources kernels compile in), `workloads/`, `tests/`, `benchmarks/`, `docs/`, `scripts/`. This doc does not track the file inventory — consult the tree itself.
+
+Ops, kernels and workloads use the manifest's family names; module boundaries follow each
+layer's responsibilities.

@@ -2,6 +2,7 @@
 
 from tileops.ops.attention import (
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
+    FP8LightningIndexerFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
@@ -12,9 +13,8 @@ from tileops.ops.attention import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
+    TopKSelectFwdOp,
 )
-from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.topk_select import TopKSelectFwdOp
 
 __all__ = [
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

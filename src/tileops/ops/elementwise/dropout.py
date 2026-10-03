@@ -14,7 +14,7 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.dropout import DropoutCall, DropoutFwdInterface, DropoutKernel
+from tileops.kernels.elementwise.dropout import DropoutCall, DropoutFwdInterface, DropoutKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 
