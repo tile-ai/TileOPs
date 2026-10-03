@@ -13,6 +13,7 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact, zeroed_input
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.sequence_modeling.engram import (
@@ -38,6 +39,12 @@ def test_engram_gate_conv_fwd_bench(call):
 
     op = EngramGateConvFwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, workload)
+    # The Engram unit-test contract includes low-precision saved intermediates.
+    checked = Exact(
+        rtol=0.1,
+        atol=0.1 if _dtype(call, "H") == torch.float16 else 0.2,
+        controls=(zeroed_input(0, "first-input-zeroed"),),
+    )
 
     bm.compare(
         {
@@ -46,6 +53,7 @@ def test_engram_gate_conv_fwd_bench(call):
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={"tileops": checked, TORCH_COMPILE_TAG: checked},
     )
 
 
@@ -57,6 +65,12 @@ def test_engram_gate_conv_bwd_bench(call):
 
     op = EngramGateConvBwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, workload)
+    # The Engram unit-test contract includes low-precision saved intermediates.
+    checked = Exact(
+        rtol=0.2,
+        atol=0.2 if _dtype(call, "dY") == torch.float16 else 0.3,
+        controls=(zeroed_input(0, "first-input-zeroed"),),
+    )
 
     @torch.enable_grad()
     def ref_with_grad(*args):
@@ -65,7 +79,11 @@ def test_engram_gate_conv_bwd_bench(call):
     # No torch-compile tag: the reference calls ``requires_grad_()`` on the intermediates it
     # returns gradients for and runs ``backward`` over them, which dynamo splits into seven
     # graphs, so the row would time six eager segments under a tag that says compiled.
-    bm.compare({"tileops": op, "torch": ref_with_grad}, *inputs)
+    bm.compare(
+        {"tileops": op, "torch": ref_with_grad},
+        *inputs,
+        evidence={"tileops": checked, "torch": checked},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(EngramDecodeFwdOp))
@@ -76,6 +94,12 @@ def test_engram_decode_bench(call):
 
     op = EngramDecodeFwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, workload)
+    # The Engram unit-test contract includes low-precision saved intermediates.
+    checked = Exact(
+        rtol=0.05,
+        atol=0.05 if _dtype(call, "e_t") == torch.float16 else 0.1,
+        controls=(zeroed_input(0, "first-input-zeroed"),),
+    )
 
     bm.compare(
         {
@@ -84,4 +108,5 @@ def test_engram_decode_bench(call):
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={"tileops": checked, TORCH_COMPILE_TAG: checked},
     )

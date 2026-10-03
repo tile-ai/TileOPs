@@ -20,6 +20,7 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom
 from tileops.ops import TopKSelectFwdOp
 from workloads.attention.topk_select import TopkSelectorCall
 
@@ -49,24 +50,6 @@ def _flashinfer_topk(workload: TopkSelectorCall, starts: torch.Tensor, ends: tor
     return fn
 
 
-def _assert_selects_same_scores(fn, reference, *inputs: torch.Tensor) -> None:
-    """Check a baseline selects the same scores, not the same order among ties.
-
-    Two exact top-k implementations disagree on which index they keep where scores
-    tie, so comparing index tensors would reject a correct baseline.
-
-    Raises:
-        AssertionError: When the selected scores differ.
-    """
-    flat = inputs[0].squeeze(-1).flatten(0, 1)
-
-    def selected(indices: torch.Tensor) -> torch.Tensor:
-        gathered = torch.gather(flat, 1, indices.reshape(flat.shape[0], -1).long())
-        return torch.sort(gathered, dim=-1)[0]
-
-    torch.testing.assert_close(selected(fn(*inputs)), selected(reference(*inputs)))
-
-
 @pytest.mark.parametrize("call", manifest_calls(TopKSelectFwdOp))
 def test_topk_select_bench(call) -> None:
     workload = TopkSelectorCall(call)
@@ -82,7 +65,36 @@ def test_topk_select_bench(call) -> None:
     }
     flashinfer_fn = _flashinfer_topk(workload, inputs[1], inputs[2])
     if flashinfer_fn is not None:
-        _assert_selects_same_scores(flashinfer_fn, workload.ref_program, *inputs)
         functors[FLASHINFER_TAG] = flashinfer_fn
 
-    bm.compare(functors, *inputs)
+    def validate(got, expected):
+        assert got.shape == expected.shape and got.dtype == expected.dtype
+        scores, starts, ends = inputs
+        padding = got == scores.shape[2]
+        assert (
+            padding | ((got >= starts[:, :, None, None]) & (got < ends[:, :, None, None]))
+        ).all()
+        assert torch.equal(padding.sum(-1), (expected == scores.shape[2]).sum(-1))
+        ordered = got.sort(-1).values
+        assert (
+            (ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] == scores.shape[2])
+        ).all(), "duplicate selected index"
+        scores = torch.nn.functional.pad(scores.movedim(2, -1), (0, 1), value=-float("inf"))
+        torch.testing.assert_close(
+            scores.gather(-1, got.long()).sort(-1).values,
+            scores.gather(-1, expected.long()).sort(-1).values,
+            rtol=0,
+            atol=0,
+        )
+
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors,
+            Custom(
+                validate,
+                "same top-k scores with distinct in-window indices; tie order is unspecified",
+            ),
+        ),
+    )

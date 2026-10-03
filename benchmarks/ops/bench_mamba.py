@@ -8,6 +8,7 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -106,12 +107,20 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
     if _mamba_chunk_scan_fwd is not None:
         # mamba signature: _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
         def mamba_fwd():
-            return _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
+            # Match the op's FP32 output; the cast is part of this baseline's timing.
+            out, _ = _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
+            return out.float()
 
         functors["mamba"] = (mamba_fwd, ())
 
     _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 2e-3, rtol=1e-5)
+        ),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkStateFwdOp))
@@ -130,7 +139,13 @@ def test_ssd_chunk_state_fwd_bench(call) -> None:
         functors["mamba"] = (mamba_fwd, ())
 
     _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 1.6e-2, rtol=1e-3)
+        ),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDStatePassingFwdOp))
@@ -147,11 +162,6 @@ def test_ssd_state_passing_fwd_bench(call) -> None:
             return _mamba_state_passing_fwd(
                 states, dA_chunk_cumsum, initial_states=initial_states, out_dtype=torch.float32
             )
-
-        # Pre-warm: run once outside bm.profile so the Triton autotuner
-        # selects its best config before the CUPTI window opens.
-        mamba_fwd()
-        torch.cuda.synchronize()
 
         functors["mamba"] = (mamba_fwd, ())
 
@@ -193,7 +203,7 @@ def test_mamba2_fwd_bench(call):
     if _mamba_chunk_scan_combined is not None:
 
         def _mamba_wrapper(x, dt, A, B, C):
-            return _mamba_chunk_scan_combined(
+            out, final_states = _mamba_chunk_scan_combined(
                 x,
                 dt,
                 A,
@@ -205,6 +215,7 @@ def test_mamba2_fwd_bench(call):
                 initial_states=initial_states,
                 return_final_states=True,
             )
+            return out.float(), final_states.float()
 
         functors["mamba"] = (_mamba_wrapper, reference_args)
 
@@ -214,4 +225,10 @@ def test_mamba2_fwd_bench(call):
     functors["torch-ref"] = (_torch_wrapper, reference_args)
     functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-2 if x.dtype == torch.float16 else 2e-2, rtol=1e-3)
+        ),
+    )

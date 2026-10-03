@@ -19,6 +19,7 @@ env:
   TILELANG_CACHE_DIR: /ci-cache/tilelang
   TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
   TRITON_CACHE_DIR: /ci-cache/triton
+  TORCHINDUCTOR_CACHE_DIR: /ci-cache/torchinductor
   PIP_CACHE_DIR: /ci-cache/pip
   MAX_JOBS: "64"
 
@@ -33,12 +34,11 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    # Sized for a cold cache: the full sweep takes hours with nothing cached and
-    # minutes once it is. Must exceed --total-budget below so the runner, not
-    # GitHub, ends the sweep.
+    # Six-hour safety ceiling, plus time to retain reports and artifacts.
     timeout-minutes: 380
     runs-on: [self-hosted, tile-ops, bench]
     env:
+      BENCH_WARN_SECONDS: ${{ vars.NIGHTLY_BENCH_WARN_SECONDS || '7200' }}
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
       # before late large MoE input tensors allocate 14-21 GiB weight blocks.
       PYTORCH_ALLOC_CONF: expandable_segments:True
@@ -135,18 +135,7 @@ jobs:
           done
         shell: bash
 
-      # Correctness before timing, at the benchmark's own shapes, which no test covers.
-      # Four bench files declare their evidence; the rest are marked and convert later, so a
-      # failure here records rather than blocks. The report carries the count either way.
-      - name: Verify benchmark baselines against their references
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
-          python3 -m pytest benchmarks/ops -q --tileops-verify \
-            --timeout=1800 --timeout-method=thread | tee tileops_bench_verify.log
-        shell: bash
-
+      # Each case checks its warmup outputs before sampling; there is no second sweep.
       - name: Run benchmark ops
         id: benchmark_tests
         continue-on-error: true
@@ -162,9 +151,7 @@ jobs:
           # One pytest process per bench file: a native hang / segfault / OOM
           # kill costs only that file's results. py-spy captures the stack of
           # a hung child before the runner kills it.
-          # --stall-timeout bounds silence, not runtime. A file killed mid-run
-          # never writes its kernels to the persistent cache, so capping total
-          # runtime would keep the same files cold every night.
+          # Bound stalled cases separately from the total sweep budget.
           set -o pipefail
           # Best-effort: on a network failure the run proceeds without stack
           # dumps (the runner records the absence) instead of dying here.
@@ -173,6 +160,7 @@ jobs:
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
             --stall-timeout 900 \
+            --warn-after "${BENCH_WARN_SECONDS}" \
             --total-budget 21600 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 

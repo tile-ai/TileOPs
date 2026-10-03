@@ -16,6 +16,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom
 from tileops.sampling import SamplingFromProbsFwdOp
 from workloads.sampling import SamplingFromProbsWorkload
 
@@ -92,9 +93,23 @@ def test_sampling_from_probs_bench(call) -> None:
         VLLM_TAG: vllm_from_probs,
         "torch-multinomial": multinomial_from_probs,
     }
-    for tag, draw in candidates.items():
-        follows_the_row(draw, tag)
-        drawn_from(draw(probs, seed, offset), tag)
-    assert op(probs, seed, offset).dtype == torch.int32
 
-    bm.compare({**candidates, "torch-ref": workload.ref_program}, probs, seed, offset)
+    def validator(draw, tag):
+        def check(tokens, _expected):
+            drawn_from(tokens, tag)
+            if tag == "tileops":
+                assert tokens.dtype == torch.int32
+            follows_the_row(draw, tag)
+
+        return check
+
+    bm.compare(
+        {**candidates, "torch-ref": workload.ref_program},
+        probs,
+        seed,
+        offset,
+        evidence={
+            tag: Custom(validator(draw, tag), "support, shape and six-sigma distribution check")
+            for tag, draw in candidates.items()
+        },
+    )

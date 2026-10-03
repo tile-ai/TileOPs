@@ -11,11 +11,11 @@ import torch
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_output_spec,
     compiled_reference,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import TopPMaskFwdOp
 from workloads.sampling import TopPMaskWorkload, probability_above
 
@@ -27,25 +27,28 @@ _VLLM_TRITON_ROWS = 8
 # mass: vLLM's kernel stops its threshold search after a bounded number of rounds, so a
 # token whose above-mass sits within one round of ``p`` may fall either way.
 _MARGIN = 2e-2
-_INF = float("inf")
 
 
 @pytest.mark.parametrize("call", manifest_calls(TopPMaskFwdOp))
 def test_top_p_mask_bench(call) -> None:
     workload = TopPMaskWorkload(call)
     logits, p = workload.gen_inputs()
-    spec = call.specs["masked_logits"]
 
     op = TopPMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
-
-    ref = workload.ref_program(logits, p)
 
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
+
+    # Same FP32 cumulative-probability boundary tolerance as the op tests.
+    near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= 1e-4
+    evidence = dict.fromkeys(
+        functors,
+        Custom(logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"),
+    )
 
     # FlashInfer 0.6.16 exposes no top-p mask over logits. Its ``top_p_renorm_probs``
     # truncates and renormalizes a probability distribution instead: it reads a softmax the
@@ -68,18 +71,10 @@ def test_top_p_mask_bench(call) -> None:
         def vllm_mask(logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
             return apply_top_k_top_p(vllm_logits.copy_(logits), None, p)
 
-        # Hand-written rather than ``assert_matches_reference``: the helper compares every
-        # entry, and the two legitimately disagree inside ``_MARGIN`` of the cut. The mask is
-        # checked away from that band and the surviving logits entry for entry, so a
-        # comparator masking another set, or returning other values under the same mask, fails.
         near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= _MARGIN
-        got = vllm_mask(logits, p)
-        kept, taken = ref != -_INF, got != -_INF
-        assert not ((taken ^ kept) & ~near).any()
-        assert torch.equal(got[taken & kept], ref[taken & kept])
+        evidence[VLLM_TAG] = Custom(
+            logit_mask_validator(logits, near), "mask ties within nucleus rounding boundary"
+        )
         functors[VLLM_TAG] = vllm_mask
 
-    for tag, functor in functors.items():
-        assert_output_spec(functor(logits, p), spec, tag)
-
-    bm.compare(functors, logits, p)
+    bm.compare(functors, logits, p, evidence=evidence)

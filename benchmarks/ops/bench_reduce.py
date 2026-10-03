@@ -20,13 +20,13 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_dims,
     flaggems_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -56,11 +56,14 @@ def _bench(
         tolerance = {"rtol": 1e-4, "atol": 1e-4}
     functors = {"tileops": op}
     if flaggems_fn is not None:
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )
 
 
 def _out_dtype(x: torch.Tensor, params: dict) -> torch.dtype:

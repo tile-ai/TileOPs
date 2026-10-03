@@ -10,17 +10,9 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerChannelFwdOp
 from workloads.quantization.quantize import INT8QuantPerChannelWorkload
-
-
-def _assert_within_one_code(fn, workload, w: torch.Tensor) -> None:
-    """vllm multiplies by ``127 / amax`` instead of dividing by the scale, so a value near
-    a rounding tie can take the neighbouring code; the scales agree to float32 rounding."""
-    q, scale = fn(w)
-    q_ref, scale_ref = workload.ref_program(w)
-    torch.testing.assert_close(scale, scale_ref, rtol=1e-6, atol=0.0)
-    assert (q.int() - q_ref.int()).abs().max().item() <= 1
 
 
 @pytest.mark.parametrize("call", manifest_calls(INT8QuantPerChannelFwdOp))
@@ -47,8 +39,6 @@ def test_int8_quant_per_channel_bench(call) -> None:
         q, scale, _ = scaled(w)
         return q, scale.view(-1)
 
-    _assert_within_one_code(vllm_triton, workload, *inputs)
-    _assert_within_one_code(vllm_cuda, workload, *inputs)
     bm.compare(
         {
             "tileops": op,
@@ -58,4 +48,8 @@ def test_int8_quant_per_channel_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={
+            tag: Custom(assert_quantized, "scales checked; INT8 rounding within one code")
+            for tag in ("tileops", VLLM_TAG, TORCH_COMPILE_TAG, "vllm-cuda")
+        },
     )

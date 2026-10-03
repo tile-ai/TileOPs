@@ -1,5 +1,6 @@
 """Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against cuBLAS, FlagGems and FlashInfer."""
 
+import math
 from typing import Optional
 
 import pytest
@@ -12,6 +13,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFp8Workload, BmmWorkload
 
@@ -67,27 +69,11 @@ def _flashinfer_bmm_fp8_row(workload: BmmFp8Workload, *inputs: torch.Tensor) -> 
     def run(a: torch.Tensor, b: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
         return _flashinfer_bmm_fp8_per_tensor_ref(workload, a, b, sa, sb)
 
-    def reference(a: torch.Tensor, b_kn: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
-        # The reference takes b in the op's layout; flashinfer takes the [B, K, N] view.
-        return workload.ref_program(a, b_kn.transpose(-2, -1) if workload.trans_b else b_kn, sa, sb)
-
     try:
-        assert_matches_reference(
-            run,
-            reference,
-            *inputs,
-            # cuDNN accumulates the fp8 products in another order, so agreement is bounded by
-            # the fp8 inputs, not the output dtype: fp16 output measured 1.04e-3 off at K=1024.
-            atol=_FP8_ATOL,
-            rtol=_FP8_RTOL,
-        )
+        run(*inputs)
     except (ImportError, RuntimeError) as exc:
         print(f"  [skip] flashinfer-bmm-fp8: {str(exc).splitlines()[0]}")
         return None
-    except AssertionError as exc:
-        raise AssertionError(
-            f"flashinfer-bmm-fp8 disagrees with the reference: {str(exc).splitlines()[0]}"
-        ) from exc
     return run, inputs
 
 
@@ -128,12 +114,26 @@ def test_bmm_fp8_bench(call) -> None:
     op = BmmFP8FwdOp(**call.arguments({}), tune=True)
     bm = ManifestBenchmark(op, workload)
     functors = {
-        "tileops": (op, (a, b, scale_a, scale_b)),
-        "torch-fp32-ref": (workload.ref_program, (a, b, scale_a, scale_b)),
+        "tileops": op,
+        "torch-fp32-ref": workload.ref_program,
     }
 
     row = _flashinfer_bmm_fp8_row(workload, a, b_kn, scale_a, scale_b)
     if row is not None:
         functors["flashinfer-bmm-fp8"] = row
 
-    bm.compare(functors)
+    # Bound absolute FP8 accumulation error by reduction length (K=1024 base);
+    # retain the 2% relative bound and require rejection of a dropped operand.
+    checked = Exact(
+        rtol=_FP8_RTOL,
+        atol=_FP8_ATOL * math.sqrt(max(1.0, workload.k / 1024)),
+        controls=(zeroed_input(0, "left-operand-zeroed"),),
+    )
+    bm.compare(
+        functors,
+        a,
+        b,
+        scale_a,
+        scale_b,
+        evidence=dict.fromkeys(functors, checked),
+    )

@@ -42,15 +42,13 @@ def _nsa_topk_varlen_kernel(
     def _nsa_topk_varlen_func(threads: int):
         @T.macro
         def odd_even_sort(indices, values, size):
-            eps = 1e-5
             for _ in T.serial(size):
                 for i in T.Parallel(size // 2):
                     v1 = values[i * 2]
                     v2 = values[i * 2 + 1]
                     idx1 = indices[i * 2]
                     idx2 = indices[i * 2 + 1]
-                    v_diff = T.abs(v1 - v2)
-                    is_equal = v_diff < eps
+                    is_equal = v1 == v2
                     if v1 < v2 or (is_equal and idx1 < idx2):
                         values[i * 2], values[i * 2 + 1] = v2, v1
                         indices[i * 2], indices[i * 2 + 1] = idx2, idx1
@@ -60,8 +58,7 @@ def _nsa_topk_varlen_kernel(
                     v2 = values[i * 2 + 2]
                     idx1 = indices[i * 2 + 1]
                     idx2 = indices[i * 2 + 2]
-                    v_diff = T.abs(v1 - v2)
-                    is_equal = v_diff < eps
+                    is_equal = v1 == v2
                     if v1 < v2 or (is_equal and idx1 < idx2):
                         values[i * 2 + 1], values[i * 2 + 2] = v2, v1
                         indices[i * 2 + 1], indices[i * 2 + 2] = idx2, idx1
@@ -195,9 +192,12 @@ def _nsa_topk_varlen_kernel(
                     b_i_current = T.alloc_fragment([bc], accum_dtype)
                     T.reduce_sum(acc_s, b_i_current, dim=0)
 
+                    # Quantized keys give a total order; pairwise epsilon ties do not.
                     for c_in in T.Parallel(bc):
                         pool_scores_s[bc + c_in] = T.if_then_else(
-                            c_in < curr_bc_tk, b_i_current[c_in], -T.infinity(accum_dtype)
+                            c_in < curr_bc_tk,
+                            T.round(b_i_current[c_in] / 1e-5),
+                            -T.infinity(accum_dtype),
                         )
                         pool_indices_s[bc + c_in] = T.if_then_else(
                             c_in < curr_bc_tk, i_tk * bc + c_in + 1, 0

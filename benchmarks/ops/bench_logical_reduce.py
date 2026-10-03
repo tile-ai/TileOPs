@@ -13,12 +13,12 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_dims,
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 from workloads.reduction import LogicalCall
 
@@ -31,7 +31,6 @@ def _bench(op_cls: type, call, baseline_fn, flaggems_name=None) -> None:
     workload = LogicalCall(call)
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
-    assert_matches_reference(op, baseline_fn, *inputs)
     functors = {"tileops": op}
     if flaggems_name is not None:
         fn = flaggems_op(flaggems_name)
@@ -41,11 +40,14 @@ def _bench(op_cls: type, call, baseline_fn, flaggems_name=None) -> None:
         def flaggems_fn(x):
             return fn(x.bool(), dims, keepdim)
 
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(AnyFwdOp))

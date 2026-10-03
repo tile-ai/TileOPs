@@ -16,7 +16,6 @@ from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_op,
     flashinfer_op,
@@ -24,6 +23,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
@@ -89,15 +89,6 @@ def _in_place_fused_add(fn, args: tuple, eps: float):
     return baseline_fn, private
 
 
-def _assert_fused_add_matches(fn, reference, x, residual, weight, eps, **tolerance) -> None:
-    """Check an in-place fused-add kernel on throwaway copies of its inputs."""
-    x_copy, residual_copy = x.clone(), residual.clone()
-    fn(x_copy, residual_copy, weight, eps)
-    expected_y, expected_add = reference(x, residual, weight)
-    torch.testing.assert_close(x_copy, expected_y, **tolerance)
-    torch.testing.assert_close(residual_copy, expected_add, **tolerance)
-
-
 def _eps(call) -> float:
     """The row's ``eps``; ``None`` is float32's machine epsilon, torch's accumulation dtype."""
     eps = call.params["eps"]
@@ -118,7 +109,6 @@ def test_rms_norm_bench(call) -> None:
         )
 
     tolerance = reference_tolerance(x.dtype)
-    assert_matches_reference(op, reference, *inputs, **tolerance)
     # The library kernels take a 2-D input and a weight; a row without one has no tag.
     library = {}
     if weight is not None and x.ndim == 2:
@@ -127,17 +117,18 @@ def test_rms_norm_bench(call) -> None:
             FLASHINFER_TAG: _flashinfer_rms_norm(eps),
             VLLM_TAG: _vllm_rms_norm(x, eps),
         }
-    for baseline_fn in library.values():
-        assert_matches_reference(baseline_fn, reference, *inputs, **tolerance)
+
+    functors = {
+        "tileops": op,
+        **library,
+        "torch-ref": reference,
+        TORCH_COMPILE_TAG: compiled_reference(reference),
+    }
 
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            **library,
-            "torch-ref": reference,
-            TORCH_COMPILE_TAG: compiled_reference(reference),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=reference, **tolerance)),
     )
 
 
@@ -156,19 +147,21 @@ def test_fused_add_rms_norm_bench(call) -> None:
         return y, add_result
 
     tolerance = reference_tolerance(inputs[0].dtype)
-    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
     fused_kernels = {
         FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
         VLLM_TAG: vllm_op("fused_add_rms_norm"),
     }
     functors = {"tileops": op}
     for tag, fn in fused_kernels.items():
-        _assert_fused_add_matches(fn, baseline_fn, *inputs, eps=eps, **tolerance)
         functors[tag] = _in_place_fused_add(fn, inputs, eps)
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
 
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(LayerNormFwdOp))
@@ -183,7 +176,6 @@ def test_layer_norm_bench(call) -> None:
         return F.layer_norm(x, shape, weight=weight, bias=bias, eps=eps)
 
     tolerance = reference_tolerance(x.dtype)
-    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
     # The library kernels take both affine tensors; a row without them has no tag.
     library = {}
     if weight is not None and bias is not None:
@@ -198,17 +190,18 @@ def test_layer_norm_bench(call) -> None:
             return flashinfer_layer_norm(x, weight, bias, eps)
 
         library = {FLAGGEMS_TAG: flaggems_fn, FLASHINFER_TAG: flashinfer_fn}
-    for library_fn in library.values():
-        assert_matches_reference(library_fn, baseline_fn, *inputs, **tolerance)
+
+    functors = {
+        "tileops": op,
+        **library,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            **library,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
     )
 
 
@@ -225,16 +218,20 @@ def test_fused_add_layer_norm_bench(call) -> None:
         n = x.shape[-1]
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=eps), add_result
 
-    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
     # flashinfer's and vllm's fused-add kernels are RMSNorm only, so this row is
     # torch against itself, eager and compiled.
+    functors = {
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
+        ),
     )
 
 
@@ -243,14 +240,18 @@ def _bench(op_cls: type, call, baseline_fn) -> None:
     workload = NormCall(call)
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
-    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
+    functors = {
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
+        ),
     )
 
 

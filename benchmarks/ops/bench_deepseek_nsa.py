@@ -17,6 +17,7 @@ mean-pools k and v on every call, work none of these ops does.
 """
 
 import pytest
+import torch
 
 from benchmarks.baselines import (
     FLA_TAG,
@@ -26,6 +27,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, zeroed_input
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
@@ -88,30 +90,41 @@ def test_nsa_cmp_fwd_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
     fla_fn = _fla_nsa_cmp_fwd(workload)
 
-    # fla writes a float32 lse, the manifest declares the input dtype. The conversion is this
-    # benchmark's, not fla's, so it stays out of the timed callable.
-    def checked(*args):
-        o, lse = fla_fn(*args)
-        return o, lse.to(workload.dtype)
+    def validate(got, expected):
+        # FLA writes its LSE in FP32; both kernels use blockwise accumulation.
+        for output, target in zip(got, expected, strict=True):
+            torch.testing.assert_close(output.float(), target.float(), rtol=1e-5, atol=4e-3)
 
-    o, lse = checked(*inputs)
-    assert_output_spec(o, call.specs["o"], FLA_TAG)
-    assert_output_spec(lse, call.specs["lse"], FLA_TAG)
-    # tests/ops/test_deepseek_nsa.py's tolerance for this op: the reference accumulates a whole
-    # sequence in float32, both kernels accumulate one block at a time.
-    assert_matches_reference(checked, workload.ref_program, *inputs, rtol=1e-5, atol=4e-3)
-
-    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
+    checked = Custom(validate, "both outputs checked at the NSA unit-test bound; LSE may be FP32")
+    bm.compare(
+        {"tileops": op, FLA_TAG: fla_fn},
+        *inputs,
+        evidence={"tileops": checked, FLA_TAG: checked},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSATopKVarlenFwdOp))
 def test_nsa_topk_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NsaTopkCall, call)
+
     # No fla comparator: its selection forces blocks 0, IC-1 and IC to importance 1.0 while this
     # op forces only IC, and it ranks raw scores where this op treats a gap under 1e-5 as a tie
     # and prefers the larger block id. The two select by different rules, so a ratio between them
     # would not be a ratio between implementations of one function.
-    bm.compare({"tileops": op, "torch-ref": workload.ref_program}, *inputs)
+    def validate(got, expected):
+        assert got.shape == expected.shape and got.dtype == expected.dtype
+        assert torch.equal(got < 0, expected < 0), "unfilled top-k slots differ"
+        # Match the NSA unit-test contract for ranks at floating-point score ties.
+        assert (got != expected).float().mean() <= 1e-3, "top-k mismatch exceeds 0.1%"
+
+    checked = Custom(
+        validate,
+        "top-k index mismatch <= 0.1%; padding matches exactly",
+        controls=(zeroed_input(0, "query-zeroed"),),
+    )
+    bm.compare(
+        {"tileops": op, "torch-ref": workload.ref_program}, *inputs, evidence={"tileops": checked}
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSAVarlenFwdOp))

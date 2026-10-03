@@ -42,10 +42,15 @@ class TopkSelectorWorkload(WorkloadBase):
     def ref_program(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
-        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
-        # Match kernel/output layout: (batch, seq_len, kv_group, topk)
-        return indexes_ref.permute(0, 1, 3, 2)
+        positions = torch.arange(index_score.shape[2], device=index_score.device)[
+            None, None, :, None
+        ]
+        valid = (positions >= starts[:, :, None, None]) & (positions < ends[:, :, None, None])
+        masked = index_score.masked_fill(~valid, -float("inf"))
+        indexes = torch.topk(masked, self.topk, dim=2).indices
+        in_window = valid.expand_as(index_score).gather(2, indexes)
+        indexes = torch.where(in_window, indexes, index_score.shape[2])
+        return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
 
 class TopkSelectorCall(CallWorkload, TopkSelectorWorkload):

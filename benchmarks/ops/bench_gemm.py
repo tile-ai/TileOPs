@@ -1,6 +1,7 @@
 """Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
+import math
 from typing import Any, Callable, Optional
 
 import pytest
@@ -9,14 +10,13 @@ import torch
 from benchmarks.baselines import (
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
-    assert_matches_reference,
     deepgemm_op,
     flaggems_op,
     flashinfer_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
+from benchmarks.verification import Exact, zeroed_input
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
@@ -386,7 +386,7 @@ def _prepare_marlin_w4a16_baseline(
 def test_gemm_bench(call) -> None:
     workload = GemmWorkload.from_call(call)
     a, b = workload.gen_inputs()
-    trans_a, trans_b, dtype = workload.trans_a, workload.trans_b, workload.dtype
+    trans_a, trans_b = workload.trans_a, workload.trans_b
 
     op = GemmFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -394,21 +394,14 @@ def test_gemm_bench(call) -> None:
     functors = {"tileops": op, "torch-cublas": workload.ref_program}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
-        assert_matches_reference(best_fn, workload.ref_program, a, b, **reference_tolerance(dtype))
         functors[CUBLASLT_TAG] = best_fn
 
     deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
     if deepgemm_fn is not None:
-        assert_matches_reference(
-            deepgemm_fn, workload.ref_program, a, b, **reference_tolerance(dtype)
-        )
         functors[DEEPGEMM_TAG] = deepgemm_fn
 
     if not trans_a and not trans_b:
         flaggems_mm = flaggems_op("mm")
-        assert_matches_reference(
-            flaggems_mm, workload.ref_program, a, b, **reference_tolerance(dtype)
-        )
         functors[FLAGGEMS_TAG] = flaggems_mm
 
     bm.compare(functors, a, b)
@@ -431,12 +424,6 @@ def test_gemm_fp8_bench(call) -> None:
         except ValueError as exc:
             print(f"  [skip] {DEEPGEMM_TAG}: {exc}")
         else:
-            assert_matches_reference(
-                deepgemm_fn,
-                workload.ref_program,
-                *inputs,
-                **reference_tolerance(out_dtype),
-            )
             functors[DEEPGEMM_TAG] = (deepgemm_fn, inputs[:2])
 
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
@@ -466,9 +453,6 @@ def test_gemm_fp8_bench(call) -> None:
         for tag, adapter in baselines.items():
             try:
                 fn = adapter(workload, *inputs)
-                assert_matches_reference(
-                    fn, workload.ref_program, *inputs, **reference_tolerance(out_dtype)
-                )
             except ValueError as exc:
                 print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
             else:
@@ -476,7 +460,12 @@ def test_gemm_fp8_bench(call) -> None:
     # A 1D1D row has no library baseline: the FlashInfer and DeepGEMM block-scale GEMMs
     # read scale_b per 128x128 block only.
 
-    bm.compare(functors, *inputs)
+    checked = Exact(
+        rtol=2e-2,
+        atol=2e-2 * math.sqrt(max(1.0, workload.k / 1024)),
+        controls=(zeroed_input(0, "left-operand-zeroed"),),
+    )
+    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, checked))
 
 
 @pytest.mark.parametrize("call", manifest_calls(GemmW4A16FwdOp))
@@ -488,9 +477,6 @@ def test_gemm_w4a16_bench(call) -> None:
     op = GemmW4A16FwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
 
-    expected = workload.ref_program(*inputs)
-    torch.testing.assert_close(op(*inputs), expected, atol=7e-2, rtol=5e-2)
-
     # Another idiom for the reference: timing ref_program would time its dequantization, so
     # the torch baseline multiplies by a weight dequantized once, outside the timed region.
     weight = dequantize_w4a16_weight(*inputs[1:]).to(workload.dtype)
@@ -498,7 +484,6 @@ def test_gemm_w4a16_bench(call) -> None:
     def torch_dequantized_matmul(activation: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
         return torch.matmul(activation, weight.T)
 
-    torch.testing.assert_close(torch_dequantized_matmul(*inputs), expected, atol=7e-2, rtol=5e-2)
     functors = {"tileops": op, "torch-dequantized-matmul": torch_dequantized_matmul}
 
     logical = (inputs[0], workload.row_major_weight, inputs[2], inputs[3])
@@ -511,11 +496,6 @@ def test_gemm_w4a16_bench(call) -> None:
         except ValueError as exc:
             print(f"  [skip] {tag}: {exc}")
             continue
-        actual = baseline(*baseline_inputs)
-        if actual.shape != (m, n) or not torch.isfinite(actual).all():
-            raise RuntimeError(f"{tag} W4A16 baseline smoke check failed")
-        torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
-        torch.cuda.synchronize()
         functors[tag] = (baseline, baseline_inputs)
 
-    bm.compare(functors, *inputs)
+    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, Exact(atol=7e-2, rtol=5e-2)))

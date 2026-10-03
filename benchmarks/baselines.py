@@ -54,35 +54,25 @@ FLA_TAG = "fla"
 VLLM_TAG = "vllm"
 
 
-def compiled_reference(fn: Callable, *, dynamic: bool = False) -> Callable:
-    """Return *fn* compiled by inductor, resetting dynamo first.
+def compiled_reference(
+    fn: Callable, *, dynamic: bool = False, preserve_precision: bool = False
+) -> Callable:
+    """Compile one full graph without an extra eager execution of stateful or random code.
 
-    The first call reports what dynamo made of *fn* on those arguments and fails
-    the case unless it is one graph with no break. Without that check a row
-    labelled compiled can be part eager, and nothing in the report says which:
-    dynamo runs what it cannot trace eagerly and is silent about it.
-
-    dynamo caches eight graphs per code object and every case of a bench file
-    shares one reference callable, so without the reset the later cases would
-    time eager under a tag that says compiled.
-    """
+    Reset Dynamo for shared reference code; ``preserve_precision`` retains rounding casts."""
     torch._dynamo.reset()
     compiled: list[Callable] = []
 
     def compiled_fn(*args: Any, **kwargs: Any) -> Any:
         if not compiled:
-            report = torch._dynamo.explain(fn)(*args, **kwargs)
-            if report.graph_count != 1 or report.graph_break_count != 0:
-                raise AssertionError(
-                    f"{getattr(fn, '__name__', fn)} traces to {report.graph_count} graph(s) "
-                    f"with {report.graph_break_count} break(s), so a row tagged "
-                    f"{TORCH_COMPILE_TAG} would time part of it eager: {report.break_reasons}"
-                )
-            # explain() traced through the same code object; start the timed compilation
-            # from an empty cache so it does not share that budget.
-            torch._dynamo.reset()
-            compiled.append(torch.compile(fn, dynamic=dynamic))
-        return compiled[0](*args, **kwargs)
+            options = {"emulate_precision_casts": True} if preserve_precision else None
+            compiled.append(torch.compile(fn, dynamic=dynamic, fullgraph=True, options=options))
+        try:
+            return compiled[0](*args, **kwargs)
+        except (torch._dynamo.exc.Unsupported, torch._dynamo.exc.UserError) as exc:
+            raise AssertionError(
+                f"{TORCH_COMPILE_TAG}: {getattr(fn, '__name__', fn)} must compile as one full graph"
+            ) from exc
 
     return compiled_fn
 

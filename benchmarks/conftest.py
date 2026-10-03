@@ -94,8 +94,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--tileops-verify",
         action="store_true",
-        help="Check each tag against the workload's reference and record no timing. The "
-        "nightly verification step runs this before the timing step.",
+        help="Run correctness warmup only, omitting timing. Normal benchmarks also verify "
+        "before sampling.",
     )
 
 
