@@ -776,3 +776,22 @@ def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
 )
 def test_the_operator_names_its_family_once(family: str, class_name: str, expected: str) -> None:
     assert operator_name(family, class_name) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "family, class_name, expected",
+    [
+        # One capital inside the abbreviation, which the case split would otherwise take.
+        ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
+        # A digit on each side of the capital.
+        ("gemm", "GemmW4A16FwdOp", "gemm_w4a16_fwd"),
+        ("gemm", "GemmInt8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
+        # Two abbreviations, one of them the family's own name.
+        ("fft", "FFTC2CFwdOp", "fft_c2c_fwd"),
+        # Two abbreviations in a row.
+        ("sampling", "TopKTopPMaskFwdOp", "sampling_topk_topp_mask_fwd"),
+    ],
+)
+def test_an_abbreviation_stays_one_word(family: str, class_name: str, expected: str) -> None:
+    assert operator_name(family, class_name) == expected
