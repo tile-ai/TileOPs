@@ -17,10 +17,6 @@ from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFp8Workload, BmmWorkload
 
-# The tolerance tests/ops/test_bmm.py holds the FP8 op to against the same reference.
-_FP8_ATOL = 2e-2
-_FP8_RTOL = 2e-2
-
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
     workload: BmmFp8Workload,
@@ -125,8 +121,8 @@ def test_bmm_fp8_bench(call) -> None:
     # Bound absolute FP8 accumulation error by reduction length (K=1024 base);
     # retain the 2% relative bound and require rejection of a dropped operand.
     checked = Exact(
-        rtol=_FP8_RTOL,
-        atol=_FP8_ATOL * math.sqrt(max(1.0, workload.k / 1024)),
+        rtol=2e-2,
+        atol=2e-2 * math.sqrt(max(1.0, workload.k / 1024)),
         controls=(zeroed_input(0, "left-operand-zeroed"),),
     )
     bm.compare(

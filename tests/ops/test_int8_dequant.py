@@ -40,52 +40,56 @@ _TESTS = {
 }
 
 
-# One typical shape per op; the per-block K is not a multiple of 128, so the last block of
-# each row is partial.
-_SHAPES = {
-    INT8DequantPerTensorFwdOp: (1024, 1024),
-    INT8DequantPerChannelFwdOp: (256, 1024),
-    INT8DequantPerBlockFwdOp: (256, 1000),
-}
-
-
 class INT8DequantFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_cls, m, k, out_dtype",
-            [
-                pytest.param(op_cls, *shape, dtype, marks=pytest.mark.smoke)
-                for op_cls, shape in _SHAPES.items()
-                for dtype in (torch.float16, torch.bfloat16, torch.float32)
-            ]
-            # Per-channel rows shorter than a thread's eight codes, over whole blocks: no
-            # block takes the vector path.
-            + [
-                pytest.param(
-                    INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
-                ),
-                # Per-block rows shorter than a vector: every block converts code by code.
-                pytest.param(
-                    INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
-                ),
-                # Per-block, K % 128 = 3: a vector crosses a row's short last group and the
-                # row end, so its codes take three scales.
-                pytest.param(
-                    INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.smoke
-                ),
-                # Per-tensor, past the small-matrix kernel's region, with a tail whose length
-                # is not a multiple of any vector width.
-                pytest.param(
-                    INT8DequantPerTensorFwdOp, 2051, 1025, torch.bfloat16, marks=pytest.mark.full
-                ),
-                # Per-block, past the small-matrix kernel's region, float32 with K % 128 = 1:
-                # the staged kernel with three scales per vector and a tail.
-                pytest.param(
-                    INT8DequantPerBlockFwdOp, 4100, 129, torch.float32, marks=pytest.mark.full
-                ),
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        # One typical shape per op; the per-block K is not a multiple of 128, so the last block of
+        # each row is partial.
+        shapes = {
+            INT8DequantPerTensorFwdOp: (1024, 1024),
+            INT8DequantPerChannelFwdOp: (256, 1024),
+            INT8DequantPerBlockFwdOp: (256, 1000),
+        }
+        return [
+            (
+                "op_cls, m, k, out_dtype",
+                [
+                    pytest.param(op_cls, *shape, dtype, marks=pytest.mark.smoke)
+                    for op_cls, shape in shapes.items()
+                    for dtype in (torch.float16, torch.bfloat16, torch.float32)
+                ]
+                # Per-channel rows shorter than a thread's eight codes, over whole blocks: no
+                # block takes the vector path.
+                + [
+                    pytest.param(
+                        INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                    ),
+                    # Per-block rows shorter than a vector: every block converts code by code.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                    ),
+                    # Per-block, K % 128 = 3: a vector crosses a row's short last group and the
+                    # row end, so its codes take three scales.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.smoke
+                    ),
+                    # Per-tensor, past the small-matrix kernel's region, with a tail whose length
+                    # is not a multiple of any vector width.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp,
+                        2051,
+                        1025,
+                        torch.bfloat16,
+                        marks=pytest.mark.full,
+                    ),
+                    # Per-block, past the small-matrix kernel's region, float32 with K % 128 = 1:
+                    # the staged kernel with three scales per vector and a tail.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 4100, 129, torch.float32, marks=pytest.mark.full
+                    ),
+                ],
+            ),
+        ]
 
 
 @INT8DequantFixture

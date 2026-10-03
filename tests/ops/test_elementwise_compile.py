@@ -362,9 +362,6 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
 # custom_op registration, register_fake, and CUDA codegen all succeed.
 # They are marked "smoke" so CI catches registration regressions early.
 
-_N = 1024 * 1024
-_SHAPE = (1024, 1024)
-_SMALL = (256, 256)
 _DTYPE = torch.float16
 
 
@@ -515,7 +512,7 @@ _register_table(_UNARY_FLOAT_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, input_fn, name", _UNARY_FLOAT_OPS)
 def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
     """Compile-smoke for remaining float unary ops."""
-    n = _N
+    n = 1024 * 1024
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
     x = (
@@ -549,7 +546,7 @@ _register_table(_UNARY_BOOL_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, dtype, name", _UNARY_BOOL_OPS)
 def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
     """Compile-smoke for unary ops with bool output."""
-    n = _N
+    n = 1024 * 1024
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
     if dtype == torch.bool:
@@ -570,7 +567,7 @@ register_compile_contract(BitwiseNotFwdOp)
 @pytest.mark.smoke
 def test_bitwise_not_compile():
     """Compile-smoke for BitwiseNotFwdOp."""
-    n = _N
+    n = 1024 * 1024
     x_int = torch.randint(0, 256, (n,), dtype=torch.uint8, device=run_device())
     op = BitwiseNotFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
@@ -624,7 +621,7 @@ _register_table(_BINARY_ARITH_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BINARY_ARITH_OPS)
 def test_binary_arith_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining binary arithmetic ops."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device()).abs().clamp(min=0.1)
     op = op_cls()
@@ -640,7 +637,7 @@ register_compile_contract(PowFwdOp)
 @pytest.mark.smoke
 def test_pow_compile():
     """Compile-smoke for PowFwdOp with positive inputs to avoid NaN domain issues."""
-    shape = _SMALL
+    shape = (256, 256)
     # Use positive base and small positive exponent to stay in valid domain
     a = torch.rand(shape, dtype=_DTYPE, device=run_device()).clamp(min=0.1) * 5.0
     b = torch.rand(shape, dtype=_DTYPE, device=run_device()) * 2.0
@@ -659,7 +656,7 @@ register_compile_contract(LerpScalarFwdOp)
 @pytest.mark.smoke
 def test_lerp_compile():
     """Compile-smoke for LerpScalarFwdOp."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = LerpScalarFwdOp(weight=0.3)
@@ -675,7 +672,7 @@ register_compile_contract(LerpTensorFwdOp)
 @pytest.mark.smoke
 def test_lerp_tensor_compile():
     """Compile-smoke for LerpTensorFwdOp (Tensor-weight overload)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     w = torch.rand(shape, dtype=_DTYPE, device=run_device())
@@ -703,7 +700,7 @@ _register_table(_COMPARISON_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _COMPARISON_OPS)
 def test_comparison_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining comparison ops (bool output)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
@@ -732,7 +729,7 @@ _register_table(_LOGICAL_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _LOGICAL_OPS)
 def test_logical_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for logical binary ops (bool output)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
@@ -758,7 +755,7 @@ _register_table(_BITWISE_BINARY_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
 def test_bitwise_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for bitwise binary ops."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     b = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     op = op_cls()
@@ -771,7 +768,7 @@ def test_bitwise_binary_compile(op_cls, ref_fn, name):
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
 def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for bool bitwise ops using the uint8 storage path."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randint(0, 2, shape, device=run_device()).bool()
     b = torch.randint(0, 2, shape, device=run_device()).bool()
     op = op_cls()
@@ -1058,7 +1055,7 @@ _DIV_ROUNDING_COMPILE_MODES = ["trunc", "floor"]
 @pytest.mark.parametrize("dtype", _DIV_ROUNDING_COMPILE_DTYPES)
 def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> None:
     """torch.compile path matches torch.div for trunc and floor rounding modes."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=dtype, device=run_device()) * 5.0
     b = torch.randn(shape, dtype=dtype, device=run_device()) * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
@@ -1191,7 +1188,8 @@ def test_parametric_unary_compile(op_name, kwargs, ref_fn):
     import tileops.ops.elementwise as ew
 
     op = getattr(ew, op_name)(**kwargs)
-    x = torch.randn(_N, dtype=_DTYPE, device=run_device())
+    n = 1024 * 1024
+    x = torch.randn(n, dtype=_DTYPE, device=run_device())
     out = torch.compile(op, fullgraph=True)(x)
     torch.testing.assert_close(out, ref_fn(x), atol=1e-2, rtol=1e-2)
 

@@ -36,12 +36,6 @@ _TUNE = True
 # flag_gems' aten-level convolutions, by spatial rank.
 _FLAGGEMS_CONV = {1: "conv1d", 2: "conv2d", 3: "conv3d"}
 
-# Triton and cuDNN sum the same products in a different order, so agreement is
-# relative to the output scale: across the manifest's workloads flag_gems lands
-# within a fraction of cuDNN where the reference reaches the hundreds.
-_BASELINE_RTOL = 2e-2
-_BASELINE_ATOL = 2e-2
-
 
 def _spatial(value, rank: int) -> tuple:
     """A per-axis parameter as one value per spatial axis, as flag_gems takes it."""
@@ -80,20 +74,30 @@ def _run_conv(
 
     flag_gems takes per-axis padding only, so a row padding by mode drops its tag.
     """
+    baseline_tolerance = {"rtol": 2e-2, "atol": 2e-2}
     inputs = workload.gen_inputs()
     baseline = workload.ref_program
     baselines = {"torch": baseline, TORCH_COMPILE_TAG: compiled_reference(baseline)}
     if not isinstance(workload.padding, str):
         flaggems = _flaggems_conv_baseline(rank, workload)
+        # Triton and cuDNN sum the same products in a different order, so agreement is
+        # relative to the output scale: across the manifest's workloads flag_gems lands
+        # within a fraction of cuDNN where the reference reaches the hundreds.
         assert_matches_reference(
             flaggems,
             baseline,
             *inputs,
-            rtol=_BASELINE_RTOL,
-            atol=_BASELINE_ATOL,
+            **baseline_tolerance,
         )
         baselines = {FLAGGEMS_TAG: flaggems, **baselines}
-    _profile_conv(op, bm, inputs, baselines, static_weight=static_weight)
+    _profile_conv(
+        op,
+        bm,
+        inputs,
+        baselines,
+        baseline_tolerance=baseline_tolerance,
+        static_weight=static_weight,
+    )
 
 
 def _profile_conv(
@@ -102,6 +106,7 @@ def _profile_conv(
     inputs: tuple[torch.Tensor, ...],
     baselines: dict[str, Callable],
     *,
+    baseline_tolerance: dict[str, float],
     static_weight: bool = False,
 ) -> None:
     """Profile op and every baseline on the same inputs and record them all."""
@@ -126,18 +131,14 @@ def _profile_conv(
                 **{tag: (bind_static_weight(fn), (x,)) for tag, fn in baselines.items()},
             },
             *inputs,
-            evidence=dict.fromkeys(
-                ("tileops", *baselines), Exact(rtol=_BASELINE_RTOL, atol=_BASELINE_ATOL)
-            ),
+            evidence=dict.fromkeys(("tileops", *baselines), Exact(**baseline_tolerance)),
         )
         return
 
     bm.compare(
         {"tileops": op, **baselines},
         *inputs,
-        evidence=dict.fromkeys(
-            ("tileops", *baselines), Exact(rtol=_BASELINE_RTOL, atol=_BASELINE_ATOL)
-        ),
+        evidence=dict.fromkeys(("tileops", *baselines), Exact(**baseline_tolerance)),
     )
 
 

@@ -18,9 +18,6 @@ from tests.ops.reduction_test_utils import reduction_tolerance
 from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 from workloads.device import run_device
 
-_SHAPE = (4, 8, 256)
-_UNALIGNED_SHAPE = (4, 8, 255)  # innermost off a tile multiple: the masked-load boundary
-
 _DIMS = [
     pytest.param(-1, id="dim=int"),
     pytest.param((0, 2), id="dim=tuple"),
@@ -67,8 +64,9 @@ def _check(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
 @pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
 def test_the_output_shape_matches_torch(op_cls, ref_fn, dim, keepdim) -> None:
     """The two axes that pick branches, crossed: ``dim=None, keepdim=False`` is 0-D."""
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=torch.float16, device=run_device())
+    x = torch.randn(*shape, dtype=torch.float16, device=run_device())
 
     _check(op_cls, ref_fn, x, dim, keepdim, correction=1)
 
@@ -80,8 +78,9 @@ def test_the_output_shape_matches_torch(op_cls, ref_fn, dim, keepdim) -> None:
 )
 def test_every_declared_dtype_matches_torch(op_cls, ref_fn, dtype) -> None:
     """Swept, not crossed: the element type reaches no branch the shape axes do not."""
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device=run_device())
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
 
     _check(op_cls, ref_fn, x, dim=-1, keepdim=False, correction=1)
 
@@ -97,8 +96,9 @@ def test_a_zero_correction_matches_torch(op_cls, ref_fn, dim) -> None:
     ``dim=(0, 2)`` bakes the correction into the edge-axis merge instead of the
     rows kernel, so both denominators are exercised.
     """
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=torch.float16, device=run_device())
+    x = torch.randn(*shape, dtype=torch.float16, device=run_device())
 
     _check(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=0)
 
@@ -117,8 +117,9 @@ def test_edge_axis_variance_keeps_a_large_mean_fp16() -> None:
 @pytest.mark.parametrize("dim", _DIMS)
 def test_an_unaligned_innermost_dim_matches_torch(op_cls, ref_fn, dim) -> None:
     """255 flushes the masked-load boundary that a tile-multiple extent skips."""
+    unaligned_shape = (4, 8, 255)
     torch.manual_seed(0)
-    x = torch.randn(*_UNALIGNED_SHAPE, dtype=torch.float16, device=run_device())
+    x = torch.randn(*unaligned_shape, dtype=torch.float16, device=run_device())
 
     _check(op_cls, ref_fn, x, dim, keepdim=False, correction=1)
 
@@ -126,8 +127,9 @@ def test_an_unaligned_innermost_dim_matches_torch(op_cls, ref_fn, dim) -> None:
 @pytest.mark.smoke
 def test_var_mean_returns_the_pair_in_torch_s_order() -> None:
     """The only shape-of-return difference in the family, so the only test that needs it."""
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=torch.float16, device=run_device())
+    x = torch.randn(*shape, dtype=torch.float16, device=run_device())
 
     out = VarMeanFwdOp(dim=-1)(x)
 

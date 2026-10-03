@@ -37,15 +37,6 @@ __all__ = [
     "vllm_op",
 ]
 
-# docs/design/testing.md's per-dtype tolerances. A baseline is checked at the same
-# strength a test checks an op: the question is the same one.
-_TOLERANCES = {
-    torch.float16: (1e-3, 1e-3),
-    torch.bfloat16: (1.6e-2, 1.6e-2),
-    torch.float32: (1e-5, 1e-5),
-    torch.float64: (1e-7, 1e-7),
-}
-
 DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
@@ -243,7 +234,15 @@ def reference_tolerance(dtype: torch.dtype) -> dict[str, float]:
     A dtype outside the table takes no tolerance override, leaving
     ``assert_close`` on its own defaults.
     """
-    rtol_atol = _TOLERANCES.get(dtype)
+    # docs/design/testing.md's per-dtype tolerances. A baseline is checked at the same
+    # strength a test checks an op: the question is the same one.
+    tolerances = {
+        torch.float16: (1e-3, 1e-3),
+        torch.bfloat16: (1.6e-2, 1.6e-2),
+        torch.float32: (1e-5, 1e-5),
+        torch.float64: (1e-7, 1e-7),
+    }
+    rtol_atol = tolerances.get(dtype)
     if rtol_atol is None:
         return {}
     return {"rtol": rtol_atol[0], "atol": rtol_atol[1]}

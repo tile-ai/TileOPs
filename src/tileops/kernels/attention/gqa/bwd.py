@@ -531,8 +531,9 @@ class GQABwdMmaKernel(GQABwdWgmmaPipelinedKernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """Why the call cannot fit the device's shared memory, or ``None``; reads the lower
-        bound at the narrowest query block."""
+        """Require complete MMA contractions and enough shared memory for the narrowest tile."""
+        if call.dim % 16 != 0:
+            return f"head dim must be a multiple of 16 for the MMA contraction, got {call.dim}"
         if not call.smem_budget:
             return None
         need = cls._live_bytes(call.dim, cls._query_blocks(call.dim)[-1], call.dtype.itemsize)

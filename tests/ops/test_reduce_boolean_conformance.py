@@ -31,9 +31,6 @@ _OP_CASES: list[tuple[type, Callable]] = [
     (AnyFwdOp, torch.any),
 ]
 
-_SHAPE = (4, 8, 256)
-_UNALIGNED_SHAPE = (4, 8, 255)
-
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -68,10 +65,11 @@ def test_logical_reduce_conformance(
     satisfying the spec-conformance requirement that at least one input
     dtype differ from the output dtype.
     """
+    shape = (4, 8, 256)
     torch.manual_seed(0)
     # Mix in exact zeros so All/Any actually see a False contribution.
-    raw = torch.randn(*_SHAPE, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(_SHAPE, device=run_device()) < 0.1
+    raw = torch.randn(*shape, dtype=dtype, device=run_device())
+    zero_mask = torch.rand(shape, device=run_device()) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = op_cls(dim=dim, keepdim=keepdim)
@@ -113,14 +111,15 @@ def test_logical_reduce_unaligned_innermost(
 ) -> None:
     """Unaligned innermost dim must still match PyTorch.
 
-    The aligned ``_SHAPE`` (innermost = 256, a kernel-tile multiple) bypasses
+    An aligned innermost extent of 256 (a kernel-tile multiple) bypasses
     the logical-reduce kernel's masked-load boundary path. Use 255 to flush
     the pad branch on every (op, dim-mode) cell.
     """
+    unaligned_shape = (4, 8, 255)
     torch.manual_seed(0)
     dtype = torch.float16
-    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(_UNALIGNED_SHAPE, device=run_device()) < 0.1
+    raw = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
+    zero_mask = torch.rand(unaligned_shape, device=run_device()) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = op_cls(dim=dim, keepdim=False)
@@ -158,9 +157,10 @@ def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
     spec-conformance requirement that at least one input dtype differ from
     the output dtype.
     """
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    raw = torch.randn(*_SHAPE, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(_SHAPE, device=run_device()) < 0.1
+    raw = torch.randn(*shape, dtype=dtype, device=run_device())
+    zero_mask = torch.rand(shape, device=run_device()) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = CountNonzeroFwdOp(dim=dim)
@@ -186,10 +186,11 @@ def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
 )
 def test_count_nonzero_unaligned_innermost(dim) -> None:
     """Unaligned innermost dim must still match ``torch.count_nonzero``."""
+    unaligned_shape = (4, 8, 255)
     torch.manual_seed(0)
     dtype = torch.float16
-    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(_UNALIGNED_SHAPE, device=run_device()) < 0.1
+    raw = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
+    zero_mask = torch.rand(unaligned_shape, device=run_device()) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = CountNonzeroFwdOp(dim=dim)

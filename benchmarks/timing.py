@@ -29,7 +29,6 @@ _logger = logging.getLogger("tileops.bench")
 # outweighs a microsecond kernel, so most ops take their count from _MAX_ITERS instead.
 DRY_RUN_MS = 25.0
 REPEAT_MS = 100.0
-_CALIBRATION_ITERS = 3
 # Counts are clamped: attribution requires every repeat to reach the GPU, so an
 # unbounded count turns one hiccup into a failed case.
 _MIN_ITERS = 10
@@ -50,13 +49,11 @@ _CALLBACKS_REGISTERED = False
 # few megabytes stalls iterations of a short call. Only latency_ms picks the stall up;
 # the records are the same either way.
 _BUFFER_BYTES = 256 * 1024
-_BUFFER_ALIGN = 8
 # What the next buffer request answers with. A phase that lost records raises it for
 # the retry: a stall costs one iteration's latency_ms, a lost record costs the case.
 _buffer_bytes = _BUFFER_BYTES
 _KERNELS: list[dict[str, Any]] = []
 _ITERATION_OF: dict[int, int] = {}
-_ATTRIBUTION_ATTEMPTS = 3
 _DROPPED_COUNT_UNREADABLE = False
 _DROP_COUNTER_LIVE: Optional[bool] = None
 # Pushed around the L2 flush and anything else run between iterations. Labelling that
@@ -106,7 +103,8 @@ def _load_cupti():
 
 
 def _buffer_requested():
-    return _buffer_bytes, _BUFFER_ALIGN
+    buffer_alignment = 8
+    return _buffer_bytes, buffer_alignment
 
 
 def _read_dropped() -> Optional[int]:
@@ -485,8 +483,9 @@ def _collect_attributed(
     and only its reading is gone, so the phase is run again, each attempt asking for a
     larger buffer. Anything the drop counter does not explain fails on the first attempt.
     """
+    attribution_attempts = 3
     buffer_bytes = _BUFFER_BYTES
-    for attempt in range(_ATTRIBUTION_ATTEMPTS):
+    for attempt in range(attribution_attempts):
         trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
         try:
             return _attributed_samples(
@@ -498,7 +497,7 @@ def _collect_attributed(
             )
         except _CUPTIRecordsLostError as exc:
             _bench_meta.attribution_retries = attempt + 1
-            if attempt == _ATTRIBUTION_ATTEMPTS - 1:
+            if attempt == attribution_attempts - 1:
                 raise
             buffer_bytes *= 4
             _logger.warning(
@@ -506,7 +505,7 @@ def _collect_attributed(
                 exc,
                 buffer_bytes // 1024,
                 attempt + 2,
-                _ATTRIBUTION_ATTEMPTS,
+                attribution_attempts,
             )
     raise AssertionError("the loop returns or raises on its last attempt")
 
@@ -674,14 +673,15 @@ def _bench_kernel(
     _flush_l2()
     _call_raw()
     torch.cuda.synchronize()
+    calibration_iters = 3
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     start.record()
-    for _ in range(_CALIBRATION_ITERS):
+    for _ in range(calibration_iters):
         _flush_l2()
         _call_raw()
     end.record()
     torch.cuda.synchronize()
-    per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
+    per_iter_ms = max(start.elapsed_time(end) / calibration_iters, 1e-6)
 
     n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters, min_iters)
     n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters, min_iters)

@@ -34,22 +34,6 @@ from workloads.elementwise import (
 )
 from workloads.workload_base import FixtureBase
 
-# Scenario -> (tokens, width).
-_STRATEGY_SHAPES = {
-    "llama-hidden-1k-tokens": (1024, 4096),
-    "llama-7b-ffn-1k-tokens": (1024, 11008),
-    "llama-hidden-4k-tokens": (4096, 4096),
-}
-_STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-_STRATEGY_KERNELS = [
-    ("silu_and_mul", SiluAndMulFwdKernel),
-    ("gelu_and_mul", GeluAndMulFwdKernel),
-    ("gelu_tanh_and_mul", GeluTanhAndMulFwdKernel),
-]
-# How far behind the fastest strategy the default may sit before the choice is
-# stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
-_STRATEGY_MARGIN = 1.25
-
 
 # flashinfer names its fused gated kernels after the same three activations and
 # takes the same concatenated input, so a key here doubles as its entry-point name.
@@ -101,19 +85,31 @@ def _strategy_params():
     bodies, whose instruction and register cost can flip the direct-vs-explicit
     result — so each kernel keeps a sentinel, without re-sweeping shapes.
     """
-    (sweep_op, sweep_cls), sentinels = _STRATEGY_KERNELS[0], _STRATEGY_KERNELS[1:]
-    ref_scenario, ref_dtype = next(iter(_STRATEGY_SHAPES)), torch.float16
+    # Scenario -> (tokens, width).
+    strategy_shapes = {
+        "llama-hidden-1k-tokens": (1024, 4096),
+        "llama-7b-ffn-1k-tokens": (1024, 11008),
+        "llama-hidden-4k-tokens": (4096, 4096),
+    }
+    strategy_dtypes = (torch.float16, torch.bfloat16, torch.float32)
+    strategy_kernels = [
+        ("silu_and_mul", SiluAndMulFwdKernel),
+        ("gelu_and_mul", GeluAndMulFwdKernel),
+        ("gelu_tanh_and_mul", GeluTanhAndMulFwdKernel),
+    ]
+    (sweep_op, sweep_cls), sentinels = strategy_kernels[0], strategy_kernels[1:]
+    ref_scenario, ref_dtype = next(iter(strategy_shapes)), torch.float16
 
     def case(op_name, scenario, dtype, kernel_cls, mark):
         case_id = f"{op_name}-{scenario}-{str(dtype).removeprefix('torch.')}"
-        M, N = _STRATEGY_SHAPES[scenario]
+        M, N = strategy_shapes[scenario]
         return pytest.param(op_name, M, N, dtype, kernel_cls, marks=mark, id=case_id)
 
     params = []
-    for scenario in _STRATEGY_SHAPES:
+    for scenario in strategy_shapes:
         mark = pytest.mark.smoke if scenario == ref_scenario else pytest.mark.full
         params.append(case(sweep_op, scenario, ref_dtype, sweep_cls, mark))
-    for dtype in _STRATEGY_DTYPES[1:]:
+    for dtype in strategy_dtypes[1:]:
         params.append(case(sweep_op, ref_scenario, dtype, sweep_cls, pytest.mark.full))
     for op_name, kernel_cls in sentinels:
         params.append(case(op_name, ref_scenario, ref_dtype, kernel_cls, pytest.mark.full))
@@ -146,9 +142,12 @@ def test_fused_gated_default_strategy_is_the_fast_one(
         with torch.no_grad():
             timings[strategy] = median_busy_ms(bench_kernel(kernel, args=inputs))
 
+    # How far behind the fastest strategy the default may sit before the choice is
+    # stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
+    strategy_margin = 1.25
     default = kernel_cls.DEFAULT_STRATEGY
     fastest = min(timings, key=timings.get)
-    assert timings[default] <= timings[fastest] * _STRATEGY_MARGIN, (
+    assert timings[default] <= timings[fastest] * strategy_margin, (
         f"{kernel_cls.__name__} {M}x{N} {dtype}: DEFAULT_STRATEGY is {default} at "
         f"{timings[default] * 1e3:.2f}us, but {fastest} runs at "
         f"{timings[fastest] * 1e3:.2f}us"

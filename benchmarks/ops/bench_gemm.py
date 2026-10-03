@@ -27,9 +27,6 @@ from workloads.gemm import (
     dequantize_w4a16_weight,
 )
 
-_FP8_BLOCK = 128
-
-
 CUBLASLT_TAG = "cublaslt-best"
 
 
@@ -144,15 +141,16 @@ def _flashinfer_fp8_blockscale_1d2d(
     Raises:
         ValueError: When the row falls outside that path.
     """
+    block_size = 128
     gemm = flashinfer_op("gemm.fp8_blockscale_gemm_sm90")
     a, b, scale_a, scale_b = inputs[:4]
     if len(inputs) == 5:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline does not support bias.")
     if workload.out_dtype != torch.bfloat16:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires bfloat16 output.")
-    if workload.k % _FP8_BLOCK != 0:
+    if workload.k % block_size != 0:
         raise ValueError(
-            f"FlashInfer FP8 blockscale GEMM baseline requires k divisible by {_FP8_BLOCK}."
+            f"FlashInfer FP8 blockscale GEMM baseline requires k divisible by {block_size}."
         )
     m, scale_k = scale_a.shape
     padded_m = -(-m // 4) * 4
@@ -224,6 +222,7 @@ def _deepgemm_fp8_per_tensor(
     Raises:
         ValueError: When the row falls outside that path.
     """
+    block_size = 128
     gemm = deepgemm_op("fp8_gemm_nt")
     align = deepgemm_op("get_mn_major_tma_aligned_tensor")
 
@@ -237,15 +236,15 @@ def _deepgemm_fp8_per_tensor(
         )
     if workload.out_dtype != torch.bfloat16:
         raise ValueError("DeepGEMM FP8 GEMM baseline requires bfloat16 output.")
-    if workload.n % _FP8_BLOCK or workload.k % _FP8_BLOCK:
+    if workload.n % block_size or workload.k % block_size:
         raise ValueError(
-            f"DeepGEMM FP8 GEMM baseline requires n and k divisible by {_FP8_BLOCK}, "
+            f"DeepGEMM FP8 GEMM baseline requires n and k divisible by {block_size}, "
             f"got n={workload.n} k={workload.k}"
         )
 
     m, n, k = workload.m, workload.n, workload.k
-    aligned_scale_a = align(scale_a.expand(m, k // _FP8_BLOCK).contiguous())
-    block_scale_b = scale_b.expand(n // _FP8_BLOCK, k // _FP8_BLOCK).contiguous()
+    aligned_scale_a = align(scale_a.expand(m, k // block_size).contiguous())
+    block_scale_b = scale_b.expand(n // block_size, k // block_size).contiguous()
 
     def run(a: torch.Tensor, b: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
         out = torch.empty((m, n), dtype=workload.out_dtype, device=a.device)

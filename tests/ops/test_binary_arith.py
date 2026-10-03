@@ -166,16 +166,6 @@ def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
 
 # Broadcast pattern tests for all binary arith ops (L3)
 
-# Broadcast patterns: (a_shape, b_shape)
-_BROADCAST_PATTERNS = [
-    # bias-add: (B,S,D) + (1,1,D)
-    ((2, 64, 128), (1, 1, 128)),
-    # row broadcast: (B,S,D) + (B,S,1)
-    ((2, 64, 128), (2, 64, 1)),
-    # scalar broadcast: (M,N) + (1,1)
-    ((64, 128), (1, 1)),
-]
-
 # (op_name, op_cls, ref_fn, gen_a, gen_b)
 _ARITH_BROADCAST_OPS = [
     (
@@ -245,25 +235,35 @@ _ARITH_BROADCAST_OPS = [
 
 
 class ArithBroadcastFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_name, op_cls, ref_fn, gen_a, gen_b, a_shape, b_shape",
-            [
-                pytest.param(
-                    name,
-                    cls,
-                    ref,
-                    ga,
-                    gb,
-                    a_s,
-                    b_s,
-                    marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
-                )
-                for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
-                for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        patterns = [
+            # bias-add: (B,S,D) + (1,1,D)
+            ((2, 64, 128), (1, 1, 128)),
+            # row broadcast: (B,S,D) + (B,S,1)
+            ((2, 64, 128), (2, 64, 1)),
+            # scalar broadcast: (M,N) + (1,1)
+            ((64, 128), (1, 1)),
+        ]
+        return [
+            (
+                "op_name, op_cls, ref_fn, gen_a, gen_b, a_shape, b_shape",
+                [
+                    pytest.param(
+                        name,
+                        cls,
+                        ref,
+                        ga,
+                        gb,
+                        a_s,
+                        b_s,
+                        marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
+                    )
+                    for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
+                    for i, (a_s, b_s) in enumerate(patterns)
+                ],
+            ),
+        ]
 
 
 @ArithBroadcastFixture

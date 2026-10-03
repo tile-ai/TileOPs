@@ -26,30 +26,6 @@ from fma_throughput import _ClockSampler
 
 from tileops.perf import load_profile
 
-# Square GEMMs large enough to saturate the tensor cores; the sweep exists
-# because the cuBLAS-peak size moves with dtype and architecture.
-_SIZES = (4096, 8192, 16384)
-
-_RUNS = 5
-# Long enough to average over several power-cap clock oscillations; short runs
-# sample one slice of the cycle and spread by >10% run to run.
-_TARGET_RUN_MS = 4000.0
-
-# Burst: rate over the first short slice of load after _COOLDOWN_S of idle,
-# before the power cap engages.  Reps are sized from the sustained per-launch
-# time, so at burst clocks the timed slice is somewhat shorter than the
-# nominal window.  The idle is under the board's clock policy as-is; no
-# power or temperature floor is verified.
-_BURST_WINDOW_MS = 200.0
-_BURST_ATTEMPTS = 3
-_COOLDOWN_S = 5.0
-
-# Warmup ends when two consecutive windows agree on the SM clock to within one
-# sm_90 boost bin (15 MHz) — a fixed duration only rides the power-cap ramp.
-_SETTLE_WINDOW_MS = 2000.0
-_SETTLE_TOL_MHZ = 15.0
-_SETTLE_CAP_MS = 30000.0
-
 
 def _telemetry_index():
     """Map the torch device to its nvidia-smi index via the device UUID."""
@@ -102,17 +78,21 @@ def _settle(launch, sampler):
     launch loop keeps the GPU busy — a one-shot read here would see the clock
     after the queue drained, not the clock under load.
     """
+    # Warmup ends when consecutive windows agree within one sm_90 boost bin.
+    settle_window_ms = 2000.0
+    settle_tol_mhz = 15.0
+    settle_cap_ms = 30000.0
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     start.record()
     elapsed, window_start, prev_mhz, mhz = 0.0, 0.0, None, None
     mark = len(sampler.samples) if sampler else 0
-    while elapsed < _SETTLE_CAP_MS:
+    while elapsed < settle_cap_ms:
         for _ in range(5):
             launch()
         end.record()
         end.synchronize()
         elapsed = start.elapsed_time(end)
-        if elapsed - window_start < _SETTLE_WINDOW_MS:
+        if elapsed - window_start < settle_window_ms:
             continue
         window_start = elapsed
         if sampler is None:
@@ -124,14 +104,16 @@ def _settle(launch, sampler):
         if not window:
             continue
         mhz = statistics.median(window)
-        if prev_mhz is not None and abs(mhz - prev_mhz) <= _SETTLE_TOL_MHZ:
+        if prev_mhz is not None and abs(mhz - prev_mhz) <= settle_tol_mhz:
             return mhz
         prev_mhz = mhz
     return mhz
 
 
-def _time_gemm(launch, flops):
-    """Median TFLOP/s over _RUNS timed runs, plus the run-to-run spread."""
+def _time_gemm(launch, flops, *, runs):
+    """Median TFLOP/s over the requested timed runs, plus the run-to-run spread."""
+    # Average over several power-cap clock oscillations; short runs can spread by >10%.
+    target_run_ms = 4000.0
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
 
     start.record()
@@ -139,10 +121,10 @@ def _time_gemm(launch, flops):
         launch()
     end.record()
     end.synchronize()
-    reps = max(1, int(_TARGET_RUN_MS / max(start.elapsed_time(end) / 3, 1e-3)))
+    reps = max(1, int(target_run_ms / max(start.elapsed_time(end) / 3, 1e-3)))
 
     ms_per_launch = []
-    for _ in range(_RUNS):
+    for _ in range(runs):
         start.record()
         for _ in range(reps):
             launch()
@@ -161,14 +143,19 @@ def _burst_gemm(launch, flops, ms_per_launch):
     Sustained rates sit at the power-cap clock; a kernel that starts with power
     headroom (after idle, or between memory-bound phases) runs at boost clocks
     until the cap engages.  Each attempt drains the queue, idles the board, and
-    times only the first _BURST_WINDOW_MS of load.
+    times only the first short window of load.
     """
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-    reps = max(1, int(_BURST_WINDOW_MS / max(ms_per_launch, 1e-3)))
+    # Size the burst from sustained per-launch time; at boost clocks it is shorter.
+    # Idle uses the board's clock policy as-is, without a power or temperature floor.
+    burst_window_ms = 200.0
+    burst_attempts = 3
+    cooldown_s = 5.0
+    reps = max(1, int(burst_window_ms / max(ms_per_launch, 1e-3)))
     rates = []
-    for _ in range(_BURST_ATTEMPTS):
+    for _ in range(burst_attempts):
         torch.cuda.synchronize()
-        time.sleep(_COOLDOWN_S)
+        time.sleep(cooldown_s)
         start.record()
         for _ in range(reps):
             launch()
@@ -186,6 +173,9 @@ def _enable_tf32():
 
 
 def main():
+    # Saturating square GEMMs: the cuBLAS-peak size moves with dtype and architecture.
+    sizes = (4096, 8192, 16384)
+    runs = 5
     parser = argparse.ArgumentParser(description="Tensor-core GEMM throughput via cuBLAS")
     parser.add_argument("--profile", default="h200", help="GPU profile name")
     args = parser.parse_args()
@@ -211,7 +201,7 @@ def main():
         f"Profile: {args.profile} | GPU: {torch.cuda.get_device_name(device)} (smi index {gpu_index})"
     )
     print(f"torch {torch.__version__}, CUDA {torch.version.cuda}")
-    print(f"Each config: settle to steady clock, then {_RUNS} runs; calibration uses the median\n")
+    print(f"Each config: settle to steady clock, then {runs} runs; calibration uses the median\n")
     print("dtype,n,median_tflops,spread_pct,burst_tflops,settled_mhz,pct_of_theo")
 
     results = {}
@@ -238,10 +228,10 @@ def main():
         if sampler:
             sampler.start()
         try:
-            for n in _SIZES:
+            for n in sizes:
                 launch, flops = _make_gemm(dtype_name, n, device)
                 settled = _settle(launch, sampler)
-                med, spread, ms_per_launch = _time_gemm(launch, flops)
+                med, spread, ms_per_launch = _time_gemm(launch, flops, runs=runs)
                 configs.append((n, flops, ms_per_launch, med, spread, settled))
                 if med > best[0]:
                     best = (med, n, spread)
