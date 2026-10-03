@@ -447,9 +447,11 @@ def _nsa_topk_torch(
         curr = (i_t // bs)[:, None, None, None]  # the block the token sits in
         o_c = torch.arange(n_chunk, device=device)
 
-        q_seq = q[bos:eos].view(n_token, head_kv, group, dim)
-        k_seq = k_cmp[boc : boc + n_chunk]
-        acc_s = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n").to(accum_dtype)
+        # Keep the dot products in FP32, as the kernel does before ranking.
+        # Casting after a half matmul has already rounded can flip close scores.
+        q_seq = q[bos:eos].view(n_token, head_kv, group, dim).to(accum_dtype)
+        k_seq = k_cmp[boc : boc + n_chunk].to(accum_dtype)
+        acc_s = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n")
 
         # The log-sum-exp over the closed blocks, which the kernel's running softmax
         # arrives at the same way. A token with none of them attends to nothing, and

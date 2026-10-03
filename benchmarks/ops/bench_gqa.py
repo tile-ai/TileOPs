@@ -10,7 +10,6 @@ from torch.nn import functional as F
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flashinfer_op,
     reference_tolerance,
@@ -20,6 +19,7 @@ from benchmarks.benchmark_base import (
     backward_of,
     manifest_calls,
 )
+from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -210,20 +210,16 @@ def test_gqa_dense_decode_bench(call) -> None:
     op = GroupedQueryAttentionDenseFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
-    tolerance = reference_tolerance(workload.dtype)
 
     fa3_fn = _fa3_gqa_dense_decode(workload)
     if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, op, *inputs, **tolerance)
         functors["fa3"] = fa3_fn
 
     flashinfer_fn = _flashinfer_gqa_dense_decode(workload, *inputs)
     if flashinfer_fn is not None:
-        assert_matches_reference(flashinfer_fn, op, *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn
 
     if fa3_fn is None and flashinfer_fn is None:
-        assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
         functors["torch-ref"] = workload.ref_program
 
     bm.compare(functors, *inputs)
@@ -244,15 +240,10 @@ def test_gqa_dense_prefill_bench(call) -> None:
     bm = ManifestBenchmark(op, workload)
     # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no
     # per-dtype one covers dequantization against a 16-bit reference.
-    assert_matches_reference(
-        op,
-        workload.ref_program,
-        *inputs,
-        **(
-            {"atol": 8e-2, "rtol": 2e-2}
-            if workload.dtype == torch.float8_e4m3fn
-            else reference_tolerance(workload.dtype)
-        ),
+    tolerance = (
+        {"atol": 8e-2, "rtol": 2e-2}
+        if workload.dtype == torch.float8_e4m3fn
+        else reference_tolerance(workload.dtype)
     )
 
     bm.compare(
@@ -262,6 +253,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={"tileops": Exact(**tolerance), TORCH_COMPILE_TAG: Exact(**tolerance)},
     )
 
 
@@ -416,23 +408,19 @@ def test_gqa_varlen_fwd_bench(call) -> None:
 
     op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    tolerance = reference_tolerance(workload.dtype)
 
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
     }
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
     rotate = _varlen_rope(workload, *inputs)
     fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr, rotate)
     if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, functors["torch-ref"], *inputs, **tolerance)
         functors["fa3"] = fa3_fn
     flashinfer_fn = _flashinfer_gqa_varlen(
         workload, workload.wl, workload.wr, *inputs, rotate=rotate
     )
     if flashinfer_fn is not None:
-        assert_matches_reference(flashinfer_fn, functors["torch-ref"], *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn
     bm.compare(functors, *inputs)
 
@@ -459,14 +447,13 @@ def test_gqa_varlen_scaled_bench(call) -> None:
         if workload.dtype == torch.float8_e4m3fn
         else reference_tolerance(workload.dtype)
     )
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
 
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
     if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, workload.ref_program, *inputs[:8], **tolerance)
         functors["fa3"] = (fa3_fn, inputs[:8])
-    bm.compare(functors, *inputs)
+    checked = Exact(**tolerance, controls=(zeroed_input(0, "query-zeroed"),))
+    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, checked))
 
 
 def _fa3_gqa_prefill_paged(workload, cache_dtype, fuse_rope, softcap):
@@ -517,14 +504,11 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     cache_dtype = None if workload.cache_dtype == workload.dtype else workload.cache_dtype
-    tolerance = reference_tolerance(workload.dtype)
     # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
     # depends on what those slots held, so every tag shares the pages.
     functors = {"tileops": op, "torch-ref": workload.ref_program}
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
     fa3_fn = _fa3_gqa_prefill_paged(workload, cache_dtype, workload.fuse_rope, workload.softcap)
     if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
         functors["fa3"] = fa3_fn
     bm.compare(functors, *inputs)
 
@@ -650,15 +634,11 @@ def test_gqa_paged_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionPagedFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    tolerance = reference_tolerance(workload.dtype)
     functors = {"tileops": op, "torch-ref": workload.ref_program}
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
         functors["fa3"] = fa3_fn
     flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
     if flashinfer_fn is not None:
-        assert_matches_reference(flashinfer_fn, workload.ref_program, *inputs, **tolerance)
         functors[FLASHINFER_TAG] = flashinfer_fn
     bm.compare(functors, *inputs)

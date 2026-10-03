@@ -538,7 +538,7 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
 
     ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
     to the output shape and flattens them, so this PrimFunc sees three
-    contiguous 1-D tensors of size ``N``, and computes in the input dtype.
+    contiguous 1-D tensors of size ``N``. Half inputs use FP32 intermediates.
 
     All three inputs move through register fragments so they share one
     vectorized access path; the result is written back into ``a``'s fragment.
@@ -564,7 +564,14 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
                 T.copy(w[bx * block_size : (bx + 1) * block_size], w_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    a_reg[k] = a_reg[k] + w_reg[k] * (b_reg[k] - a_reg[k])
+                    start = T.cast(a_reg[k], "float32")
+                    end = T.cast(b_reg[k], "float32")
+                    weight = T.cast(w_reg[k], "float32")
+                    a_reg[k] = T.if_then_else(
+                        T.abs(weight) < 0.5,
+                        start + weight * (end - start),
+                        end - (end - start) * (1 - weight),
+                    )
                 T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main

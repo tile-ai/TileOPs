@@ -154,3 +154,15 @@ def test_assert_output_spec_rejects_another_dtype_or_shape():
         assert_output_spec(torch.zeros(3, 3, dtype=torch.float16), spec, "tag")
     with pytest.raises(AssertionError, match="not a tensor"):
         assert_output_spec((torch.zeros(2, 3, dtype=torch.float16),), spec, "tag")
+
+
+def test_compiled_reference_warmup_updates_state_once():
+    """Graph validation must not secretly execute the stateful reference first."""
+
+    def advance(state):
+        return state.add_(1)
+
+    state = torch.ones(4)
+    result = compiled_reference(advance)(state)
+    torch.testing.assert_close(state, torch.full_like(state, 2))
+    torch.testing.assert_close(result, state)

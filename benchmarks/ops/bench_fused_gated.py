@@ -11,13 +11,13 @@ import torch
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flashinfer_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
+from benchmarks.verification import Exact
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluTanhAndMulFwdKernel,
@@ -58,8 +58,11 @@ def _profile_fused_gated(op_cls, call, library: str) -> None:
     op = op_cls(**workload.arguments())
     inputs = workload.gen_inputs()
     flashinfer_fn = flashinfer_op(library)
-    assert_matches_reference(
-        flashinfer_fn, workload.ref_program, *inputs, **reference_tolerance(workload.dtype)
+    # Fused activation and multiply: use the same bound as test_fused_gated.py.
+    tolerance = (
+        {"rtol": 1e-2, "atol": 1e-2}
+        if workload.dtype == torch.float16
+        else reference_tolerance(workload.dtype)
     )
     ManifestBenchmark(op, workload).compare(
         {
@@ -69,6 +72,9 @@ def _profile_fused_gated(op_cls, call, library: str) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={
+            tag: Exact(**tolerance) for tag in ("tileops", FLASHINFER_TAG, TORCH_COMPILE_TAG)
+        },
     )
 
 

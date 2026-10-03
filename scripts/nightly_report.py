@@ -601,7 +601,7 @@ def _unverified_rows(bench_ops: dict) -> list[tuple[str, str, str]]:
                     continue
                 tag = key[: -len("_no_ratio")]
                 # The alias conftest writes beside the first baseline's own tag.
-                if tag == "baseline":
+                if tag == "baseline" and f"{cfg.get('baseline_tag', '')}_no_ratio" in cfg:
                     continue
                 found.append(
                     (op, cfg.get("config", ""), cfg.get(f"{tag}_unverified", "unestablished"))

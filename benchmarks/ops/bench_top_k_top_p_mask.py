@@ -11,13 +11,13 @@ import torch
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_output_spec,
     compiled_reference,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import TopKTopPMaskFwdOp
-from workloads.sampling import TopKTopPMaskWorkload, top_k_mask
+from workloads.sampling import TopKTopPMaskWorkload, probability_above, top_k_mask
 
 # Rows vLLM's Triton path takes: it reads float32 logits only, and it is the path
 # ``apply_top_k_top_p`` chooses at this many rows or more. Below it the sort path runs,
@@ -36,7 +36,6 @@ def test_top_k_top_p_mask_bench(call) -> None:
     workload = TopKTopPMaskWorkload(call)
     logits, k, p = workload.gen_inputs()
     reference = workload.ref_program(logits, k, p)
-    spec = call.specs["masked_logits"]
 
     op = TopKTopPMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -46,6 +45,13 @@ def test_top_k_top_p_mask_bench(call) -> None:
         "torch-ref": workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
+
+    # Same FP32 cumulative-probability boundary tolerance as the op tests.
+    near = (probability_above(top_k_mask(logits, k).float().softmax(-1)) - p[:, None]).abs() <= 1e-4
+    evidence = dict.fromkeys(
+        functors,
+        Custom(logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"),
+    )
 
     # FlashInfer 0.6.16 exposes no mask-only top-k-top-p entry point, only
     # ``top_k_top_p_sampling_from_logits``, which draws a token, so no row carries a
@@ -63,18 +69,13 @@ def test_top_k_top_p_mask_bench(call) -> None:
         def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
             return apply_top_k_top_p(vllm_logits.copy_(logits), vllm_k, p)
 
-        # Hand-written rather than ``assert_matches_reference``: the helper compares every
-        # entry, and the two legitimately disagree inside the tied run at the cut.
-        got = vllm_mask(logits, k, p)
         kept = reference != -float("inf")
-        taken = got != -float("inf")
         probs = top_k_mask(logits, k).float().softmax(-1)
         lowest = probs.masked_fill(~kept, float("inf")).amin(-1, keepdim=True)
-        assert ((probs / lowest - 1).abs()[taken ^ kept] <= _MARGIN).all()
-        assert torch.equal(got[taken & kept], reference[taken & kept])
+        near = (probs / lowest - 1).abs() <= _MARGIN
+        evidence[VLLM_TAG] = Custom(
+            logit_mask_validator(logits, near), "mask ties within nucleus rounding boundary"
+        )
         functors[VLLM_TAG] = vllm_mask
 
-    for tag, functor in functors.items():
-        assert_output_spec(functor(logits, k, p), spec, tag)
-
-    bm.compare(functors, logits, k, p)
+    bm.compare(functors, logits, k, p, evidence=evidence)

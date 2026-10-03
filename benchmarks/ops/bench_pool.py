@@ -14,7 +14,6 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -349,14 +348,27 @@ def test_mean_pooling_bench(call) -> None:
     inputs = workload.gen_inputs()
     bm = ManifestBenchmark(op, workload)
 
+    reference = workload.ref_program
+    if len(inputs) > 1 and inputs[1] is not None:
+        # Specialize the fixed workload metadata before tracing; a data-dependent
+        # Python loop over CUDA offsets would silently fall back to eager execution.
+        offsets = inputs[1].tolist()
+        slices = [
+            (start, min(start + workload.chunk_size, end))
+            for begin, end in zip(offsets[:-1], offsets[1:], strict=True)
+            for start in range(begin, end, workload.chunk_size)
+        ]
+
+        def reference(x, *_metadata):
+            return torch.stack([x[:, begin:end].mean(1) for begin, end in slices], dim=1)
+
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+        TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)
     if view_mean is not None:
-        assert_matches_reference(view_mean, workload.ref_program, *inputs)
         functors["torch-view-mean"] = view_mean
 
     bm.compare(functors, *inputs)

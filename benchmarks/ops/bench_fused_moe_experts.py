@@ -60,6 +60,7 @@ except ImportError:
         )
 
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedMoEExpertsFwdOp,
@@ -72,12 +73,6 @@ from tileops.ops.moe import (
 from workloads.moe import IndexedExpertMLPWorkload, MoeExpertsWorkload
 
 
-def _assert_matches(workload, inputs) -> None:
-    torch.testing.assert_close(
-        inputs[0].float(), workload.ref_program(*inputs).float(), rtol=3e-2, atol=3e-2
-    )
-
-
 @pytest.mark.parametrize("call", manifest_calls(FusedMoEExpertsFwdOp))
 def test_moe_experts_bench(call) -> None:
     workload = MoeExpertsWorkload(call)
@@ -85,8 +80,6 @@ def test_moe_experts_bench(call) -> None:
     output, hidden, w1, w2, topk_weights, topk_ids = inputs
     experts = FusedMoEExpertsFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(experts, workload)
-    experts(*inputs)
-    _assert_matches(workload, inputs)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
         experts.forward(output, hidden, w1, w2, topk_weights, topk_ids)
@@ -99,9 +92,6 @@ def test_moe_experts_bench(call) -> None:
 
         def _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids):
             return _vllm_fused_experts(hidden, w1, w2, topk_weights, topk_ids)
-
-        _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
-        torch.cuda.synchronize()
 
         functors["vllm-triton"] = _vllm_triton_fn
 
@@ -127,7 +117,11 @@ def test_moe_experts_bench(call) -> None:
 
         functors["torch-ref"] = _torch_fn
 
-    bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)
+    bm.compare(
+        {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(IndexedExpertMLPFwdOp))
@@ -136,8 +130,6 @@ def test_indexed_expert_mlp_bench(call) -> None:
     inputs = workload.gen_inputs()
     output, hidden, w1, w2, topk_weights, topk_ids = inputs
     indexed = IndexedExpertMLPFwdOp(**call.arguments({}))
-    indexed(*inputs)
-    _assert_matches(workload, inputs)
 
     def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
         indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids)
@@ -159,8 +151,9 @@ def test_indexed_expert_mlp_bench(call) -> None:
         return staged_output
 
     functors = {"tileops": _indexed_fn, "staged": _staged_fn}
-    for fn in functors.values():
-        fn(hidden, w1, w2, topk_weights, topk_ids)
-    torch.cuda.synchronize()
 
-    ManifestBenchmark(indexed, workload).compare(functors, hidden, w1, w2, topk_weights, topk_ids)
+    ManifestBenchmark(indexed, workload).compare(
+        {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(rtol=3e-2, atol=3e-2)),
+    )

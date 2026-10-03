@@ -26,6 +26,7 @@ from benchmarks.baselines import (
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
 
@@ -121,14 +122,23 @@ def _profile_conv(
 
         bm.compare(
             {
-                "tileops": op_with_static_weight,
-                **{tag: bind_static_weight(fn) for tag, fn in baselines.items()},
+                "tileops": (op_with_static_weight, (x,)),
+                **{tag: (bind_static_weight(fn), (x,)) for tag, fn in baselines.items()},
             },
-            x,
+            *inputs,
+            evidence=dict.fromkeys(
+                ("tileops", *baselines), Exact(rtol=_BASELINE_RTOL, atol=_BASELINE_ATOL)
+            ),
         )
         return
 
-    bm.compare({"tileops": op, **baselines}, *inputs)
+    bm.compare(
+        {"tileops": op, **baselines},
+        *inputs,
+        evidence=dict.fromkeys(
+            ("tileops", *baselines), Exact(rtol=_BASELINE_RTOL, atol=_BASELINE_ATOL)
+        ),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(Conv1dFwdOp))

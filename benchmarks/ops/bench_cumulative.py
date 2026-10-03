@@ -15,12 +15,12 @@ import pytest
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 from workloads.reduction import CumulativeCall
 
@@ -43,7 +43,6 @@ def test_cumsum_bench(call) -> None:
     # with the square root of the scanned length.
     tolerance = reference_tolerance(dtype)
     tolerance["atol"] *= math.sqrt(workload.shape[workload.dim])
-    assert_matches_reference(flaggems_fn, workload.ref_program, *inputs, **tolerance)
 
     bm.compare(
         {
@@ -53,6 +52,9 @@ def test_cumsum_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence=dict.fromkeys(
+            ("tileops", FLAGGEMS_TAG, "torch", TORCH_COMPILE_TAG), Exact(**tolerance)
+        ),
     )
 
 

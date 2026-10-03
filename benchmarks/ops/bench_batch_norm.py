@@ -18,6 +18,7 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.norm import BatchNormBwdCall, RunningStatsCall
 
@@ -118,4 +119,9 @@ def test_batch_norm_bwd_bench(call):
             "torch-native-batch-norm": _aten_bn_bwd,
         },
         *inputs,
+        evidence={
+            "tileops": Exact(**reference_tolerance(inputs[0].dtype)),
+            "torch-autograd": Exact(reference=_torch_bn_bwd, rtol=1e-3, atol=1e-3),
+            "torch-native-batch-norm": Exact(reference=_torch_bn_bwd, rtol=1e-3, atol=1e-3),
+        },
     )

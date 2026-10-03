@@ -1325,3 +1325,14 @@ def test_add_bool_broadcast() -> None:
     with torch.no_grad():
         out = op(a, b)
     _exact_compare(out, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_lerp_tensor_cancellation_uses_float_intermediates(dtype: torch.dtype) -> None:
+    """Rounding end-start to the storage dtype can erase a nonzero midpoint."""
+    a = torch.full((256,), -4 - 4 * torch.finfo(dtype).eps, dtype=dtype, device=run_device())
+    b = torch.full_like(a, 4)
+    w = torch.full_like(a, 0.5)
+    torch.testing.assert_close(LerpTensorFwdOp()(a, b, w), torch.lerp(a, b, w), rtol=0, atol=0)

@@ -7,7 +7,6 @@ import torch
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     reference_tolerance,
 )
@@ -114,9 +113,11 @@ def test_gla_inference_bench(call) -> None:
     workload = GLAInferenceCall(call)
     inputs = workload.gen_inputs()
     op = GLAInferenceFwdOp(**workload.arguments())
-    tolerance = reference_tolerance(inputs[0].dtype)
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
-    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        {"tileops": op, "fla": workload.ref_program},
+        *inputs,
+        evidence={"tileops": Exact(**reference_tolerance(inputs[0].dtype))},
+    )
 
 
 # Decode: against FLA's fused_recurrent_gla at T=1 when it is installed, and torch.

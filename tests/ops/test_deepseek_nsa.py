@@ -263,3 +263,32 @@ def test_nsa_topk_varlen_op(
         tune=tune,
     )
     test.check_topk(op, *inputs)
+
+
+@pytest.mark.smoke
+def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
+    """Promoting a rounded half matmul is too late to rank close candidates."""
+    torch.manual_seed(1235)
+    workload = NsaTopkWorkload(1, 512, 32, 64, 16, 1.0, 16, 32, torch.float16)
+    q, k, *metadata = workload.gen_inputs()
+    torch.testing.assert_close(
+        workload.ref_program(q, k, *metadata),
+        workload.ref_program(q.float(), k.float(), *metadata),
+        rtol=0,
+        atol=0,
+    )
+
+
+@pytest.mark.smoke
+def test_nsa_topk_close_scores_have_a_total_order() -> None:
+    """Nearby scores use quantized ties, not a non-transitive epsilon comparator."""
+    workload = NsaTopkWorkload(1, 256, 16, 16, 16, 1.0, 8, 32, torch.float16)
+    q, k, *metadata = workload.gen_inputs()
+    q = torch.zeros_like(q)
+    q[-1].fill_(1)
+    k = torch.empty_like(k)
+    k.copy_(torch.arange(k.shape[0] - 1, -1, -1, device=k.device)[:, None, None] * 2**-24)
+    op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=8, bs=32)
+    torch.testing.assert_close(
+        op(q, k, *metadata), workload.ref_program(q, k, *metadata), rtol=0, atol=0
+    )

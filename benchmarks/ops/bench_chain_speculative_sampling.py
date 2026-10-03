@@ -16,6 +16,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom
 from tileops.sampling import ChainSpeculativeSamplingFwdOp
 from workloads.sampling import ChainSpeculativeSamplingWorkload
 
@@ -61,16 +62,7 @@ def test_chain_speculative_sampling_bench(call) -> None:
     op = ChainSpeculativeSamplingFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
 
-    lengths = workload.ref_program(*inputs)[1]
-    _assert_same_acceptance(op(*inputs), lengths, num_draft, batch)
-
-    # The reference holds no graph break, so the torch-compile row times the compiled
-    # reference rather than an eager one under a compiled tag.
-    torch._dynamo.utils.counters.clear()
     compiled = compiled_reference(workload.ref_program)
-    _assert_same_acceptance(compiled(*inputs), lengths, num_draft, batch)
-    assert not torch._dynamo.utils.counters.get("graph_break", {})
-
     functors = {"tileops": op, "torch-ref": workload.ref_program, TORCH_COMPILE_TAG: compiled}
 
     # flashinfer's kernel takes the same inputs and the same Philox pair and applies the same
@@ -82,7 +74,6 @@ def test_chain_speculative_sampling_bench(call) -> None:
             draft_probs, draft_token_ids, target_probs, seed=seed, offset=offset
         )
 
-    _assert_same_acceptance(flashinfer_verify(), lengths, num_draft, batch)
     functors[FLASHINFER_TAG] = flashinfer_verify
 
     # vllm's rejection sampler works on the flattened draft positions and takes target
@@ -133,7 +124,10 @@ def test_chain_speculative_sampling_bench(call) -> None:
             metadata,
         )
 
-    _assert_same_acceptance(vllm_verify(), lengths, num_draft, batch)
     functors[VLLM_TAG] = vllm_verify
 
-    bm.compare(functors, *inputs)
+    acceptance = Custom(
+        lambda result, expected: _assert_same_acceptance(result, expected[1], num_draft, batch),
+        "independent random streams: compare accepted-prefix distributions and token structure",
+    )
+    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, acceptance))

@@ -12,6 +12,7 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_normalized_error, zeroed_input
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
 
@@ -24,6 +25,11 @@ def test_fp8_lightning_indexer_bench(call) -> None:
     op = FP8LightningIndexerFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
+    checked = Custom(
+        assert_normalized_error,
+        "symmetric normalized squared error <= 1e-3; nonfinite values match",
+        controls=(zeroed_input(0, "query-zeroed"),),
+    )
     bm.compare(
         {
             "tileops": op,
@@ -31,4 +37,5 @@ def test_fp8_lightning_indexer_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={"tileops": checked, TORCH_COMPILE_TAG: checked},
     )

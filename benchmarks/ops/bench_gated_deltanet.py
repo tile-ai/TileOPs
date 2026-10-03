@@ -2,8 +2,9 @@
 
 import pytest
 
-from benchmarks.baselines import assert_matches_reference, reference_tolerance
+from benchmarks.baselines import reference_tolerance
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall
 
@@ -13,7 +14,8 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     workload = GatedDeltaNetFwdCall(call)
     inputs = workload.gen_inputs()
     op = GatedDeltaNetFwdOp(**workload.arguments())
-    assert_matches_reference(
-        op, workload.ref_program, *inputs, **reference_tolerance(inputs[0].dtype)
+    ManifestBenchmark(op, workload).compare(
+        {"tileops": op, "fla": workload.ref_program},
+        *inputs,
+        evidence={"tileops": Exact(**reference_tolerance(inputs[0].dtype))},
     )
-    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)

@@ -9,6 +9,7 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.ops import FP8QuantFwdOp
 from workloads.quantization.fp8_quant import FP8QuantWorkload
 
@@ -32,4 +33,8 @@ def test_fp8_quant_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={
+            tag: Custom(assert_quantized, "scales checked; FP8 rounding within one code")
+            for tag in ("tileops", TORCH_COMPILE_TAG)
+        },
     )

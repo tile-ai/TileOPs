@@ -6,31 +6,34 @@ whole vocabulary: a tag is checked elementwise against the reference, checked by
 the case supplies, timed without a ratio because it implements a different function, or
 measured with no reference available and said so.
 
-`Exact` is the default, so a tag that can take an elementwise check needs no declaration.
+`Exact` is the default where a reference exists; unavailable references are unestablished.
 """
 
 import dataclasses
 from typing import Any, Callable, Optional
 
+import torch
+
 __all__ = [
     "Custom",
     "Evidence",
     "Exact",
+    "NegativeControl",
     "Noncomparable",
     "Partial",
     "ReferenceInfeasible",
     "Unestablished",
     "set_verifying",
     "verifying",
+    "zeroed_input",
 ]
 
-# Set from --tileops-verify by benchmarks/conftest.py. A run either measures or verifies:
-# a reference resident while the timer runs perturbs the measurement it exists to take.
+# --tileops-verify runs correctness warmup only, omitting timing.
 _VERIFYING = False
 
 
 def verifying() -> bool:
-    """Whether this process verifies rather than times."""
+    """Whether this process omits timing after correctness warmup."""
     return _VERIFYING
 
 
@@ -38,6 +41,25 @@ def set_verifying(value: bool) -> None:
     """Put the run into verification mode. The benchmark conftest owns this."""
     global _VERIFYING
     _VERIFYING = value
+
+
+@dataclasses.dataclass(frozen=True)
+class NegativeControl:
+    """A named, deliberately faulty computation evaluated against a row's oracle."""
+
+    name: str
+    run: Callable[[Callable, tuple], Any]
+
+
+def zeroed_input(index: int, name: str) -> NegativeControl:
+    """Drop one tensor input without changing the call's shape or dtype."""
+
+    def run(reference: Callable, inputs: tuple) -> Any:
+        changed = list(inputs)
+        changed[index] = torch.zeros_like(changed[index])
+        return reference(*changed)
+
+    return NegativeControl(name, run)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +80,7 @@ class Exact:
     rtol: Optional[float] = None
     atol: Optional[float] = None
     reference: Optional[Callable] = None
+    controls: tuple[NegativeControl, ...] = ()
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
@@ -81,6 +104,7 @@ class Partial:
     rtol: Optional[float] = None
     atol: Optional[float] = None
     reference: Optional[Callable] = None
+    controls: tuple[NegativeControl, ...] = ()
     kind: str = "partial"
 
     def __post_init__(self) -> None:
@@ -120,6 +144,7 @@ class Custom:
 
     validator: Callable[[Any, Any], None]
     reason: str
+    controls: tuple[NegativeControl, ...] = ()
     kind: str = "custom"
 
 
@@ -169,4 +194,64 @@ def describe(evidence: Evidence) -> Optional[str]:
         return f"noncomparable: {evidence.reason}"
     if evidence.kind == "reference_infeasible":
         return f"unestablished, needs {evidence.missing}: {evidence.reason}"
-    return "unestablished: the workload carries no reference"
+    return "unestablished: no benchmark reference contract declared or available"
+
+
+def assert_quantized(got: Any, expected: Any) -> None:
+    """Check scales numerically and FP8/INT8 codes within one representable step.
+
+    Division and multiplication by a reciprocal can round adjacent codes at a
+    quantization boundary; both still quantize the same input.
+    """
+    for output, target in zip(got, expected, strict=True):
+        assert output.shape == target.shape and output.dtype == target.dtype
+        if output.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            step = (output.view(torch.uint8).int() - target.view(torch.uint8).int()).abs()
+            assert step.max().item() <= 1, "FP8 quantization differs by more than one code"
+            assert torch.isfinite(output.float()).all() and torch.isfinite(target.float()).all()
+        elif output.dtype == torch.int8:
+            assert (output.int() - target.int()).abs().max().item() <= 1, "INT8 code differs by > 1"
+        else:
+            torch.testing.assert_close(output, target, rtol=1e-6, atol=0)
+
+
+def assert_normalized_error(got: Any, expected: Any, tolerance: float = 1e-3) -> None:
+    """Bound squared error / combined energy, with identical nonfinite values.
+
+    The symmetric error metric used by FP8 indexer tests, reduced in chunks to
+    avoid allocating several FP64 copies of a long-context attention output.
+    """
+    if isinstance(got, (tuple, list)) or isinstance(expected, (tuple, list)):
+        outputs = got if isinstance(got, (tuple, list)) else (got,)
+        targets = expected if isinstance(expected, (tuple, list)) else (expected,)
+        for output, target in zip(outputs, targets, strict=True):
+            assert_normalized_error(output, target, tolerance)
+        return
+    assert got.shape == expected.shape and got.dtype == expected.dtype
+    error = torch.zeros((), device=got.device, dtype=torch.float64)
+    energy = torch.zeros_like(error)
+    for a, b in zip(
+        got.reshape(-1).split(1048576), expected.reshape(-1).split(1048576), strict=True
+    ):
+        a, b = a.double(), b.double()
+        finite = torch.isfinite(a)
+        assert torch.equal(finite, torch.isfinite(b)), "nonfinite mask mismatch"
+        torch.testing.assert_close(
+            a.masked_fill(finite, 0), b.masked_fill(finite, 0), rtol=0, atol=0, equal_nan=True
+        )
+        a, b = a.masked_fill(~finite, 0), b.masked_fill(~finite, 0)
+        error += ((a - b) ** 2).sum()
+        energy += (a * a + b * b).sum()
+    assert error <= tolerance * energy, f"normalized squared error: {error / energy}"
+
+
+def logit_mask_validator(logits: torch.Tensor, near: torch.Tensor) -> Callable:
+    """Allow boundary mask ties, while checking every retained logit's value."""
+
+    def validate(got: torch.Tensor, expected: torch.Tensor) -> None:
+        assert got.shape == expected.shape and got.dtype == expected.dtype
+        taken, kept = got != -float("inf"), expected != -float("inf")
+        assert not ((taken ^ kept) & ~near).any(), "mask differs away from boundary"
+        assert torch.equal(got[taken], logits[taken]), "retained logits changed"
+
+    return validate

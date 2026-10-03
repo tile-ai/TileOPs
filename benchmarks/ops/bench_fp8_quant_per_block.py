@@ -8,10 +8,10 @@ byte counts come from the op's ``eval_roofline()`` via
 import functools
 
 import pytest
-import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import FP8QuantPerBlockFwdOp
 from workloads.quantization.quantize import FP8QuantPerBlockWorkload
 
@@ -34,11 +34,6 @@ def test_fp8_quant_per_block_bench(call) -> None:
     )
     # vllm floors the amax at 1e-4, which no tile of a random input reaches, and multiplies
     # by the reciprocal of the scale, so a code can sit one step from the reference's.
-    q, scale = vllm_quant(*inputs)
-    q_ref, scale_ref = workload.ref_program(*inputs)
-    torch.testing.assert_close(scale, scale_ref, rtol=1e-6, atol=0.0)
-    step = (q.view(torch.uint8).int() - q_ref.view(torch.uint8).int()).abs()
-    assert step.max().item() <= 1
     bm.compare(
         {
             "tileops": op,
@@ -47,4 +42,8 @@ def test_fp8_quant_per_block_bench(call) -> None:
             VLLM_TAG: vllm_quant,
         },
         *inputs,
+        evidence={
+            tag: Custom(assert_quantized, "scales checked; FP8 rounding within one code")
+            for tag in ("tileops", TORCH_COMPILE_TAG, VLLM_TAG)
+        },
     )

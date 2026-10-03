@@ -8,7 +8,6 @@ import pytest
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     reference_tolerance,
 )
@@ -46,9 +45,11 @@ def test_deltanet_inference_bench(call) -> None:
     workload = DeltaNetInferenceCall(call)
     inputs = workload.gen_inputs()
     op = DeltaNetInferenceFwdOp(**workload.arguments())
-    dtype = inputs[0].dtype
-    assert_matches_reference(op, workload.ref_program, *inputs, **reference_tolerance(dtype))
-    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        {"tileops": op, "fla": workload.ref_program},
+        *inputs,
+        evidence={"tileops": Exact(**reference_tolerance(inputs[0].dtype))},
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkFwdOp))

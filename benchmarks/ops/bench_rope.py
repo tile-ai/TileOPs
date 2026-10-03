@@ -20,7 +20,7 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact, Noncomparable, ReferenceInfeasible
+from benchmarks.verification import Exact
 from tileops.ops.rope import (
     RopeFwdOp,
     RopeLlama31FwdOp,
@@ -29,34 +29,18 @@ from tileops.ops.rope import (
     RopeYarnFwdOp,
 )
 from workloads.device import run_device
+from workloads.rope import (
+    llama31_frequency_tables,
+    longrope_frequency_tables,
+    rope_frequency_tables,
+    yarn_frequency_tables,
+)
 from workloads.workload_base import CallWorkload
 
-# The torch baseline's frequency base; the rows run every op at its default base.
-_BASE = 10000.0
 
-
-# Bench-local PyTorch baselines
-
-
-def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
-    """Half-split cos/sin tables, shape ``(seq_len, head_dim)``.
-
-    Frequency values are variant-specific, but the timed rotation cost depends
-    only on table geometry, which every RoPE variant shares — so one baseline
-    serves all of them.
-    """
-    half = head_dim // 2
-    freqs = 1.0 / (
-        _BASE ** (torch.arange(0, half, device=run_device(), dtype=torch.float32) / half)
-    )
-    angles = torch.outer(
-        torch.arange(seq_len, device=run_device(), dtype=torch.float32),
-        freqs,
-    )
-    return (
-        torch.cat([torch.cos(angles)] * 2, dim=-1).to(dtype),
-        torch.cat([torch.sin(angles)] * 2, dim=-1).to(dtype),
-    )
+def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype, *, base: float = 10000.0):
+    cos, sin = rope_frequency_tables(head_dim, seq_len, base=base, dtype=dtype)
+    return torch.cat([cos, cos], dim=-1), torch.cat([sin, sin], dim=-1)
 
 
 def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -105,14 +89,8 @@ def _vllm_rope(
     return baseline_fn, (positions, query)
 
 
-def _bench_rope(op_cls, call, *, rescales_frequencies=lambda call: False) -> None:
-    """Profile the op on one manifest call against the torch rotation baseline.
-
-    ``rescales_frequencies`` reads the call: a variant that derives its frequencies from its
-    own parameters rotates by different angles than this base-table baseline, so that
-    baseline is timed and publishes no ratio. LongRoPE only rescales on a call that passes
-    ``rescale_factors``, so the question is per call rather than per op.
-    """
+def _bench_rope(op_cls, call) -> None:
+    """Check and time the rotation using this variant's independent frequency tables."""
     workload = CallWorkload(call)
     tensors = call.materialize(run_device())
     op = op_cls(**call.arguments(tensors))
@@ -120,7 +98,17 @@ def _bench_rope(op_cls, call, *, rescales_frequencies=lambda call: False) -> Non
     x = tensors["x"]
     input_layout = call.params["input_layout"]
     seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
-    cos, sin = _rope_tables(seq_len, x.shape[-1], x.dtype)
+    table_fn = {
+        RopeFwdOp: rope_frequency_tables,
+        RopeLlama31FwdOp: llama31_frequency_tables,
+        RopeYarnFwdOp: yarn_frequency_tables,
+        RopeLongRopeFwdOp: longrope_frequency_tables,
+    }[op_cls]
+    parameters = {k: v for k, v in call.params.items() if k not in ("input_layout", "rope_layout")}
+    if "rescale_factors" in tensors:
+        parameters["rescale_factors"] = tensors["rescale_factors"]
+    cos, sin = table_fn(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **parameters)
+    cos, sin = (torch.cat([table, table], dim=-1) for table in (cos, sin))
     if input_layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, x.shape[-1]) for t in (cos, sin))
     # The scheme variants serve NeoX only, so a call without the parameter is NeoX.
@@ -130,21 +118,6 @@ def _bench_rope(op_cls, call, *, rescales_frequencies=lambda call: False) -> Non
         return rotate(t, cos, sin)
 
     exact = Exact(rtol=2e-2, atol=2e-2, reference=baseline_fn)
-    if rescales_frequencies(call):
-        # This baseline rotates by the base table while the op derives its frequencies from
-        # its own parameters, so neither side can be checked against it. tests/ops/test_rope.py
-        # asserts the op against each variant's own reference.
-        baseline_mark = Noncomparable(
-            "the op derives its frequencies from its own scaling parameters; this baseline "
-            "rotates by the base table, so the two rotate by different angles"
-        )
-        op_mark = ReferenceInfeasible(
-            "this variant's own reference on the workload",
-            "the benchmark holds only the base-table rotation, which is not this variant's "
-            "semantics; tests/ops/test_rope.py asserts the op against its own reference",
-        )
-    else:
-        baseline_mark = op_mark = exact
     bm.compare(
         {
             "tileops": op,
@@ -153,9 +126,9 @@ def _bench_rope(op_cls, call, *, rescales_frequencies=lambda call: False) -> Non
         },
         x,
         evidence={
-            "tileops": op_mark,
-            "torch-ref": baseline_mark,
-            TORCH_COMPILE_TAG: baseline_mark,
+            "tileops": exact,
+            "torch-ref": exact,
+            TORCH_COMPILE_TAG: exact,
         },
     )
 
@@ -167,22 +140,17 @@ def test_rope_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLlama31FwdOp))
 def test_rope_llama31_bench(call) -> None:
-    _bench_rope(RopeLlama31FwdOp, call, rescales_frequencies=lambda _c: True)
+    _bench_rope(RopeLlama31FwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeYarnFwdOp))
 def test_rope_yarn_bench(call) -> None:
-    _bench_rope(RopeYarnFwdOp, call, rescales_frequencies=lambda _c: True)
+    _bench_rope(RopeYarnFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLongRopeFwdOp))
 def test_rope_longrope_bench(call) -> None:
-    _bench_rope(
-        RopeLongRopeFwdOp,
-        call,
-        # LongRoPE at its defaults rescales nothing, so its frequencies are the base table's.
-        rescales_frequencies=lambda c: "rescale_factors" in c.tensors,
-    )
+    _bench_rope(RopeLongRopeFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeNeoxPositionIdsFwdOp))
@@ -194,7 +162,9 @@ def test_rope_neox_position_ids_bench(call) -> None:
     op = RopeNeoxPositionIdsFwdOp(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
 
-    cos, sin = _rope_tables(call.params["max_position"], head_dim, x.dtype)
+    cos, sin = _rope_tables(
+        call.params["max_position"], head_dim, x.dtype, base=call.params["base"]
+    )
 
     def baseline_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         idx = pos.long()
@@ -207,8 +177,8 @@ def test_rope_neox_position_ids_bench(call) -> None:
     rotation = Exact(rtol=1e-2, atol=2e-2, reference=baseline_fn)
     # vllm returns the rotation flattened; the check compares it in the op's shape.
     vllm_shaped = (
-        lambda *a, _f=vllm_fn, _a=vllm_args: _f(*_a).view(x.shape),
-        (),
+        lambda *a, _f=vllm_fn: _f(*a).view(x.shape),
+        vllm_args,
     )
     bm.compare(
         {

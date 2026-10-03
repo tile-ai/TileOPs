@@ -4,6 +4,7 @@ Timing lives in :mod:`benchmarks.timing`, reporting in :mod:`benchmarks.report`.
 are re-exported here, so a bench file keeps importing what it always did.
 """
 
+import gc
 import statistics
 from abc import ABC, abstractmethod
 from typing import Any, Generic, Optional, TypeVar
@@ -90,6 +91,8 @@ def _detached_copy(value: Any) -> Any:
         return tuple(_detached_copy(item) for item in value)
     if isinstance(value, list):
         return [_detached_copy(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _detached_copy(item) for key, item in value.items()}
     return value
 
 
@@ -271,13 +274,14 @@ class OpBenchmark(BenchmarkBase[W]):
     def calculate_memory(self) -> Optional[float]:
         return self._get_roofline()[1]
 
-    def _resolve_evidence(self, plan: dict, declared: dict) -> dict:
-        """Evidence for every tag: `Exact` by default, `Unestablished` where no oracle exists.
+    def _resolve_evidence(self, plan: dict, declared: Optional[dict]) -> dict:
+        """Evidence for every tag: Exact where a reference exists, otherwise Unestablished.
 
         A tag whose workload carries no reference cannot be checked, here or under the
         verification step. The row is still timed, so that a family which has not been
         converted keeps publishing, and it carries no ratio and a note saying so.
         """
+        declared = declared or {}
         stray = set(declared) - set(plan)
         if stray:
             raise ValueError(
@@ -297,15 +301,26 @@ class OpBenchmark(BenchmarkBase[W]):
         }
 
     def _verify(self, plan: dict, evidence: dict, inputs: tuple) -> None:
-        """Check each tag against the reference. Runs only under the verification step.
+        """Check the timed callables during correctness warmup.
 
         The reference takes the call's own inputs. A tag given as ``(callable, args)`` has
         already folded what it needs into that closure, and those args are the library's
         calling convention rather than the op's.
         """
         reference = getattr(self.workload, "ref_program", None)
-        declared_dtype = getattr(self.workload, "dtype", None)
-        # Everything a call can write: the op's inputs, and a tag's own argument list.
+        active = []
+        for tag, (functor, args) in plan.items():
+            mark = evidence[tag]
+            oracle = getattr(mark, "reference", None) or reference
+            if oracle is None or mark.kind not in ("exact", "partial", "custom"):
+                continue
+            if args is inputs and _same_callable(functor, oracle):
+                continue
+            active.append((tag, functor, args, mark, oracle))
+        if not active:
+            return
+
+        # Include tag-specific arguments: one tag must not mutate the next tag's input.
         live = {id(t): t for t in _flatten_tensors(inputs)}
         for _, args in plan.values():
             live.update({id(t): t for t in _flatten_tensors(args)})
@@ -316,49 +331,101 @@ class OpBenchmark(BenchmarkBase[W]):
                 for key, tensor in live.items():
                     tensor.copy_(pristine[key])
 
-        for tag, (functor, args) in plan.items():
-            mark = evidence[tag]
-            oracle = getattr(mark, "reference", None) or reference
-            if oracle is None or mark.kind in ("noncomparable", "reference_infeasible"):
-                continue
-            # The oracle against itself proves nothing, but only when called the same way.
-            if args is inputs and _same_callable(functor, oracle):
-                continue
+        # An independent oracle is evaluated once per case, not once per timed tag.
+        references = []
+        control_checks = {}
+        try:
+            for tag, functor, args, mark, oracle in active:
+                restore()
+                # Match the no-grad mode used by the timer, including compiled baselines.
+                with torch.no_grad():
+                    produced = _detached_copy(functor(*args))
+                restore()
+                for cached_oracle, cached_result in references:
+                    if _same_callable(oracle, cached_oracle):
+                        expected = cached_result
+                        break
+                else:
+                    expected = _detached_copy(oracle(*inputs))
+                    references.append((oracle, expected))
+                restore()
+                OpBenchmark._check_result(tag, produced, expected, mark)
+                outputs = produced if isinstance(produced, (tuple, list)) else (produced,)
+                dtypes = tuple(_result_dtype(output) for output in outputs)
+                reference_index = next(
+                    i
+                    for i, (candidate, _) in enumerate(references)
+                    if _same_callable(oracle, candidate)
+                )
+                for control in getattr(mark, "controls", ()):
+                    key = (reference_index, id(control))
+                    control_checks.setdefault(key, (control, []))[1].append((tag, mark, dtypes))
+                del produced
+
+            # Execute each fault once per oracle, then judge it with every tag's
+            # own comparator. Only one fault output is retained at a time.
+            for (reference_index, _), (control, checks) in control_checks.items():
+                oracle, expected = references[reference_index]
+                restore()
+                faulty = _detached_copy(control.run(oracle, inputs))
+                restore()
+                try:
+                    for tag, mark, dtypes in checks:
+                        try:
+                            OpBenchmark._check_result(
+                                tag, faulty, expected, mark, tolerance_dtypes=dtypes
+                            )
+                        except AssertionError:
+                            continue
+                        raise ValueError(
+                            f"{tag}: negative control {control.name!r} was accepted; "
+                            "the inputs or tolerance do not distinguish this fault"
+                        )
+                finally:
+                    del faulty
+
+        finally:
             restore()
-            # Copied before the restore below, which would undo an in-place result.
-            produced = _detached_copy(functor(*args))
-            restore()
-            expected = oracle(*inputs)
-            if mark.kind == "custom":
-                mark.validator(produced, expected)
-                continue
-            dtype = (
-                declared_dtype
-                if isinstance(declared_dtype, torch.dtype)
-                else _result_dtype(produced)
+
+    @staticmethod
+    def _check_result(
+        tag: str,
+        produced: Any,
+        expected: Any,
+        mark: Evidence,
+        *,
+        tolerance_dtypes: Optional[tuple] = None,
+    ) -> None:
+        if mark.kind == "custom":
+            mark.validator(produced, expected)
+            return
+        outputs = produced if isinstance(produced, (tuple, list)) else (produced,)
+        targets = expected if isinstance(expected, (tuple, list)) else (expected,)
+        width, covered = len(outputs), len(targets)
+        claimed = getattr(mark, "outputs", width)
+        if covered < 1 or width < 1:
+            raise ValueError(f"{tag}: the reference or implementation returned no outputs")
+        if mark.kind == "exact" and covered < width:
+            raise ValueError(
+                f"{tag}: the reference establishes {covered} of {width} outputs; declare "
+                f"Partial(outputs={covered}, reason=...) naming what the rest leaves open"
             )
+        if claimed > min(width, covered):
+            raise ValueError(
+                f"{tag}: claims {claimed} outputs, implementation returns {width} "
+                f"and reference establishes {covered}"
+            )
+        dtypes = tolerance_dtypes or tuple(_result_dtype(output) for output in outputs)
+        for output, target, dtype in zip(
+            outputs[:claimed], targets[:claimed], dtypes[:claimed], strict=True
+        ):
             tolerance = reference_tolerance(dtype) if dtype is not None else {}
-            # A shorter reference leaves the rest unchecked. Exact claims all of it.
-            width = len(produced) if isinstance(produced, (tuple, list)) else 1
-            covered = len(expected) if isinstance(expected, (tuple, list)) else 1
-            claimed = getattr(mark, "outputs", width)
-            if covered < 1:
-                raise ValueError(f"{tag}: the reference returned nothing to check against")
-            if mark.kind == "exact" and covered < width:
-                raise ValueError(
-                    f"{tag}: the reference establishes {covered} of {width} outputs; declare "
-                    f"Partial(outputs={covered}, reason=...) naming what the rest leaves open"
+            try:
+                assert_matches_reference(
+                    lambda _o=output: _o, lambda _t=target: _t, **mark.tolerance(tolerance)
                 )
-            if claimed > covered:
-                raise ValueError(
-                    f"{tag}: Partial claims {claimed} outputs, the reference establishes {covered}"
-                )
-            assert_matches_reference(
-                lambda *_i, _p=produced: _p,
-                lambda *_i, _e=expected: _e,
-                *inputs,
-                **mark.tolerance(tolerance),
-            )
+            except AssertionError as exc:
+                raise AssertionError(f"{tag}: {exc}") from exc
 
     def compare(
         self,
@@ -385,12 +452,12 @@ class OpBenchmark(BenchmarkBase[W]):
         the case rather than the tag: reading one side with copies and the other without
         compares two instruments.
 
-        Every tag carries evidence that it computes what the op computes, defaulting to
-        `Exact`. ``evidence`` names the tags that something else establishes — a validator
+        Every tag is checked during correctness warmup, defaulting to ``Exact`` where a
+        reference exists. ``evidence`` names the tags that something else establishes — a validator
         for an op whose output is a draw, `Noncomparable` for an implementation of a
         different function, `ReferenceInfeasible` where no reference runs at this shape.
-        The reference is run under the nightly verification step, not here: a reference
-        resident while the timer runs perturbs the measurement it exists to take.
+        Reference results and snapshots are released before timing warmup and sampling.
+        ``--tileops-verify`` runs only the correctness warmup for diagnosis.
 
         Raises:
             ValueError: ``evidence`` names a tag this call does not time.
@@ -399,10 +466,16 @@ class OpBenchmark(BenchmarkBase[W]):
             tag: value if isinstance(value, tuple) else (value, inputs)
             for tag, value in functors.items()
         }
-        evidence = self._resolve_evidence(plan, evidence or {})
+        evidence = self._resolve_evidence(plan, evidence)
+        # These calls are the correctness warmup of the very same callables we time.
+        # Let verification locals die before the timer allocates its cache-flush buffer.
+        self._verify(plan, evidence, inputs)
         if verifying():
-            self._verify(plan, evidence, inputs)
             return {}
+        if any(ratio_allowed(mark) for mark in evidence.values()):
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
         tags = list(plan)
         order = tags + tags[::-1]
         # Split the budget across the two passes rather than spending it twice:

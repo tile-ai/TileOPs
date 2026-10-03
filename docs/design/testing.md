@@ -148,6 +148,10 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). Profile the workload's `ref_program` for the torch baseline. Another idiom for the same computation, or a different implementation, takes its own tag next to it, is asserted against the reference before the case is timed, and raises when unavailable. Never import a baseline from `tests/`.
 1. **Library baselines** — resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): `flaggems_op`, `flashinfer_op` and `vllm_op` for the kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row that has a library kernel for its op times it, so the nightly's ratio is against the strongest implementation available rather than against eager torch alone.
 
+Correctness uses the timed callables during per-case warmup. Release reference results and
+restore inputs before sampling; `--tileops-verify` is a diagnostic mode, not a second nightly
+sweep. A row without an applicable reference carries an explicit verification gap and no ratio.
+
 ### Metrics
 
 - Latency (ms)
