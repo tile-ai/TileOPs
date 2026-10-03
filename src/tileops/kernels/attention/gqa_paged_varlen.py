@@ -98,12 +98,26 @@ def _make_tile_parts(
 
     @T.macro
     def apply_mask(acc_s, key0, row0, rows, align, kv_len):
-        for i, j in T.Parallel(block_M, block_N):
-            acc_s[i, j] = T.if_then_else(
-                masked(key0 + j, (row0 + i) // group + align, kv_len) | (row0 + i >= rows),
-                -T.infinity(accum_dtype),
-                acc_s[i, j],
-            )
+        # Only a tile the cache end or a mask boundary cuts needs the per-element pass; one
+        # wholly inside every row's visible range keeps every score it computed. The tile's
+        # upper bound is set by its first row, which sees the fewest keys, and its lower
+        # bound by its last row, which sees the most.
+        first_q = row0 // group + align
+        last_q = T.min(row0 + block_M - 1, rows - 1) // group + align
+        cut = key0 + block_N > kv_len
+        if is_causal:
+            cut = cut | (key0 + block_N > first_q + 1)
+        elif window_size_right >= 0:
+            cut = cut | (key0 + block_N > first_q + window_size_right + 1)
+        if window_size_left >= 0:
+            cut = cut | (key0 < last_q - window_size_left)
+        if cut:
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] = T.if_then_else(
+                    masked(key0 + j, (row0 + i) // group + align, kv_len) | (row0 + i >= rows),
+                    -T.infinity(accum_dtype),
+                    acc_s[i, j],
+                )
 
     online_softmax = make_online_softmax_with_mask_guard(
         softmax_scale, accum_dtype, block_M, block_N

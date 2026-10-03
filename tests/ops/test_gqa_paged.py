@@ -220,6 +220,27 @@ def test_gqa_paged_decode_bs1_dispatch() -> None:
             [2, 0, 9], [700, 64, 33], 16, 128, torch.float16, {"softcap": 30.0}, id="softcap"
         ),
         pytest.param([3, 1], [129, 48], 48, 128, torch.bfloat16, {}, id="bf16"),
+        # The three shapes that isolate one term of the key-tile classification each. A tile
+        # is masked per element only where a bound cuts it, so a term that never fires on any
+        # case is a term no test pays for.
+        # Causal only: a cache length the key tile divides, so the cache end never cuts and
+        # the causal bound is the only term that can.
+        pytest.param([5, 2], [512, 256], 64, 128, torch.float16, {}, id="causal-aligned-cache"),
+        # Neither causal nor windowed: the cache end is then the only term that can cut.
+        pytest.param(
+            [3, 2], [250, 130], 64, 128, torch.float16, {"is_causal": False}, id="cache-end-only"
+        ),
+        # A right window narrower than the request's own query span, over a cache the key
+        # tile divides: the right bound is then the only term that cuts.
+        pytest.param(
+            [64, 8],
+            [256, 128],
+            64,
+            128,
+            torch.float16,
+            {"is_causal": False, "window_size_right": 8},
+            id="right-window-only",
+        ),
     ],
 )
 def test_gqa_paged_packed_query_lengths(
