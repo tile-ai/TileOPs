@@ -25,6 +25,6 @@ def flashinfer_experts(hidden, w1, w2, top_k):
     def baseline(x, gate_up, down, weights, ids):
         return run(
             x, ids.int(), weights.float(), gate_up, down, x.dtype, [], workspace_buffer=workspace
-        )
+        )[0]
 
     return baseline
