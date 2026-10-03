@@ -130,6 +130,7 @@ def _gqa_paged_varlen_kernel(
     sm_scale: float,
     softcap: float,
     dtype: str,
+    producer_warpgroup: bool,
 ):
     """Build the paged packed-query attention program for one fixed set of call facts."""
     accum_dtype = "float"
@@ -146,6 +147,7 @@ def _gqa_paged_varlen_kernel(
             # Row i of the tile is query i // group of head i % group, which is injective
             # in i; the checker cannot prove it and reports the output store as a race.
             tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: not producer_warpgroup,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -640,9 +642,20 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             softcap,
             self.dtype_str,
         )
-        self.kernel = _gqa_paged_varlen_kernel(*self._builder_args)
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
+
+    @property
+    def kernel(self):
+        """The unsplit scan for the configured tile, with the warp roles that tile wants."""
+        config = self.config or self.default_config
+        # TileLang infers a producer warpgroup for the key-tile copy, which doubles the block
+        # and takes registers per thread to 240. A single warpgroup scanning a key tile of at
+        # most one WGMMA's rows runs faster without it; a wider key tile and the two-warpgroup
+        # query tile keep it, and so does the split scan, whose chunk is too short to absorb
+        # the copy any other way.
+        producer = config["threads"] > WARPGROUP_THREADS or config["block_N"] > WGMMA_ROWS
+        return _gqa_paged_varlen_kernel(*self._builder_args, producer)
 
     def _shared_bytes(self, config: dict) -> int:
         """Shared memory the program allocates for *config*: the query rows, a K and a V tile
