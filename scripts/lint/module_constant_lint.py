@@ -43,6 +43,11 @@ def _is_written_out(node: ast.expr) -> bool:
         return _is_written_out(node.operand)
     if isinstance(node, ast.JoinedStr):
         return all(isinstance(part, ast.Constant) for part in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return all(
+            isinstance(side, ast.Constant) and isinstance(side.value, str)
+            for side in (node.left, node.right)
+        )
     return False
 
 
@@ -57,14 +62,26 @@ def _is_type_alias(node: ast.stmt) -> bool:
 
 def _module_statements(body: list[ast.stmt]):
     """Every statement that binds at module scope, through the blocks that open no scope."""
+    nesting = (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.AsyncFor, ast.While)
     for node in body:
         yield node
-        if isinstance(node, (ast.If, ast.Try, ast.With)):
+        if isinstance(node, nesting):
             nested = list(node.body) + list(getattr(node, "orelse", []))
             nested += list(getattr(node, "finalbody", []))
             for handler in getattr(node, "handlers", []):
                 nested += list(handler.body)
             yield from _module_statements(nested)
+
+
+def _bound_names(target: ast.expr) -> list[ast.Name]:
+    """Every name a target binds, through tuple, list and starred targets."""
+    if isinstance(target, ast.Name):
+        return [target]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _bound_names(element)]
+    return []
 
 
 def _candidates(tree: ast.Module) -> list[tuple[str, int]]:
@@ -80,24 +97,30 @@ def _candidates(tree: ast.Module) -> list[tuple[str, int]]:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             rebound.update(a.asname or a.name.split(".")[0] for a in node.names)
             continue
-        if isinstance(node, ast.AugAssign):
-            if isinstance(node.target, ast.Name):
-                rebound.add(node.target.id)
+        if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)):
+            rebound.update(name.id for name in _bound_names(node.target))
             continue
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         if _is_type_alias(node):
+            rebound.update(name.id for t in targets for name in _bound_names(t))
             continue
-        for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-            # A destructuring target takes the matching element of a written-out sequence.
-            if isinstance(target, ast.Tuple) and isinstance(node.value, (ast.Tuple, ast.List)):
+        for target in targets:
+            # A destructuring target takes the matching element of a written-out sequence;
+            # against anything else, every name it binds is state rather than a constant.
+            if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+                node.value, (ast.Tuple, ast.List)
+            ):
                 pairs = list(zip(target.elts, node.value.elts, strict=False))
             else:
                 pairs = [(target, node.value)]
             for name_node, value in pairs:
-                if not isinstance(name_node, ast.Name):
+                names = _bound_names(name_node)
+                if len(names) != 1 or names[0] is not name_node or not _is_written_out(value):
+                    rebound.update(name.id for name in names)
                     continue
-                if name_node.id in bindings or not _is_written_out(value):
+                if name_node.id in bindings:
                     rebound.add(name_node.id)
                 else:
                     bindings[name_node.id] = name_node.lineno
