@@ -185,48 +185,54 @@ def test_gqa_paged_decode_bs1_dispatch() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("q_lens", "cache_lens", "page_size", "dtype", "op_kwargs"),
+    ("q_lens", "cache_lens", "page_size", "dim", "dtype", "op_kwargs"),
     [
         pytest.param(
-            [0, 1, 5, 1], [300, 512, 600, 7], 64, torch.float16, {}, id="ragged-with-empty"
+            [0, 1, 5, 1], [300, 512, 600, 7], 64, 128, torch.float16, {}, id="ragged-with-empty"
         ),
+        # Head dimension 64, where the key tile is gathered at a width the page does not hold.
         pytest.param(
-            [1, 1], [1000, 513], 64, torch.float16, {"window_size_left": 128}, id="window"
+            [1, 1], [1000, 513], 64, 64, torch.float16, {"window_size_left": 128}, id="window"
         ),
         pytest.param(
             [7, 3],
             [300, 200],
+            128,
             128,
             torch.float16,
             {"is_causal": False, "window_size_left": 64, "window_size_right": 32},
             id="both-windows-noncausal",
         ),
         # A page no key tile fits inside: the key tile is gathered row by row.
-        pytest.param([1, 1], [400, 131], 65, torch.float16, {}, id="page-no-tile-fits"),
+        pytest.param([1, 1], [400, 131], 65, 128, torch.float16, {}, id="page-no-tile-fits"),
         # The only shape where the causal bound and the window bound both bind: a request
         # with one query token sees its whole cache, so its causal bound masks nothing.
         pytest.param(
             [6, 1, 0],
             [300, 500, 128],
             64,
+            128,
             torch.float16,
             {"window_size_left": 64},
             id="causal-window-multi",
         ),
-        pytest.param([2, 0, 9], [700, 64, 33], 16, torch.float16, {"softcap": 30.0}, id="softcap"),
-        pytest.param([3, 1], [129, 48], 48, torch.bfloat16, {}, id="bf16"),
+        pytest.param(
+            [2, 0, 9], [700, 64, 33], 16, 128, torch.float16, {"softcap": 30.0}, id="softcap"
+        ),
+        pytest.param([3, 1], [129, 48], 48, 128, torch.bfloat16, {}, id="bf16"),
     ],
 )
 def test_gqa_paged_packed_query_lengths(
     q_lens: list[int],
     cache_lens: list[int],
     page_size: int,
+    dim: int,
     dtype: torch.dtype,
     op_kwargs: dict,
 ) -> None:
     """Calls the decode region does not serve: ragged lengths, windows, and odd pages."""
     width = -(-max(cache_lens) // page_size)
     workload = GroupedQueryAttentionPagedFwdWorkload(
-        32, 8, 128, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
+        32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
     )
     _check(GroupedQueryAttentionPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())

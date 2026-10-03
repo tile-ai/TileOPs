@@ -653,7 +653,8 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
     @property
     def default_config(self) -> dict:
         """The 128-row query tile where every request fills one, the 64-row tile otherwise,
-        over the widest key tile up to 128 rows that one page holds.
+        over the widest key tile up to 128 rows that one page holds, or, where a tile row is
+        128 bytes or less, a width the page does not hold so the tile is gathered.
 
         Fitted over the entry's workload rows at head dimension 64 and 128. A request shorter
         than the query tile pads it, and a packing holding even a few of them is faster on the
@@ -664,12 +665,22 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         ``autotune_configs`` on those rows.
         """
         page = self.page_size
-        held = [n for n in (128, 64, 48, 32) if page % n == 0]
-        block_n = held[0] if held else 64
-        # A key tile below one WGMMA's rows leaves the score accumulator small enough that
-        # the wide query tile still compiles to two consumer warpgroups, which is half again
-        # the warp slots; above it the tile gets one warpgroup and is only padding.
-        wide = self.rows_fill_tile or block_n < WGMMA_ROWS
+        # A tile row of 128 bytes or less leaves the contiguous copy too little to move per
+        # row: at head dimension 64, over page sizes 16 to 256, every width the page does not
+        # hold measures faster than every width it does. The tile is then the narrowest such
+        # width where a window bounds the key range, and 80 rows where none does.
+        if self.dim * self.dtype.itemsize <= 128:
+            bounded = self.window_size_left >= 0 or self.window_size_right >= 0
+            order = (48, 64, 80, 96) if bounded else (80, 96, 64, 48)
+            block_n = next((n for n in order if page % n != 0), 64)
+            wide = self.rows_fill_tile
+        else:
+            held = [n for n in (128, 64, 48, 32) if page % n == 0]
+            block_n = held[0] if held else 64
+            # A key tile below one WGMMA's rows leaves the score accumulator small enough that
+            # the wide query tile still compiles to two consumer warpgroups, which is half
+            # again the warp slots; above it the tile gets one warpgroup and is only padding.
+            wide = self.rows_fill_tile or block_n < WGMMA_ROWS
         tile = (
             {
                 "block_M": 2 * WGMMA_ROWS,
@@ -705,7 +716,6 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
     def autotune_configs(self) -> list[dict]:
         # A warpgroup owns WGMMA_ROWS rows of the score tile, so a second one needs twice that.
         cap = get_shared_memory_optin(self.device_index)
-        page = self.page_size
         configs = [
             {
                 "block_M": block_m,
@@ -719,8 +729,8 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
                 (2 * WGMMA_ROWS, WARPGROUP_THREADS),
                 (2 * WGMMA_ROWS, 2 * WARPGROUP_THREADS),
             )
-            for block_n in (16, 32, 48, 64, 96, 128)
-            if block_n % 16 == 0 and (page % block_n == 0 or block_n % page == 0 or block_n == 64)
+            # The gather reads any width, so the sweep is not restricted to the page's own.
+            for block_n in (16, 32, 48, 64, 80, 96, 128)
             for stages in (1, 2, 3, 4)
         ]
         return [c for c in configs if self._shared_bytes(c) <= cap]
