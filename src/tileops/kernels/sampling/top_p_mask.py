@@ -35,7 +35,7 @@ __all__ = ["TopPMaskFwdKernel"]
 # an element whatever this is, so the figure to keep down is the passes, and 256 bins spend
 # a bfloat16 key in two of them. It is also the widest split whose per-lane bins fit the
 # shared budget, at 256 * 32 * 4 = 32 KB. Re-fit by timing a manifest row at 128 and 256.
-SEARCH_BINS: int = 256
+_SEARCH_BINS: int = 256
 
 
 @functools.lru_cache(maxsize=32)
@@ -55,9 +55,9 @@ def _top_p_mask_kernel(
     chunk = -(-row_tiles // parts)
     grid = batch * parts
     warps = threads // WARP_LANES
-    digit_bits = (SEARCH_BINS - 1).bit_length()
+    digit_bits = (_SEARCH_BINS - 1).bit_length()
     # One thread per bin folds and walks the bins.
-    assert threads >= SEARCH_BINS
+    assert threads >= _SEARCH_BINS
     key_bits = 32
     # A float32's order-preserving unsigned key flips the sign bit of a non-negative value
     # and every bit of a negative one, so the keys sort the way the values do.
@@ -91,7 +91,7 @@ def _top_p_mask_kernel(
             logits: T.Tensor((batch * vocab,), dtype),
             p: T.Tensor((batch,), "float32"),
             part_top: T.Tensor((grid,), "float32"),
-            part_bins: T.Tensor((grid * SEARCH_BINS,), "float32"),
+            part_bins: T.Tensor((grid * _SEARCH_BINS,), "float32"),
             masked: T.Tensor((batch * vocab,), dtype),
         ):
             with T.Kernel(grid, threads=threads) as bx:
@@ -105,8 +105,8 @@ def _top_p_mask_kernel(
                 warp_seen = T.alloc_shared((warps,), "uint32")
                 # A lane's copy of the bins is its own shared-memory bank, so no two lanes
                 # of one atomic instruction meet whatever bins their elements fall in.
-                bins = T.alloc_shared((SEARCH_BINS, WARP_LANES), "float32")
-                suffix = T.alloc_shared((SEARCH_BINS + 1,), "float32")
+                bins = T.alloc_shared((_SEARCH_BINS, WARP_LANES), "float32")
+                suffix = T.alloc_shared((_SEARCH_BINS + 1,), "float32")
                 row_top = T.alloc_shared((1,), "float32")
                 target = T.alloc_shared((1,), "float32")
                 carried = T.alloc_shared((1,), "float32")
@@ -193,8 +193,8 @@ def _top_p_mask_kernel(
                     base[0] = bracket[0]
                     step[0] = key_bits - digit_bits * (level + 1)
                     reach[0] = ~T.uint32(0) >> (digit_bits * level)
-                    for b in T.serial(-(-WARP_LANES * SEARCH_BINS // threads)):
-                        if b * threads + tx < WARP_LANES * SEARCH_BINS:
+                    for b in T.serial(-(-WARP_LANES * _SEARCH_BINS // threads)):
+                        if b * threads + tx < WARP_LANES * _SEARCH_BINS:
                             bins[
                                 (b * threads + tx) // WARP_LANES, (b * threads + tx) % WARP_LANES
                             ] = T.float32(0)
@@ -219,24 +219,24 @@ def _top_p_mask_kernel(
                             if t < chunk and head + t * threads < full:
                                 tally(bins, cur, j, row_max, base, reach, step, lane)
                     T.sync_threads()
-                    if tx < SEARCH_BINS:
+                    if tx < _SEARCH_BINS:
                         fold_bins[0] = bins[tx, 0]
                         for w in T.serial(1, WARP_LANES):
                             fold_bins[0] += bins[tx, w]
                         suffix[tx] = fold_bins[0]
                     if tx == 0:
-                        suffix[SEARCH_BINS] = T.float32(0)
+                        suffix[_SEARCH_BINS] = T.float32(0)
                         picked[0] = 0
                     T.sync_threads()
 
                     if parts > 1:
-                        if tx < SEARCH_BINS:
-                            part_bins[bx * SEARCH_BINS + tx] = suffix[tx]
+                        if tx < _SEARCH_BINS:
+                            part_bins[bx * _SEARCH_BINS + tx] = suffix[tx]
                         T.sync_grid()
-                        if tx < SEARCH_BINS:
+                        if tx < _SEARCH_BINS:
                             fold_bins[0] = T.float32(0)
                             for c in T.serial(parts):
-                                fold_bins[0] += part_bins[(line * parts + c) * SEARCH_BINS + tx]
+                                fold_bins[0] += part_bins[(line * parts + c) * _SEARCH_BINS + tx]
                             suffix[tx] = fold_bins[0]
                         T.sync_threads()
                         # Every block has read this pass's slice before the next pass
@@ -246,10 +246,10 @@ def _top_p_mask_kernel(
                     # Suffix sums, so one read gives the weight at or above any bin.
                     for stage in T.serial(digit_bits):
                         fold_bins[0] = T.float32(0)
-                        if tx + (1 << stage) < SEARCH_BINS:
+                        if tx + (1 << stage) < _SEARCH_BINS:
                             fold_bins[0] = suffix[tx + (1 << stage)]
                         T.sync_threads()
-                        if tx < SEARCH_BINS:
+                        if tx < _SEARCH_BINS:
                             suffix[tx] += fold_bins[0]
                         T.sync_threads()
 
@@ -261,7 +261,7 @@ def _top_p_mask_kernel(
                     # later pass's re-tally can round below the first pass's total. The scan
                     # sums overlapping ranges under different association trees, so two bins
                     # can qualify by a rounding and the highest wins rather than the race.
-                    if tx < SEARCH_BINS and carried[0] + suffix[tx] >= target[0]:
+                    if tx < _SEARCH_BINS and carried[0] + suffix[tx] >= target[0]:
                         T.atomic_max(picked[0], tx)
                     T.sync_threads()
                     if tx == 0:
@@ -397,10 +397,12 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         row_tiles = max(1, -(-vectors // threads))
         self._parts = row_split(row_tiles, call.batch, call.sm_count)
 
-        self._passes = -(-self._KEY_BITS[call.dtype] // (SEARCH_BINS - 1).bit_length())
+        self._passes = -(-self._KEY_BITS[call.dtype] // (_SEARCH_BINS - 1).bit_length())
         # The per-lane bins and their scan, plus at most one alignment each for the ten
         # buffers the search and the reductions take beside the row.
-        reserve = (WARP_LANES * SEARCH_BINS + SEARCH_BINS + 1) * 4 + 10 * SHARED_BUFFER_ALIGN_BYTES
+        reserve = (
+            WARP_LANES * _SEARCH_BINS + _SEARCH_BINS + 1
+        ) * 4 + 10 * SHARED_BUFFER_ALIGN_BYTES
         self._smem_tiles = (call.smem_budget - reserve) // (
             threads * self._vec * call.dtype.itemsize
         )
@@ -432,7 +434,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             logits = logits.clone()
         blocks = self.call.batch * self._parts
         part_top = torch.empty(blocks, dtype=torch.float32, device=logits.device)
-        part_bins = torch.empty(blocks * SEARCH_BINS, dtype=torch.float32, device=logits.device)
+        part_bins = torch.empty(blocks * _SEARCH_BINS, dtype=torch.float32, device=logits.device)
         masked = torch.empty_like(logits)
         self.kernel(self.config["reg_tiles"], self.config["smem_tiles"], self.config["pace"])(
             logits.view(-1), p, part_top, part_bins, masked.view(-1)

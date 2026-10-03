@@ -21,7 +21,11 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import GLABwdInterface, GLAChunkCall
+from tileops.kernels.linear_attention.call_spec import (
+    GLABwdInterface,
+    GLAChunkCall,
+    head_count_refusal,
+)
 from tileops.kernels.linear_attention.gla.chunk_fwd import gla_precompute_g_kernel
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops.utils import get_sm_count, get_sm_version
@@ -602,7 +606,9 @@ class GLABwdKernel(Kernel, GLABwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
-        return cls.region_refusal(call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch)
+        return head_count_refusal(call.heads) or cls.region_refusal(
+            call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
+        )
 
     @classmethod
     def entry_for(cls, call: GLAChunkCall) -> Entry:

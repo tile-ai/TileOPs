@@ -413,6 +413,36 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "heads, heads_kv",
+    [
+        pytest.param(72, 1, id="group-over-a-block"),
+        pytest.param(71, 1, id="group-over-a-block-odd"),
+        pytest.param(142, 2, id="group-over-a-block-two-kv-heads"),
+    ],
+)
+def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
+    heads: int, heads_kv: int
+) -> None:
+    """Every output head is written when the group needs more than one head block of 64."""
+    dim, seq_len_kv, dtype = 64, 2048, torch.bfloat16
+    q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+
+    output = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)(q, k, v)
+
+    torch.testing.assert_close(
+        output,
+        dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        atol=1.6e-2,
+        rtol=1.6e-2,
+    )
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "batch, dtype, rope_layout, rotary_dim, num_stages",
     [
         pytest.param(1, torch.float16, "neox", 64, 2, id="bs1-fp16-neox-partial"),

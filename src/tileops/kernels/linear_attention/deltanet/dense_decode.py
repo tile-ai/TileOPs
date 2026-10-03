@@ -8,6 +8,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceCall,
     DeltaNetInferenceFwdInterface,
+    head_count_refusal,
 )
 from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
 
@@ -34,6 +35,9 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
 
         One 16-bit token over a 64- or 128-wide square float32 state.
         """
+        heads = head_count_refusal(call.heads)
+        if heads is not None:
+            return heads
         unsupported = [
             name
             for name, present in (

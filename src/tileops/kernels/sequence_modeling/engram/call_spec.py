@@ -11,12 +11,17 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "CONV_KERNEL_SIZE",
     "EngramDecodeCall",
     "EngramDecodeFwdInterface",
     "EngramGateConvBwdInterface",
     "EngramGateConvCall",
     "EngramGateConvFwdInterface",
 ]
+
+# Taps of the depthwise gate convolution, which the forward and the backward
+# must read the same way.
+CONV_KERNEL_SIZE = 4
 
 
 @dataclasses.dataclass(frozen=True)

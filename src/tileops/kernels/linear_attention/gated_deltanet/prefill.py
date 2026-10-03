@@ -11,6 +11,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GatedDeltaNetCall,
     GatedDeltaNetFwdInterface,
+    head_count_refusal,
 )
 from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
@@ -48,6 +49,9 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         state key-major or value-major, and with the Q/K normalization, the gate and the
         beta transform taken in kernel.
         """
+        heads = head_count_refusal(call.heads, call.value_heads)
+        if heads is not None:
+            return heads
         if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
             return "does not support K and V other than matching 64 or 128"
         if call.seq_len < 1 or (call.seq_len == 1 and not call.varlen):

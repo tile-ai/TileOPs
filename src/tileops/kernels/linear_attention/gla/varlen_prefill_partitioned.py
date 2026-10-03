@@ -26,6 +26,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
@@ -509,6 +510,10 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
     # Blocks per multiprocessor a walk is sized to launch. Re-fit by timing the packed
     # manifest rows over the lengths above.
     _blocks_per_sm = 1
+
+    @classmethod
+    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
