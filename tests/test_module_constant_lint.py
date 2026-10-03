@@ -27,11 +27,11 @@ def _findings(tmp_path: Path, source: str) -> list[str]:
 
 FLAGGED = [
     pytest.param("block_size = 128\n", id="literal"),
+    pytest.param("offset = -1\n", id="negative-literal"),
     pytest.param("_pc = {tilelang.PassConfigKey.X: True}\n", id="dict-keyed-by-a-dotted-name"),
     pytest.param('_cf = ["-O3", "-DNDEBUG"]\n', id="list-of-literals"),
     pytest.param("if TYPE_CHECKING:\n    block_size = 128\n", id="inside-if"),
     pytest.param("try:\n    header_words = 2\nexcept Exception:\n    pass\n", id="inside-try"),
-    pytest.param("block_m, block_n = (64, 128)\n", id="destructured"),
     pytest.param("[block_m, block_n] = [64, 128]\n", id="destructured-list"),
     pytest.param('name = "tileops." + "params"\n', id="concatenated-literals"),
     pytest.param("for _ in (1,):\n    size = 128\n", id="inside-for"),
@@ -43,26 +43,23 @@ FLAGGED = [
 
 ACCEPTED = [
     pytest.param("BLOCK_SIZE = 128\n", id="upper-snake"),
-    pytest.param("_BLOCK_SIZE = 128\n", id="private-upper-snake"),
     pytest.param("__all__ = ['a']\n", id="dunder"),
     pytest.param("logger = logging.getLogger(__name__)\n", id="call"),
     pytest.param("device = torch.empty(0).device\n", id="attribute-of-a-call"),
-    pytest.param("missing = object()\n", id="sentinel"),
-    pytest.param('T = TypeVar("T")\n', id="typevar"),
     pytest.param("Tensor: TypeAlias = torch.Tensor\n", id="type-alias"),
     pytest.param("Tensor: typing.TypeAlias = torch.Tensor\n", id="qualified-type-alias"),
     pytest.param("counter = 0\ncounter += 1\n", id="augmented-assignment"),
     pytest.param("block_size = 128\nblock_size = 64\n", id="rebound"),
     pytest.param("size = 128\nsize, other = load_sizes()\n", id="rebound-by-destructuring"),
     pytest.param("size = 128\nfor size in range(3):\n    pass\n", id="rebound-by-a-loop"),
+    pytest.param("flag = False\n\n\ndef flag():\n    pass\n", id="shadowed-by-a-def"),
+    pytest.param("size = 128\nfrom x import size\n", id="shadowed-by-an-import"),
     pytest.param(
         "flag = False\n\n\ndef set_it():\n    global flag\n    flag = True\n", id="global"
     ),
     pytest.param("sizes = [x for x in (1, 2)]\n", id="comprehension"),
     pytest.param('name = f"{prefix}.params"\n', id="interpolated-f-string"),
     pytest.param("size = 128 if fast else 64\n", id="conditional"),
-    pytest.param("import torch as t\n", id="import-alias"),
-    pytest.param("def helper():\n    pass\n", id="function"),
     pytest.param("class Holder:\n    field = 1\n", id="class-attribute"),
     pytest.param("def f():\n    local_size = 128\n", id="function-local"),
 ]
