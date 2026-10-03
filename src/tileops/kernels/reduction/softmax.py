@@ -186,6 +186,8 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
+    index_bits = 64 if M * total_cols >= 2**31 else 32
+    index_dtype = "int64" if index_bits == 64 else "int32"
     # The last tile may extend beyond N; boundary masking is needed when
     # total_cols > N (which is always true when N is not aligned, and also
     # when tile_n does not evenly divide N_padded).
@@ -194,14 +196,14 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
 
     if op_kind == "softmax":
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(out_idx=[1], pass_configs={"tl.config_index_bitwidth": index_bits})
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, total_cols), out_dtype],
+                x: T.Tensor[(T.cast(M, index_dtype), T.cast(N, index_dtype)), dtype],
+                y: T.Tensor[(T.cast(M, index_dtype), T.cast(total_cols, index_dtype)), out_dtype],
             ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                with T.Kernel(T.cast(T.ceildiv(M, block_m), index_dtype), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
                     shared_buf = T.alloc_shared((block_m, tile_n), dtype)
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
@@ -353,14 +355,14 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
 
     else:  # log_softmax
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(out_idx=[1], pass_configs={"tl.config_index_bitwidth": index_bits})
         def _func(block_m, threads):
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, total_cols), out_dtype],
+                x: T.Tensor[(T.cast(M, index_dtype), T.cast(N, index_dtype)), dtype],
+                y: T.Tensor[(T.cast(M, index_dtype), T.cast(total_cols, index_dtype)), out_dtype],
             ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                with T.Kernel(T.cast(T.ceildiv(M, block_m), index_dtype), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
                     shared_buf = T.alloc_shared((block_m, tile_n), dtype)
                     tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")

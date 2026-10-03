@@ -21,6 +21,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
+from benchmarks.baselines import VLLM_TAG, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.verification import Custom
 from tileops.ops.moe import MoEPermuteAlignFwdOp
@@ -167,6 +168,16 @@ def test_permute_align_bench(call) -> None:
         return sorted_ids, expert_ids, num_post_pad
 
     functors["triton"] = _triton_fn
+    align = vllm_op("moe_align_block_size")
+    vllm_sorted = torch.empty_like(sorted_ids)
+    vllm_experts = torch.empty_like(expert_ids)
+    vllm_count = torch.empty_like(num_post_pad)
+
+    def vllm_fn(topk_ids):
+        align(topk_ids, num_experts, block_size, vllm_sorted, vllm_experts, vllm_count)
+        return vllm_sorted, vllm_experts, vllm_count
+
+    functors[VLLM_TAG] = vllm_fn
 
     # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:

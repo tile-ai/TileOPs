@@ -29,7 +29,10 @@ def prefill_chunk_local_cumsum_bthd_tl(
     offsets_dtype: str,
     gate_in_kernel: bool = False,
 ):
-    """Accumulate the gate inside each chunk, restarting at every sequence start.
+    """Accumulate each chunk's log-gates in FP32, restarting at every sequence start.
+
+    Adjacent cumulative gates are subtracted before exponentiation; rounding them to
+    the input dtype loses precision in those differences and the recurrent state.
 
     A contiguous ``[batch, seq_len, head]`` gate is the same bytes as a packed
     ``[1, batch * seq_len, head]`` one whose offsets step by ``seq_len``, so an equal-length
@@ -122,7 +125,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
                             else base + i < end
                         )
                         if stored:
-                            out[0, base + i, first_head + hid] = T.cast(chunk_s[i, hid], dtype)
+                            out[0, base + i, first_head + hid] = chunk_s[i, hid]
 
         if gate_in_kernel:
 
@@ -132,7 +135,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
                 cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
                 a_log: T.Tensor([head], "float32"),
                 dt_bias: T.Tensor([head], "float32"),
-                out: T.Tensor([1, total_tokens, head], dtype),
+                out: T.Tensor([1, total_tokens, head], "float32"),
             ):
                 with T.Kernel(num_chunks, threads=threads) as (cid,):
                     accumulate(cid, g, cu_seqlens, a_log, dt_bias, out)
@@ -143,7 +146,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
             def chunk_cumsum_bthd_kernel(
                 g: T.Tensor([1, total_tokens, head], dtype),
                 cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
-                out: T.Tensor([1, total_tokens, head], dtype),
+                out: T.Tensor([1, total_tokens, head], "float32"),
             ):
                 with T.Kernel(num_chunks, threads=threads) as (cid,):
                     accumulate(cid, g, cu_seqlens, None, None, out)
@@ -212,7 +215,7 @@ def _prefill_blocksolve_A_bthd_tl(
         @T.prim_func
         def prefill_blocksolve_A_bthd_tl(
             k: T.Tensor([1, total_tokens, key_head, dim_k], dtype),
-            g: T.Tensor([1, total_tokens, head], dtype),
+            g: T.Tensor([1, total_tokens, head], "float32"),
             beta: T.Tensor([1, total_tokens, head], dtype),
             cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
             A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
@@ -228,7 +231,7 @@ def _prefill_blocksolve_A_bthd_tl(
                 k1 = T.alloc_shared([block_c, block_k], dtype)
                 k2 = T.alloc_shared([block_c, block_k], dtype)
                 k3 = T.alloc_shared([block_c, block_k], dtype)
-                g_s = T.alloc_shared([block_t], dtype)
+                g_s = T.alloc_shared([block_t], accum_dtype)
                 beta_s = T.alloc_shared([block_t], dtype)
                 gate0_s = T.alloc_shared([block_t], dtype)
                 gate1_s = T.alloc_shared([block_t], dtype)

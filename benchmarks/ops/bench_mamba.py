@@ -6,7 +6,12 @@ mamba_chunk_scan_combined.
 import pytest
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    TORCH_COMPILE_TAG,
+    compiled_reference,
+    flashinfer_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.verification import Exact
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
@@ -69,7 +74,12 @@ def test_cb_producer_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = SSDChunkCouplingFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    bm.compare({"tileops": op, "torch": (workload.ref_program, inputs)}, *inputs)
+    from mamba_ssm.ops.triton.ssd_bmm import _bmm_chunk_fwd
+
+    def mamba_fn(c, b):
+        return _bmm_chunk_fwd(c, b, call.ix["chunk_len"], causal=True, output_dtype=c.dtype).tril()
+
+    bm.compare({"tileops": op, "mamba": mamba_fn, "torch": workload.ref_program}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkCumsumFwdOp))
@@ -176,16 +186,40 @@ def test_ssd_decode_bench(call) -> None:
     op = SSDRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
-    # Each implementation updates its own copy of the state in place.
+    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+
+    skip = torch.zeros(x.shape[1:], dtype=torch.float32, device=x.device)
+
+    def mamba_fn(A, dt, x, B, C, state):
+        # FP32 x preserves the contract's output; explicit zero bias avoids an upstream None-stride bug.
+        return selective_state_update(state, x.float(), dt, A, B, C, D=skip, dt_bias=skip)
+
+    flashinfer_update = flashinfer_op("mamba.selective_state_update")
+
+    skip_tied = torch.zeros(x.shape[1], 1, dtype=torch.float32, device=x.device).expand(x.shape[1:])
+
+    def flashinfer_fn(A, dt, x, B, C, state):
+        rates = A[:, :1, :1].contiguous().expand_as(A)
+        steps = dt[:, :, :1].contiguous().expand_as(dt)
+        return flashinfer_update(state, x.float(), steps, rates, B.float(), C.float(), skip_tied)
+
+    def reset_state(fn):
+        private = state.clone()
+
+        def run(A, dt, x, B, C, source_state):
+            private.copy_(source_state)
+            return fn(A, dt, x, B, C, private)
+
+        return run
+
     functors = {
-        "tileops": op,
-        "torch-ref": (workload.ref_program, (A, dt, x, B_in, C_in, state.clone())),
-        TORCH_COMPILE_TAG: (
-            compiled_reference(workload.ref_program),
-            (A, dt, x, B_in, C_in, state.clone()),
-        ),
+        "tileops": reset_state(op),
+        "mamba": reset_state(mamba_fn),
+        FLASHINFER_TAG: reset_state(flashinfer_fn),
+        "torch-ref": reset_state(workload.ref_program),
+        TORCH_COMPILE_TAG: reset_state(compiled_reference(workload.ref_program)),
     }
-    bm.compare(functors, A, dt, x, B_in, C_in, state.clone())
+    bm.compare(functors, A, dt, x, B_in, C_in, state)
 
 
 @pytest.mark.parametrize("call", manifest_calls(Mamba2FwdOp))
