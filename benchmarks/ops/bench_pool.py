@@ -370,4 +370,15 @@ def test_mean_pooling_bench(call) -> None:
     if view_mean is not None:
         functors["torch-view-mean"] = view_mean
 
-    bm.compare(functors, *inputs)
+    if len(inputs) > 1 and inputs[1] is not None:
+        lengths = torch.tensor(
+            [end - begin for begin, end in slices], dtype=torch.int64, device=inputs[0].device
+        )
+
+        def segmented_mean(x, *_metadata):
+            values = x.transpose(0, 1).contiguous().float()
+            out = torch.segment_reduce(values, "mean", lengths=lengths, unsafe=True)
+            return out.to(x.dtype).transpose(0, 1).contiguous()
+
+        functors["torch-segment-reduce"] = segmented_mean
+    bm.compare(functors, *inputs, count_copies=True)

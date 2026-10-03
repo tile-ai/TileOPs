@@ -22,6 +22,8 @@ __all__ = [
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
     "FLA_TAG",
+    "QUACK_TAG",
+    "quack_op",
     "TORCH_COMPILE_TAG",
     "VLLM_TAG",
     "assert_matches_reference",
@@ -37,6 +39,7 @@ __all__ = [
     "vllm_op",
 ]
 
+QUACK_TAG = "quack"
 DEEPGEMM_TAG = "deepgemm"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
@@ -188,6 +191,11 @@ def flaggems_group_norm(n: int, c: int, hxw: int, groups: int, eps: float) -> Ca
     return baseline_fn
 
 
+def quack_op(name: str, module: str = "quack") -> Callable:
+    """Resolve a QuACK CuTeDSL kernel from the runner image."""
+    return _resolve(module, name, "quack")
+
+
 def deepgemm_op(name: str) -> Callable:
     """Return the ``deep_gemm`` entry point *name*.
 
@@ -197,9 +205,9 @@ def deepgemm_op(name: str) -> Callable:
     return _resolve("deep_gemm", name, "deepgemm")
 
 
-def flashinfer_op(name: str) -> Callable:
+def flashinfer_op(name: str, module: str = "") -> Callable:
     """Return the ``flashinfer`` entry point *name*, dots allowed for submodules."""
-    return _resolve("flashinfer", name, "flashinfer")
+    return _resolve(f"flashinfer.{module}" if module else "flashinfer", name, "flashinfer")
 
 
 def fla_op(name: str) -> Callable:

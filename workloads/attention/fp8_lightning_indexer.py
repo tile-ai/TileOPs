@@ -214,14 +214,21 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         mask_hi = torch.arange(0, seq_len_kv, device=run_device())[None, :] < cu_seqlen_ke[:, None]
         mask = mask_lo & mask_hi
 
-        score = torch.einsum("bsghd,bngd->bghsn", q, k)
-        weights = weights.view(seq_len, kv_group, heads_per_group)
-        weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
-        score = score.relu() * weights
-        logits = score.sum(dim=2)
-        logits = logits.permute(0, 2, 3, 1)
-        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
-        logits = logits.masked_fill(~mask_expanded, float("-inf"))
+        # Bound the FP32 head-score workspace while checking the complete output.
+        score_elements = 64 * 1024 * 1024
+        query_chunk = max(1, score_elements // (batch * heads * seq_len_kv))
+        logits = torch.empty(
+            (batch, seq_len, seq_len_kv, kv_group), device=q.device, dtype=torch.float32
+        )
+        for start in range(0, seq_len, query_chunk):
+            end = min(start + query_chunk, seq_len)
+            score = torch.einsum("bsghd,bngd->bghsn", q[:, start:end], k)
+            chunk_weights = weights[start:end].view(end - start, kv_group, heads_per_group)
+            chunk_weights = chunk_weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
+            chunk_logits = (score.relu() * chunk_weights).sum(dim=2).permute(0, 2, 3, 1)
+            logits[:, start:end] = chunk_logits.masked_fill(
+                ~mask[start:end].unsqueeze(0).unsqueeze(-1), float("-inf")
+            )
         return (logits,)
 
 

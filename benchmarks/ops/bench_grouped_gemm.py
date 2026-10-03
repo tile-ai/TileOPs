@@ -9,8 +9,10 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
+    QUACK_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
+    quack_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedGemmFwdOp
@@ -90,6 +92,19 @@ def test_grouped_gemm_bench(call) -> None:
     grouped_mm_fn = _torch_grouped_mm(workload, inputs)
     if grouped_mm_fn is not None:
         functors["torch"] = grouped_mm_fn
-    # Rows are named by the op, with the layout among their params: a row named
-    # for the layout leaves the op it measured out of the report.
+    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+    offsets = torch.tensor(
+        [0, *torch.tensor(workload.batch_sizes_list).cumsum(0).tolist()],
+        device=inputs[0].device,
+        dtype=torch.int32,
+    )
+
+    def quack_fn(a, b, *_):
+        if workload.transpose_a:
+            rhs = b.T if workload.transpose_b else b
+            return quack_gemm(a.T, rhs, cu_seqlens_k=offsets)
+        rhs = b.transpose(-1, -2) if workload.transpose_b else b
+        return quack_gemm(a, rhs, cu_seqlens_m=offsets)
+
+    functors[QUACK_TAG] = quack_fn
     bm.compare(functors, *inputs)

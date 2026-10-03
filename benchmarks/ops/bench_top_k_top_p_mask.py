@@ -22,10 +22,6 @@ from workloads.sampling import TopKTopPMaskWorkload, probability_above, top_k_ma
 
 @pytest.mark.parametrize("call", manifest_calls(TopKTopPMaskFwdOp))
 def test_top_k_top_p_mask_bench(call) -> None:
-    # Rows vLLM's Triton path takes: it reads float32 logits only, and it is the path
-    # ``apply_top_k_top_p`` chooses at this many rows or more. Below it the sort path runs,
-    # which takes the logits' own dtype.
-    vllm_triton_rows = 8
     # vLLM cuts at a sorted position instead of keeping or dropping the run of tokens tied at
     # the boundary together, so the two disagree inside that run, and a token they disagree on
     # sits this close to the row's smallest kept probability, relative to it. A 16-bit row ties
@@ -52,29 +48,21 @@ def test_top_k_top_p_mask_bench(call) -> None:
         Custom(logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"),
     )
 
-    # FlashInfer 0.6.16 exposes no mask-only top-k-top-p entry point, only
-    # ``top_k_top_p_sampling_from_logits``, which draws a token, so no row carries a
-    # FlashInfer tag. A row vLLM cannot take in the manifest's dtype carries no vLLM tag.
-    if logits.shape[0] < vllm_triton_rows or logits.dtype is torch.float32:
-        # vLLM masks its argument in place; it reaches nothing else of its caller's, and a k
-        # above V has no meaning to it, so it takes a clamped k and a private logits buffer
-        # refilled per call. It is not idempotent either: a second pass renormalizes over the
-        # tokens the first left and cuts further. ``count_copies`` stays false at the
-        # comparison below, so the refill is excluded from ``device_busy_ms``.
-        apply_top_k_top_p = vllm_op("apply_top_k_top_p", "v1.sample.ops.topk_topp_sampler")
-        vllm_k = k.clamp(max=call.ix["V"])
-        vllm_logits = torch.empty_like(logits)
+    # Conversion kernels are timed; same-dtype copies only reset the private input.
+    apply_top_k_top_p = vllm_op("apply_top_k_top_p", "v1.sample.ops.topk_topp_sampler")
+    vllm_logits = torch.empty_like(logits, dtype=torch.float32)
 
-        def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-            return apply_top_k_top_p(vllm_logits.copy_(logits), vllm_k, p)
-
-        kept = reference != -float("inf")
-        probs = top_k_mask(logits, k).float().softmax(-1)
-        lowest = probs.masked_fill(~kept, float("inf")).amin(-1, keepdim=True)
-        near = (probs / lowest - 1).abs() <= margin
-        evidence[VLLM_TAG] = Custom(
-            logit_mask_validator(logits, near), "mask ties within nucleus rounding boundary"
+    def vllm_mask(logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        return apply_top_k_top_p(vllm_logits.copy_(logits), k.clamp(max=logits.shape[-1]), p).to(
+            logits.dtype
         )
-        functors[VLLM_TAG] = vllm_mask
 
+    kept = reference != -float("inf")
+    probs = top_k_mask(logits, k).float().softmax(-1)
+    lowest = probs.masked_fill(~kept, float("inf")).amin(-1, keepdim=True)
+    near = (probs / lowest - 1).abs() <= margin
+    evidence[VLLM_TAG] = Custom(
+        logit_mask_validator(logits, near), "mask ties within nucleus rounding boundary"
+    )
+    functors[VLLM_TAG] = vllm_mask
     bm.compare(functors, logits, k, p, evidence=evidence)

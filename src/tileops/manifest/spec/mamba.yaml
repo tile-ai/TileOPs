@@ -69,6 +69,7 @@ SSDChunkCouplingFwdOp:
   workloads:
   - {B: 1, S: 4096, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: float16}], label: mamba2-780m}
   - {B: 4, S: 2048, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b}
+  - {B: 3, S: 3072, G: 8, N: 128, chunk_len: 256, dtype_cases: [{T: float16}], label: mamba2-grouped-prefill}
   roofline:
     # Causal masking halves the 2 * Q * Q * N contraction per (batch, chunk, group).
     flops: "B * NC * G * chunk_len * chunk_len * N"
