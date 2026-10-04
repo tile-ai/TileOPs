@@ -94,14 +94,16 @@ def logit_mask_validator(logits: torch.Tensor, near: torch.Tensor) -> Callable:
 
 
 def assert_quantized(got: Any, expected: Any, scale_rtol: float = 1e-6) -> None:
-    """Check scales and allow one adjacent FP8/INT8 code at rounding boundaries.
+    """Check a tensor or output sequence, allowing one adjacent FP8/INT8 code.
 
     The one-code allowance is the semantics of quantization, not a decision:
     two correct implementations rounding a value that sits on a boundary land
     on neighbouring codes. What the caller decides is how close the scales must
     be, which is *scale_rtol*.
     """
-    for output, target in zip(got, expected, strict=True):
+    outputs = got if isinstance(got, (tuple, list)) else (got,)
+    targets = expected if isinstance(expected, (tuple, list)) else (expected,)
+    for output, target in zip(outputs, targets, strict=True):
         assert output.shape == target.shape and output.dtype == target.dtype
         if output.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             step = (output.view(torch.uint8).int() - target.view(torch.uint8).int()).abs()

@@ -283,15 +283,24 @@ def test_custom_control_uses_the_declared_validator(bench):
     bench.verify(_workload(ref=lambda x: x), {"op": (lambda x: x, inputs)}, {"op": mark}, inputs)
 
 
-def test_quantization_validator_rejects_scale_and_code_faults():
+@pytest.mark.parametrize("sequence", [False, True], ids=["tensor", "outputs"])
+def test_quantization_validator_rejects_scale_and_code_faults(sequence):
+    """Per-output unit checks and whole-result benchmark checks reject the same faults."""
     from workloads.numerics import assert_quantized
 
     scale = torch.ones(1)
     q = torch.tensor([1.0, 2.0, -1.0]).to(torch.float8_e4m3fn)
-    assert_quantized((q, scale), (q, scale))
-    for actual in [(q, scale * 2), (torch.zeros_like(q), scale)]:
+    good = [(q, scale)] if sequence else [q, scale]
+    for output in good:
+        assert_quantized(output, output)
+    faults = (
+        [((q, scale * 2), (q, scale)), ((torch.zeros_like(q), scale), (q, scale))]
+        if sequence
+        else [(scale * 2, scale), (torch.zeros_like(q), q)]
+    )
+    for actual, expected in faults:
         with pytest.raises(AssertionError):
-            assert_quantized(actual, (q, scale))
+            assert_quantized(actual, expected)
 
 
 def test_normalized_validator_rejects_wrong_nonfinite_values_and_scale():

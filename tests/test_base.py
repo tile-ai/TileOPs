@@ -153,6 +153,12 @@ class TestBase(WorkloadBase):
         op_module = op.__class__.__module__
         _refuse_non_op(op, op_name)
         subject = op if runs is None else runs
+        # Each invocation owns its attribution and comparison evidence. A test
+        # may call check() again and catch its failure; it must not report the
+        # previous invocation's error under the new op's name.
+        _check_result.op_name = op_name
+        _check_result.op_module = op_module
+        _check_result.max_abs_err = None
 
         try:
             outputs_ref = self.ref_program(*inputs)
@@ -175,7 +181,7 @@ class TestBase(WorkloadBase):
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
         )
 
-        # Error metrics before the comparison, so a failing case still reports them.
+        # Compute the metric now, but publish it only after every comparison succeeds.
         max_abs_err = 0.0
         compared = False
         for output, output_ref in zip(outputs, outputs_ref, strict=True):
@@ -196,9 +202,6 @@ class TestBase(WorkloadBase):
             wide = torch.complex64 if output.is_complex() else torch.float32
             err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
             max_abs_err = max(max_abs_err, err)
-
-        _check_result.op_name = op_name
-        _check_result.op_module = op_module
 
         comparators = [compare] * len(outputs) if callable(compare) else list(compare)
 

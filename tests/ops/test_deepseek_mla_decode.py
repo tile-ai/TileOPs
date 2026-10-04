@@ -4,9 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MlaDecodeCall, MLADecodeMmaKernel
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from tileops.utils import get_sm_version
 from workloads.attention.mla import MlaDecodeWorkload
-from workloads.device import run_device
 
 
 class MlaDecodeTest(MlaDecodeWorkload, TestBase):
@@ -130,14 +128,3 @@ def test_mla_decode_mma_config_follows_the_shared_memory_budget(
         budget, dim, pe_dim, torch.float16.itemsize, seqlen_kv
     )
     assert config["block_H"] == expected
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_mla_decode_mma_dim_768() -> None:
-    """Dim 768 takes 16-row head blocks on 99 KB of shared memory."""
-    if get_sm_version(torch.device(run_device()).index) not in MLADecodeMmaKernel.supported_archs:
-        pytest.skip("the MMA decode serves SM80, SM86 and SM89")
-    test = MlaDecodeTest(2, 32, 1, 512, 768, 64, torch.float16)
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp()
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)

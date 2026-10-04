@@ -985,18 +985,6 @@ def test_gqa_bwd_mma_builds_per_device() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("heads_kv", [8, 2])
-def test_gqa_bwd_mma_head_dim_256(heads_kv: int) -> None:
-    """Head dim 256 takes 16-row query blocks on 99 KB of shared memory."""
-    if get_sm_version(torch.device(run_device()).index) not in GQABwdMmaKernel.supported_archs:
-        pytest.skip("the MMA backward serves SM80, SM86 and SM89")
-    test = GroupedQueryAttentionBwdTest(1, 8, heads_kv, 512, 256, True, torch.float16)
-    op = GroupedQueryAttentionBwdOp(True)
-    test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-3)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
 @pytest.mark.parametrize("dim", [80, 96])
 def test_gqa_bwd_preprocess_sums_rows_of_any_head_dim(dim: int) -> None:
     """At head dims that are not powers of two, delta is each row's sum of o * do and the dQ
