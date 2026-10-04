@@ -149,21 +149,16 @@ class INT8QuantPerChannelFwdInterface(KernelInterface):
 
 
 class INT4QuantPerGroupFwdInterface(KernelInterface):
-    """Asymmetric INT4 quantization of each group of a row into ``GemmW4A16FwdOp``'s operands."""
+    """DeepSpeed-compatible asymmetric INT4 quantization and packing."""
 
     request = QuantizeCall
 
     @abstractmethod
-    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Quantize and pack the ``call.rows`` rows of ``w``; nothing is written in place.
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Quantize contiguous float16 ``w[call.rows, call.cols]`` without mutation.
 
-        Args:
-            w: ``[call.rows, call.cols]``, contiguous, ``float16`` on ``call.device``.
-
-        Returns:
-            A new ``packed_weight`` ``[call.rows, call.cols // 2]`` in ``uint8``, in the order
-            ``GemmW4A16FwdOp.repack`` produces, and a new ``weight_scale`` in ``float16`` and
-            ``weight_zero`` in ``uint8``, both ``[call.rows, call.cols // call.group_size]``.
+        Return int8 packed codes ``[call.rows, call.cols // 2]`` and float32
+        scale/offset pairs ``[call.rows * call.cols // call.group_size, 2]``.
         """
 
 

@@ -11,7 +11,6 @@ import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
-from workloads.gemm import repack_w4a16_weight
 from workloads.workload_base import WorkloadBase
 
 _BLOCK = 128
@@ -72,26 +71,17 @@ def fp8_quant_per_block(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return q, scale
 
 
-def int4_quant_per_group(
-    w: torch.Tensor, group_size: int
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """``INT4QuantPerGroupFwdOp``'s reference: asymmetric, one scale and zero per group."""
+def int4_quant_per_group(w: torch.Tensor, group_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """DeepSpeed asymmetric INT4: signed codes and float32 scale/offset pairs."""
     n, k = w.shape
-    groups = w.float().view(n, k // group_size, group_size)
-    # The range includes 0, so the zero point lies in [0, 15].
-    lo = groups.amin(dim=-1).clamp_max(0)
-    hi = groups.amax(dim=-1).clamp_min(0)
-    floor = torch.finfo(w.dtype).tiny
-    scale = torch.where(hi > lo, ((hi - lo) / 15).clamp_min(floor), torch.ones_like(hi))
-    # Quantize against the scale the op returns.
-    scale = scale.to(w.dtype).float()
-    zero = torch.round(-lo / scale)
-    q = (torch.round(groups / scale[..., None]) + zero[..., None]).clamp(0, 15)
-    q = q.to(torch.uint8).view(n, k // 2, 2)
-    # Row-major bytes, even K in the low nibble, reordered as GemmW4A16FwdOp.repack does.
-    # That order is defined per 128-element K step, which the signature requires.
-    packed = repack_w4a16_weight(q[..., 0] | (q[..., 1] << 4))
-    return packed, scale.to(w.dtype), zero.to(torch.uint8)
+    groups = w.float().view(-1, group_size)
+    lo, hi = groups.amin(dim=-1), groups.amax(dim=-1)
+    multiplier = torch.where(hi == lo, 1.0, 16.0 / (hi - lo))
+    offset = (hi + lo) * 0.5
+    q = ((groups - offset[:, None]) * multiplier[:, None]).round().clamp(-8, 7)
+    q = q.to(torch.int8).view(n, k // 2, 2)
+    packed = (q[..., 0] << 4) | (q[..., 1] & 15)
+    return packed, torch.stack((1.0 / multiplier, offset), dim=-1)
 
 
 def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -160,7 +150,7 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
         ix = call.ix
         return cls(ix["N"], ix["K"], getattr(torch, ix["T"]), ix["group_size"])
 
-    def ref_program(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def ref_program(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int4_quant_per_group(w, self.group_size)
 
 

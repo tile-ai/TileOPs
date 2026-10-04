@@ -59,7 +59,7 @@ _int8_per_channel = _outputs(("q", "scale"), quantization.int8_quant_per_channel
 _int8_per_block = _outputs(("q", "scale"), quantization.int8_quant_per_block, "x")
 _fp8_per_block = _outputs(("q", "scale"), quantization.fp8_quant_per_block, "w")
 _int4_per_group = _outputs(
-    ("packed_weight", "weight_scale", "weight_zero"),
+    ("packed_weight", "params"),
     quantization.int4_quant_per_group,
     "w",
     group_size="group_size",

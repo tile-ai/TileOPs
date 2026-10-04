@@ -19,6 +19,7 @@ import torch
 
 __all__ = [
     "DEEPGEMM_TAG",
+    "DEEPSPEED_TAG",
     "FLAGGEMS_TAG",
     "FLASHINFER_TAG",
     "FLA_TAG",
@@ -29,6 +30,7 @@ __all__ = [
     "assert_output_spec",
     "compiled_reference",
     "deepgemm_op",
+    "deepspeed_op",
     "fla_op",
     "flaggems_dims",
     "flaggems_group_norm",
@@ -41,6 +43,7 @@ __all__ = [
 
 QUACK_TAG = "quack"
 DEEPGEMM_TAG = "deepgemm"
+DEEPSPEED_TAG = "deepspeed"
 TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
@@ -203,6 +206,11 @@ def deepgemm_op(name: str) -> Callable:
     allocates before it calls.
     """
     return _resolve("deep_gemm", name, "deepgemm")
+
+
+def deepspeed_op(name: str) -> Any:
+    """Resolve an entry of DeepSpeed's prebuilt quantizer extension."""
+    return _resolve("deepspeed.ops.quantizer.quantizer_op", name, DEEPSPEED_TAG)
 
 
 def flashinfer_op(name: str, module: str = "") -> Callable:

@@ -10,7 +10,6 @@ from tileops.kernels.quantization import (
     INT8QuantPerTensorFwdKernel,
     QuantizeCall,
 )
-from tileops.ops import GemmW4A16FwdOp
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -23,7 +22,6 @@ from tileops.quantization import (
     SmoothQuantFwdOp,
 )
 from workloads.device import run_device
-from workloads.gemm import unrepack_w4a16_weight
 from workloads.quantization.quantize import (
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
@@ -55,7 +53,7 @@ def _bitwise_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 _COMPARE = {
     INT8QuantPerBlockFwdOp: [exact_compare, exact_compare],
     FP8QuantPerBlockFwdOp: [_bitwise_compare, _bitwise_compare],
-    INT4QuantPerGroupFwdOp: [exact_compare, exact_compare, exact_compare],
+    INT4QuantPerGroupFwdOp: [exact_compare, _scale_compare],
 }
 
 
@@ -430,32 +428,28 @@ def test_generated_checks_reject_an_invalid_call(op_cls) -> None:
 
 @pytest.mark.smoke
 def test_int4_reference_round_trips_a_group_of_one_sign() -> None:
-    """A group of one sign round-trips within half a step, and a tiny range keeps a scale."""
+    """A group of one sign round-trips within one step, and a tiny range keeps a scale."""
     w = torch.empty(2, 128, dtype=torch.float16, device=run_device())
     w[0] = torch.linspace(1.0, 1.5, 128)
     w[1] = torch.linspace(0.0, 1e-5, 128)
-    packed, scale, zero = int4_quant_per_group(w, 128)
-    raw = unrepack_w4a16_weight(packed).to(torch.int32)
-    q = torch.stack((raw & 0xF, raw >> 4), dim=-1).view(2, 128)
-    step = scale.float()
-    restored = (q - zero.to(torch.int32)) * step
+    packed, params = int4_quant_per_group(w, 128)
+    q = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(2, 128)
+    step = params[:, :1]
+    restored = q * step + params[:, 1:]
     assert (step > 0).all()
-    assert ((restored - w.float()).abs() <= step / 2 + 1e-6).all()
+    assert ((restored - w.float()).abs() <= step + 1e-6).all()
 
 
 def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
-    """128-element groups on the edges of the grid: all zero (scale 1), constant (the range
-    widened to 0), one sign, below the scale floor, rounding ties, and a clamp at 15."""
+    """Constant groups, one sign, tiny ranges and signed rounding boundaries."""
     w = w.clone()
     groups = w.view(-1, 128)
     groups[0] = 0
     groups[1] = 0.75
     groups[2] = groups[2].abs()
     groups[3] = torch.linspace(0.0, 1e-4, 128)
-    # Scale 1.5 and zero point 8 from a tie; every other element is a tie w / 1.5 = n + 1/2.
     groups[4] = (torch.arange(128, device=w.device) % 15 - 7.5) * 1.5
-    groups[4, :2] = torch.tensor([-11.25, 11.25])
-    # The scale rounds down to 0.11761474609375, so hi / scale + zero rounds to 16.
+    groups[4, :2] = torch.tensor([-12.0, 12.0])
     groups[5] = torch.linspace(-0.7646484375, 1.0, 128)
     return w
 
@@ -477,22 +471,13 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
         rows, cols, torch.float16, group_size
     )
     (w,) = test.gen_inputs()
-    test.check(INT4QuantPerGroupFwdOp(group_size), make(w), compare=[exact_compare] * 3)
+    test.check(INT4QuantPerGroupFwdOp(group_size), make(w), compare=[exact_compare, _scale_compare])
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("group_size", [128, 1024])
 def test_int4_per_group_round_trip(group_size: int) -> None:
-    """``GemmW4A16FwdOp`` with the op's outputs reproduces ``w`` within the grid's error.
-
-    The activation is the identity, so output ``(k, n)`` is the dequantized ``w[n, k]``
-    rounded to float16 once, and the reference ``torch.matmul`` in float32 is ``w[n, k]``.
-    Rounding to the nearest code moves ``w`` by at most half a step ``s`` of its group. The
-    float16 scale may round below the range by 2^-11 of itself, which lets the largest
-    element round to code 16 and clamp to 15: at most ``15 * 2^-11 * s`` more. The float32
-    roundings of the range, its product by 1/15 and the quotients add less than
-    ``2^-20 * s``, and the float16 output adds ``2^-11`` of its magnitude.
-    """
+    """Signed packing and float offsets reconstruct each group within one quantization step."""
     rows, cols = 256, 1024
     groups = rows * cols // group_size
     magnitude = torch.logspace(-2, 2, groups, device=run_device())
@@ -501,21 +486,11 @@ def test_int4_per_group_round_trip(group_size: int) -> None:
         :, None
     ]
     w = w.view(rows, cols).half()
-    packed, scale, zero = INT4QuantPerGroupFwdOp(group_size)(w)
-    # The GEMM reads 128-element groups; a wider group is the same scale and zero repeated.
-    repeat = group_size // 128
-    eye = torch.eye(cols, dtype=torch.float16, device=run_device())
-    out = GemmW4A16FwdOp()(
-        eye,
-        packed,
-        scale.repeat_interleave(repeat, 1).contiguous(),
-        zero.repeat_interleave(repeat, 1).contiguous(),
-    )
-    ref = torch.matmul(eye.float(), w.float().T)
-    step = scale.float().repeat_interleave(group_size, 1).T
-    bound = step * (0.5 + 15 * 2**-11 + 2**-20) + 2**-11 * out.float().abs()
-    err = (out.float() - ref).abs()
-    assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
+    packed, params = INT4QuantPerGroupFwdOp(group_size)(w)
+    codes = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(groups, group_size)
+    restored = codes.float() * params[:, :1] + params[:, 1:]
+    error = (restored - w.float().view(groups, group_size)).abs()
+    assert (error <= params[:, :1] * (1 + 1e-5)).all()
 
 
 def _zero_odd_tiles(w: torch.Tensor) -> torch.Tensor:
