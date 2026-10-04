@@ -815,21 +815,18 @@ def _delta(current: int | float, previous: int | float | None, unit: str = "") -
     return f" **{sign}{magnitude}{unit}**"
 
 
-def _ops_verified(test_ops: dict | None, bench_ops: dict | None) -> tuple[int, int] | None:
-    """``(ops with a verified result, implemented ops)``, or None without a manifest.
+def _ops_verified(
+    test_ops: dict | None, bench_ops: dict | None, implemented: set[str] | None
+) -> tuple[int, int] | None:
+    """``(ops with a verified result, implemented ops)``, or None without *implemented*.
 
     An op counts as verified when a reference established one of its results
     tonight, from either verifier: unit tests compare against ``ref_program``,
     and a benchmark row is checked against its baseline before it is timed. The
     two cover different ops, and neither alone is the library's coverage.
     """
-    try:
-        from tileops.manifest import load_manifest
-
-        manifest = load_manifest()
-    except Exception:
+    if implemented is None:
         return None
-    implemented = {name for name, op in manifest.items() if op.get("status") == "implemented"}
     # Attribution says which op a test belongs to, not what it established: a
     # constructor rejection passes without comparing any of the op's values.
     passed = {op for op, d in (test_ops or {}).items() if d.get("compared", 0) > 0}
@@ -897,8 +894,22 @@ def _kernel_count() -> int | None:
     return len(found)
 
 
-def _library_scale() -> dict[str, int] | None:
-    """What the op library holds, or None when the manifest will not load.
+def _load_manifest() -> dict | None:
+    """The installed op manifest, or None when it will not load.
+
+    Returns None rather than raising: a night whose benchmark data is intact still
+    has a report to render, and the rows the manifest feeds are dropped instead.
+    """
+    try:
+        from tileops.manifest import load_manifest
+
+        return load_manifest()
+    except Exception:
+        return None
+
+
+def _library_scale(manifest: dict | None) -> dict[str, int] | None:
+    """What the op library holds, or None without *manifest*.
 
     ``operators`` counts the ops that have an implementation, which is what the
     library offers; an entry that is still only a specification is counted by
@@ -909,16 +920,13 @@ def _library_scale() -> dict[str, int] | None:
 
     ``collect_stats`` is the same reader the manifest stats job publishes from,
     so the two never disagree on how an op is counted.
-
-    Returns None rather than raising: a night whose benchmark data is intact
-    still has a report to render, and the caller drops these rows instead.
     """
+    if manifest is None:
+        return None
     try:
         from manifest_stats import collect_stats
 
-        from tileops.manifest import load_manifest
-
-        stats = collect_stats(load_manifest())
+        stats = collect_stats(manifest)
     except Exception:
         return None
     scale = {
@@ -1118,6 +1126,8 @@ def generate_report(
     have_gpu_profile: bool = False,
     history_window: str = "not read",
     test_results: list[dict] | None = None,
+    scale: dict[str, int] | None = None,
+    implemented: set[str] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -1165,7 +1175,6 @@ def generate_report(
     lines.append("|---|---|")
     # Ahead of the run's own figures: these two say how large the library is,
     # and the rows under them say how it did tonight.
-    scale = _library_scale()
     if scale:
         lines.append(f"| **Operators** | {scale['operators']} |")
         if "kernels" in scale:
@@ -1174,7 +1183,7 @@ def generate_report(
         lines.append(f"| **Workloads** | {scale['workloads']} |")
     # Ops first: the question the row answers is how much of the library was
     # established tonight, and the test count is the evidence, not the answer.
-    verified = _ops_verified(test_ops, bench_ops)
+    verified = _ops_verified(test_ops, bench_ops, implemented)
     scope = f"{verified[0]}/{verified[1]} ops verified, " if verified else ""
     lines.append(
         f"| **Correctness** | {corr_icon} &ensp; ({scope}{total_passed}/{total_tests} tests) |"
@@ -1541,6 +1550,12 @@ def main():
         coverage = parse_coverage_xml(args.coverage_xml)
     # Read before this run is appended, so the comparison is against a prior run.
     coverage_prev = _previous_coverage(history_runs)
+    manifest = _load_manifest()
+    implemented = (
+        None
+        if manifest is None
+        else {name for name, op in manifest.items() if op.get("status") == "implemented"}
+    )
 
     report = generate_report(
         test_ops,
@@ -1557,6 +1572,8 @@ def main():
         have_gpu_profile=gpu_profile is not None,
         history_window=_history_window(history_runs, bool(args.history)),
         test_results=test_results,
+        scale=_library_scale(manifest),
+        implemented=implemented,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

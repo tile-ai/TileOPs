@@ -18,25 +18,22 @@ from tileops.kernels.attention import (
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
-from tileops.kernels.attention.mla import prefill_varlen
 from tileops.ops import MultiHeadLatentAttentionVarlenFwdOp
 from workloads.device import run_device
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_mla_varlen_default_config_is_owned_by_each_kernel(monkeypatch) -> None:
+def test_mla_varlen_default_config_is_owned_by_each_kernel() -> None:
     """Changing one kernel's config must not change another kernel or future defaults."""
-    monkeypatch.setattr(MLAVarlenPrefillFwdKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(prefill_varlen, "get_shared_memory_optin", lambda index=None: 101376)
-    first = MLAVarlenPrefillFwdKernel(1, 4, 128, 64, 128, True, torch.float16)
-    second = MLAVarlenPrefillFwdKernel(2, 8, 128, 64, 128, True, torch.float16)
-    expected = second.config.copy()
+    budget, shape = 101376, (128, 64, 128, torch.float16.itemsize)
+    first = MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape)
+    second = MLAVarlenPrefillFwdKernel._default_config_for(budget, 2, *shape)
+    expected = second.copy()
 
-    monkeypatch.setitem(first.config, "block_n", 32)
+    first["block_n"] = 32
 
-    assert second.config == expected
-    assert first.default_config == expected
+    assert second == expected
+    assert MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape) == expected
 
 
 def _gen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):

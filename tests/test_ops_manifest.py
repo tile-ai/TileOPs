@@ -64,11 +64,8 @@ class TestManifestAPI:
             assert not hasattr(manifest, name)
 
 
-def test_family_file_named_after_another_family_raises(tmp_path, monkeypatch):
-    import tileops.manifest as manifest
+def test_family_file_named_after_another_family_raises():
+    from tileops.manifest import _check_family_file
 
-    path = tmp_path / "sequence_modeling.yaml"
-    path.write_text("FFTC2CFwdOp: {family: fft}\n")
-    monkeypatch.setattr(manifest, "manifest_files", lambda: [path])
     with pytest.raises(ValueError, match="FFTC2CFwdOp.*family 'fft'"):
-        manifest.load_manifest.__wrapped__()
+        _check_family_file("sequence_modeling.yaml", {"FFTC2CFwdOp": {"family": "fft"}})

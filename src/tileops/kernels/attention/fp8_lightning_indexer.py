@@ -408,19 +408,28 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        budget = get_shared_memory_optin(self.device_index)
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.heads,
+            self.index_dim,
+            self.kv_group,
+        )
+
+    @classmethod
+    def _default_config_for(cls, budget: int, heads: int, index_dim: int, kv_group: int) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
         block_q = next(
             (
                 q
-                for q in self._BLOCK_QS
-                if self._shared_bytes(q, self.heads, self.index_dim, self.kv_group) <= budget
+                for q in cls._BLOCK_QS
+                if cls._shared_bytes(q, heads, index_dim, kv_group) <= budget
             ),
-            self._BLOCK_QS[-1],
+            cls._BLOCK_QS[-1],
         )
         return {
-            "block_N": self._BLOCK_N,
-            "num_stages": self._NUM_STAGES,
-            "threads": self._THREADS,
+            "block_N": cls._BLOCK_N,
+            "num_stages": cls._NUM_STAGES,
+            "threads": cls._THREADS,
             "block_Q": block_q,
         }
 

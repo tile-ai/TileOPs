@@ -494,22 +494,39 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
 
     @property
     def default_config(self) -> dict:
-        threads = 256 if self.chunk_size >= 64 else 128
-        while threads > 64 and self.dim_v < min_gemm_n(threads):
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            getattr(torch, self.dtype_str).itemsize,
+        )
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
+        threads = 256 if chunk_size >= 64 else 128
+        while threads > 64 and dim_v < min_gemm_n(threads):
             threads //= 2
         return {
-            "num_stages": max(self._recurrence_stage_options()),
+            "num_stages": max(
+                cls._recurrence_stage_options(budget, chunk_size, dim_k, dim_v, elem)
+            ),
             "threads": threads,
             "parallel_threads": threads,
             "recurrence_threads": threads,
         }
 
-    def _recurrence_stage_options(self) -> list[int]:
-        """Recurrence stage counts to choose from: two only where their upper bound fits the
-        device; one stays, as ``refusal`` vets it."""
-        elem = getattr(torch, self.dtype_str).itemsize
-        two = self._recurrence_shared_bytes(self.chunk_size, self.dim_k, self.dim_v, elem, 2)
-        return [1, 2] if two <= get_shared_memory_optin(self.device_index) else [1]
+    @classmethod
+    def _recurrence_stage_options(
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+    ) -> list[int]:
+        """Recurrence stage counts to choose from: two only where their upper bound fits
+        *budget*; one stays, as ``refusal`` vets it."""
+        two = cls._recurrence_shared_bytes(chunk_size, dim_k, dim_v, elem, 2)
+        return [1, 2] if two <= budget else [1]
 
     @staticmethod
     def _recurrence_shared_bytes(c: int, k: int, v: int, elem: int, num_stages: int) -> int:
@@ -573,7 +590,13 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
 
         recurrence_configs = [
             {"num_stages": ns, "threads": t}
-            for ns in self._recurrence_stage_options()
+            for ns in self._recurrence_stage_options(
+                get_shared_memory_optin(self.device_index),
+                self.chunk_size,
+                self.dim_k,
+                self.dim_v,
+                getattr(torch, self.dtype_str).itemsize,
+            )
             for t in thread_options
         ]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")

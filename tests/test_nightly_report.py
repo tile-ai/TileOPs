@@ -452,9 +452,9 @@ def test_a_named_history_that_does_not_exist_is_refused(tmp_path):
     assert "--history file does not exist" in result.stderr
 
 
-def _summary_report(report, scale, monkeypatch):
-    monkeypatch.setattr(report, "_library_scale", lambda: scale)
+def _summary_report(report, scale):
     return report.generate_report(
+        scale=scale,
         test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
         bench_ops=_bench_ops(1.0),
         bench_failures=[],
@@ -464,17 +464,13 @@ def _summary_report(report, scale, monkeypatch):
     )
 
 
-def test_the_summary_names_the_scale_rows_verbatim(report, monkeypatch):
+def test_the_summary_names_the_scale_rows_verbatim(report):
     """The Lark card looks these rows up by key, from another repository.
 
     Renaming either key drops a column from the card and breaks nothing here,
     so the names are pinned rather than left to the renderer.
     """
-    md = _summary_report(
-        report,
-        {"operators": 186, "kernels": 272, "specs": 19, "workloads": 1135},
-        monkeypatch,
-    )
+    md = _summary_report(report, {"operators": 186, "kernels": 272, "specs": 19, "workloads": 1135})
     assert "| **Operators** | 186 |" in md
     assert "| **Kernels** | 272 |" in md
     assert "| **Specs** | 19 |" in md
@@ -483,9 +479,9 @@ def test_the_summary_names_the_scale_rows_verbatim(report, monkeypatch):
     assert "| **Operators** | 205 |" not in md
 
 
-def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report, monkeypatch):
+def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report):
     """Benchmark data stands on its own; an unreadable manifest costs two rows."""
-    md = _summary_report(report, None, monkeypatch)
+    md = _summary_report(report, None)
     assert "**Operators**" not in md
     assert "**Kernels**" not in md
     assert "**Specs**" not in md
@@ -506,10 +502,8 @@ def _result(outcome, op, name="test_x", compared=True):
     }
 
 
-def _counted(report, monkeypatch, results):
+def _counted(report, results):
     """The whole report, built over *results* as the suite that ran."""
-    monkeypatch.setattr(report, "_library_scale", lambda: None)
-    monkeypatch.setattr(report, "_ops_verified", lambda *_: None)
     md = report.generate_report(
         test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
         bench_ops=None,
@@ -522,67 +516,55 @@ def _counted(report, monkeypatch, results):
     return md
 
 
-def test_correctness_counts_every_test_not_only_the_attributed_ones(report, monkeypatch):
+def test_correctness_counts_every_test_not_only_the_attributed_ones(report):
     """Counting only tests a reference attributed reported a rate over half the suite."""
     results = [_result("passed", _OP)] + [_result("passed", None) for _ in range(3)]
 
-    assert "(4/4 tests)" in _counted(report, monkeypatch, results)
+    assert "(4/4 tests)" in _counted(report, results)
 
 
-def test_an_unattributed_failure_is_counted_and_named(report, monkeypatch):
+def test_an_unattributed_failure_is_counted_and_named(report):
     """A test with no op property fails the job, so the report must not lose it.
 
     Counting it and leaving it out of the failure table reports a number with
     nothing behind it: the reader sees N failed and a table holding fewer rows.
     """
     row = _result("failed", None, "test_sum")
-    md = _counted(report, monkeypatch, [_result("passed", _OP), row])
+    md = _counted(report, [_result("passed", _OP), row])
 
     assert "(1/2 tests)" in md
     assert report._FAIL in md
     assert row["nodeid"] in md
 
 
-def test_ops_verified_unions_both_verifiers(report, monkeypatch):
+def test_ops_verified_unions_both_verifiers(report):
     """Unit tests and benchmark rows verify different ops; neither alone is coverage."""
-    monkeypatch.setattr(
-        report,
-        "load_manifest",
-        lambda: {"A": {"status": "implemented"}, "B": {"status": "implemented"}},
-        raising=False,
-    )
-    import tileops.manifest
-
-    monkeypatch.setattr(
-        tileops.manifest,
-        "load_manifest",
-        lambda: {
-            "A": {"status": "implemented"},
-            "B": {"status": "implemented"},
-            "C": {"status": "spec-only"},
-        },
-    )
+    implemented = {"A", "B"}
 
     tested = {"A": {"passed": 1, "failed": 0, "compared": 1}}
     benched = {"B": {"configs": [{"baseline_ratio": 0.9}]}}
 
-    assert report._ops_verified(tested, benched) == (2, 2)
-    assert report._ops_verified(tested, None) == (1, 2)
-    assert report._ops_verified(tested, {"C": {"configs": [{"baseline_ratio": 0.9}]}}) == (1, 2)
+    assert report._ops_verified(tested, benched, implemented) == (2, 2)
+    assert report._ops_verified(tested, None, implemented) == (1, 2)
+    assert report._ops_verified(
+        tested, {"C": {"configs": [{"baseline_ratio": 0.9}]}}, implemented
+    ) == (1, 2)
     # A name alone is not evidence: every test for this op failed.
-    assert report._ops_verified({"A": {"passed": 0, "failed": 3, "compared": 0}}, None) == (0, 2)
+    assert report._ops_verified(
+        {"A": {"passed": 0, "failed": 3, "compared": 0}}, None, implemented
+    ) == (0, 2)
     # Nor is a passing test that compared nothing. After ownership becomes a
     # declaration, a constructor-rejection test carries the op name and no value.
     rejection_only = {"A": {"passed": 4, "failed": 0, "compared": 0}}
-    assert report._ops_verified(rejection_only, None) == (0, 2)
+    assert report._ops_verified(rejection_only, None, implemented) == (0, 2)
     # Nor is a benchmark row with no baseline to compare against.
-    assert report._ops_verified(None, {"B": {"configs": [{}]}}) == (0, 2)
+    assert report._ops_verified(None, {"B": {"configs": [{}]}}, implemented) == (0, 2)
     # A timed but noncomparable baseline leaves a populated dict and no ratio:
     # the conftest writes timing before deciding whether a tag may publish one.
     noncomparable = {"B": {"configs": [{"baselines": {"torch": {"latency_ms": 1.0}}}]}}
-    assert report._ops_verified(None, noncomparable) == (0, 2)
+    assert report._ops_verified(None, noncomparable, implemented) == (0, 2)
     rated = {"B": {"configs": [{"baselines": {"torch": {"ratio": 0.9}}}]}}
-    assert report._ops_verified(None, rated) == (1, 2)
+    assert report._ops_verified(None, rated, implemented) == (1, 2)
 
 
 def test_the_kernel_count_is_what_packages_export(report):

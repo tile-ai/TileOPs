@@ -944,7 +944,7 @@ def test_gqa_varlen_regions(
     ],
 )
 def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch, budget: int, dim: int, block_n: Optional[int]
+    budget: int, dim: int, block_n: Optional[int]
 ) -> None:
     """The query block and the refusal each follow their bound at a budget."""
     from tileops.kernels.attention.call_spec import AttentionCall
@@ -966,10 +966,8 @@ def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
         assert "needs at least" in GQABwdMmaKernel.refusal(call)
         return
     assert GQABwdMmaKernel.refusal(call) is None
-    monkeypatch.setattr(GQABwdMmaKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(gqa_bwd, "get_shared_memory_optin", lambda index=None: budget)
-    kernel = GQABwdMmaKernel(1, 8, 2, 1024, dim, True, torch.float16)
-    assert kernel.config["block_n"] == block_n
+    config = GQABwdMmaKernel._default_config_for(budget, dim, torch.float16.itemsize, True)
+    assert config["block_n"] == block_n
 
 
 @pytest.mark.cuda_only

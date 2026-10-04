@@ -31,9 +31,19 @@ from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
 from workloads.numerics import Evidence, Exact, Unestablished, describe
 
-# --tileops-verify runs correctness warmup only, omitting timing. The benchmark
-# conftest sets it; this module is the only reader.
-verifying = False
+# --tileops-verify runs correctness warmup only, omitting timing.
+_verifying = False
+
+
+def verifying() -> bool:
+    """Whether this run omits timing after the correctness warmup."""
+    return _verifying
+
+
+def set_verifying(value: bool) -> None:
+    """Put the run into verification mode. The benchmark conftest owns this."""
+    global _verifying
+    _verifying = value
 
 
 def ratio_allowed(evidence: Evidence) -> bool:
@@ -448,7 +458,7 @@ class OpBenchmark(BenchmarkBase[W]):
         evidence = self._resolve_evidence(plan, evidence)
         # Release verification temporaries before allocating timer buffers.
         self._verify(plan, evidence, inputs)
-        if verifying:
+        if verifying():
             return {}
         if any(ratio_allowed(mark) for mark in evidence.values()):
             torch.cuda.synchronize()

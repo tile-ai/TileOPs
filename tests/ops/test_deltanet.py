@@ -9,7 +9,6 @@ from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_t
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall
-from tileops.kernels.linear_attention.deltanet import chunk_bwd as deltanet_bwd
 from tileops.kernels.linear_attention.deltanet.chunk_bwd import DeltaNetBwdKernel
 from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
@@ -207,7 +206,6 @@ def test_deltanet_bwd(
     ],
 )
 def test_deltanet_bwd_config_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
     budget: int,
     chunk_size: int,
     dim_k: int,
@@ -232,11 +230,8 @@ def test_deltanet_bwd_config_follows_the_shared_memory_budget(
         assert "needs at least" in DeltaNetBwdKernel.refusal(call)
         return
     assert DeltaNetBwdKernel.refusal(call) is None
-    monkeypatch.setattr(DeltaNetBwdKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(deltanet_bwd, "get_shared_memory_optin", lambda index=None: budget)
-    dtype_str = DeltaNetBwdKernel.dtype_to_str(dtype)
-    kernel = DeltaNetBwdKernel(1, 1, 4 * chunk_size, chunk_size, dim_k, dim_v, dtype_str)
-    assert kernel.config["num_stages"] == stages
+    config = DeltaNetBwdKernel._default_config_for(budget, chunk_size, dim_k, dim_v, dtype.itemsize)
+    assert config["num_stages"] == stages
 
 
 class DeltaNetInferenceTest(DeltaNetInferenceWorkload, TestBase):

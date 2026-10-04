@@ -4,11 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import (
-    FP8LightningIndexerCall,
-    FP8LightningIndexerKernel,
-    fp8_lightning_indexer,
-)
+from tileops.kernels.attention import FP8LightningIndexerCall, FP8LightningIndexerKernel
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
@@ -66,7 +62,6 @@ def test_indexer(
     ],
 )
 def test_indexer_block_q_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
     budget: int,
     heads: int,
     index_dim: int,
@@ -89,10 +84,8 @@ def test_indexer_block_q_follows_the_shared_memory_budget(
         assert "needs" in FP8LightningIndexerKernel.refusal(call)
         return
     assert FP8LightningIndexerKernel.refusal(call) is None
-    monkeypatch.setattr(FP8LightningIndexerKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(fp8_lightning_indexer, "get_shared_memory_optin", lambda index=None: budget)
-    kernel = FP8LightningIndexerKernel(1, 1024, heads, index_dim, 2048, kv_group)
-    assert kernel.config["block_Q"] == block_q
+    config = FP8LightningIndexerKernel._default_config_for(budget, heads, index_dim, kv_group)
+    assert config["block_Q"] == block_q
 
 
 @pytest.mark.smoke

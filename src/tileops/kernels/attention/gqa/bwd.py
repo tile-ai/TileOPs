@@ -556,18 +556,22 @@ class GQABwdMmaKernel(GQABwdWgmmaPipelinedKernel):
 
     @property
     def default_config(self) -> dict:
-        budget = get_shared_memory_optin(self.device_index)
-        blocks = self._query_blocks(self.dim)
-        grouped = self.heads != self.heads_kv
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.dim,
+            self.dtype.itemsize,
+            self.heads != self.heads_kv,
+        )
+
+    @classmethod
+    def _default_config_for(cls, budget: int, dim: int, itemsize: int, grouped: bool) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
+        blocks = cls._query_blocks(dim)
         block_n = next(
-            (
-                n
-                for n in blocks
-                if self._shared_bytes(self.dim, n, self.dtype.itemsize, grouped) <= budget
-            ),
+            (n for n in blocks if cls._shared_bytes(dim, n, itemsize, grouped) <= budget),
             blocks[-1],
         )
-        return {"block_m": self._BLOCK_M, "block_n": block_n, "num_stages": 1, "threads": 128}
+        return {"block_m": cls._BLOCK_M, "block_n": block_n, "num_stages": 1, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:

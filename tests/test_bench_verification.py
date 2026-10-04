@@ -193,10 +193,22 @@ def test_partial_control_must_change_the_checked_prefix(bench):
         )
 
 
-def test_normal_benchmark_rejects_bad_warmup_before_sampling(bench, monkeypatch):
+@pytest.fixture
+def timing_run():
+    """Put the process-wide mode back to a run that times, and restore what it replaced."""
     from benchmarks import benchmark_base
 
-    monkeypatch.setattr(benchmark_base, "verifying", False)
+    previous = benchmark_base.verifying()
+    benchmark_base.set_verifying(False)
+    try:
+        yield
+    finally:
+        benchmark_base.set_verifying(previous)
+
+
+def test_normal_benchmark_rejects_bad_warmup_before_sampling(bench, timing_run, monkeypatch):
+    from benchmarks import benchmark_base
+
     monkeypatch.setattr(
         benchmark_base, "bench_kernel", lambda *_a, **_k: pytest.fail("timed a wrong result")
     )

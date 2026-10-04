@@ -507,7 +507,6 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     ],
 )
 def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
-    monkeypatch: pytest.MonkeyPatch,
     kind: str,
     packing: "str | None",
     metadata_kind: "str | None",
@@ -531,8 +530,7 @@ def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
         n=256,
         k=512,
     )
-    monkeypatch.setattr(MoeGroupedGemmMmaKernel, "_check_arch", lambda self: None)
-    supply = MoeGroupedGemmMmaKernel(call).autotune_supply_prog
+    supply = MoeGroupedGemmMmaKernel._supply_prog_for(call)
     a, b, layout, c = supply([None] * 4)
 
     lead = [num_groups, max_m] if kind == "masked" else [rows]

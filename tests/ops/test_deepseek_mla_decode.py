@@ -3,7 +3,6 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MlaDecodeCall, MLADecodeMmaKernel
-from tileops.kernels.attention.mla import decode as mla_decode
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from tileops.utils import get_sm_version
 from workloads.attention.mla import MlaDecodeWorkload
@@ -104,7 +103,6 @@ def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
     ],
 )
 def test_mla_decode_mma_config_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
     budget: int,
     dim: int,
     pe_dim: int,
@@ -128,10 +126,10 @@ def test_mla_decode_mma_config_follows_the_shared_memory_budget(
         assert expected in MLADecodeMmaKernel.refusal(call)
         return
     assert MLADecodeMmaKernel.refusal(call) is None
-    monkeypatch.setattr(MLADecodeMmaKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(mla_decode, "get_shared_memory_optin", lambda index=None: budget)
-    kernel = MLADecodeMmaKernel(2, 128, 1, seqlen_kv, dim, pe_dim, torch.float16)
-    assert kernel.config["block_H"] == expected
+    config = MLADecodeMmaKernel._default_config_for(
+        budget, dim, pe_dim, torch.float16.itemsize, seqlen_kv
+    )
+    assert config["block_H"] == expected
 
 
 @pytest.mark.cuda_only
