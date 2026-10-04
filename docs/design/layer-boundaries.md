@@ -102,6 +102,9 @@ dtypes, presence and metadata values come from instantiating the rows
 per-output dtype tolerances is insufficient. The declaration and `ref_program`
 belong to the narrowest shared class naming an operator. Shape-only bases are
 extended here, never by a consumer-local reference or comparator.
+Declared in-place state updates are observable results: a shared workload adapter
+exposes them alongside the returned tensors, and the reference returns the same
+structure. Neither consumer may silently omit those updates from comparison.
 
 **Must not contain**: pytest outcomes, `check`, timing, roofline calculations,
 or the choice of benchmark competitors.

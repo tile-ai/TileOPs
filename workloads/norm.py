@@ -360,9 +360,9 @@ class NormCall(CallWorkload):
             return F.group_norm(x, p["num_groups"], weight, bias, eps)
         if name in ("InstanceNormFwdOp", "BatchNormFwdOp"):
             _, rm, rv, weight, bias = inputs
-            if rm is not None:
-                rm, rv = rm.clone(), rv.clone()
             if name == "InstanceNormFwdOp":
+                if rm is not None:
+                    rm, rv = rm.clone(), rv.clone()
                 return F.instance_norm(
                     x, rm, rv, weight, bias, p["use_input_stats"], p["momentum"], eps
                 )
