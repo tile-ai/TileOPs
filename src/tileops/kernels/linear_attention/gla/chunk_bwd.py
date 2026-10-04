@@ -79,7 +79,8 @@ def _gla_bwd_dh_kernel(
     is the only parallelism: ``batch * heads * Vp * Kp`` blocks, each owning one K slice
     of one V slice. A row of dh decays under its own gate and takes its own gemm row, so
     a K partition changes nothing the kernel computes.
-    Stores dh_out[i_c] = dh after adding chunk i_c's contribution, before decay.
+    dh_out[i_c] is the gradient of the state after chunk i_c, the one its keys and values
+    write; dh0 is the gradient of the state before chunk 0.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
@@ -203,22 +204,19 @@ def _gla_bwd_dh_kernel(
                             dtype,
                         )
 
-                    # dh += scale * q_gated^T @ do_slice
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        dh_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = dh_s[i_k, i_v]
+
+                    # Back through the chunk: its gate decays the state, its queries read it.
                     dh_delta = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                     T.fill(dh_delta, 0.0)
                     T.gemm(
                         q_gated_s, do_s, dh_delta, transpose_A=True, policy=T.GemmWarpPolicy.FullRow
                     )
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        dh_s[i_k, i_v] = dh_s[i_k, i_v] + scale * dh_delta[i_k, i_v]
-
-                    # Store dh BEFORE decay
-                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        dh_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = dh_s[i_k, i_v]
-
-                    # Decay for next (earlier) chunk
-                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                        dh_s[i_k, i_v] = dh_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2E)
+                        dh_s[i_k, i_v] = scale * dh_delta[i_k, i_v] + dh_s[i_k, i_v] * T.exp2(
+                            g_last[i_k] * LOG2E
+                        )
 
                 # Write dh0
                 if has_initial_state:
