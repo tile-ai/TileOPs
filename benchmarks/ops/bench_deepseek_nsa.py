@@ -5,17 +5,9 @@ passes also write LSE; its cached sequence metadata helpers run warm during timi
 """
 
 import pytest
-import torch
 
-from benchmarks.baselines import (
-    FLA_TAG,
-    assert_matches_reference,
-    assert_output_spec,
-    fla_op,
-    reference_tolerance,
-)
+from benchmarks.baselines import FLA_TAG, assert_output_spec, fla_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, zeroed_input
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
@@ -53,7 +45,7 @@ def _fla_nsa_fwd(workload: NsaFwdCall):
 
 
 def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
-    """Compression attention over the same compressed k/v. Returns fla's float32 lse unconverted."""
+    """Compression attention over the same compressed k/v. Adapts LSE to the workload's output dtype."""
     fwd = fla_op("ops.nsa.compression.parallel_nsa_compression_fwd")
 
     def fn(q, k_cmp, v_cmp, offsets, _chunk_offsets, token_indices):
@@ -68,7 +60,7 @@ def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
             cu_seqlens_k=offsets,
             token_indices_q=token_indices,
         )
-        return o.squeeze(0), lse.squeeze(0)
+        return o.squeeze(0), lse.squeeze(0).to(q.dtype)
 
     return fn
 
@@ -96,63 +88,15 @@ def _fla_nsa_topk(workload: NsaTopkCall):
 def test_nsa_cmp_fwd_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
     fla_fn = _fla_nsa_cmp_fwd(workload)
-    tolerance = (
-        reference_tolerance(torch.bfloat16)
-        if inputs[0].dtype == torch.bfloat16
-        else {"rtol": 1e-5, "atol": 4e-3}
-    )
-
-    def validate(got, expected):
-        assert got[0].dtype == expected[0].dtype
-        # FLA writes its LSE in FP32; TileOPs returns the input dtype.
-        assert got[1].dtype in (expected[1].dtype, torch.float32)
-        for output, target in zip(got, expected, strict=True):
-            torch.testing.assert_close(output.float(), target.float(), **tolerance)
-
-    checked = Custom(
-        validate,
-        "both outputs checked at the existing FP16 bound or standard BF16 bound; LSE may be FP32",
-        controls=(zeroed_input(0, "query-zeroed"),),
-    )
-    bm.compare(
-        {"tileops": op, FLA_TAG: fla_fn},
-        *inputs,
-        evidence={"tileops": checked, FLA_TAG: checked},
-    )
+    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSATopKVarlenFwdOp))
 def test_nsa_topk_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NsaTopkCall, call)
-
     fla_fn = _fla_nsa_topk(workload)
 
-    def validate(got, expected):
-        assert_output_spec(got, call.specs["block_indices"], "NSA top-k")
-        assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
-        current = inputs[-1][:, 1, None, None] // workload.bs
-        assert ((got >= -1) & (got <= current)).all(), "non-causal or invalid block id"
-        ordered = got.sort(-1).values
-        assert not ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(), (
-            "duplicate selected block"
-        )
-        torch.testing.assert_close(
-            workload.selection_scores(got, *inputs),
-            workload.selection_scores(expected, *inputs),
-            rtol=1e-5,
-            atol=1e-6,
-        )
-
-    checked = Custom(
-        validate,
-        "every selected score checked at rtol=1e-5/atol=1e-6; valid unique indices and exact padding",
-        controls=(zeroed_input(0, "query-zeroed"),),
-    )
-    bm.compare(
-        {"tileops": op, FLA_TAG: fla_fn},
-        *inputs,
-        evidence={"tileops": checked, FLA_TAG: checked},
-    )
+    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSAVarlenFwdOp))
@@ -163,7 +107,4 @@ def test_nsa_fwd_varlen_bench(call) -> None:
         bm.compare({"tileops": op, "torch-ref": workload.ref_program}, *inputs)
         return
     assert_output_spec(fla_fn(*inputs), call.specs["o_slc"], FLA_TAG)
-    assert_matches_reference(
-        fla_fn, workload.ref_program, *inputs, **reference_tolerance(workload.dtype)
-    )
     bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)

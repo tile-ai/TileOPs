@@ -8,7 +8,7 @@ Covers L1 smoke correctness.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, exact_compare
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
     BitwiseAndFwdOp,
     BitwiseNotFwdOp,
@@ -16,25 +16,12 @@ from tileops.ops.elementwise import (
     BitwiseXorFwdOp,
 )
 from workloads.device import run_device
-from workloads.elementwise import BitwiseNotWorkload, BitwiseWorkload
+from workloads.elementwise import BitwiseCase, BitwiseNotWorkload, ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 
-def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for integer outputs."""
-    assert torch.equal(output, output_ref), (
-        f"Mismatch: {(output != output_ref).sum().item()} elements differ"
-    )
-
-
-class BitwiseTest(BitwiseWorkload, TestBase):
-    """Reusable test body for bitwise ops."""
-
-    def __init__(self, n_total: int, ref_fn):
-        super().__init__(n_total)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a, b)
+class BitwiseTest(BitwiseCase, TestBase):
+    pass
 
 
 class BitwiseAndFixture(FixtureBase):
@@ -51,9 +38,9 @@ class BitwiseAndFixture(FixtureBase):
 
 @BitwiseAndFixture
 def test_bitwise_and_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_and)
+    test = BitwiseTest(n_total, "BitwiseAndFwdOp")
     op = BitwiseAndFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class BitwiseOrFixture(FixtureBase):
@@ -70,9 +57,9 @@ class BitwiseOrFixture(FixtureBase):
 
 @BitwiseOrFixture
 def test_bitwise_or_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_or)
+    test = BitwiseTest(n_total, "BitwiseOrFwdOp")
     op = BitwiseOrFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class BitwiseXorFixture(FixtureBase):
@@ -89,9 +76,9 @@ class BitwiseXorFixture(FixtureBase):
 
 @BitwiseXorFixture
 def test_bitwise_xor_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_xor)
+    test = BitwiseTest(n_total, "BitwiseXorFwdOp")
     op = BitwiseXorFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests for binary bitwise ops (L3)
@@ -145,7 +132,7 @@ def test_bitwise_broadcast(
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, ref)
+    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
 class BoolBitwiseFixture(FixtureBase):
@@ -186,7 +173,7 @@ def test_bool_bitwise_fast_path(
     with torch.no_grad():
         out = op(a, b)
     assert out.dtype == torch.bool
-    _exact_compare(out, ref)
+    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
 class BitwiseFixture(FixtureBase):
@@ -215,7 +202,7 @@ class BitwiseNotTest(BitwiseNotWorkload, TestBase):
 def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test = BitwiseNotTest(n_total, dtype)
     op = BitwiseNotFwdOp()
-    test.check(op, *test.gen_inputs(), compare=exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only

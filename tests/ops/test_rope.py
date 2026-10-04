@@ -18,130 +18,21 @@ independently computes the same frequency tables.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
 from workloads.rope import (
-    RopeWorkload,
-    llama31_frequency_tables,
-    longrope_frequency_tables,
+    RopeCase,
+    ref_rope_neox_position_ids,
     rope_frequency_tables,
-    yarn_frequency_tables,
+    rope_verification,
 )
-
-
-def _rotate_half_neox(x: torch.Tensor) -> torch.Tensor:
-    """Neox-style rotation: split at midpoint and negate first half."""
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-    return torch.cat([-x2, x1], dim=-1)
-
-
-def _rotate_half_non_neox(x: torch.Tensor) -> torch.Tensor:
-    """Non-neox (RoFormer) rotation: adjacent pairs."""
-    x_even = x[..., 0::2]
-    x_odd = x[..., 1::2]
-    rotated = torch.stack([-x_odd, x_even], dim=-1)
-    return rotated.flatten(-2)
-
-
-def ref_rope_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Reference neox RoPE: full-dim cos/sin broadcast with half-rotation."""
-    cos_full = torch.cat([cos, cos], dim=-1)
-    sin_full = torch.cat([sin, sin], dim=-1)
-    if x.ndim == 2:
-        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(
-            x.dtype
-        )
-    elif x.ndim == 4:
-        cos_full = cos_full.unsqueeze(0).unsqueeze(2)
-        sin_full = sin_full.unsqueeze(0).unsqueeze(2)
-        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(
-            x.dtype
-        )
-    else:
-        raise ValueError(f"Unsupported ndim={x.ndim}")
-
-
-def ref_rope_neox_position_ids(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    position_ids: torch.Tensor,
-    rotary_dim: int | None = None,
-) -> torch.Tensor:
-    """Reference neox RoPE for packed THD tensors with explicit positions."""
-    rotary_dim = x.shape[-1] if rotary_dim is None else rotary_dim
-    cos_full = torch.cat([cos, cos], dim=-1)[position_ids].unsqueeze(1)
-    sin_full = torch.cat([sin, sin], dim=-1)[position_ids].unsqueeze(1)
-    x_rot = x[..., :rotary_dim]
-    y_rot = (
-        x_rot.float() * cos_full.float() + _rotate_half_neox(x_rot).float() * sin_full.float()
-    ).to(x.dtype)
-    if rotary_dim == x.shape[-1]:
-        return y_rot
-    return torch.cat([y_rot, x[..., rotary_dim:]], dim=-1)
-
-
-def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Reference non-neox (RoFormer) RoPE: adjacent pair rotation."""
-    cos_interleaved = cos.repeat_interleave(2, dim=-1)
-    sin_interleaved = sin.repeat_interleave(2, dim=-1)
-    if x.ndim == 2:
-        return (
-            x.float() * cos_interleaved.float()
-            + _rotate_half_non_neox(x).float() * sin_interleaved.float()
-        ).to(x.dtype)
-    elif x.ndim == 4:
-        cos_interleaved = cos_interleaved.unsqueeze(0).unsqueeze(2)
-        sin_interleaved = sin_interleaved.unsqueeze(0).unsqueeze(2)
-        return (
-            x.float() * cos_interleaved.float()
-            + _rotate_half_non_neox(x).float() * sin_interleaved.float()
-        ).to(x.dtype)
-    else:
-        raise ValueError(f"Unsupported ndim={x.ndim}")
-
 
 # Test fixtures
 
 
-class RopeTest(RopeWorkload, TestBase):
-    """Generic test fixture for RoPE ops.
-
-    The op computes cos/sin internally; the test generates only x as input
-    and computes the reference rotation using independently generated
-    frequency tables.
-    """
-
-    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Independently compute cos/sin for the reference implementation."""
-        if self.variant in ("neox", "non_neox"):
-            return rope_frequency_tables(self.head_dim, self.seq_len, dtype=self.dtype)
-        elif self.variant == "rope_llama31":
-            return llama31_frequency_tables(
-                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
-            )
-        elif self.variant == "yarn_rope":
-            return yarn_frequency_tables(
-                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
-            )
-        elif self.variant == "longrope":
-            return longrope_frequency_tables(
-                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
-            )
-        else:
-            raise ValueError(f"Unknown variant: {self.variant}")
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        """Pure-PyTorch reference: independently computes cos/sin and applies rotation."""
-        cos, sin = self._compute_cos_sin()
-        if self.variant in ("neox", "rope_llama31", "yarn_rope", "longrope"):
-            return ref_rope_neox(x, cos, sin)
-        elif self.variant == "non_neox":
-            return ref_rope_non_neox(x, cos, sin)
-        else:
-            raise ValueError(f"Unknown variant: {self.variant}")
+class RopeTest(RopeCase, TestBase):
+    pass
 
 
 class RopeBasicFixture(FixtureBase):
@@ -200,7 +91,7 @@ def test_rope_1d(
 
     test = RopeTest(variant, "1d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeFwdOp(rope_layout=rope_layout, input_layout="1d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize("rope_layout, variant", [("neox", "neox"), ("interleaved", "non_neox")])
@@ -218,7 +109,7 @@ def test_rope_2d(
 
     test = RopeTest(variant, "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeFwdOp(rope_layout=rope_layout, input_layout="2d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -248,7 +139,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
         rotary_dim=rotary_dim,
     )
     output = op(x, position_ids)
-    torch.testing.assert_close(output, ref, **standard_tolerance(dtype))
+    compare_outputs(output, ref, rope_verification())
 
 
 @pytest.mark.smoke
@@ -281,12 +172,12 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     x1 = torch.randn(8, 2, 16, device=run_device(), dtype=torch.float16)
     cos1, sin1 = rope_frequency_tables(16, max_position, dtype=x1.dtype, device=run_device())
     ref1 = ref_rope_neox_position_ids(x1, cos1, sin1, position_ids.long(), rotary_dim=None)
-    torch.testing.assert_close(op(x1, position_ids), ref1, atol=5e-3, rtol=1e-5)
+    compare_outputs(op(x1, position_ids), ref1, rope_verification())
 
     x2 = torch.randn(8, 2, 32, device=run_device(), dtype=torch.float16)
     cos2, sin2 = rope_frequency_tables(32, max_position, dtype=x2.dtype, device=run_device())
     ref2 = ref_rope_neox_position_ids(x2, cos2, sin2, position_ids.long(), rotary_dim=None)
-    torch.testing.assert_close(op(x2, position_ids), ref2, atol=5e-3, rtol=1e-5)
+    compare_outputs(op(x2, position_ids), ref2, rope_verification())
 
 
 # Non-neox (RoFormer) RoPE tests
@@ -311,7 +202,7 @@ def test_rope_llama31_1d(
         "rope_llama31", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLlama31FwdOp(input_layout="1d", **extra)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @RopeBasicFixture
@@ -330,7 +221,7 @@ def test_rope_llama31_2d(
         "rope_llama31", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLlama31FwdOp(input_layout="2d", **extra)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # YaRN RoPE tests
@@ -353,7 +244,7 @@ def test_rope_yarn_1d(
         "yarn_rope", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeYarnFwdOp(input_layout="1d", **extra)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @RopeBasicFixture
@@ -373,7 +264,7 @@ def test_rope_yarn_2d(
         "yarn_rope", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeYarnFwdOp(input_layout="2d", **extra)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # LongRoPE tests
@@ -403,7 +294,7 @@ def test_rope_longrope_1d(
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
     )
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @RopeBasicFixture
@@ -430,7 +321,7 @@ def test_rope_longrope_2d(
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
     )
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Edge case tests
@@ -452,7 +343,7 @@ def test_rope_edge(
 
     test = RopeTest(variant, "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeFwdOp(rope_layout=rope_layout, input_layout="2d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Layout and dtype regression tests

@@ -18,6 +18,8 @@ import pytest
 import torch
 
 from workloads.device import run_device, run_device_available
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 pytestmark = [
     pytest.mark.skipif(not run_device_available(), reason="the run device is not available"),
@@ -48,7 +50,7 @@ def test_sum_scalar_input(dim) -> None:
     y = op(x)
     ref = torch.sum(x, dim=dim) if dim is not None else torch.sum(x)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -61,7 +63,7 @@ def test_mean_scalar_input(dim) -> None:
     y = op(x)
     ref = torch.mean(x, dim=dim) if dim is not None else torch.mean(x)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -74,7 +76,7 @@ def test_amax_scalar_input(dim) -> None:
     y = op(x)
     ref = torch.amax(x, dim=dim) if dim is not None else torch.amax(x)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -87,7 +89,7 @@ def test_amin_scalar_input(dim) -> None:
     y = op(x)
     ref = torch.amin(x, dim=dim) if dim is not None else torch.amin(x)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -100,7 +102,7 @@ def test_prod_scalar_input(dim) -> None:
     y = op(x)
     ref = torch.prod(x, dim=dim)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -114,7 +116,7 @@ def test_all_scalar_input(dim) -> None:
     ref = torch.all(x, dim=dim) if dim is not None else torch.all(x)
     assert y.shape == ref.shape
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -128,7 +130,7 @@ def test_any_scalar_input(dim) -> None:
     ref = torch.any(x, dim=dim) if dim is not None else torch.any(x)
     assert y.shape == ref.shape
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -142,7 +144,7 @@ def test_count_nonzero_scalar_input(dim) -> None:
     ref = torch.count_nonzero(x, dim=dim) if dim is not None else torch.count_nonzero(x)
     assert y.shape == ref.shape
     assert y.dtype == ref.dtype
-    assert torch.equal(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 # Welford-family reductions on scalar input -> nan + UserWarning
@@ -216,7 +218,7 @@ def test_var_mean_scalar_input(dim) -> None:
     assert mean_out.shape == mean_ref.shape == ()
     assert torch.isnan(var_out).item()
     assert torch.isnan(var_ref).item()
-    torch.testing.assert_close(mean_out, mean_ref)
+    compare_outputs(mean_out, mean_ref, reduction_verification((mean_ref).dtype, scalar=True))
     if expect_warn:
         assert any(issubclass(w.category, UserWarning) for w in op_caught)
 
@@ -291,4 +293,8 @@ def test_a_scalar_input_to_an_axis_op_matches_torch(name: str, ref) -> None:
     import tileops.reduction as reduction
 
     x = torch.tensor(-1.5, dtype=torch.float32, device=run_device())
-    torch.testing.assert_close(getattr(reduction, name)(dim=0)(x), ref(x))
+    compare_outputs(
+        getattr(reduction, name)(dim=0)(x),
+        ref(x),
+        reduction_verification((ref(x)).dtype, scalar=True),
+    )

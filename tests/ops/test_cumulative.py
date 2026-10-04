@@ -8,9 +8,9 @@ Output has the same shape as input.
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
 from workloads.reduction import CumulativeWorkload
 
 
@@ -90,20 +90,13 @@ class CumulativeTest(CumulativeWorkload, TestBase):
 # Helper to get tolerances
 
 
-def _cumprod_tol(dtype: torch.dtype) -> dict:
-    """Tolerances for cumprod tests (more numerically sensitive)."""
-    if dtype == torch.float32:
-        return {"atol": 1e-3, "rtol": 1e-3}
-    return {"atol": 5e-2, "rtol": 5e-2}
-
-
 @CumulativeBasicFixture
 def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     test = CumulativeTest((m, n), dtype, "cumsum")
     op = CumsumFwdOp()
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @CumulativeNonContigFixture
@@ -115,8 +108,8 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = CumsumFwdOp()
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @Cumulative3DFixture
@@ -127,8 +120,8 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @Cumulative4DFixture
@@ -139,8 +132,8 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @Cumulative1DFixture
@@ -151,8 +144,8 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"1D cumsum max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @pytest.mark.smoke
@@ -177,7 +170,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = CumulativeTest((m, n), dtype, "cumprod", use_small_range=True)
     op = CumprodFwdOp()
-    test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @CumulativeNonContigFixture
@@ -189,8 +182,8 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = CumprodFwdOp()
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
 @Cumulative3DFixture
@@ -201,8 +194,8 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
     op = CumprodFwdOp()
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D cumprod max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
 @Cumulative4DFixture
@@ -213,8 +206,8 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
     op = CumprodFwdOp()
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"4D cumprod max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
 @Cumulative1DFixture
@@ -225,8 +218,8 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     op = CumprodFwdOp()
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"1D cumprod max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
 class CumulativeDimAxis1Fixture(FixtureBase):
@@ -250,10 +243,8 @@ def test_cumsum_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype)
     op = CumsumFwdOp(dim=1)
     ref = x.float().cumsum(dim=1).to(dtype)
     y = op(x)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, ref, atol=atol, rtol=atol), (
-        f"cumsum dim=1 max err: {(y - ref).abs().max()}"
-    )
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @CumulativeDimAxis1Fixture
@@ -266,8 +257,8 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
     op = CumprodFwdOp(dim=1)
     ref = x.float().cumprod(dim=1).to(dtype)
     y = op(x)
-    tol = _cumprod_tol(dtype)
-    assert torch.allclose(y, ref, **tol), f"cumprod dim=1 max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
 @pytest.mark.smoke
@@ -297,9 +288,7 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     y = op(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **reduction_tolerance(dtype)), (
-        f"({M}, {N}) {dtype}: max_diff={torch.abs(y - ref).max()}"
-    )
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
     # The kernel the call built, not one refetched by a key: the key is a read-back of
     # the arguments and says nothing about which backend was chosen.
@@ -333,7 +322,13 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
         x[:, index] = value
 
     for op, ref in ((CumsumFwdOp(dim=-1), torch.cumsum), (CumprodFwdOp(dim=-1), torch.cumprod)):
-        torch.testing.assert_close(op(x), ref(x, dim=-1), rtol=1e-5, atol=1e-5, equal_nan=True)
+        compare_outputs(
+            op(x),
+            ref(x, dim=-1),
+            CumulativeWorkload(
+                tuple(x.shape), x.dtype, "cumprod" if isinstance(op, CumprodFwdOp) else "cumsum"
+            ).verification(x),
+        )
 
 
 @pytest.mark.smoke
@@ -349,8 +344,8 @@ def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
 
     # Row r holds the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
     expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device=run_device())
-    assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), (
-        f"({M}, {N}): max_diff={torch.abs(y - expected).max()}"
+    compare_outputs(
+        y, expected, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x)
     )
 
 
@@ -383,9 +378,7 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     y = compiled(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **reduction_tolerance(dtype)), (
-        f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
-    )
+    compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
 @pytest.mark.smoke

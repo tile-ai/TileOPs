@@ -43,3 +43,8 @@ class FP8QuantWorkload(WorkloadBase):
         output_tensor = torch.clamp(x / scale_tensor, min=-448.0, max=448.0)
         output_tensor = output_tensor.to(torch.float8_e4m3fn)
         return scale_tensor.squeeze(dim=-1), output_tensor
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, assert_quantized
+
+        return Custom(assert_quantized, "FP8 codes and scales")

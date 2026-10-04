@@ -8,17 +8,13 @@ import torch
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.linear_attention.gla import (
     GLAChunkwiseCall,
     GLADecodeCall,
     GLAInferenceCall,
-    gla_autograd_bwd_torch,
-    gla_fwd_chunked_torch,
 )
 
 try:
@@ -43,18 +39,7 @@ def test_gla_fwd_bench(call) -> None:
             q, k, v, g, scale=op.scale, initial_state=initial_state, output_final_state=True
         )
 
-    chunked = Exact(
-        rtol=2e-2,
-        atol=2e-2,
-        reference=lambda q, k, v, g, s: (lambda o, state: (o.to(q.dtype), state.float()))(
-            *gla_fwd_chunked_torch(q, k, v, g, op.chunk_size, scale=op.scale, initial_state=s)
-        ),
-    )
-    bm.compare(
-        {"tileops": op, "fla": (fla_fwd, ())},
-        *inputs,
-        evidence={"tileops": chunked, "fla": chunked},
-    )
+    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(GLAChunkBwdOp))
@@ -64,19 +49,13 @@ def test_gla_bwd_bench(call) -> None:
     workload = GLAChunkwiseCall(call)
     q, k, v, g, _h, do, _dht = workload.gen_inputs()
     arguments = workload.arguments()
-
-    # The per-chunk states are the forward's, so the backward reads what it would in training.
     fwd_op = GLAChunkFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
     (fwd_kernel,) = fwd_op.built_kernels("gla_fwd").values()
     h = fwd_kernel._h_out
     dht = torch.zeros_like(_dht)
-
     bwd_op = GLAChunkBwdOp(**arguments)
     bm = ManifestBenchmark(bwd_op, workload)
-
-    # FLA's backward recomputes h internally (not saved from fwd), so this measures
-    # bwd + h recomputation, not pure bwd.
     q_fla, k_fla, v_fla, g_fla = (t.float().detach().requires_grad_(True) for t in (q, k, v, g))
     o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=bwd_op.scale)
     fla_backward = backward_of(o_fla)
@@ -85,27 +64,7 @@ def test_gla_bwd_bench(call) -> None:
     def fla_bwd():
         return fla_backward(do_fla, None)[:4]
 
-    autograd = Exact(
-        rtol=2e-2,
-        atol=2e-2,
-        reference=lambda q, k, v, g, _h, do, _dht: tuple(
-            t.float()
-            for t in gla_autograd_bwd_torch(
-                do, q, k, v, g, arguments["chunk_size"], scale=bwd_op.scale
-            )
-        ),
-    )
-    bm.compare(
-        {"tileops": bwd_op, "fla": (fla_bwd, ())},
-        q,
-        k,
-        v,
-        g,
-        h,
-        do,
-        dht,
-        evidence={"tileops": autograd, "fla": autograd},
-    )
+    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, q, k, v, g, h, do, dht)
 
 
 @pytest.mark.parametrize("call", manifest_calls(GLAInferenceFwdOp))
@@ -116,7 +75,6 @@ def test_gla_inference_bench(call) -> None:
     ManifestBenchmark(op, workload).compare(
         {"tileops": op, "fla": workload.ref_program},
         *inputs,
-        evidence={"tileops": Exact(**reference_tolerance(inputs[0].dtype))},
     )
 
 

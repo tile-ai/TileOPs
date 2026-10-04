@@ -13,7 +13,10 @@ import pytest
 import torch
 
 import tileops.ops.elementwise as elementwise_mod
+from tests.test_base import TestBase
 from workloads.device import run_device, run_device_available
+from workloads.elementwise import ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 
 def _randn(s, d):
@@ -40,48 +43,44 @@ def _pow_exp(s, d):
     return torch.rand(*s, dtype=d, device=run_device()) * 2.0
 
 
-# (op_name, dtype, gen_a, gen_b, ref_fn).
+# (op_name, dtype, gen_a, gen_b).
 _F16 = torch.float16
 _I32 = torch.int32
 
 _BROADCAST_OPS = [
-    ("AddFwdOp", _F16, _randn, _randn, lambda a, b: a + b),
-    ("SubFwdOp", _F16, _randn, _randn, lambda a, b: a - b),
-    ("MulFwdOp", _F16, _randn, _randn, lambda a, b: a * b),
-    ("DivFwdOp", _F16, _rand_pos, _rand_pos, lambda a, b: a / b),
-    ("RemainderFwdOp", _F16, _rand_pos, _rand_pos, lambda a, b: torch.remainder(a, b)),
-    ("PowFwdOp", _F16, _pow_base, _pow_exp, lambda a, b: torch.pow(a, b)),
-    # floor_divide reference computed in fp32 to match the kernel's internal
-    # path; tolerance widened to 1.0 because rounding boundaries flip the
-    # quotient by ±1 around exact integer ratios — see test_binary_arith.py.
+    ("AddFwdOp", _F16, _randn, _randn),
+    ("SubFwdOp", _F16, _randn, _randn),
+    ("MulFwdOp", _F16, _randn, _randn),
+    ("DivFwdOp", _F16, _rand_pos, _rand_pos),
+    ("RemainderFwdOp", _F16, _rand_pos, _rand_pos),
+    ("PowFwdOp", _F16, _pow_base, _pow_exp),
     (
         "FloorDivideFwdOp",
         _F16,
         _rand_pos,
         _rand_pos,
-        lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
     ),
-    ("LerpScalarFwdOp", _F16, _randn, _randn, lambda a, b: torch.lerp(a, b, 0.5)),
-    ("MaximumFwdOp", _F16, _randn, _randn, lambda a, b: torch.maximum(a, b)),
-    ("MinimumFwdOp", _F16, _randn, _randn, lambda a, b: torch.minimum(a, b)),
-    ("EqFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: a == b),
-    ("NeFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: a != b),
-    ("GtFwdOp", _F16, _randn, _randn, lambda a, b: a > b),
-    ("LtFwdOp", _F16, _randn, _randn, lambda a, b: a < b),
-    ("GeFwdOp", _F16, _randn, _randn, lambda a, b: a >= b),
-    ("LeFwdOp", _F16, _randn, _randn, lambda a, b: a <= b),
-    ("LogicalAndFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_and(a, b)),
-    ("LogicalOrFwdOp", _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_or(a, b)),
-    ("BitwiseAndFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_and(a, b)),
-    ("BitwiseOrFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_or(a, b)),
-    ("BitwiseXorFwdOp", _I32, _randint, _randint, lambda a, b: torch.bitwise_xor(a, b)),
+    ("LerpScalarFwdOp", _F16, _randn, _randn),
+    ("MaximumFwdOp", _F16, _randn, _randn),
+    ("MinimumFwdOp", _F16, _randn, _randn),
+    ("EqFwdOp", _F16, _rand_bool, _rand_bool),
+    ("NeFwdOp", _F16, _rand_bool, _rand_bool),
+    ("GtFwdOp", _F16, _randn, _randn),
+    ("LtFwdOp", _F16, _randn, _randn),
+    ("GeFwdOp", _F16, _randn, _randn),
+    ("LeFwdOp", _F16, _randn, _randn),
+    ("LogicalAndFwdOp", _F16, _rand_bool, _rand_bool),
+    ("LogicalOrFwdOp", _F16, _rand_bool, _rand_bool),
+    ("BitwiseAndFwdOp", _I32, _randint, _randint),
+    ("BitwiseOrFwdOp", _I32, _randint, _randint),
+    ("BitwiseXorFwdOp", _I32, _randint, _randint),
 ]
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
-    "op_name, dtype, gen_a, gen_b, ref_fn",
+    "op_name, dtype, gen_a, gen_b",
     _BROADCAST_OPS,
     ids=[entry[0] for entry in _BROADCAST_OPS],
 )
@@ -90,7 +89,6 @@ def test_binary_op_bidirectional_broadcast(
     dtype: torch.dtype,
     gen_a,
     gen_b,
-    ref_fn,
 ) -> None:
     """Bidirectional broadcast: (3,1) x (1,4) -> (3,4)."""
     cls = getattr(elementwise_mod, op_name)
@@ -99,19 +97,8 @@ def test_binary_op_bidirectional_broadcast(
     a = gen_a(a_shape, dtype)
     b = gen_b(b_shape, dtype)
     op = cls()
-    out = op(a, b)
-    ref = ref_fn(a, b)
-    assert tuple(out.shape) == (3, 4), (
-        f"{op_name}: expected output shape (3, 4), got {tuple(out.shape)}"
-    )
-    if op_name == "FloorDivideFwdOp":
-        atol, rtol = 1.0, 1e-2  # boundary rounding flips quotient by ±1
-    elif out.dtype.is_floating_point:
-        atol, rtol = 1e-2, 1e-2
-    else:
-        torch.testing.assert_close(out, ref.to(out.dtype))
-        return
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+    workload = ElementwiseWorkload(op_name, (a, b))
+    TestBase.check(workload, op, a, b)
 
 
 @pytest.mark.smoke
@@ -129,7 +116,7 @@ def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
     b = torch.rand(3, 1, 1, dtype=torch.float16, device=run_device()) + 0.5
     ref = torch.maximum(a, b) if op_name == "MaximumFwdOp" else a / b
     out = cls()(a, b)
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+    compare_outputs(out, ref, ElementwiseWorkload(op_name, (a, b)).verification(a, b))
 
 
 _STAGED_SHAPES = [
@@ -149,7 +136,7 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape):
     b = torch.randn(b_shape, device=run_device(), dtype=torch.float16)
     out = GtFwdOp()(a, b)
     assert out.dtype == torch.bool
-    assert torch.equal(out, torch.gt(a, b))
+    compare_outputs(out, torch.gt(a, b), ElementwiseWorkload("GtFwdOp", (a, b)).verification(a, b))
 
 
 _TAIL_SHAPES = [
@@ -167,4 +154,5 @@ def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
 
     a = torch.randn(a_shape, device=run_device(), dtype=torch.float32)
     b = torch.randn(b_shape, device=run_device(), dtype=torch.float32)
-    assert torch.equal(AddFwdOp()(a, b), a + b)
+    workload = ElementwiseWorkload("AddFwdOp", (a, b))
+    TestBase.check(workload, AddFwdOp(), a, b)

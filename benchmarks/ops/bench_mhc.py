@@ -10,7 +10,6 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
 from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 
@@ -43,8 +42,6 @@ def test_mhc_pre_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
-        # The MHC unit-test bound includes low-precision projection intermediates.
-        evidence={tag: Exact(atol=1e-2, rtol=1e-2) for tag in ("tileops", TORCH_COMPILE_TAG)},
     )
 
 

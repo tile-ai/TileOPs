@@ -123,6 +123,11 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             gradients = torch.autograd.grad(out, (q, k, v), grad_output.float())
             return tuple(grad.to(dtype) for grad in gradients)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=5e-3, rtol=1e-5)
+
 
 class GroupedQueryAttentionBwdCall(CallWorkload, GroupedQueryAttentionBwdWorkload):
     """A manifest call of GroupedQueryAttentionBwdOp; ``o`` and ``lse`` are the forward's."""

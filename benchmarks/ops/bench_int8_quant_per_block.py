@@ -11,7 +11,6 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerBlockFwdOp
 from workloads.quantization.quantize import INT8QuantPerBlockWorkload
 
@@ -49,7 +48,9 @@ def test_int8_quant_per_block_bench(call) -> None:
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Custom(assert_quantized, "scales checked; INT8 rounding within one code")
-        ),
+        noncomparable={
+            VLLM_TAG: "vendor truncates codes and clamps tiny scales; workload requires round-to-nearest"
+        }
+        if VLLM_TAG in functors
+        else None,
     )

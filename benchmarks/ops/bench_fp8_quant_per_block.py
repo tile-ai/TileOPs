@@ -11,7 +11,6 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import FP8QuantPerBlockFwdOp
 from workloads.quantization.quantize import FP8QuantPerBlockWorkload
 
@@ -42,8 +41,8 @@ def test_fp8_quant_per_block_bench(call) -> None:
             VLLM_TAG: vllm_quant,
         },
         *inputs,
-        evidence={
-            tag: Custom(assert_quantized, "scales checked; FP8 rounding within one code")
-            for tag in ("tileops", TORCH_COMPILE_TAG, VLLM_TAG)
+        noncomparable={
+            TORCH_COMPILE_TAG: "Inductor replaces division with reciprocal multiplication; block codes are not bitwise equal",
+            VLLM_TAG: "vendor clamps tiny scales and uses reciprocal multiplication instead of exact block quantization",
         },
     )

@@ -13,7 +13,6 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -29,6 +28,7 @@ from workloads.mamba import (
     SSDChunkStateFwdCall,
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
+    ssd_decode_result,
 )
 
 # Optional mamba_ssm Triton baselines
@@ -127,9 +127,6 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 2e-3, rtol=1e-5)
-        ),
     )
 
 
@@ -152,9 +149,6 @@ def test_ssd_chunk_state_fwd_bench(call) -> None:
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 1.6e-2, rtol=1e-3)
-        ),
     )
 
 
@@ -213,9 +207,9 @@ def test_ssd_decode_bench(call) -> None:
         return run
 
     functors = {
-        "tileops": reset_state(op),
-        "mamba": reset_state(mamba_fn),
-        FLASHINFER_TAG: reset_state(flashinfer_fn),
+        "tileops": reset_state(lambda *args: ssd_decode_result(op, *args)),
+        "mamba": reset_state(lambda *args: ssd_decode_result(mamba_fn, *args)),
+        FLASHINFER_TAG: reset_state(lambda *args: ssd_decode_result(flashinfer_fn, *args)),
         "torch-ref": reset_state(workload.ref_program),
         TORCH_COMPILE_TAG: reset_state(compiled_reference(workload.ref_program)),
     }
@@ -262,7 +256,4 @@ def test_mamba2_fwd_bench(call):
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-2 if x.dtype == torch.float16 else 2e-2, rtol=1e-3)
-        ),
     )

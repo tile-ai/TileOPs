@@ -19,7 +19,8 @@ from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceKernel,
 )
 from workloads.device import run_device, run_device_available
-from workloads.reduction import AnyWorkload
+from workloads.numerics import compare_outputs
+from workloads.reduction import LogicalReduceCase, reduction_verification
 
 
 class LogicalReduceBasicFixture(FixtureBase):
@@ -136,45 +137,8 @@ class LogicalReduceKeepdimFixture(FixtureBase):
     ]
 
 
-class LogicalReduceTest(AnyWorkload, TestBase):
-    """Parameterized test helper for logical reduce ops."""
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        if self.op_kind == "any":
-            return x.bool().any(dim=-1)
-        elif self.op_kind == "all":
-            return x.bool().all(dim=-1)
-        elif self.op_kind == "count_nonzero":
-            return torch.count_nonzero(x, dim=-1).to(torch.int64)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
-
-
-def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact match comparison using torch.equal."""
-    assert output.dtype == torch.bool, f"Expected bool dtype, got {output.dtype}"
-    assert output_ref.dtype == torch.bool, f"Expected ref bool dtype, got {output_ref.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Bool mismatch.\n"
-        f"  output:     {output[:10]}...\n"
-        f"  output_ref: {output_ref[:10]}...\n"
-        f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
-    )
-
-
-def _exact_compare_int64(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact match comparison for int64 count_nonzero outputs."""
-    assert output.dtype == torch.int64, f"Expected int64 dtype, got {output.dtype}"
-    assert output_ref.dtype == torch.int64, f"Expected ref int64 dtype, got {output_ref.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Int64 mismatch.\n"
-        f"  output:     {output[:10]}...\n"
-        f"  output_ref: {output_ref[:10]}...\n"
-        f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
-    )
+class LogicalReduceTest(LogicalReduceCase, TestBase):
+    pass
 
 
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
@@ -204,7 +168,7 @@ def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @LogicalReduceNonContigFixture
@@ -217,7 +181,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     ref = x.contiguous().bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"non-contig any mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce3DFixture
@@ -229,7 +193,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"3D any mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce4DFixture
@@ -241,7 +205,7 @@ def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"4D any mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce1DFixture
@@ -253,7 +217,7 @@ def test_any_1d(n: int, dtype: torch.dtype) -> None:
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y.view_as(ref), ref), "1D any mismatch"
+    compare_outputs(y.view_as(ref), ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceDimFixture
@@ -266,7 +230,7 @@ def test_any_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"any dim={dim} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceKeepdimFixture
@@ -279,7 +243,7 @@ def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"any keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceBasicFixture
@@ -288,7 +252,7 @@ def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @LogicalReduceNonContigFixture
@@ -301,7 +265,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     ref = x.contiguous().bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"non-contig all mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce3DFixture
@@ -313,7 +277,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"3D all mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce4DFixture
@@ -325,7 +289,7 @@ def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y, ref), f"4D all mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce1DFixture
@@ -337,7 +301,7 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
-    assert torch.equal(y.view_as(ref), ref), "1D all mismatch"
+    compare_outputs(y.view_as(ref), ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceDimFixture
@@ -350,7 +314,7 @@ def test_all_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"all dim={dim} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceKeepdimFixture
@@ -363,7 +327,7 @@ def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"all keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduceBasicFixture
@@ -372,7 +336,7 @@ def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @LogicalReduceNonContigFixture
@@ -385,7 +349,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
     ref = torch.count_nonzero(x.contiguous(), dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"non-contig count_nonzero mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce3DFixture
@@ -397,7 +361,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D count_nonzero mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce4DFixture
@@ -409,7 +373,7 @@ def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D count_nonzero mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @LogicalReduce1DFixture
@@ -421,7 +385,7 @@ def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
-    assert torch.equal(y.view_as(ref), ref), "1D count_nonzero mismatch"
+    compare_outputs(y.view_as(ref), ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -433,7 +397,9 @@ def test_count_nonzero_past_fp32_integer_range() -> None:
     x[: 1 << 24] = True
     x[-1] = True
     y = CountNonzeroFwdOp(dim=None)(x)
-    assert torch.equal(y, torch.count_nonzero(x))
+    compare_outputs(
+        y, torch.count_nonzero(x), reduction_verification((torch.count_nonzero(x)).dtype)
+    )
 
 
 @LogicalReduceDimFixture
@@ -446,7 +412,7 @@ def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.dtype == torch.int64
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"count_nonzero dim={dim} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Dtype smoke tests: ensure all 6 supported dtypes are covered at smoke tier.
@@ -487,7 +453,7 @@ def test_any_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bfloat16
@@ -496,7 +462,7 @@ def test_any_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int32
@@ -505,7 +471,7 @@ def test_any_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int64
@@ -514,7 +480,7 @@ def test_any_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bool
@@ -523,7 +489,7 @@ def test_any_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_float16
@@ -532,7 +498,7 @@ def test_all_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bfloat16
@@ -541,7 +507,7 @@ def test_all_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int32
@@ -550,7 +516,7 @@ def test_all_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int64
@@ -559,7 +525,7 @@ def test_all_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bool
@@ -568,7 +534,7 @@ def test_all_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_float16
@@ -577,7 +543,7 @@ def test_count_nonzero_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bfloat16
@@ -586,7 +552,7 @@ def test_count_nonzero_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> Non
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int32
@@ -595,7 +561,7 @@ def test_count_nonzero_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_int64
@@ -604,7 +570,7 @@ def test_count_nonzero_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @_DtypeSmoke_bool
@@ -613,32 +579,22 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_kind, dtype",
-    [
-        ("any", torch.bool),
-        ("all", torch.bool),
-        ("count_nonzero", torch.float16),
-    ],
+    "op_kind, dtype", [("any", torch.bool), ("all", torch.bool), ("count_nonzero", torch.float16)]
 )
 def test_logical_reduce_long_sequence(op_kind: str, dtype: torch.dtype) -> None:
     """A long row whose last step only part of the block reaches."""
     from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
-    op_map = {
-        "any": AnyFwdOp,
-        "all": AllFwdOp,
-        "count_nonzero": CountNonzeroFwdOp,
-    }
+    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
     test = LogicalReduceTest(3, 33024, dtype, op_kind)
     op = op_map[op_kind](dim=-1)
-    compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
-    test.check(op, *test.gen_inputs(), compare=compare)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -649,7 +605,7 @@ def test_logical_reduce_autotune() -> None:
     m, n, dtype = 4, 40000, torch.bool
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dim=-1, tune=True)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
     if served_in_tree(op):
         (kernel,) = op.built_kernels("reduce").values()
@@ -733,7 +689,7 @@ def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype
         "all": lambda: x.all(0).all(-1),
         "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
     }[op_kind]()
-    assert torch.equal(op(x), ref)
+    compare_outputs(op(x), ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.cuda_only
@@ -768,7 +724,7 @@ def test_logical_reduce_edge_axes_fused_dispatch(
         "all": lambda: x.all(0).all(-1),
         "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
     }[op_kind]()
-    assert torch.equal(op(x), ref)
+    compare_outputs(op(x), ref, reduction_verification((ref).dtype))
     # The role is the op's one memoization bucket; which implementation served the call
     # is the entry that was built under it.
     (built,) = op.built_kernels("reduce").values()
@@ -855,9 +811,13 @@ def test_logical_reduce_truth_at_own_width(dtype: torch.dtype, value: complex) -
     x[2, 999] = value
     inputs = [x, x.conj()] if dtype.is_complex else [x]
     for t in inputs:
-        assert torch.equal(AnyFwdOp(dim=-1)(t), t.any(-1))
-        assert torch.equal(AllFwdOp(dim=-1)(t), t.all(-1))
-        assert torch.equal(CountNonzeroFwdOp(dim=-1)(t), torch.count_nonzero(t, dim=-1))
+        compare_outputs(AnyFwdOp(dim=-1)(t), t.any(-1), reduction_verification((t.any(-1)).dtype))
+        compare_outputs(AllFwdOp(dim=-1)(t), t.all(-1), reduction_verification((t.all(-1)).dtype))
+        compare_outputs(
+            CountNonzeroFwdOp(dim=-1)(t),
+            torch.count_nonzero(t, dim=-1),
+            reduction_verification((torch.count_nonzero(t, dim=-1)).dtype),
+        )
 
 
 @pytest.mark.smoke
@@ -868,7 +828,11 @@ def test_count_nonzero_exact_past_fp32_integers() -> None:
 
     x = torch.ones(2, (1 << 24) + 4, dtype=torch.bool, device=run_device())
     x[1, 7] = False
-    assert torch.equal(CountNonzeroFwdOp(dim=-1)(x), torch.count_nonzero(x, dim=-1))
+    compare_outputs(
+        CountNonzeroFwdOp(dim=-1)(x),
+        torch.count_nonzero(x, dim=-1),
+        reduction_verification((torch.count_nonzero(x, dim=-1)).dtype),
+    )
 
 
 @pytest.mark.cuda_only

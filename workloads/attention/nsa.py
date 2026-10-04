@@ -198,6 +198,14 @@ class NsaFwdWorkload(WorkloadBase):
 
         return o_slc.to(dtype)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        # Both tensor-core implementations narrow unnormalized softmax weights
+        # before P @ V, then narrow the output again. Cancellation therefore
+        # needs the storage-dtype absolute bound as well as its relative bound.
+        return Exact()
+
 
 class NsaCmpFwdWorkload(WorkloadBase):
     def __init__(
@@ -271,6 +279,16 @@ class NsaCmpFwdWorkload(WorkloadBase):
         return _parallel_nsa_compression_fwd_pytorch(
             self, q, k_cmp, v_cmp, self.bs, self.scale, offsets
         )
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, reference_tolerance, zeroed_input
+
+        tol = (
+            reference_tolerance(inputs[0].dtype)
+            if inputs[0].dtype == torch.bfloat16
+            else {"atol": 4e-3, "rtol": 1e-5}
+        )
+        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), **tol)
 
 
 class NsaTopkWorkload(WorkloadBase):
@@ -374,6 +392,37 @@ class NsaTopkWorkload(WorkloadBase):
                 picked < 0, -float("inf")
             )
         return selected
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, NegativeControl
+
+        def validate(got, expected):
+            assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
+            current = inputs[-1][:, 1, None, None] // self.bs
+            assert ((got >= -1) & (got <= current)).all(), "non-causal or invalid block id"
+            ordered = got.sort(-1).values
+            assert not ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(), (
+                "duplicate selected block"
+            )
+            torch.testing.assert_close(
+                self.selection_scores(got, *inputs),
+                self.selection_scores(expected, *inputs),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+
+        return Custom(
+            validate,
+            "valid top-k indices and selected scores",
+            # Selecting every visible block is independent of Q, and tied scores
+            # can keep their order after zeroing Q. An invalid index is a fault
+            # for every nonempty selection, including those valid corner cases.
+            controls=(
+                NegativeControl(
+                    "invalid-block-index", lambda ref, args: torch.full_like(ref(*args), -2)
+                ),
+            ),
+        )
 
 
 def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):

@@ -256,11 +256,14 @@ class MoeGroupedGemmMmaKernel(MoeGroupedGemmKernel):
 
     @property
     def autotune_supply_prog(self) -> Callable:
+        return self._supply_prog_for(self.call)
+
+    @classmethod
+    def _supply_prog_for(cls, call: MGroupedGemmCall) -> Callable:
         """Supply autotuning the call's own rows, split over the groups as the manifest's
         workloads split them, so each candidate walks the tiles a real call does."""
         from tilelang.utils.device import get_current_device
 
-        call = self.call
         masked = call.kind == "masked"
         rows = call.num_groups * call.max_m if masked else call.m
         lead = (call.num_groups, call.max_m) if masked else (rows,)
@@ -269,7 +272,7 @@ class MoeGroupedGemmMmaKernel(MoeGroupedGemmKernel):
         def supply_prog(params: list) -> list:
             if len(params) != 4:
                 raise RuntimeError(
-                    f"autotuning {type(self).__name__} expects 4 parameters (a, b, layout, c), "
+                    f"autotuning {cls.__name__} expects 4 parameters (a, b, layout, c), "
                     f"got {len(params)}"
                 )
             device = get_current_device()

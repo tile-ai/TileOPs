@@ -11,7 +11,13 @@ from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
-from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload
+from workloads.norm import (
+    FusedAddRMSNormWorkload,
+    RMSNormWorkload,
+    norm_verification,
+    normalization_verification,
+)
+from workloads.numerics import compare_outputs
 
 register_compile_contract(RMSNormFwdOp)
 
@@ -57,9 +63,7 @@ class RMSNormFixture(FixtureBase):
 def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormTest(m, n, dtype)
     op = RMSNormFwdOp(normalized_shape=(n,))
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    rtol = atol
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 class RMSNormNonContigFixture(FixtureBase):
@@ -91,10 +95,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
-        f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
 
 
 class RMSNorm3DFixture(FixtureBase):
@@ -124,10 +125,7 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
-        f"3D test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
 
 
 @pytest.mark.cuda_only
@@ -173,7 +171,7 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     graph.replay()
     torch.cuda.synchronize()
 
-    assert torch.allclose(static_out, expected, atol=1e-3, rtol=1e-3)
+    assert torch.equal(static_out, expected)
 
 
 @pytest.mark.smoke
@@ -184,7 +182,7 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
     x = torch.randn(64, 4096, dtype=torch.float16, device=run_device())
     weight = torch.randn(4096, dtype=torch.float16, device=run_device())
 
-    torch.testing.assert_close(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
+    assert torch.equal(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
 
 
 @pytest.mark.smoke
@@ -210,7 +208,7 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
     output = torch.compile(op, fullgraph=True)(x, weight)
 
     assert output.is_contiguous()
-    torch.testing.assert_close(output, op(x, weight))
+    assert torch.equal(output, op(x, weight))
 
 
 @pytest.mark.smoke
@@ -224,7 +222,11 @@ def test_an_unaligned_row_comes_back_contiguous() -> None:
 def test_no_weight_and_no_eps_match_torch() -> None:
     """An absent weight scales by one; ``eps=None`` is torch's float32 machine epsilon."""
     x = torch.full((2, 4), 1e-3, dtype=torch.float16, device=run_device())
-    torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))
+    compare_outputs(
+        RMSNormFwdOp(normalized_shape=(4,))(x),
+        F.rms_norm(x, [4]),
+        normalization_verification("RMSNormFwdOp", x.dtype),
+    )
 
 
 @pytest.mark.smoke
@@ -243,9 +245,7 @@ def test_rms_norm_rows_exceeding_shared_memory(n, dtype, has_weight) -> None:
         dtype
     )
     actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
-    torch.testing.assert_close(
-        actual, expected, rtol=1e-3 if dtype == torch.float16 else 1.6e-2, atol=1e-3
-    )
+    compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
 class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):
@@ -282,19 +282,11 @@ class FusedAddRMSNormFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float16:
-        return 1e-2, 1e-2
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @FusedAddRMSNormFixture
 def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormTest(m, n, dtype)
     op = FusedAddRMSNormFwdOp(tune=tune)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):
@@ -325,13 +317,8 @@ def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight)
 
     y, residual_out = op(x, residual, weight)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
-        f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
+    compare_outputs(residual_out, add_ref, norm_verification(dtype))
 
 
 class FusedAddRMSNorm3DFixture(FixtureBase):
@@ -360,13 +347,8 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     y_ref, add_ref = test.ref_program(x, residual, weight)
 
     y, residual_out = op(x, residual, weight)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"3D y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
-        f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
+    compare_outputs(residual_out, add_ref, norm_verification(dtype))
 
 
 @pytest.mark.cuda_only

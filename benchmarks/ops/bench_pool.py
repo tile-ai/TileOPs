@@ -199,14 +199,6 @@ def _as_tuple(value, ndim: int) -> tuple:
     return (value,) * ndim
 
 
-def _assert_matches_reference(fn, workload, inputs: tuple) -> None:
-    """A baseline that computes something else is worse than no baseline."""
-    got, expected = fn(*inputs), workload.ref_program(*inputs)
-    if isinstance(got, tuple):
-        got, expected = got[0], expected[0]
-    torch.testing.assert_close(got, expected)
-
-
 def pool_baseline(op_name: str, workload, *inputs) -> tuple:
     """Return (tag, callable) for op_name's baseline.
 
@@ -236,7 +228,6 @@ def pool_baseline(op_name: str, workload, *inputs) -> tuple:
     )
     if fn is None:
         return "torch-ref", workload.ref_program
-    _assert_matches_reference(fn, workload, inputs)
     return choice, fn
 
 

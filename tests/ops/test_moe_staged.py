@@ -28,7 +28,13 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
-from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
+from workloads.moe import (
+    MoeExpertMLPWorkload,
+    MoeGroupedGemmWorkload,
+    moe_call,
+    post_permute_verification,
+)
+from workloads.numerics import compare_outputs
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
 
@@ -217,19 +223,23 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert inverse.shape == (tokens * top_k,)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
 
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
     assert pre.eval_roofline() == (0, 1616)
     assert post.eval_roofline() == (1024, 1600)
 
     # A routing scale other than one multiplies every output element once more.
     scaled = MoEPostPermuteFwdOp(layout, RoutingEpilogueSpec(routed_scaling_factor=2.0))
     output = scaled(expert_input, weights, inverse)
-    torch.testing.assert_close(output.float(), 2 * expected, rtol=2e-2, atol=4e-2)
+    compare_outputs(
+        output.float(),
+        2 * expected,
+        post_permute_verification(scaled.epilogue.routed_scaling_factor),
+    )
     assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
 
 
@@ -255,12 +265,12 @@ def test_staged_tight_optimized_shapes_round_trip(
     expert_input, physical_ends, inverse = pre(x, local_ids)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
-    torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
+    assert torch.equal(physical_ends, counts.cumsum(0).int())
     output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
 
 
 @pytest.mark.smoke
@@ -283,14 +293,14 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert inverse.shape == (tokens * top_k,)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
     assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
-    torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
+    assert torch.count_nonzero(expert_input[8:]) == 0
 
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
 
 
 @pytest.mark.cuda_only
@@ -335,15 +345,7 @@ def _run(workload) -> tuple:
     cls = MoEGroupedGemmFwdOp if len(inputs) == 3 else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments({}))
     out = op(*inputs)
-    rows = inputs[0].numel() // inputs[0].shape[-1]
-    valid = valid_rows(op.layout, inputs[-1], rows, inputs[1].shape[0])
-    ref = workload.ref_program(*inputs)
-    torch.testing.assert_close(
-        out.reshape(-1, out.shape[-1])[valid].float(),
-        ref.reshape(-1, ref.shape[-1])[valid].float(),
-        rtol=2e-2,
-        atol=1e-1,
-    )
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
     return op, out
 
 
@@ -453,7 +455,9 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
-    torch.testing.assert_close(out, workload.ref_program(a, b, metadata), rtol=1e-3, atol=1e-2)
+    compare_outputs(
+        out, workload.ref_program(a, b, metadata), workload.verification(a, b, metadata)
+    )
 
 
 @pytest.mark.smoke
@@ -507,7 +511,6 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     ],
 )
 def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
-    monkeypatch: pytest.MonkeyPatch,
     kind: str,
     packing: "str | None",
     metadata_kind: "str | None",
@@ -531,8 +534,7 @@ def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
         n=256,
         k=512,
     )
-    monkeypatch.setattr(MoeGroupedGemmMmaKernel, "_check_arch", lambda self: None)
-    supply = MoeGroupedGemmMmaKernel(call).autotune_supply_prog
+    supply = MoeGroupedGemmMmaKernel._supply_prog_for(call)
     a, b, layout, c = supply([None] * 4)
 
     lead = [num_groups, max_m] if kind == "masked" else [rows]

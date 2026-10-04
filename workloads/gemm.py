@@ -50,6 +50,16 @@ class GemmWorkload(WorkloadBase):
             b = b.T
         return torch.matmul(a, b)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        tol = 1e-3 if self.dtype == torch.float16 else 1.6e-2
+        gemv = not self.trans_a and (
+            (self.m == 1 and self.trans_b) or (self.n == 1 and not self.trans_b)
+        )
+        atol = tol * max(1.0, self.k / 2048) if gemv else tol
+        return Exact(atol=atol, rtol=tol)
+
 
 class GemmFp8Workload(WorkloadBase):
     def __init__(
@@ -141,6 +151,9 @@ class GemmFp8Workload(WorkloadBase):
         if bias is not None:
             out = out + bias.float()
         return out.to(self.out_dtype)
+
+    def verification(self, *inputs):
+        return fp8_matmul_verification(self.k)
 
 
 def quantize_weight_int4(
@@ -310,6 +323,11 @@ class GemmW4A16Workload(WorkloadBase):
         weight = dequantize_w4a16_weight(packed_weight, weight_scale, weight_zero)
         return torch.matmul(activation, weight.to(activation.dtype).T)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=7e-2, rtol=5e-2)
+
 
 class BmmWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
@@ -400,6 +418,9 @@ class BmmFp8Workload(WorkloadBase):
         b_f = b.float() * scale_b
         out = torch.bmm(a_f, b_f)
         return out.to(self.out_dtype)
+
+    def verification(self, *inputs):
+        return fp8_matmul_verification(self.k)
 
 
 def _generate_batch_sizes(batch_sum: int, batch_count: int):
@@ -547,3 +568,58 @@ class GroupedGemmWorkload(WorkloadBase):
                     output[i] = torch.mm(A[start:end].transpose(0, 1), B[start:end])
                     start = end
         return output
+
+
+def fp8_matmul_verification(k):
+    """FP8 accumulation noise grows with the square root of the reduction length."""
+    from workloads.numerics import Exact, zeroed_input
+
+    return Exact(
+        atol=2e-2 * max(1.0, k / 1024) ** 0.5,
+        rtol=2e-2,
+        controls=(zeroed_input(0, "left-operand-zeroed"),),
+    )
+
+
+class GemmW4A16BasisWorkload(GemmW4A16Workload):
+    """A basis vector selects exactly one dequantized weight: no reduction error."""
+
+    def __init__(self, k_index):
+        super().__init__(1, 35, 384, torch.float16)
+        self.k_index = k_index
+
+    def gen_inputs(self):
+        n, k = 35, 384
+        rows = torch.arange(n)[:, None]
+        quantized = torch.randint(0, 16, (n, k), generator=self.rng("packed-weight"))
+        zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
+        scale = (
+            0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+        ).to(torch.float16)
+        packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
+        group = self.k_index // 128
+        centered = quantized[:, self.k_index].float() - zero[:, group].float()
+        self.expected = (centered * scale[:, group].float()).half()[None, :]
+        activation = torch.zeros((1, k), device=run_device(), dtype=torch.float16)
+        activation[0, self.k_index] = 1
+        prepacked = repack_w4a16_weight(packed)
+        return activation, prepacked.to(run_device()), scale.to(run_device()), zero.to(run_device())
+
+    def ref_program(self, activation, *weights):
+        return self.expected.to(activation.device)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
+
+def w4a16_partition_verification():
+    """Compare K partitions of the same decoded weights, not a separate dequantizer.
+
+    Only FP32 partial-sum order changes. Keep the tighter partition consistency
+    bound separate from the GEMM reference's weight-narrowing error allowance.
+    """
+    from workloads.numerics import Exact
+
+    return Exact(atol=1e-5, rtol=2e-3)

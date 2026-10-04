@@ -54,6 +54,9 @@ class GLADecodeWorkload(WorkloadBase):
         o, new_state = gla_decode_torch(q, k, v, gk, state, self.scale)
         return o.to(self.dtype), new_state.to(self.dtype)
 
+    def verification(self, *inputs):
+        return decode_verification(inputs[0].dtype)
+
 
 class GLAChunkwiseWorkload(WorkloadBase):
     def __init__(
@@ -130,6 +133,9 @@ class GLAInferenceWorkload(GLAChunkwiseWorkload):
             output_final_state=True,
         )
 
+    def verification(self, *inputs):
+        return inference_verification(inputs[0].dtype, decode=inputs[0].shape[1] == 1)
+
 
 def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, initial_state=None):
     """Fully differentiable chunked GLA forward in float32.
@@ -180,7 +186,7 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, initial_state=None
     return torch.cat(o_chunks, dim=1), h
 
 
-def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
+def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0, *, initial_state=None, dht=None):
     """Compute GLA backward gradients via autograd on the differentiable forward."""
     sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
 
@@ -189,8 +195,12 @@ def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
     v_ = v.float().detach().requires_grad_(True)
     g_ = g.float().detach().requires_grad_(True)
 
-    o, _final = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
+    o, final = gla_fwd_chunked_torch(
+        q_, k_, v_, g_, chunk_size, scale=sc, initial_state=initial_state
+    )
     loss = (o * do.float()).sum()
+    if dht is not None:
+        loss = loss + (final * dht.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
     return dq, dk, dv, dg
 
@@ -230,6 +240,9 @@ class GLADecodeCall(CallWorkload):
         o, new_state = gla_decode_torch(q, k, v, gk, state, self.call.ix["scale"])
         return o.to(q.dtype), new_state.to(q.dtype)
 
+    def verification(self, *inputs):
+        return decode_verification(inputs[0].dtype)
+
 
 class GLAChunkwiseCall(CallWorkload):
     """A manifest call of GLAChunkFwdOp or GLAChunkBwdOp."""
@@ -237,6 +250,27 @@ class GLAChunkwiseCall(CallWorkload):
     def gen_inputs(self):
         tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
         return tuple(_log_gates(t) if name == "g" else _small(t) for name, t in tensors.items())
+
+    def ref_program(self, *inputs):
+        a = self.arguments()
+        if self.call.signature.name == "GLAChunkFwdOp":
+            q, k, v, g, initial = inputs
+            out, state = gla_fwd_chunked_torch(
+                q, k, v, g, a["chunk_size"], scale=a["scale"], initial_state=initial
+            )
+            return out.to(q.dtype), state.float()
+        q, k, v, g, h, do, dht = inputs
+        return tuple(
+            t.float()
+            for t in gla_autograd_bwd_torch(
+                do, q, k, v, g, a["chunk_size"], scale=a["scale"], initial_state=h[:, 0], dht=dht
+            )
+        )
+
+    def verification(self, *inputs):
+        return chunkwise_verification(
+            inputs[0].dtype, backward=self.call.signature.name == "GLAChunkBwdOp"
+        )
 
 
 class GLAInferenceCall(CallWorkload):
@@ -269,3 +303,72 @@ class GLAInferenceCall(CallWorkload):
         # chunk_gla builds its chunk index on the host, and the host copy of the offsets
         # is what spares it a device-to-host synchronization for them.
         return chunk_gla(q, k, v, g, cu_seqlens_cpu=cu_seqlens_cpu, **arguments)
+
+    def verification(self, *inputs):
+        return inference_verification(inputs[0].dtype, decode=inputs[0].shape[1] == 1)
+
+
+def decode_verification(dtype):
+    from workloads.numerics import Exact
+
+    tol = {torch.float32: 3e-06, torch.float16: 0.0007, torch.bfloat16: 0.003}[dtype]
+    return Exact(atol=tol, rtol=tol)
+
+
+def inference_verification(dtype, *, decode=False):
+    from workloads.numerics import Custom, assert_close
+
+    if decode:
+
+        def validate_decode(got, expected):
+            # A single step keeps its state in FP32: prefill's accumulation bound
+            # does not apply. The stored output may straddle a half/bfloat rounding
+            # boundary after two FP32 reduction orders; allow one adjacent value,
+            # then apply the original absolute bound to the remaining error.
+            actual, target = got[0], expected[0]
+            adjacent = torch.nextafter(target, actual)
+            residual = (actual.float() - adjacent.float()).abs()
+            assert_close(residual, torch.zeros_like(residual), atol=3e-7, rtol=0)
+            assert_close(got[1], expected[1], atol=3e-7, rtol=3e-7)
+
+        return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
+
+    tol = {torch.float32: 3e-07, torch.float16: 1e-3, torch.bfloat16: 1.6e-2}[dtype]
+    state_tol = 0.0025 if dtype == torch.float16 else tol
+
+    def validate(got, expected):
+        assert_close(got[0], expected[0], atol=tol, rtol=tol)
+        assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
+
+    return Custom(validate, "output and accumulated FP32 state")
+
+
+def chunkwise_verification(dtype, *, backward=False):
+    from workloads.numerics import Custom, Exact, compare_outputs
+
+    if not backward:
+        tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[dtype]
+
+        def validate_forward(got, expected):
+            compare_outputs(got, expected, Exact(atol=tol, rtol=tol))
+            actuals = (got,) if isinstance(got, torch.Tensor) else got
+            references = (expected,) if isinstance(expected, torch.Tensor) else expected
+            for actual, reference in zip(actuals, references, strict=True):
+                a, b = actual.float().flatten(), reference.float().flatten()
+                if torch.count_nonzero(b):
+                    # Absolute slack alone must not accept zero for low-amplitude outputs.
+                    cosine = torch.dot(a, b) / (
+                        torch.linalg.vector_norm(a) * torch.linalg.vector_norm(b)
+                    )
+                    assert cosine > 0.99
+
+        return Custom(validate_forward, "forward error bound and nonzero signal alignment")
+
+    def validate(got, expected):
+        # Gradients are about 1e-2; bound each by 1% of its largest reference entry.
+        for actual, reference in zip(got, expected, strict=True):
+            torch.testing.assert_close(
+                actual, reference, atol=1e-2 * reference.abs().max().item(), rtol=0
+            )
+
+    return Custom(validate, "gradient error bounded by 1% of each gradient's amplitude")

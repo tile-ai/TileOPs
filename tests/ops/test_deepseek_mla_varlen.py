@@ -1,103 +1,30 @@
-"""Packed-varlen MLA prefill tests against a float32 per-request reference.
-
-Input construction and the reference belong in ``workloads/`` once an entry has
-workload rows, so that a benchmark reads the same definition. This entry is
-still ``spec-only`` and has neither, so they are module-level helpers here:
-there is no second consumer to drift from yet, and promoting the entry moves
-them to ``workloads/attention/mla.py`` along with the benchmark that will
-read them. The reference itself is the semantics
-``tests/test_spec_reference.py`` already states for the entry -- expand ``k_pe``
-to every head, then attend per request in float32.
-"""
+"""Packed MLA prefill consumes the shared output and log-sum-exp contract."""
 
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
-from tileops.kernels.attention.mla import prefill_varlen
 from tileops.ops import MultiHeadLatentAttentionVarlenFwdOp
-from workloads.device import run_device
+from workloads.attention.mla import MlaVarlenWorkload, mla_varlen_inputs
+from workloads.numerics import compare_outputs
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_mla_varlen_default_config_is_owned_by_each_kernel(monkeypatch) -> None:
+def test_mla_varlen_default_config_is_owned_by_each_kernel() -> None:
     """Changing one kernel's config must not change another kernel or future defaults."""
-    monkeypatch.setattr(MLAVarlenPrefillFwdKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(prefill_varlen, "get_shared_memory_optin", lambda index=None: 101376)
-    first = MLAVarlenPrefillFwdKernel(1, 4, 128, 64, 128, True, torch.float16)
-    second = MLAVarlenPrefillFwdKernel(2, 8, 128, 64, 128, True, torch.float16)
-    expected = second.config.copy()
+    budget, shape = 101376, (128, 64, 128, torch.float16.itemsize)
+    first = MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape)
+    second = MLAVarlenPrefillFwdKernel._default_config_for(budget, 2, *shape)
+    expected = second.copy()
 
-    monkeypatch.setitem(first.config, "block_n", 32)
+    first["block_n"] = 32
 
-    assert second.config == expected
-    assert first.default_config == expected
-
-
-def _gen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):
-    """The packed tensors one call takes, for ``seq_lens`` requests."""
-    total = sum(seq_lens)
-    device = run_device()
-    return (
-        torch.randn(total, heads, dim_nope + dim_pe, dtype=dtype, device=device),
-        torch.randn(total, heads, dim_nope, dtype=dtype, device=device),
-        torch.randn(total, dim_pe, dtype=dtype, device=device),
-        torch.randn(total, heads, dim_v, dtype=dtype, device=device),
-        torch.tensor(
-            [0, *torch.tensor(seq_lens).cumsum(0).tolist()],
-            dtype=torch.int32,
-            device=device,
-        ),
-    )
-
-
-def _ref_program(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm_scale=None):
-    """Expand the shared rope half to every head, then attend per request in float32.
-
-    The score block of a whole request is quadratic in its length, so query rows
-    and heads are taken a slab at a time; each row still sees its whole key
-    axis, so the numbers are those of the unsplit form.
-    """
-    # Bound the temporary score tensor's memory without changing the reference result.
-    heads_per_chunk = 8
-    rows_per_chunk = 1024
-    heads = q.shape[1]
-    scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
-    bounds = cu_seqlens.tolist()
-    out = torch.empty_like(q[..., :dim_v])
-    lse = torch.empty(q.shape[0], heads, dtype=torch.float32, device=q.device)
-    for start, end in zip(bounds, bounds[1:], strict=False):
-        span = end - start
-        key = torch.cat(
-            [k_nope[start:end], k_pe[start:end, None].expand(-1, heads, -1)], dim=-1
-        ).float()
-        value = v[start:end].float()
-        rows = torch.arange(span, device=q.device)
-        for h0 in range(0, heads, heads_per_chunk):
-            h1 = min(h0 + heads_per_chunk, heads)
-            for r0 in range(0, span, rows_per_chunk):
-                r1 = min(r0 + rows_per_chunk, span)
-                scores = (
-                    torch.einsum(
-                        "shd,nhd->hsn",
-                        q[start + r0 : start + r1, h0:h1].float(),
-                        key[:, h0:h1],
-                    )
-                    * scale
-                )
-                if is_causal:
-                    visible = rows[None, :] <= rows[r0:r1, None]
-                    scores = scores.masked_fill(~visible[None], float("-inf"))
-                out[start + r0 : start + r1, h0:h1] = torch.einsum(
-                    "hsn,nhd->shd", scores.softmax(-1), value[:, h0:h1]
-                ).to(q.dtype)
-                lse[start + r0 : start + r1, h0:h1] = scores.logsumexp(-1).T
-    return out, lse
+    assert second == expected
+    assert MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape) == expected
 
 
 class MlaVarlenFwdFixture(FixtureBase):
@@ -197,13 +124,11 @@ class MlaVarlenFwdFixture(FixtureBase):
 def test_mla_varlen_fwd_op(
     seq_lens, heads, dim_nope, dim_pe, dim_v, is_causal, sm_scale, dtype
 ) -> None:
-    inputs = _gen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype)
+    workload = MlaVarlenWorkload(
+        seq_lens, heads, dim_nope, dim_pe, dim_v, dtype, is_causal, sm_scale
+    )
     op = MultiHeadLatentAttentionVarlenFwdOp(is_causal=is_causal, sm_scale=sm_scale)
-    out, lse = op(*inputs)
-    ref_out, ref_lse = _ref_program(*inputs, is_causal=is_causal, dim_v=dim_v, sm_scale=sm_scale)
-    tolerance = 2e-2 if dtype is torch.bfloat16 else 4e-3
-    torch.testing.assert_close(out.float(), ref_out.float(), atol=tolerance, rtol=tolerance)
-    torch.testing.assert_close(lse, ref_lse, atol=2e-3, rtol=2e-3)
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -216,19 +141,13 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
     states.
     """
     torch.manual_seed(0)
-    q, k_nope, k_pe, v, cu_seqlens = _gen_inputs([512], 4, 128, 64, 128, torch.float16)
+    q, k_nope, k_pe, v, cu_seqlens = mla_varlen_inputs([512], 4, 128, 64, 128, torch.float16)
     op = MultiHeadLatentAttentionVarlenFwdOp(is_causal=True)
     out, lse = op(q, k_nope, k_pe, v, cu_seqlens)
 
-    heads = q.shape[1]
-    scale = q.shape[-1] ** -0.5
-    key = torch.cat([k_nope, k_pe[:, None].expand(-1, heads, -1)], dim=-1)
-    scores = torch.einsum("shd,nhd->hsn", q.float(), key.float()) * scale
-    rows = torch.arange(512, device=scores.device)[:, None]
-    cols = torch.arange(512, device=scores.device)[None, :]
-    scores = scores.masked_fill(~(cols <= rows)[None], float("-inf"))
-
-    torch.testing.assert_close(lse, scores.logsumexp(-1).T, atol=2e-3, rtol=2e-3)
+    workload = MlaVarlenWorkload([512], 4, 128, 64, 128, torch.float16)
+    inputs = (q, k_nope, k_pe, v, cu_seqlens)
+    compare_outputs((out, lse), workload.ref_program(*inputs), workload.verification(*inputs))
     assert out.dtype == q.dtype
     assert lse.dtype == torch.float32
 
@@ -253,7 +172,7 @@ def test_each_implementation_matches_the_reference(kernel_cls, seq_lens) -> None
     The op dispatches to whichever one the device admits, so a test that only
     calls the op leaves the other unexercised on any given machine.
     """
-    inputs = _gen_inputs(seq_lens, 4, 128, 64, 128, torch.bfloat16)
+    inputs = mla_varlen_inputs(seq_lens, 4, 128, 64, 128, torch.bfloat16)
     kernel = kernel_cls(
         batch=len(seq_lens),
         heads=4,
@@ -263,7 +182,7 @@ def test_each_implementation_matches_the_reference(kernel_cls, seq_lens) -> None
         is_causal=True,
         dtype=torch.bfloat16,
     )
-    out, lse = kernel.forward(*inputs)
-    ref_out, ref_lse = _ref_program(*inputs, is_causal=True, dim_v=128)
-    torch.testing.assert_close(out.float(), ref_out.float(), atol=2e-2, rtol=2e-2)
-    torch.testing.assert_close(lse, ref_lse, atol=2e-3, rtol=2e-3)
+    workload = MlaVarlenWorkload(seq_lens, 4, 128, 64, 128, torch.bfloat16)
+    TestBase.check(
+        workload, MultiHeadLatentAttentionVarlenFwdOp(is_causal=True), *inputs, runs=kernel.forward
+    )

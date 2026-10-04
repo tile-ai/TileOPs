@@ -557,15 +557,12 @@ def test_a_key_another_op_declares_passes_through() -> None:
     assert "shared_expert_mlp" not in op.kernel_map
 
 
-def test_kernel_types_declare_the_keys_an_override_may_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
     """``default_kernel_map`` is ``kernel_types``, and an override may name only a key some
     created op class declares."""
     from tileops.kernels.gemm import GemmTmaKernel
     from tileops.kernels.gemm.call_spec import GemmFwdInterface
 
-    monkeypatch.setattr(op_base, "_DISPATCH_KEYS", set())
     attrs = {
         "kernel_types": {"probe_kernel": GemmTmaKernel},
         "interfaces": {"gemm": GemmFwdInterface},

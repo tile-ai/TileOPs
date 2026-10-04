@@ -1,7 +1,6 @@
 """Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
-import math
 from typing import Any, Callable, Optional
 
 import pytest
@@ -18,7 +17,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
-from benchmarks.verification import Exact, zeroed_input
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
@@ -356,13 +354,10 @@ def test_gemm_bench(call) -> None:
 def test_gemm_fp8_bench(call) -> None:
     workload = GemmFp8Workload.from_call(call)
     inputs = workload.gen_inputs()
-    scale_mode, out_dtype = workload.scale_mode, workload.out_dtype
-
+    scale_mode, out_dtype = (workload.scale_mode, workload.out_dtype)
     op = GemmFP8FwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
-
     functors = {"tileops": op, "torch-fp32-ref": workload.ref_program}
-
     functors[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
     if scale_mode == "per_tensor":
 
@@ -372,7 +367,6 @@ def test_gemm_fp8_bench(call) -> None:
             )
 
         functors["torch-scaled-mm"] = scaled_mm
-
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
@@ -390,9 +384,7 @@ def test_gemm_fp8_bench(call) -> None:
 
             functors["flashinfer-mm-fp8"] = flashinfer_fn
     elif scale_mode == "block128x128":
-        baselines = {
-            "flashinfer-fp8-blockscale-sm90": _flashinfer_fp8_blockscale_1d2d,
-        }
+        baselines = {"flashinfer-fp8-blockscale-sm90": _flashinfer_fp8_blockscale_1d2d}
         for tag, adapter in baselines.items():
             try:
                 fn = adapter(workload, *inputs)
@@ -400,13 +392,7 @@ def test_gemm_fp8_bench(call) -> None:
                 print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
             else:
                 functors[tag] = (fn, inputs)
-
-    checked = Exact(
-        rtol=2e-2,
-        atol=2e-2 * math.sqrt(max(1.0, workload.k / 1024)),
-        controls=(zeroed_input(0, "left-operand-zeroed"),),
-    )
-    bm.compare(functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, checked))
+    bm.compare(functors, *inputs, count_copies=True)
 
 
 @pytest.mark.parametrize("call", manifest_calls(GemmW4A16FwdOp))
@@ -439,4 +425,4 @@ def test_gemm_w4a16_bench(call) -> None:
             continue
         functors[tag] = (baseline, baseline_inputs)
 
-    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, Exact(atol=7e-2, rtol=5e-2)))
+    bm.compare(functors, *inputs)

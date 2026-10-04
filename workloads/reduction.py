@@ -1,6 +1,7 @@
 """Workload definitions for the reduction op family."""
 
 import torch
+import torch.nn.functional as F
 
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, RandnWorkload, WorkloadBase
@@ -9,17 +10,29 @@ from workloads.workload_base import CallWorkload, RandnWorkload, WorkloadBase
 class SumWorkload(RandnWorkload):
     """Workload definition for SumFwdOp."""
 
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
+
 
 class MeanWorkload(RandnWorkload):
     """Workload definition for MeanFwdOp."""
+
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class AmaxWorkload(RandnWorkload):
     """Workload definition for AmaxFwdOp."""
 
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
+
 
 class AminWorkload(RandnWorkload):
     """Workload definition for AminFwdOp."""
+
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class ProdWorkload(WorkloadBase):
@@ -39,17 +52,29 @@ class ProdWorkload(WorkloadBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return x.float().prod(dim=-1).to(x.dtype)
 
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, product=True, scalar=inputs[0].ndim == 0)
+
 
 class StdWorkload(RandnWorkload):
     """Workload definition for StdFwdOp."""
+
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class VarWorkload(RandnWorkload):
     """Workload definition for VarFwdOp."""
 
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
+
 
 class VarMeanWorkload(RandnWorkload):
     """Workload definition for VarMeanFwdOp."""
+
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class ArgmaxWorkload(RandnWorkload):
@@ -63,9 +88,15 @@ class ArgminWorkload(RandnWorkload):
 class SoftmaxWorkload(RandnWorkload):
     """Workload definition for SoftmaxFwdOp (spec interface: shape + dtype)."""
 
+    def verification(self, *inputs):
+        return softmax_verification(inputs[0].dtype, logarithmic=False)
+
 
 class LogSoftmaxWorkload(RandnWorkload):
     """Workload definition for LogSoftmaxFwdOp (spec interface: shape + dtype)."""
+
+    def verification(self, *inputs):
+        return softmax_verification(inputs[0].dtype, logarithmic=True)
 
 
 class LogSumExpWorkload(RandnWorkload):
@@ -74,6 +105,9 @@ class LogSumExpWorkload(RandnWorkload):
 
 class VectorNormWorkload(RandnWorkload):
     """Workload definition for VectorNormFwdOp."""
+
+    def verification(self, *inputs):
+        return vector_norm_verification(inputs[0].dtype)
 
 
 class _LogicalWorkload(WorkloadBase):
@@ -111,6 +145,76 @@ class ReductionCall(CallWorkload):
         super().__init__(call, device)
         spec = call.specs["x"]
         self.shape, self.dtype = spec.shape, spec.dtype
+
+    def ref_program(self, *inputs):
+        p = self.call.params
+        name = self.call.signature.name
+        x = inputs[0]
+        dim, keep = p.get("dim"), p.get("keepdim", False)
+        dtype = getattr(torch, p["dtype"]) if p.get("dtype") else x.dtype
+        if name in ("ArgmaxFwdOp", "ArgminFwdOp"):
+            return (torch.argmax if name == "ArgmaxFwdOp" else torch.argmin)(
+                x, dim=dim, keepdim=keep
+            )
+        if name in ("AnyFwdOp", "AllFwdOp"):
+            return (torch.any if name == "AnyFwdOp" else torch.all)(x.bool(), dim=dim, keepdim=keep)
+        if name == "CountNonzeroFwdOp":
+            return torch.count_nonzero(x, dim=dim).to(torch.int64)
+        if name in ("SoftmaxFwdOp", "LogSoftmaxFwdOp"):
+            fn = torch.softmax if name == "SoftmaxFwdOp" else torch.log_softmax
+            return fn(x.float(), dim=dim).to(dtype)
+        if name == "LogSumExpFwdOp":
+            return torch.logsumexp(x.float(), dim=dim, keepdim=keep).to(dtype)
+        if name == "VectorNormFwdOp":
+            return torch.linalg.vector_norm(x.float(), ord=p["ord"], dim=dim, keepdim=keep).to(
+                dtype
+            )
+        if name in ("StdFwdOp", "VarFwdOp", "VarMeanFwdOp"):
+            fn = {"StdFwdOp": torch.std, "VarFwdOp": torch.var, "VarMeanFwdOp": torch.var_mean}[
+                name
+            ]
+            out = fn(
+                x.float(),
+                dim=dim,
+                keepdim=keep,
+                correction=1 if p["correction"] is None else p["correction"],
+            )
+            return tuple(v.to(dtype) for v in out) if isinstance(out, tuple) else out.to(dtype)
+        fn = {
+            "SumFwdOp": torch.sum,
+            "MeanFwdOp": torch.mean,
+            "AmaxFwdOp": torch.amax,
+            "AminFwdOp": torch.amin,
+            "ProdFwdOp": torch.prod,
+        }[name]
+        return fn(x.float(), dim=dim, keepdim=keep).to(dtype)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        name = self.call.signature.name
+        if name in (
+            "SumFwdOp",
+            "MeanFwdOp",
+            "AmaxFwdOp",
+            "AminFwdOp",
+            "StdFwdOp",
+            "VarFwdOp",
+            "VarMeanFwdOp",
+            "ProdFwdOp",
+        ):
+            return reduction_verification(
+                inputs[0].dtype, product=name == "ProdFwdOp", scalar=inputs[0].ndim == 0
+            )
+        if name in ("SoftmaxFwdOp", "LogSoftmaxFwdOp"):
+            dtype = self.call.params.get("dtype")
+            dtype = getattr(torch, dtype) if dtype else inputs[0].dtype
+            return softmax_verification(
+                dtype, input_dtype=inputs[0].dtype, logarithmic=name == "LogSoftmaxFwdOp"
+            )
+        if name == "VectorNormFwdOp":
+            return VectorNormWorkload.verification(self, *inputs)
+        return Exact()
 
 
 class ProdCall(ReductionCall):
@@ -204,6 +308,9 @@ class CumulativeWorkload(WorkloadBase):
         scan = torch.cumsum if self.op_kind == "cumsum" else torch.cumprod
         return scan(x.float(), dim=self.dim).to(x.dtype)
 
+    def verification(self, *inputs):
+        return reduction_verification(inputs[0].dtype, product=self.op_kind == "cumprod")
+
 
 class CumulativeCall(CallWorkload, CumulativeWorkload):
     """A manifest call of CumsumFwdOp or CumprodFwdOp, with the workload's inputs."""
@@ -216,3 +323,184 @@ class CumulativeCall(CallWorkload, CumulativeWorkload):
         )
 
     gen_inputs = CumulativeWorkload.gen_inputs
+
+
+def reduction_verification(dtype, *, product=False, scalar=False):
+    """Long reductions use the existing reduction bound, shared by both consumers."""
+    from workloads.numerics import Exact
+
+    # Scalar closed forms and integer/boolean outputs have no rounding budget.
+    if scalar or not (dtype.is_floating_point or dtype.is_complex):
+        return Exact(atol=0, rtol=0)
+    tol = (
+        (1e-3 if dtype == torch.float32 else 5e-2)
+        if product
+        else (1e-4 if dtype == torch.float32 else 1e-2)
+    )
+    return Exact(atol=tol, rtol=tol)
+
+
+class ArgreduceCase(ArgmaxWorkload):
+    """Parameterized test helper for argreduce ops."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
+        super().__init__((m, n), dtype)
+        self.op_kind = op_kind
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        (x,) = inputs
+        if self.op_kind == "argmax":
+            return x.argmax(dim=-1)
+        elif self.op_kind == "argmin":
+            return x.argmin(dim=-1)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class SoftmaxCase(SoftmaxWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.softmax(x.float(), dim=self.dim).to(x.dtype)
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
+        super().__init__(shape, dtype)
+        self.dim = dim
+
+
+class LogSoftmaxCase(LogSoftmaxWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
+        super().__init__(shape, dtype)
+        self.dim = dim
+
+
+class LogSumExpCase(LogSumExpWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.logsumexp(x.float(), dim=self.dim).to(x.dtype)
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
+        super().__init__(shape, dtype)
+        self.dim = dim
+
+
+class WelfordNonAlignedCase(RandnWorkload):
+    def __init__(self, shape: tuple, dtype, op_kind: str, correction: int = 1):
+        super().__init__(shape, dtype)
+        self.op_kind = op_kind
+        self.correction = correction
+
+    """Test helper for Welford ops with non-aligned N values."""
+
+    def ref_program(self, x: torch.Tensor) -> object:
+        x_f32 = x.float()
+        if self.op_kind == "var":
+            return x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "std":
+            return x_f32.std(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "var_mean":
+            v = x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+            m = x_f32.mean(dim=-1).to(x.dtype)
+            return (v, m)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class LogicalReduceCase(AnyWorkload):
+    """Parameterized test helper for logical reduce ops."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
+        super().__init__((m, n), dtype)
+        self.op_kind = op_kind
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        if self.op_kind == "any":
+            return x.bool().any(dim=-1)
+        elif self.op_kind == "all":
+            return x.bool().all(dim=-1)
+        elif self.op_kind == "count_nonzero":
+            return torch.count_nonzero(x, dim=-1).to(torch.int64)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class ReduceCase(SumWorkload):
+    """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        dtype: torch.dtype,
+        op_kind: str,
+    ):
+        super().__init__((m, n), dtype)
+        self.op_kind = op_kind
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        if self.op_kind == "sum":
+            return x_f32.sum(dim=-1).to(x.dtype)
+        elif self.op_kind == "mean":
+            return x_f32.mean(dim=-1).to(x.dtype)
+        elif self.op_kind == "amax":
+            return x_f32.amax(dim=-1).to(x.dtype)
+        elif self.op_kind == "amin":
+            return x_f32.amin(dim=-1).to(x.dtype)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class WelfordCase(StdWorkload):
+    """Test helper for Welford-based ops (std, var, var_mean)."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):
+        super().__init__((m, n), dtype)
+        self.op_kind = op_kind
+        self.correction = correction
+
+    def ref_program(self, x: torch.Tensor) -> object:
+        x_f32 = x.float()
+        if self.op_kind == "var":
+            return x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "std":
+            return x_f32.std(dim=-1, correction=self.correction).to(x.dtype)
+        elif self.op_kind == "var_mean":
+            v = x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
+            m = x_f32.mean(dim=-1).to(x.dtype)
+            return (v, m)
+        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class VectorNormCase(VectorNormWorkload):
+    """Parameterized test helper for vector norm ops."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
+        super().__init__((m, n), dtype)
+        self.op_kind = op_kind
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        # Compute in fp32 for reference, then cast back to input dtype
+        ord_val = {"l1": 1, "l2": 2, "inf": float("inf")}[self.op_kind]
+        ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=-1)
+        return ref.to(self.dtype)
+
+
+def reduction_tolerance(dtype: torch.dtype) -> dict[str, float]:
+    """The reduction policy, exposed for algebraic property assertions."""
+    return reduction_verification(dtype).tolerance({})
+
+
+def vector_norm_verification(dtype):
+    from workloads.numerics import Exact
+
+    tol = 1e-5 if dtype == torch.float32 else 1e-2
+    return Exact(atol=tol, rtol=tol)
+
+
+def softmax_verification(dtype, *, input_dtype=None, logarithmic=False):
+    """FP32 probabilities need a relative bound: an absolute floor can accept all zeros.
+
+    Widening the result must also exclude an intermediate rounding to the input dtype.
+    """
+    from workloads.numerics import Exact, reference_tolerance
+
+    if dtype == torch.float32 and (not logarithmic or input_dtype not in (None, dtype)):
+        return Exact(atol=0, rtol=1e-4)
+    return Exact(**reference_tolerance(dtype))

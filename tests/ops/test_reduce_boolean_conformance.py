@@ -24,6 +24,8 @@ import torch
 
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 # (op_cls, torch_fn) pairs for ops sharing the (dim, keepdim) signature.
 _OP_CASES: list[tuple[type, Callable]] = [
@@ -87,7 +89,7 @@ def test_logical_reduce_conformance(
         f"{op_cls.__name__} dim={dim} keepdim={keepdim} dtype={dtype}: "
         f"shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -130,7 +132,7 @@ def test_logical_reduce_unaligned_innermost(
     assert y.shape == ref.shape, (
         f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # CountNonzero: separate matrix because the op does not accept ``keepdim``.
@@ -172,7 +174,7 @@ def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
     assert y.shape == ref.shape, (
         f"CountNonzeroFwdOp dim={dim} dtype={dtype}: shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -201,4 +203,4 @@ def test_count_nonzero_unaligned_innermost(dim) -> None:
     assert y.shape == ref.shape, (
         f"CountNonzeroFwdOp dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))

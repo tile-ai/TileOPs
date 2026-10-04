@@ -961,22 +961,33 @@ class MLADecodeMmaKernel(MLADecodeWsKernel):
 
     @property
     def default_config(self) -> dict:
-        budget = get_shared_memory_optin(self.device_index)
-        itemsize = self.dtype.itemsize
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.dim,
+            self.pe_dim,
+            self.dtype.itemsize,
+            self.seqlen_kv,
+        )
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, dim: int, pe_dim: int, itemsize: int, seqlen_kv: int
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
         block_h = next(
             (
                 h
-                for h in self._BLOCK_HS
-                if self._shared_bytes(h, self.dim, self.pe_dim, itemsize, self.seqlen_kv) <= budget
+                for h in cls._BLOCK_HS
+                if cls._shared_bytes(h, dim, pe_dim, itemsize, seqlen_kv) <= budget
             ),
-            self._BLOCK_HS[-1],
+            cls._BLOCK_HS[-1],
         )
         return {
             "block_H": block_h,
-            "block_N": self._BLOCK_N,
-            "num_split": self._NUM_SPLIT,
+            "block_N": cls._BLOCK_N,
+            "num_split": cls._NUM_SPLIT,
             "num_stages": 1,
-            "threads": self._THREADS,
+            "threads": cls._THREADS,
         }
 
     @classmethod

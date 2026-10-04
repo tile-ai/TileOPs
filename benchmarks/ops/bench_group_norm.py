@@ -3,17 +3,14 @@
 import math
 
 import pytest
-import torch.nn.functional as F
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
     flaggems_group_norm,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.norm import NormCall
 
@@ -28,26 +25,17 @@ def _bench(call) -> None:
     workload = NormCall(call)
     x, weight, bias = inputs = workload.gen_inputs()
     op = GroupNormFwdOp(**workload.arguments())
-    groups, eps = call.params["num_groups"], call.params["eps"]
-
-    def baseline_fn(x, weight, bias):
-        return F.group_norm(x, groups, weight=weight, bias=bias, eps=eps)
-
+    groups, eps = (call.params["num_groups"], call.params["eps"])
+    baseline_fn = workload.ref_program
     n, c, *spatial = x.shape
     flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), groups, eps)
-    tolerance = reference_tolerance(x.dtype)
     functors = {
         "tileops": op,
         FLAGGEMS_TAG: flaggems_fn,
         "torch": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
-
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", [p for p in _CALLS if _affine(p)])

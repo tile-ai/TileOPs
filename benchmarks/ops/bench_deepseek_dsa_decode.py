@@ -3,13 +3,7 @@
 import pytest
 import torch
 
-from benchmarks.baselines import (
-    TORCH_COMPILE_TAG,
-    assert_matches_reference,
-    compiled_reference,
-    reference_tolerance,
-    vllm_op,
-)
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DsaDecodeCall
@@ -95,14 +89,11 @@ def test_dsa_decode_bench(call) -> None:
     workload = DsaDecodeCall(call)
     inputs = workload.gen_inputs()
     dtype = workload.dtype
-
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-
     if dtype == torch.bfloat16:
         bm.compare({"tileops": op, "flashmla": _flashmla_sparse(workload)}, *inputs)
         return
-
     baselines = {}
     sdpa_fn = _torch_sdpa_dsa(workload)
     if sdpa_fn is not None:
@@ -110,9 +101,6 @@ def test_dsa_decode_bench(call) -> None:
     gather_fn = _torch_gather_dsa(workload)
     if gather_fn is not None:
         baselines["torch-gather"] = gather_fn
-    for fn in baselines.values():
-        assert_matches_reference(fn, workload.ref_program, *inputs, **reference_tolerance(dtype))
-
     bm.compare(
         {
             "tileops": op,

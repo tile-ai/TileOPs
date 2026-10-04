@@ -447,15 +447,28 @@ class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        cap = get_shared_memory_optin(self.device_index)
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.batch,
+            self.dim_nope,
+            self.dim_pe,
+            self.dim_v,
+            self.dtype.itemsize,
+        )
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, batch: int, dim_nope: int, dim_pe: int, dim_v: int, itemsize: int
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block.
+
+        A fresh dictionary each call, so a caller may tune the returned config in place.
+        """
         return next(
             (
                 c
                 for c in _CANDIDATES
-                if self._shared_bytes(
-                    self.batch, self.dim_nope, self.dim_pe, self.dim_v, self.dtype.itemsize, c
-                )
-                <= cap
+                if cls._shared_bytes(batch, dim_nope, dim_pe, dim_v, itemsize, c) <= budget
             ),
             _NARROW,
         ).copy()

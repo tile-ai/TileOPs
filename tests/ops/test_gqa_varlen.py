@@ -309,7 +309,7 @@ def test_gqa_varlen_fwd_op(
         window_size_left=wl,
         window_size_right=wr,
     )
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -319,7 +319,7 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
         test = GroupedQueryAttentionVarlenFwdTest(
             2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
         )
-        test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+        test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -343,7 +343,7 @@ def test_varlen_regular_forwards_scale_and_softcap() -> None:
         sm_scale=0.125,
         softcap=5.0,
     )
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -358,7 +358,7 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -389,7 +389,7 @@ def test_general_kernel_serves_sliding_windows(
         window_size_left=wl,
         window_size_right=wr,
     )
-    test.check(kernel, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(GroupedQueryAttentionVarlenFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 @pytest.mark.smoke
@@ -429,7 +429,7 @@ def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=is_causal, **scores)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    test.check(op, *inputs)
     if served_in_tree(op):
         assert type(op._get_kernel((*inputs, None, None, None, None, None))).__name__ == kernel
 
@@ -443,7 +443,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-2, rtol=1e-2)
+    test.check(op, *inputs)
     first = op(*inputs)
     assert torch.equal(op(*inputs), first)
 
@@ -480,7 +480,7 @@ def test_varlen_rope_rotates_at_per_request_positions(
         rotary_dim=rotary_dim,
         rope_layout=rope_layout,
     )
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only

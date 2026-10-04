@@ -6,6 +6,7 @@ from tileops.ops import TopKSelectFwdOp
 from tileops.utils import STR_TO_DTYPE
 from workloads.attention.topk_select import TopkSelectorWorkload
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
 
 
 class TopkSelectorTest(TopkSelectorWorkload, TestBase):
@@ -67,15 +68,7 @@ def test_topk_select_op(
     op = TopKSelectFwdOp(topk=topk, tune=tune)
     inputs = test.gen_inputs()
 
-    def compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-        def selected(indices: torch.Tensor) -> torch.Tensor:
-            gather_index = indices.permute(0, 1, 3, 2).long()
-            values = torch.gather(inputs[0], 2, gather_index).permute(0, 1, 3, 2)
-            return torch.sort(values, dim=-1).values
-
-        torch.testing.assert_close(selected(output), selected(output_ref))
-
-    test.check(op, *inputs, compare=compare)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -91,7 +84,7 @@ def test_topk_select_returns_a_short_window_whole(width: int) -> None:
     assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()
     workload = TopkSelectorWorkload(batch, seq_len, seq_len_kv, 1, topk, torch.float32, torch.int32)
     reference = workload.ref_program(scores, starts, ends)
-    torch.testing.assert_close(out.sort(-1).values, reference.sort(-1).values, rtol=0, atol=0)
+    compare_outputs(out, reference, workload.verification(scores, starts, ends))
 
 
 @pytest.mark.smoke
@@ -104,5 +97,7 @@ def test_topk_select_threshold_bucket_past_staging() -> None:
     starts = torch.zeros(1, 1, dtype=torch.int32, device=run_device())
     ends = torch.full((1, 1), seq_len_kv, dtype=torch.int32, device=run_device())
     out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
-    expected = torch.topk(scores.flatten(), topk).indices.sort().values
-    assert torch.equal(out.flatten().long().sort().values, expected)
+    workload = TopkSelectorWorkload(1, 1, seq_len_kv, 1, topk, torch.float32, torch.int32)
+    compare_outputs(
+        out, workload.ref_program(scores, starts, ends), workload.verification(scores, starts, ends)
+    )

@@ -7,14 +7,12 @@ flashinfer's kernels.
 """
 
 import pytest
-import torch
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -97,29 +95,7 @@ def _bench(op_cls, call, *, torch_tag: str = "torch", count_copies: bool = False
         torch_tag: workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    evidence = {}
-    if op_cls is DropoutFwdOp:
-        x = inputs[0]
-        arguments = workload.arguments()
-        p = arguments["p"] if arguments["training"] else 0.0
-
-        def validate(got, _expected):
-            if p in (0.0, 1.0):
-                torch.testing.assert_close(got, x if p == 0 else torch.zeros_like(x))
-                return
-            # Independent generators need not choose identical masks.
-            torch.testing.assert_close(got, torch.where(got != 0, x / (1 - p), 0))
-            eligible = x != 0
-            n = eligible.sum()
-            dropped = ((got == 0) & eligible).sum()
-            assert (dropped - n * p).abs() <= 6 * (n * p * (1 - p)).sqrt() + 1
-
-        evidence = dict.fromkeys(
-            functors, Custom(validate, "dropout scaling and six-sigma mask rate")
-        )
-    ManifestBenchmark(op, workload).compare(
-        functors, *inputs, count_copies=count_copies, evidence=evidence
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs, count_copies=count_copies)
 
 
 @pytest.mark.parametrize("call", manifest_calls(PreluFwdOp))

@@ -19,11 +19,15 @@ from tileops.kernels.norm.call_spec import (
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.norm import (
-    BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,
+    batch_norm_backward,
+    batch_norm_backward_verification,
+    batch_norm_forward_result,
+    batch_norm_forward_verification,
     batch_norm_fwd_ref,
 )
+from workloads.numerics import compare_outputs
 
 
 class BatchNormBwdTest(BatchNormBwdWorkload, TestBase):
@@ -105,70 +109,23 @@ class BatchNormBwdFixture(FixtureBase):
 @BatchNormFwdFixture
 def test_batch_norm_fwd(N, C, spatial, dtype, training):
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
-    x, weight, bias, running_mean, running_var = test.gen_inputs()
-
-    # Clone before op call so reference sees the same initial state.
-    running_mean_ref = running_mean.clone()
-    running_var_ref = running_var.clone()
-
+    inputs = test.gen_inputs()
     op = BatchNormFwdOp(training=training)
-    # Manifest input order: (x, running_mean, running_var, weight, bias).
-    y = op(x, running_mean, running_var, weight, bias)
-
-    ref_y, ref_rm, ref_rv = batch_norm_fwd_ref(
-        x, weight, bias, running_mean_ref, running_var_ref, training=training
-    )
-
-    # Agreement at the storage dtype's precision; both sides accumulate in float32.
-    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
-    max_err = (y.float() - ref_y.float()).abs().max()
-    assert torch.allclose(y.float(), ref_y.float(), atol=atol, rtol=rtol), (
-        f"fwd mismatch (training={training}): max_err={max_err:.4e}"
-    )
+    test.check(op, *inputs, runs=lambda *args: batch_norm_forward_result(op, *args))
 
     if training:
-        # allclose is masked when running_mean starts near the batch mean; check determinism.
-        rm2, rv2 = running_mean_ref.clone(), running_var_ref.clone()
-        op(x, rm2, rv2, weight, bias)
-        det_err = (running_mean.float() - rm2.float()).abs().max()
-        assert torch.equal(running_mean, rm2) and torch.equal(running_var, rv2), (
-            f"running stats non-deterministic across runs: max_err={det_err:.4e}"
-        )
-
-        rm_err = (running_mean.float() - ref_rm.float()).abs().max()
-        assert torch.allclose(running_mean.float(), ref_rm.float(), atol=atol, rtol=rtol), (
-            f"running_mean mismatch: max_err={rm_err:.4e}"
-        )
-        rv_err = (running_var.float() - ref_rv.float()).abs().max()
-        assert torch.allclose(running_var.float(), ref_rv.float(), atol=atol, rtol=rtol), (
-            f"running_var mismatch: max_err={rv_err:.4e}"
-        )
+        # Repeat from the same initial statistics to detect update races separately.
+        x, mean, var, weight, bias = inputs
+        mean2, var2 = mean.clone(), var.clone()
+        op(x, mean, var, weight, bias)
+        op(x, mean2, var2, weight, bias)
+        assert torch.equal(mean, mean2) and torch.equal(var, var2)
 
 
 @BatchNormBwdFixture
 def test_batch_norm_bwd(N, C, spatial, dtype):
     test = BatchNormBwdTest(N, C, spatial, dtype)
-    grad_out, x, weight, mean, rstd = test.gen_inputs()
-
-    op = BatchNormBwdOp()
-    grad_x, grad_weight, grad_bias = op(grad_out, x, weight, mean, rstd)
-
-    ref_gx, ref_gw, ref_gb = test.ref_program(grad_out, x, weight, mean, rstd)
-
-    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
-    # grad_weight and grad_bias sum N * spatial terms per channel in another order than
-    # torch; where the terms cancel, atol alone carries float32's rounding of the sum.
-    sum_atol = 1e-4 if dtype == torch.float32 else atol
-
-    for name, got, ref, tol in [
-        ("grad_x", grad_x.float(), ref_gx.float(), atol),
-        ("grad_weight", grad_weight.float(), ref_gw.float(), sum_atol),
-        ("grad_bias", grad_bias.float(), ref_gb.float(), sum_atol),
-    ]:
-        max_err = (got - ref).abs().max()
-        assert torch.allclose(got, ref, atol=tol, rtol=rtol), (
-            f"bwd {name} mismatch: max_err={max_err:.4e}"
-        )
+    test.check(BatchNormBwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -208,11 +165,16 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
     rv = torch.ones(2 * C, device=run_device(), dtype=torch.float32)[::2]
     assert not rm.is_contiguous()
 
-    op(x, rm, rv, weight, bias)
-
-    expected_mean = op.momentum * x.float().transpose(0, 1).reshape(C, -1).mean(dim=1)
-    torch.testing.assert_close(rm, expected_mean, atol=1e-3, rtol=1e-3)
-    assert not torch.equal(rv, torch.ones_like(rv)), "running_var was not written either"
+    workload = BatchNormFwdTest(N, C, (H, W), x.dtype, training=True)
+    workload.check(
+        op,
+        x,
+        rm,
+        rv,
+        weight,
+        bias,
+        runs=lambda *args: batch_norm_forward_result(op, *args),
+    )
 
 
 @pytest.mark.cuda_only
@@ -241,11 +203,12 @@ def test_training_rejects_one_value_per_channel() -> None:
 
     # Inference applies no correction; torch normalizes the same shape.
     infer = BatchNormFwdOp(training=False)
-    y = infer(x, rm, rv, weight, bias)
-    expected = torch.nn.functional.batch_norm(
-        x, rm, rv, weight, bias, training=False, eps=infer.eps
+    expected = batch_norm_fwd_ref(x, weight, bias, rm, rv, training=False, eps=infer.eps)
+    compare_outputs(
+        batch_norm_forward_result(infer, x, rm, rv, weight, bias),
+        expected,
+        batch_norm_forward_verification(x.dtype),
     )
-    torch.testing.assert_close(y, expected, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
@@ -255,17 +218,21 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     length no tile divides."""
     x = torch.randn(shape, dtype=torch.float16, device=run_device())
     c = shape[1]
-    y = BatchNormFwdOp(training=True)(x)
-    torch.testing.assert_close(
-        y, torch.nn.functional.batch_norm(x, None, None, training=True), atol=4e-3, rtol=4e-3
+    op = BatchNormFwdOp(training=True)
+    compare_outputs(
+        batch_norm_forward_result(op, x, None, None, None, None),
+        batch_norm_fwd_ref(x, None, None, None, None, training=True),
+        batch_norm_forward_verification(x.dtype),
     )
     grad_out, weight = torch.randn_like(x), torch.randn(c, device=run_device())
-    workload = BatchNormBwdCall.__new__(BatchNormBwdCall)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     rstd = torch.rsqrt(var + 1e-5)
-    got = BatchNormBwdOp()(grad_out, x, weight, mean, rstd)
-    for a, b in zip(got, workload.ref_program(grad_out, x, weight, mean, rstd), strict=True):
-        torch.testing.assert_close(a, b, atol=5e-3, rtol=5e-3)
+    inputs = grad_out, x, weight, mean, rstd
+    compare_outputs(
+        BatchNormBwdOp()(*inputs),
+        batch_norm_backward(*inputs),
+        batch_norm_backward_verification(x.dtype),
+    )
 
 
 @pytest.mark.smoke
@@ -517,7 +484,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
         y = op(x, running_mean, running_var, weight, bias)
         ref_y = _batch_norm_infer_ref(x, running_mean, running_var, weight, bias, op.eps)
-        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+        assert torch.equal(y.float(), ref_y.float())
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
@@ -562,7 +529,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
         y = op(x, running_mean, running_var, weight, bias)
         ref_y, _, _ = _batch_norm_train_ref(x, weight, bias, op.eps)
-        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+        assert torch.equal(y.float(), ref_y.float())
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
@@ -615,9 +582,9 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         ref_grad_x, ref_grad_weight, ref_grad_bias = _batch_norm_bwd_ref(
             grad_out, x, weight, mean, rstd
         )
-        assert torch.allclose(grad_x.float(), ref_grad_x.float(), atol=0.0, rtol=0.0)
-        assert torch.allclose(grad_weight, ref_grad_weight, atol=0.0, rtol=0.0)
-        assert torch.allclose(grad_bias, ref_grad_bias, atol=0.0, rtol=0.0)
+        assert torch.equal(grad_x.float(), ref_grad_x.float())
+        assert torch.equal(grad_weight, ref_grad_weight)
+        assert torch.equal(grad_bias, ref_grad_bias)
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1

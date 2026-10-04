@@ -145,11 +145,7 @@ class BmmFixture(FixtureBase):
 def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     test = BmmTest(batch, m, n, k, dtype)
     op = BmmFwdOp(tune=tune)
-    if dtype == torch.float16:
-        tolerances = {"atol": 1e-3, "rtol": 1e-3}
-    else:
-        tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -258,7 +254,7 @@ def test_bmm_fp8(
     test = BmmFp8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
     op = BmmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=2e-2, rtol=2e-2)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -405,10 +401,5 @@ def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    out = op(a, b_kn, scale_a, scale_b)
 
-    # Reference computed in float32 with the same per-tensor scales.
-    a_f = a.float() * scale_a
-    b_f = b_kn.float() * scale_b
-    ref = torch.bmm(a_f, b_f).to(torch.bfloat16)
-    torch.testing.assert_close(out, ref, atol=0.05, rtol=0.05)
+    test.check(op, a, b_kn, scale_a, scale_b)

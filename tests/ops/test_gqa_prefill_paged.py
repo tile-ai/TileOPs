@@ -11,18 +11,10 @@ from workloads.attention.paged_kv_cache import (
     make_fragmented_block_table,
     make_interleaved_block_table,
     make_unit_cache_scales,
-    paged_cache_row,
 )
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
 from workloads.sequence_metadata import make_cu_seqlens
-
-
-def _prefill_paged_tolerance(dtype: torch.dtype) -> tuple[float, float]:
-    """Return this kernel family's reference tolerances without shared mutable defaults."""
-    return {
-        torch.float16: (5e-3, 1e-5),
-        torch.bfloat16: (8e-2, 1e-2),
-    }[dtype]
 
 
 @pytest.mark.parametrize(
@@ -151,8 +143,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         for old_len in old_lens
     ]
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
-    k_pages_before = k_pages.clone()
-    v_pages_before = v_pages.clone()
     k_scale, v_scale = make_unit_cache_scales()
     case = GQAPrefillPagedWithKVCacheFwdWorkload(
         batch, heads, heads_kv, q_lens, old_lens, page_size, dim, is_causal, dtype
@@ -188,21 +178,22 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         block_table,
     )
     assert isinstance(output, torch.Tensor)
-    atol, rtol = _prefill_paged_tolerance(dtype)
-    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
-
-    for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
-        q_start = int(cu_seqlens_q[b].item())
-        for i in range(q_len):
-            row = paged_cache_row(block_table, b, old_len + i, page_size)
-            torch.testing.assert_close(k_pages[row], k_new[q_start + i])
-            torch.testing.assert_close(v_pages[row], v_new[q_start + i])
-
-    for b, old_len in enumerate(old_lens):
-        for pos in range(old_len):
-            row = paged_cache_row(block_table, b, pos, page_size)
-            torch.testing.assert_close(k_pages[row], k_pages_before[row])
-            torch.testing.assert_close(v_pages[row], v_pages_before[row])
+    compare_outputs(
+        (output, k_pages, v_pages),
+        ref,
+        case.verification(
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        ),
+    )
 
 
 @pytest.mark.smoke
@@ -260,8 +251,6 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
     fill_paged_cache_from_logical(
         k_pages, v_pages, k_old_quant, v_old_quant, block_table, page_size
     )
-    k_pages_before = k_pages.clone()
-    v_pages_before = v_pages.clone()
     case = GQAPrefillPagedWithKVCacheFwdWorkload(
         batch, heads, heads_kv, q_lens, old_lens, page_size, dim, is_causal, dtype, softcap=softcap
     )
@@ -298,22 +287,22 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         block_table,
     )
     assert isinstance(output, torch.Tensor)
-    torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
-
-    for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
-        q_start = int(cu_seqlens_q[b].item())
-        for i in range(q_len):
-            row = paged_cache_row(block_table, b, old_len + i, page_size)
-            expected_k = (k_new[q_start + i].float() / k_scale[0]).to(cache_dtype).float()
-            expected_v = (v_new[q_start + i].float() / v_scale[0]).to(cache_dtype).float()
-            torch.testing.assert_close(k_pages[row].float(), expected_k, atol=0, rtol=0)
-            torch.testing.assert_close(v_pages[row].float(), expected_v, atol=0, rtol=0)
-
-    for b, old_len in enumerate(old_lens):
-        for pos in range(old_len):
-            row = paged_cache_row(block_table, b, pos, page_size)
-            torch.testing.assert_close(k_pages[row].float(), k_pages_before[row].float())
-            torch.testing.assert_close(v_pages[row].float(), v_pages_before[row].float())
+    compare_outputs(
+        (output, k_pages, v_pages),
+        ref,
+        case.verification(
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        ),
+    )
 
 
 @pytest.mark.smoke
@@ -406,12 +395,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
 
-    new_positions = torch.cat(
-        [
-            torch.arange(old_len, old_len + q_len, device=run_device(), dtype=torch.int32)
-            for old_len, q_len in zip(old_lens, q_lens, strict=True)
-        ]
-    )
     old_positions = torch.cat(
         [torch.arange(old_len, device=run_device(), dtype=torch.int32) for old_len in old_lens]
     )
@@ -429,7 +412,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         rotary_dim=rotary_dim,
         softcap=softcap,
     )
-    k_new_rot = case.rope(k_new_raw, new_positions)
     k_old_raw = [
         torch.randn(old_len, heads_kv, dim, device=run_device(), dtype=dtype).contiguous()
         for old_len in old_lens
@@ -446,8 +428,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         )
     )
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
-    k_pages_before = k_pages.clone()
-    v_pages_before = v_pages.clone()
 
     k_scale, v_scale = make_unit_cache_scales()
     ref = case.ref_program(
@@ -484,20 +464,22 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         cache_seqlens,
         block_table,
     )
-    atol, rtol = _prefill_paged_tolerance(dtype)
-    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
-
-    for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
-        q_start = int(cu_seqlens_q[b].item())
-        for i in range(q_len):
-            row = paged_cache_row(block_table, b, old_len + i, page_size)
-            # Two rotations of the same input, not a copy: the kernel's against the reference.
-            torch.testing.assert_close(k_pages[row], k_new_rot[q_start + i], atol=atol, rtol=rtol)
-            torch.testing.assert_close(v_pages[row], v_new[q_start + i])
-        for pos in range(old_len):
-            row = paged_cache_row(block_table, b, pos, page_size)
-            torch.testing.assert_close(k_pages[row], k_pages_before[row])
-            torch.testing.assert_close(v_pages[row], v_pages_before[row])
+    compare_outputs(
+        (output, k_pages, v_pages),
+        ref,
+        case.verification(
+            q_raw,
+            k_new_raw,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        ),
+    )
 
 
 @pytest.mark.cuda_only
@@ -586,7 +568,22 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         cache_seqlens,
         block_table,
     )
-    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+    compare_outputs(
+        (output, k_pages, v_pages),
+        ref,
+        case.verification(
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        ),
+    )
 
 
 @pytest.mark.smoke
@@ -652,8 +649,22 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
             block_table,
         )
         assert output.dtype == dtype
-        atol, rtol = _prefill_paged_tolerance(dtype)
-        torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+        compare_outputs(
+            (output, k_pages, v_pages),
+            ref,
+            case.verification(
+                q,
+                k_new,
+                v_new,
+                k_pages,
+                v_pages,
+                k_scale,
+                v_scale,
+                cu_seqlens_q,
+                cache_seqlens,
+                block_table,
+            ),
+        )
 
     if served_in_tree(op):
         built = op.built_kernels("gqa_prefill_paged")

@@ -450,3 +450,152 @@ def test_a_named_history_that_does_not_exist_is_refused(tmp_path):
     )
     assert result.returncode != 0
     assert "--history file does not exist" in result.stderr
+
+
+def _summary_report(report, scale):
+    return report.generate_report(
+        scale=scale,
+        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        bench_ops=_bench_ops(1.0),
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+    )
+
+
+def test_the_summary_names_the_scale_rows_verbatim(report):
+    """The Lark card looks these rows up by key, from another repository.
+
+    Renaming either key drops a column from the card and breaks nothing here,
+    so the names are pinned rather than left to the renderer.
+    """
+    md = _summary_report(report, {"operators": 186, "kernels": 272, "specs": 19, "workloads": 1135})
+    assert "| **Operators** | 186 |" in md
+    assert "| **Kernels** | 272 |" in md
+    assert "| **Specs** | 19 |" in md
+    assert "| **Workloads** | 1135 |" in md
+    # An entry that is only a specification is not something the library offers.
+    assert "| **Operators** | 205 |" not in md
+
+
+def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report):
+    """Benchmark data stands on its own; an unreadable manifest costs two rows."""
+    md = _summary_report(report, None)
+    assert "**Operators**" not in md
+    assert "**Kernels**" not in md
+    assert "**Specs**" not in md
+    assert "**Workloads**" not in md
+    assert "| **Correctness** |" in md
+
+
+def _result(outcome, op, name="test_x", compared=True):
+    """One parse_test_xml row, with the fields that function always fills."""
+    return {
+        "outcome": outcome,
+        "op": op,
+        "op_module": None,
+        "nodeid": f"tests/ops/test_f.py::{name}",
+        "name": name,
+        "compared": compared,
+        "failure_message": "boom" if outcome == "failed" else None,
+    }
+
+
+def _counted(report, results):
+    """The whole report, built over *results* as the suite that ran."""
+    md = report.generate_report(
+        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        bench_ops=None,
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+        test_results=results,
+    )
+    return md
+
+
+def test_unattributed_passes_and_failures_are_counted_and_failures_named(report):
+    """A test with no op property fails the job, so the report must not lose it.
+
+    Counting it and leaving it out of the failure table reports a number with
+    nothing behind it: the reader sees N failed and a table holding fewer rows.
+    """
+    row = _result("failed", None, "test_sum")
+    md = _counted(report, [_result("passed", _OP), _result("passed", None), row])
+
+    assert "(2/3 tests)" in md
+    assert report._FAIL in md
+    assert row["nodeid"] in md
+
+
+def test_ops_verified_unions_both_verifiers(report):
+    """Unit tests and benchmark rows verify different ops; neither alone is coverage."""
+    implemented = {"A", "B"}
+
+    tested = {"A": {"passed": 1, "failed": 0, "compared": 1}}
+    benched = {"B": {"configs": [{"baseline_ratio": 0.9}]}}
+
+    assert report._ops_verified(tested, benched, implemented) == (2, 2)
+    assert report._ops_verified(tested, None, implemented) == (1, 2)
+    assert report._ops_verified(
+        tested, {"C": {"configs": [{"baseline_ratio": 0.9}]}}, implemented
+    ) == (1, 2)
+    # A name alone is not evidence: every test for this op failed.
+    assert report._ops_verified(
+        {"A": {"passed": 0, "failed": 3, "compared": 0}}, None, implemented
+    ) == (0, 2)
+    # Nor is a passing test that compared nothing. After ownership becomes a
+    # declaration, a constructor-rejection test carries the op name and no value.
+    rejection_only = {"A": {"passed": 4, "failed": 0, "compared": 0}}
+    assert report._ops_verified(rejection_only, None, implemented) == (0, 2)
+    # Nor is a benchmark row with no baseline to compare against.
+    assert report._ops_verified(None, {"B": {"configs": [{}]}}, implemented) == (0, 2)
+    # A timed but noncomparable baseline leaves a populated dict and no ratio:
+    # the conftest writes timing before deciding whether a tag may publish one.
+    noncomparable = {"B": {"configs": [{"baselines": {"torch": {"latency_ms": 1.0}}}]}}
+    assert report._ops_verified(None, noncomparable, implemented) == (0, 2)
+    rated = {"B": {"configs": [{"baselines": {"torch": {"ratio": 0.9}}}]}}
+    assert report._ops_verified(None, rated, implemented) == (1, 2)
+
+
+def test_a_case_that_compared_nothing_is_not_evidence(report):
+    """A rejection or dispatch test owns the op and establishes none of its values."""
+    results = [
+        _result("passed", _OP, "compares"),
+        _result("passed", _OP, "rejects", compared=False),
+        _result("failed", _OP, "breaks"),
+    ]
+    aggregated = report.aggregate_test_results(results)
+
+    assert aggregated[_OP]["passed"] == 2
+    assert aggregated[_OP]["compared"] == 1
+
+
+def test_an_exclusion_reason_is_not_a_ratio(report, tmp_path):
+    """`<tag>_no_ratio` says why a tag published none; it is not a comparison."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(
+        '<testsuite><testcase classname="b" name="t"><properties>'
+        '<property name="op" value="AddFwdOp"/>'
+        '<property name="tileops_no_ratio" value="no reference"/>'
+        '<property name="tileops_unverified" value="no reference"/>'
+        "</properties></testcase></testsuite>",
+        encoding="utf-8",
+    )
+    rows = report.parse_bench_xml(str(xml))
+    bench_ops = report.aggregate_bench_results(rows)
+
+    assert "tileops_no" not in (rows[0].get("baselines") or {})
+    assert report.baseline_standing(bench_ops) == (0, 0)
+
+
+@pytest.mark.parametrize("count, expected", [("0", False), ("1", True)])
+def test_junit_uses_explicit_coverage_even_for_zero_error(report, tmp_path, count, expected):
+    xml = tmp_path / "results.xml"
+    xml.write_text(f"""<testsuites><testsuite><testcase name="exact" classname="tests.ops.test_x">
+      <properties><property name="max_abs_err" value="0"/>
+      <property name="checked_outputs" value="{count}"/></properties>
+    </testcase></testsuite></testsuites>""")
+    assert report.parse_test_xml(str(xml))[0]["compared"] is expected

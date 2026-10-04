@@ -24,6 +24,9 @@ class RMSNormWorkload(WorkloadBase):
         rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return ((x_f32 / rms) * weight.float()).to(x.dtype)
 
+    def verification(self, *inputs):
+        return norm_verification(inputs[0].dtype)
+
 
 class LayerNormWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
@@ -50,6 +53,34 @@ class LayerNormWorkload(WorkloadBase):
             eps=self.eps,
         ).to(x.dtype)
 
+    def verification(self, *inputs):
+        return layer_norm_verification(inputs[0].dtype)
+
+
+class LayerNormLargeOffsetWorkload(LayerNormWorkload):
+    """Adversarial mean 1e4 / standard deviation 1e-2 tests variance stability."""
+
+    def gen_inputs(self):
+        x = (10000.0 + 0.01 * torch.randn(self.m, self.n, device=run_device())).to(self.dtype)
+        weight = torch.ones(self.n, dtype=self.dtype, device=x.device)
+        return x, weight, torch.zeros_like(weight)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, Exact, compare_outputs
+
+        # Cancellation amplifies FP32 reduction-order differences by about 1-2%.
+        evidence = (
+            Exact(atol=1e-1, rtol=5e-2)
+            if inputs[0].dtype == torch.float32
+            else super().verification(*inputs)
+        )
+
+        def validate(got, expected):
+            result = compare_outputs(got, expected, evidence)
+            assert result.max_abs_err < 1.0, "catastrophic cancellation"
+
+        return Custom(validate, "large-offset normalization without catastrophic cancellation")
+
 
 class FusedAddRMSNormWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
@@ -75,6 +106,9 @@ class FusedAddRMSNormWorkload(WorkloadBase):
         rms = torch.sqrt(add_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         y = ((add_f32 / rms) * weight.float()).to(x.dtype)
         return y, add_result
+
+    def verification(self, *inputs):
+        return norm_verification(inputs[0].dtype)
 
 
 class FusedAddLayerNormWorkload(WorkloadBase):
@@ -249,10 +283,17 @@ def batch_norm_fwd_ref(
 ):
     """Reference: torch.nn.functional.batch_norm (float32 upcast)."""
     x32 = x.float()
-    rm = running_mean.clone()
-    rv = running_var.clone()
+    rm = None if running_mean is None else running_mean.clone()
+    rv = None if running_var is None else running_var.clone()
     y32 = torch.nn.functional.batch_norm(
-        x32, rm, rv, weight.float(), bias.float(), training=training, momentum=momentum, eps=eps
+        x32,
+        rm,
+        rv,
+        None if weight is None else weight.float(),
+        None if bias is None else bias.float(),
+        training=training,
+        momentum=momentum,
+        eps=eps,
     )
     return y32.to(x.dtype), rm, rv
 
@@ -281,17 +322,10 @@ class BatchNormBwdWorkload(WorkloadBase):
         return grad_out, x, weight, mean, rstd
 
     def ref_program(self, grad_out, x, weight, mean, rstd):
-        """Reference via torch.autograd on a float32 graph."""
-        x32 = x.float().requires_grad_(True)
-        w32 = weight.float().requires_grad_(True)
-        b32 = torch.zeros(self.C, device=x.device, dtype=torch.float32, requires_grad=True)
-        rm = torch.zeros(self.C, device=x.device, dtype=torch.float32)
-        rv = torch.ones(self.C, device=x.device, dtype=torch.float32)
-        y32 = torch.nn.functional.batch_norm(
-            x32, rm, rv, w32, b32, training=True, momentum=0.1, eps=1e-5
-        )
-        y32.backward(grad_out.float())
-        return x32.grad.to(x.dtype), w32.grad, b32.grad
+        return batch_norm_backward(grad_out, x, weight, mean, rstd)
+
+    def verification(self, *inputs):
+        return batch_norm_backward_verification(inputs[0].dtype)
 
 
 class BatchNormFwdWorkload(WorkloadBase):
@@ -303,13 +337,16 @@ class BatchNormFwdWorkload(WorkloadBase):
         self.training = training
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return _make_tensors(self.N, self.C, self.spatial, self.dtype)
+        x, weight, bias, mean, var = _make_tensors(self.N, self.C, self.spatial, self.dtype)
+        return x, mean, var, weight, bias
 
-    def ref_program(self, x, weight, bias, running_mean, running_var):
-        y, rm, rv = batch_norm_fwd_ref(
+    def ref_program(self, x, running_mean, running_var, weight, bias):
+        return batch_norm_fwd_ref(
             x, weight, bias, running_mean, running_var, training=self.training
         )
-        return (y,)
+
+    def verification(self, *inputs):
+        return batch_norm_forward_verification(inputs[0].dtype)
 
 
 class NormCall(CallWorkload):
@@ -319,6 +356,47 @@ class NormCall(CallWorkload):
         super().__init__(call, device)
         spec = call.specs[next(iter(call.signature.inputs))]
         self.shape, self.dtype = spec.shape, spec.dtype
+
+    def ref_program(self, *inputs):
+        p = self.call.params
+        name = self.call.signature.name
+        x = inputs[0]
+        eps = p.get("eps")
+        eps = torch.finfo(torch.float32).eps if eps is None else eps
+        if name == "GroupNormFwdOp":
+            _, weight, bias = inputs
+            return F.group_norm(x, p["num_groups"], weight, bias, eps)
+        if name in ("InstanceNormFwdOp", "BatchNormFwdOp"):
+            _, rm, rv, weight, bias = inputs
+            if name == "InstanceNormFwdOp":
+                if rm is not None:
+                    rm, rv = rm.clone(), rv.clone()
+                return F.instance_norm(
+                    x, rm, rv, weight, bias, p["use_input_stats"], p["momentum"], eps
+                )
+            return batch_norm_fwd_ref(x, weight, bias, rm, rv, p["training"], p["momentum"], eps)
+        if name in ("AdaLayerNormFwdOp", "AdaLayerNormZeroFwdOp"):
+            _, scale, shift, *gate = inputs
+            normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
+            out = scale.float() * normed + shift.float()
+            return (out * gate[0].float() if gate else out).to(x.dtype)
+        fused = name in ("FusedAddRMSNormFwdOp", "FusedAddLayerNormFwdOp")
+        if fused:
+            x = (x.float() + inputs[1].float()).to(x.dtype)
+            weight, *bias = inputs[2:]
+        else:
+            weight, *bias = inputs[1:]
+        shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
+        w = None if weight is None else weight.float()
+        if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
+            out = F.rms_norm(x.float(), shape, w, eps).to(x.dtype)
+        else:
+            b = None if not bias or bias[0] is None else bias[0].float()
+            out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
+        return (out, x) if fused else out
+
+    def verification(self, *inputs):
+        return normalization_verification(self.call.signature.name, inputs[0].dtype)
 
 
 class RunningStatsCall(NormCall):
@@ -341,16 +419,81 @@ class BatchNormBwdCall(NormCall):
         return grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
 
     def ref_program(self, grad_out, x, weight, mean, rstd):
-        """The gradients of the training forward, from the saved statistics."""
-        shape = (1, -1, *[1] * (x.ndim - 2))
-        axes = [0, *range(2, x.ndim)]
-        x_hat = (x.float() - mean.view(shape)) * rstd.view(shape)
-        grad_bias = grad_out.float().sum(axes)
-        grad_weight = (grad_out.float() * x_hat).sum(axes)
-        length = x.numel() // x.shape[1]
-        grad_x = (
-            (weight * rstd).view(shape)
-            / length
-            * (length * grad_out.float() - grad_bias.view(shape) - x_hat * grad_weight.view(shape))
-        )
-        return grad_x.to(x.dtype), grad_weight, grad_bias
+        return batch_norm_backward(grad_out, x, weight, mean, rstd)
+
+    def verification(self, *inputs):
+        return batch_norm_backward_verification(inputs[0].dtype)
+
+
+def batch_norm_backward_verification(dtype):
+    from workloads.numerics import Custom
+
+    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
+    # Channel gradients reduce N * spatial values; cancellation needs an absolute bound.
+    sum_atol = 1e-4 if dtype == torch.float32 else atol
+
+    def validate(got, expected):
+        for actual, reference, bound in zip(got, expected, (atol, sum_atol, sum_atol), strict=True):
+            torch.testing.assert_close(actual, reference, atol=bound, rtol=rtol)
+
+    return Custom(validate, "input gradient and accumulated channel gradients")
+
+
+def batch_norm_backward(grad_out, x, weight, mean, rstd):
+    """The gradients of the training forward, from the saved statistics."""
+    shape = (1, -1, *[1] * (x.ndim - 2))
+    axes = [0, *range(2, x.ndim)]
+    x_hat = (x.float() - mean.view(shape)) * rstd.view(shape)
+    grad_bias = grad_out.float().sum(axes)
+    grad_weight = (grad_out.float() * x_hat).sum(axes)
+    length = x.numel() // x.shape[1]
+    grad_x = (
+        (weight * rstd).view(shape)
+        / length
+        * (length * grad_out.float() - grad_bias.view(shape) - x_hat * grad_weight.view(shape))
+    )
+    return grad_x.to(x.dtype), grad_weight, grad_bias
+
+
+def norm_verification(dtype):
+    from workloads.numerics import Exact
+
+    if dtype == torch.float16:
+        return Exact(atol=1e-2, rtol=1e-2)
+    return Exact()
+
+
+def batch_norm_forward_result(subject, *inputs):
+    """Expose the returned tensor and the two declared running-stat side effects."""
+    output = subject(*inputs)
+    return output, inputs[1], inputs[2]
+
+
+def batch_norm_forward_verification(dtype):
+    from workloads.numerics import Exact
+
+    # Output narrowing and running-stat reductions share the original forward bound.
+    tol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
+    return Exact(atol=tol, rtol=tol)
+
+
+def layer_norm_verification(dtype):
+    from workloads.numerics import Exact
+
+    tol = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 1e-2}[dtype]
+    return Exact(atol=tol, rtol=tol)
+
+
+def normalization_verification(name, dtype):
+    """Select the normalization contract by operation, independently of its consumer."""
+    from workloads.numerics import Exact
+
+    if name == "BatchNormFwdOp":
+        return batch_norm_forward_verification(dtype)
+    if name == "BatchNormBwdOp":
+        return batch_norm_backward_verification(dtype)
+    if name == "LayerNormFwdOp":
+        return layer_norm_verification(dtype)
+    if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
+        return norm_verification(dtype)
+    return Exact()

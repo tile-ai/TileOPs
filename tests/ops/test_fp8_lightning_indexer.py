@@ -2,49 +2,14 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import (
-    FP8LightningIndexerCall,
-    FP8LightningIndexerKernel,
-    fp8_lightning_indexer,
-)
+from tileops.kernels.attention import FP8LightningIndexerCall, FP8LightningIndexerKernel
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
 
 
 class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
-    @staticmethod
-    def _compute_correlation(a: torch.Tensor, b: torch.Tensor) -> float:
-        a, b = a.data.double(), b.data.double()
-        norm_sum = (a * a + b * b).sum()
-        return 2 * (a * b).sum() / norm_sum
-
-    @staticmethod
-    def _validate_tensor_match(
-        output: torch.Tensor, output_ref: torch.Tensor, tolerance: float = 1e-3
-    ) -> None:
-        if isinstance(output, tuple):
-            output = output[0]
-        if isinstance(output_ref, tuple):
-            output_ref = output_ref[0]
-
-        a_finite = torch.isfinite(output)
-        b_finite = torch.isfinite(output_ref)
-        assert torch.all(a_finite == b_finite), "Error: isfinite mask mismatch"
-        assert torch.isclose(
-            output.masked_fill(a_finite, 0),
-            output_ref.masked_fill(b_finite, 0),
-            rtol=0,
-            atol=0,
-            equal_nan=True,
-        ).all(), "Error: nonfinite value mismatch"
-        output = output.masked_fill(~a_finite, 0)
-        output_ref = output_ref.masked_fill(~b_finite, 0)
-        correlation = FP8LightningIndexerTest._compute_correlation(output, output_ref)
-        difference = 1.0 - correlation
-        assert 0 <= difference <= tolerance, (
-            f"outputs is not close to outputs_ref, difference: {difference}"
-        )
+    pass
 
 
 class FP8LightningIndexerFixture(FixtureBase):
@@ -79,7 +44,7 @@ def test_indexer(
         batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits
     )
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
-    test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -94,7 +59,6 @@ def test_indexer(
     ],
 )
 def test_indexer_block_q_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
     budget: int,
     heads: int,
     index_dim: int,
@@ -117,10 +81,8 @@ def test_indexer_block_q_follows_the_shared_memory_budget(
         assert "needs" in FP8LightningIndexerKernel.refusal(call)
         return
     assert FP8LightningIndexerKernel.refusal(call) is None
-    monkeypatch.setattr(FP8LightningIndexerKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(fp8_lightning_indexer, "get_shared_memory_optin", lambda index=None: budget)
-    kernel = FP8LightningIndexerKernel(1, 1024, heads, index_dim, 2048, kv_group)
-    assert kernel.config["block_Q"] == block_q
+    config = FP8LightningIndexerKernel._default_config_for(budget, heads, index_dim, kv_group)
+    assert config["block_Q"] == block_q
 
 
 @pytest.mark.smoke

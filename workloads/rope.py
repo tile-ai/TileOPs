@@ -5,10 +5,19 @@ import math
 import torch
 
 from workloads.device import run_device
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
+
+
+def rope_verification():
+    from workloads.numerics import Exact
+
+    return Exact()
 
 
 class RopeWorkload(WorkloadBase):
+    def verification(self, *inputs):
+        return rope_verification()
+
     def __init__(
         self,
         variant: str,
@@ -223,3 +232,164 @@ def longrope_frequency_tables(
     cos_vals = (torch.cos(angles) * scaling_factor).to(dtype)
     sin_vals = (torch.sin(angles) * scaling_factor).to(dtype)
     return cos_vals, sin_vals
+
+
+def ref_rope_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Reference neox RoPE: full-dim cos/sin broadcast with half-rotation."""
+    cos_full = torch.cat([cos, cos], dim=-1)
+    sin_full = torch.cat([sin, sin], dim=-1)
+    if x.ndim == 2:
+        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(
+            x.dtype
+        )
+    elif x.ndim == 4:
+        cos_full = cos_full.unsqueeze(0).unsqueeze(2)
+        sin_full = sin_full.unsqueeze(0).unsqueeze(2)
+        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(
+            x.dtype
+        )
+    elif x.ndim == 3:
+        return (x.float() * cos_full.float() + _rotate_half_neox(x).float() * sin_full.float()).to(
+            x.dtype
+        )
+    else:
+        raise ValueError(f"Unsupported ndim={x.ndim}")
+
+
+def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Reference non-neox (RoFormer) RoPE: adjacent pair rotation."""
+    cos_interleaved = cos.repeat_interleave(2, dim=-1)
+    sin_interleaved = sin.repeat_interleave(2, dim=-1)
+    if x.ndim == 2:
+        return (
+            x.float() * cos_interleaved.float()
+            + _rotate_half_non_neox(x).float() * sin_interleaved.float()
+        ).to(x.dtype)
+    elif x.ndim == 4:
+        cos_interleaved = cos_interleaved.unsqueeze(0).unsqueeze(2)
+        sin_interleaved = sin_interleaved.unsqueeze(0).unsqueeze(2)
+        return (
+            x.float() * cos_interleaved.float()
+            + _rotate_half_non_neox(x).float() * sin_interleaved.float()
+        ).to(x.dtype)
+    else:
+        raise ValueError(f"Unsupported ndim={x.ndim}")
+
+
+class RopeCase(RopeWorkload):
+    """Generic test fixture for RoPE ops.
+
+    The op computes cos/sin internally; the test generates only x as input
+    and computes the reference rotation using independently generated
+    frequency tables.
+    """
+
+    def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Independently compute cos/sin for the reference implementation."""
+        if self.variant in ("neox", "non_neox"):
+            return rope_frequency_tables(self.head_dim, self.seq_len, dtype=self.dtype)
+        elif self.variant == "rope_llama31":
+            return llama31_frequency_tables(
+                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
+            )
+        elif self.variant == "yarn_rope":
+            return yarn_frequency_tables(
+                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
+            )
+        elif self.variant == "longrope":
+            return longrope_frequency_tables(
+                self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
+            )
+        else:
+            raise ValueError(f"Unknown variant: {self.variant}")
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        """Pure-PyTorch reference: independently computes cos/sin and applies rotation."""
+        cos, sin = self._compute_cos_sin()
+        if self.variant in ("neox", "rope_llama31", "yarn_rope", "longrope"):
+            return ref_rope_neox(x, cos, sin)
+        elif self.variant == "non_neox":
+            return ref_rope_non_neox(x, cos, sin)
+        else:
+            raise ValueError(f"Unknown variant: {self.variant}")
+
+
+def _rotate_half_neox(x: torch.Tensor) -> torch.Tensor:
+    """Neox-style rotation: split at midpoint and negate first half."""
+    half = x.shape[-1] // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return torch.cat([-x2, x1], dim=-1)
+
+
+def _rotate_half_non_neox(x: torch.Tensor) -> torch.Tensor:
+    """Non-neox (RoFormer) rotation: adjacent pairs."""
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    rotated = torch.stack([-x_odd, x_even], dim=-1)
+    return rotated.flatten(-2)
+
+
+class RopeCall(CallWorkload):
+    """A manifest rotation checked against independently constructed frequencies."""
+
+    def verification(self, *inputs):
+        return rope_verification()
+
+    def ref_program(self, x, position_ids=None):
+        name = self.call.signature.name
+        p = self.call.params
+        if name == "RopeNeoxPositionIdsFwdOp":
+            cos, sin = rope_frequency_tables(
+                p.get("rotary_dim") or x.shape[-1],
+                p["max_position"],
+                base=p["base"],
+                dtype=x.dtype,
+                device=x.device,
+            )
+            return ref_rope_neox_position_ids(x, cos, sin, position_ids, p.get("rotary_dim"))
+        tables = {
+            "RopeFwdOp": rope_frequency_tables,
+            "RopeLlama31FwdOp": llama31_frequency_tables,
+            "RopeYarnFwdOp": yarn_frequency_tables,
+            "RopeLongRopeFwdOp": longrope_frequency_tables,
+        }[name]
+        seq_len = x.shape[0] if p["input_layout"] == "1d" else x.shape[1]
+        kwargs = {k: v for k, v in p.items() if k not in ("input_layout", "rope_layout")}
+        if "rescale_factors" in self.call.specs:
+            kwargs["rescale_factors"] = self.tensors["rescale_factors"]
+        cos, sin = tables(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **kwargs)
+        rotate = (
+            ref_rope_non_neox if p.get("rope_layout", "neox") == "interleaved" else ref_rope_neox
+        )
+        return rotate(x, cos, sin)
+
+    def __init__(self, call, device=None):
+        CallWorkload.__init__(self, call, device)
+        self.tensors = call.materialize(self.device)
+
+    def gen_inputs(self):
+        return tuple(self.tensors[name] for name in self.call.signature.inputs)
+
+    def arguments(self):
+        return self.call.arguments(self.tensors)
+
+
+def ref_rope_neox_position_ids(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor,
+    rotary_dim: int | None = None,
+) -> torch.Tensor:
+    """Reference neox RoPE for packed THD tensors with explicit positions."""
+    rotary_dim = x.shape[-1] if rotary_dim is None else rotary_dim
+    cos_full = torch.cat([cos, cos], dim=-1)[position_ids].unsqueeze(1)
+    sin_full = torch.cat([sin, sin], dim=-1)[position_ids].unsqueeze(1)
+    x_rot = x[..., :rotary_dim]
+    y_rot = (
+        x_rot.float() * cos_full.float() + _rotate_half_neox(x_rot).float() * sin_full.float()
+    ).to(x.dtype)
+    if rotary_dim == x.shape[-1]:
+        return y_rot
+    return torch.cat([y_rot, x[..., rotary_dim:]], dim=-1)

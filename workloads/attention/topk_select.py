@@ -52,6 +52,31 @@ class TopkSelectorWorkload(WorkloadBase):
         indexes = torch.where(in_window, indexes, index_score.shape[2])
         return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            assert got.shape == expected.shape and got.dtype == expected.dtype
+            scores, starts, ends = inputs
+            padding = got == scores.shape[2]
+            assert (
+                padding | ((got >= starts[:, :, None, None]) & (got < ends[:, :, None, None]))
+            ).all()
+            assert torch.equal(padding.sum(-1), (expected == scores.shape[2]).sum(-1))
+            ordered = got.sort(-1).values
+            assert (
+                (ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] == scores.shape[2])
+            ).all(), "duplicate selected index"
+            scores = torch.nn.functional.pad(scores.movedim(2, -1), (0, 1), value=-float("inf"))
+            torch.testing.assert_close(
+                scores.gather(-1, got.long()).sort(-1).values,
+                scores.gather(-1, expected.long()).sort(-1).values,
+                rtol=0,
+                atol=0,
+            )
+
+        return Custom(validate, "selected values, unique indices and exact padding")
+
 
 class TopkSelectorCall(CallWorkload, TopkSelectorWorkload):
     """A manifest call of TopKSelectFwdOp; the row's generators give the windows."""

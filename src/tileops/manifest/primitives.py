@@ -409,6 +409,13 @@ def topk_ids(rng, rows, k, experts):
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
+def random_ids(rng, rows, width, upper):
+    """Rows of independent indices in [0, upper), allowing repeated tokens."""
+    if min(rows, width, upper) <= 0:
+        raise ValueError("random_ids needs positive arguments")
+    return [[rng.randrange(upper) for _ in range(width)] for _ in range(rows)]
+
+
 def sample_indices(rng, n, hi):
     """`n` distinct random values in `[0, hi)`."""
     if not 0 <= n <= hi:
@@ -524,6 +531,7 @@ GENERATORS = {
     "nsa_block_indices": nsa_block_indices,
     "nsa_block_counts": nsa_block_counts,
     "topk_ids": topk_ids,
+    "random_ids": random_ids,
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
     "causal_topk_indices": causal_topk_indices,
@@ -544,6 +552,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
     "topk_ids": (("Int", "Int", "Int"), "Value"),
+    "random_ids": (("Int", "Int", "Int"), "Value"),
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
     "causal_topk_indices": (("Int", "Int", "Int", "Int", "Int", "Int", "Int"), "Value"),
@@ -564,6 +573,7 @@ GENERATOR_RANKS = {
     "nsa_block_indices": 3,
     "nsa_block_counts": 2,
     "topk_ids": 2,
+    "random_ids": 2,
     "sample_indices": 1,
     "moe.layout_metadata": 1,
     "causal_topk_indices": 4,
@@ -583,6 +593,7 @@ GENERATOR_SHAPES = {
     "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),
     "topk_ids": lambda rows, k, experts: (rows, k),
+    "random_ids": lambda rows, width, upper: (rows, width),
     "sample_indices": lambda n, hi: (n,),
     "moe.layout_metadata": lambda layout, rows, experts: (
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
@@ -603,6 +614,7 @@ RANDOM_GENERATORS = frozenset(
         "nsa_block_indices",
         "nsa_block_counts",
         "topk_ids",
+        "random_ids",
         "sample_indices",
         "causal_topk_indices",
         "attn.sparse_topk_positions",

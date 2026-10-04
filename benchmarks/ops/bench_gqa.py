@@ -11,14 +11,12 @@ from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
     flashinfer_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     backward_of,
     manifest_calls,
 )
-from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -33,7 +31,10 @@ from workloads.attention.gqa.dense import (
     GroupedQueryAttentionDensePrefillCall,
 )
 from workloads.attention.gqa.paged import GroupedQueryAttentionPagedCall
-from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdCall
+from workloads.attention.gqa.prefill_paged_kv_append import (
+    GQAPrefillPagedWithKVCacheFwdCall,
+    paged_prefill_result,
+)
 from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenCall,
     GroupedQueryAttentionVarlenScaledCall,
@@ -108,18 +109,9 @@ def test_gqa_bwd_bench(call) -> None:
     else:
         functors["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
 
-    tolerance = reference_tolerance(inputs[0].dtype)
-    tolerance["atol"] = max(5e-3, tolerance["atol"])
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors,
-            Exact(
-                **tolerance,
-                controls=(zeroed_input(0, "query-zeroed"),),
-            ),
-        ),
     )
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
@@ -256,14 +248,6 @@ def test_gqa_dense_prefill_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionDenseFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no
-    # per-dtype one covers dequantization against a 16-bit reference.
-    tolerance = (
-        {"atol": 8e-2, "rtol": 2e-2}
-        if workload.dtype == torch.float8_e4m3fn
-        else reference_tolerance(workload.dtype)
-    )
-
     from flash_attn_interface import flash_attn_func
 
     rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
@@ -307,7 +291,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
                 cache,
                 workload.rope_layout == "neox",
             )
-            q, k = q_rot.reshape_as(q), k_rot.reshape_as(k)
+            q, k = (q_rot.reshape_as(q), k_rot.reshape_as(k))
         return flash_attn_func(
             q,
             k,
@@ -323,9 +307,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
         "torch-ref": workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    bm.compare(
-        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, Exact(**tolerance))
-    )
+    bm.compare(functors, *inputs, count_copies=True)
 
 
 def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tensor):
@@ -511,20 +493,11 @@ def test_gqa_varlen_scaled_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no per-dtype one
-    # covers dequantization against a 16-bit reference.
-    tolerance = (
-        {"atol": 8e-2, "rtol": 2e-2}
-        if workload.dtype == torch.float8_e4m3fn
-        else reference_tolerance(workload.dtype)
-    )
-
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
     if fa3_fn is not None:
         functors["fa3"] = (fa3_fn, inputs[:8])
-    checked = Exact(**tolerance, controls=(zeroed_input(0, "query-zeroed"),))
-    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, checked))
+    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_prefill_paged(workload, inputs):
@@ -604,10 +577,13 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     bm = ManifestBenchmark(op, workload)
     # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
     # depends on what those slots held, so every tag shares the pages.
-    functors = {"tileops": op, "torch-ref": workload.ref_program}
+    functors = {
+        "tileops": lambda *args: paged_prefill_result(op, *args),
+        "torch-ref": workload.ref_program,
+    }
     fa3_fn = _fa3_gqa_prefill_paged(workload, inputs)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        functors["fa3"] = lambda *args: paged_prefill_result(fa3_fn, *args)
     bm.compare(functors, *inputs)
 
 

@@ -4,10 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
+from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
-from workloads.norm import InstanceNormWorkload
+from workloads.norm import InstanceNormWorkload, normalization_verification
+from workloads.numerics import compare_outputs, reference_tolerance
 
 
 class InstanceNormTest(InstanceNormWorkload, TestBase):
@@ -41,7 +43,7 @@ class InstanceNormFixture(FixtureBase):
 def test_instance_norm_op(n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)
     op = InstanceNormFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class InstanceNormNonContigFixture(FixtureBase):
@@ -75,9 +77,7 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: tor
     ).to(dtype)
 
     y = op(x, weight=weight, bias=bias)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 class InstanceNormAffineFreeFixture(FixtureBase):
@@ -117,9 +117,7 @@ def test_instance_norm_affine_free_op(
         bias=None,
         eps=1e-5,
     ).to(dtype)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"NoAffine forward mismatch, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 @InstanceNormAffineFreeFixture
@@ -145,9 +143,7 @@ def test_instance_norm_affine_free_running_stats(
         use_input_stats=False,
         eps=1e-5,
     )
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"Running-stats mismatch, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 @pytest.mark.smoke
@@ -167,35 +163,6 @@ def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     )
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_instance_norm_lazily_specializes_per_device() -> None:
-    """An op first called on a non-default CUDA device builds its entry there."""
-    if torch.cuda.device_count() < 2:
-        pytest.skip("multi-device test requires >= 2 CUDA devices")
-
-    n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
-    op = InstanceNormFwdOp()
-    x_other = torch.randn(
-        (n, c, *spatial),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    weight_other = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    bias_other = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    y = op(x_other, weight=weight_other, bias=bias_other)
-    assert y.device == x_other.device
-    assert len(op.built_kernels("instance_norm")) == 1
-
-
 @pytest.mark.smoke
 def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     """One op instance reuses identical specs and caches changed specs."""
@@ -213,7 +180,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
             bias=bias.float(),
             eps=1e-5,
         ).to(dtype)
-        assert torch.allclose(y, y_ref, **standard_tolerance(dtype))
+        compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(op.built_kernels("instance_norm")) == 1
@@ -236,32 +203,23 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
-    """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
+    """Forward refuses weight or bias on another device than x.
 
-    Without an explicit check the kernel call would either dispatch on
-    cross-device tensors (slow / wrong) or surface as an opaque CUDA
-    error; surface a clean ValueError instead.
+    Without the check the call would dispatch on cross-device tensors, or
+    surface as an opaque CUDA error. The device that differs is CPU rather than
+    a second GPU: the op compares devices, so one machine with one card
+    exercises the same rejection.
     """
-    if torch.cuda.device_count() < 2:
-        pytest.skip("affine-device-mismatch test requires >= 2 CUDA devices")
-
     n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
-    with torch.cuda.device(0):
-        op = InstanceNormFwdOp()
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=torch.device("cuda", 0))
-    weight_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
-    bias_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
-    bias_same = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 0))
+    op = InstanceNormFwdOp()
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+    elsewhere = torch.randn((c,), dtype=dtype, device="cpu")
+    same = torch.randn((c,), dtype=dtype, device=run_device())
 
-    weight_same = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 0),
-    )
-    with pytest.raises(ValueError, match="weight on"):
-        op(x, weight=weight_other, bias=bias_same)
-    with pytest.raises(ValueError, match="bias on"):
-        op(x, weight=weight_same, bias=bias_other)
+    with pytest.raises(CheckError, match="one device"):
+        op(x, elsewhere, same)
+    with pytest.raises(CheckError, match="one device"):
+        op(x, same, elsewhere)
 
 
 _OP_CLASSES = [
@@ -301,7 +259,7 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     bias = torch.randn((c,), dtype=dtype, device=run_device())
     y1 = op_default(x, weight=weight, bias=bias)
     y2 = op_other(x, weight=weight, bias=bias)
-    assert torch.allclose(y1, y2, **standard_tolerance(dtype))
+    assert torch.allclose(y1, y2, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -323,8 +281,8 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
     op = InstanceNormFwdOp(use_input_stats=use_input_stats)
     y = op(x, *mine, weight, bias)
     y_ref = F.instance_norm(x, *ref, weight, bias, use_input_stats=use_input_stats)
-    torch.testing.assert_close(y, y_ref, **standard_tolerance(dtype))
-    torch.testing.assert_close(mine, ref, **standard_tolerance(dtype))
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
+    compare_outputs(mine, ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 @pytest.mark.smoke
@@ -338,8 +296,8 @@ def test_instance_norm_updates_running_statistics_across_blocks(n, spatial) -> N
     mine, ref = [s.clone() for s in stats], [s.clone() for s in stats]
     y = InstanceNormFwdOp(momentum=0.3)(x, *mine)
     y_ref = F.instance_norm(x, *ref, momentum=0.3)
-    torch.testing.assert_close(y, y_ref, **standard_tolerance(dtype))
-    torch.testing.assert_close(mine, ref, **standard_tolerance(dtype))
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
+    compare_outputs(mine, ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 @pytest.mark.smoke

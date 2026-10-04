@@ -15,7 +15,6 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerTensorFwdOp
 from workloads.quantization.quantize import INT8QuantPerTensorWorkload
 
@@ -52,8 +51,4 @@ def test_int8_quant_per_tensor_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
-        evidence={
-            tag: Custom(assert_quantized, "scales checked; INT8 rounding within one code")
-            for tag in ("tileops", VLLM_TAG, TORCH_COMPILE_TAG)
-        },
     )

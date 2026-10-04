@@ -49,6 +49,41 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         self.rope_base = rope_base
         self.sm_scale = sm_scale
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, Exact, compare_outputs
+
+        quantized = inputs[3].dtype == torch.float8_e4m3fn
+        atol, rtol = (5e-3, 1e-5) if inputs[0].dtype == torch.float16 else (8e-2, 1e-2)
+        attention = Exact(atol=8e-2, rtol=2e-2) if quantized else Exact(atol=atol, rtol=rtol)
+        rotated = torch.zeros(inputs[3].shape[0], dtype=torch.bool, device=inputs[3].device)
+        if self.fuse_rope:
+            bounds, cache_lens, table = inputs[7:10]
+            for b in range(len(bounds) - 1):
+                positions = torch.arange(
+                    int(cache_lens[b]),
+                    int(cache_lens[b] + bounds[b + 1] - bounds[b]),
+                    device=rotated.device,
+                )
+                rows = (
+                    table[b, positions // self.page_size].long() * self.page_size
+                    + positions % self.page_size
+                )
+                rotated[rows] = True
+
+        def validate(got, expected):
+            compare_outputs(got[0], expected[0], attention)
+            # V is copied (or quantized); old and unused K rows are untouched.
+            torch.testing.assert_close(got[2].float(), expected[2].float(), atol=0, rtol=0)
+            torch.testing.assert_close(
+                got[1][~rotated].float(), expected[1][~rotated].float(), atol=0, rtol=0
+            )
+            if rotated.any():
+                torch.testing.assert_close(
+                    got[1][rotated].float(), expected[1][rotated].float(), atol=atol, rtol=rtol
+                )
+
+        return Custom(validate, "attention output, appended keys/values and preserved cache rows")
+
     @property
     def total_q(self) -> int:
         return sum(self.q_lens)
@@ -135,7 +170,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         cu_seqlens_q: torch.Tensor,
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Attend each request's chunk to its cached keys plus its own, in FP32, then append
         the chunk's keys and values to the pages after the cached ones.
 
@@ -144,6 +179,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         new queries and keys at their positions; the cached keys are stored rotated.
         A query row that sees no key yields zeros.
         """
+        k_pages, v_pages = k_pages.clone(), v_pages.clone()
         groups = self.heads // self.heads_kv
         page_size = self.page_size
         scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
@@ -183,7 +219,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
                 k_b = (k_b.float() / k_scale[0]).to(k_pages.dtype)
                 v_b = (v_b.float() / v_scale[0]).to(v_pages.dtype)
             k_pages[rows], v_pages[rows] = k_b, v_b
-        return torch.cat(outputs).contiguous()
+        return torch.cat(outputs).contiguous(), k_pages, v_pages
 
 
 class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCacheFwdWorkload):
@@ -241,3 +277,9 @@ class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCache
             cache_seqlens,
             block_table,
         )
+
+
+def paged_prefill_result(subject, *inputs):
+    """Expose the returned attention output and both declared cache writes."""
+    output = subject(*inputs)
+    return output, inputs[3], inputs[4]

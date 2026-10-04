@@ -36,20 +36,11 @@ def test_engram_gate_conv_fwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
     op = EngramGateConvFwdOp(M, seq_len, d, tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-1 if dtype == torch.float16 else 2e-1
-    rtol = 1e-1
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs)
 
 
 class EngramGateConvBwdTest(EngramGateConvBwdWorkload, TestBase):
     pass
-
-
-def _ref_rmsnorm(x, w, eps=1e-6):
-    x_f = x.float()
-    rrms = (x_f**2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
-    normed = x_f * rrms * w.float()
-    return normed, rrms.squeeze(-1)
 
 
 class EngramGateConvBwdFixture(FixtureBase):
@@ -72,11 +63,7 @@ def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
     op = EngramGateConvBwdOp(M, seq_len, d, tune=tune)
     inputs = test.gen_inputs()
-    atol = 2e-1 if dtype == torch.float16 else 3e-1
-    rtol = 2e-1
-    test.check(op, *inputs, atol=atol, rtol=rtol)
-
-    # A data race varies run to run; allclose can still pass, so require two runs to match.
+    test.check(op, *inputs)
     run1 = [o.clone() for o in op(*inputs)]
     run2 = [o.clone() for o in op(*inputs)]
     for i, name in ((0, "dH"), (1, "dk"), (2, "dv")):
@@ -110,19 +97,9 @@ class EngramDecodeFixture(FixtureBase):
 @EngramDecodeFixture
 def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
-    op = EngramDecodeFwdOp(
-        batch,
-        d_mem,
-        d,
-        max_conv_len,
-        conv_kernel_size,
-        dilation,
-        tune=tune,
-    )
+    op = EngramDecodeFwdOp(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=tune)
     inputs = test.gen_inputs()
-    atol = 5e-2 if dtype == torch.float16 else 1e-1
-    rtol = 5e-2
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke

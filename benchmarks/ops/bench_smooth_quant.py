@@ -10,7 +10,6 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import SmoothQuantFwdOp
 from workloads.quantization.quantize import SmoothQuantWorkload
 
@@ -40,10 +39,8 @@ def test_smooth_quant_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled,
         },
         *inputs,
-        evidence=dict.fromkeys(
-            (VLLM_TAG, TORCH_COMPILE_TAG),
-            Custom(
-                assert_quantized, "one-code rounding at quantization boundaries; matching scales"
-            ),
-        ),
+        noncomparable={
+            VLLM_TAG: "vendor multiplies by 127 / amax; reciprocal rounding can change an INT8 code",
+            TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes",
+        },
     )

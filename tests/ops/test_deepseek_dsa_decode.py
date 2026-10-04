@@ -3,9 +3,8 @@ import dataclasses
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
-from tileops.kernels.attention.dsa import decode as dsa_decode
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DsaDecodeWorkload
 from workloads.device import run_device
@@ -92,7 +91,7 @@ def test_sparse_mla_decode(
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
-    test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -108,7 +107,7 @@ def test_sparse_mla_decode_tail_and_dtype(dim_tail, dtype) -> None:
     """BF16 preserves the output dtype; a zero tail omits the extra QK contraction."""
     test = DsaDecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, 1, 256)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 def _padded_topk_indices(
@@ -154,7 +153,7 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
         batch, seq_len, heads_kv, topk, seq_len_kv, seq_len_kv, generator
     )
     # The reference sums in float32 and rounds once; one fp16 ulp here is 1e-3.
-    test.check(op, q, kv, in_range_pad, atol=2e-3, rtol=2e-3)
+    test.check(op, q, kv, in_range_pad)
 
     expected = op(q, kv, in_range_pad)
     assert torch.isfinite(expected).all(), "an in-range padding slot produced a non-finite output"
@@ -170,12 +169,10 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
 
 
 @pytest.mark.smoke
-def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On SM89 the heads per block and the refusal follow the default config's shared memory,
-    tuned or not: 16 heads at d=1024 with a 16-wide tail take 99,840 bytes over one KV tile
-    (topk 32), served, and 101,888 over two (topk 64), refused."""
+def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
+    """On SM89 the heads per block and the refusal follow the default config's shared memory:
+    16 heads at d=1024 with a 16-wide tail take 99,840 bytes over one KV tile (topk 32),
+    served, and 101,888 over two (topk 64), refused."""
     call = SparseMlaCall(
         arch=89,
         sm_count=1,
@@ -189,12 +186,18 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold(
         topk=2048,
         kv_stride=1,
     )
-    monkeypatch.setattr(SparseMlaBasicKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(dsa_decode, "get_sm_version", lambda index=None: 89)
     for tail_dim, block_h in ((64, 32), (512, 16)):
-        assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, tail_dim=tail_dim)) is None
-        kernel = SparseMlaBasicKernel(1, 1, 2048, 64, 512, tail_dim, torch.float16, 2048, 1, 2047)
-        assert kernel.config["block_h"] == block_h
+        shaped = dataclasses.replace(call, tail_dim=tail_dim)
+        assert SparseMlaBasicKernel.refusal(shaped) is None
+        config = SparseMlaBasicKernel._default_config_for(
+            shaped.arch,
+            shaped.heads // shaped.kv_group,
+            shaped.dim,
+            tail_dim,
+            shaped.dtype.itemsize,
+            shaped.topk,
+        )
+        assert config["block_h"] == block_h
     tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
     assert SparseMlaBasicKernel.refusal(tight) is None
     assert "101888" in SparseMlaBasicKernel.refusal(dataclasses.replace(tight, topk=64))

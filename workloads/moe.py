@@ -30,15 +30,90 @@ class FusedTopKWorkload(CallWorkload):
             gating_output, correction_bias, p["top_k"], p["scoring_func"], p["renormalize"]
         )
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        gating_output, *bias = inputs
+        correction_bias = bias[0] if bias else None
+        scoring_func, renormalize = (
+            self.call.params["scoring_func"],
+            self.call.params["renormalize"],
+        )
+
+        def validate(got, expected):
+            weights, ids = got[:2]
+            ref_weights, ref_ids = expected
+            assert weights.shape == ref_weights.shape and weights.dtype == ref_weights.dtype
+            assert ids.shape == ref_ids.shape and ids.dtype == ref_ids.dtype
+            assert ((ids >= 0) & (ids < gating_output.shape[-1])).all()
+            ordered = ids.sort(-1).values
+            assert (ordered[:, 1:] != ordered[:, :-1]).all(), "duplicate expert"
+            logits = gating_output.float()
+            scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
+            selection = scores if correction_bias is None else scores + correction_bias
+            # Validate selected scores and per-expert weights independently of tie order.
+            torch.testing.assert_close(
+                selection.gather(1, ids.long()).sort(-1).values,
+                selection.gather(1, ref_ids.long()).sort(-1).values,
+                rtol=1e-5,
+                atol=0,
+            )
+            selected = scores.gather(1, ids.long())
+            if renormalize:
+                selected = selected / selected.sum(-1, keepdim=True)
+            torch.testing.assert_close(weights, selected, rtol=1e-4, atol=0)
+
+        return Custom(validate, "expert selection and weights independent of tie order")
+
 
 class MoePermuteAlignWorkload(CallWorkload):
     """The routing ids of one ``MoEPermuteAlignFwdOp`` call."""
 
-    def ref_program(
-        self, topk_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def ref_program(self, topk_ids):
         p = self.call.params
-        return ref_permute_align(topk_ids, p["block_size"], p["num_experts"])
+        ids, experts, count = ref_permute_align(topk_ids, p["block_size"], p["num_experts"])
+        capacity = topk_ids.numel() + (p["num_experts"] + 1) * (p["block_size"] - 1)
+        blocks = math.ceil(capacity / p["block_size"])
+        return (
+            torch.nn.functional.pad(ids, (0, capacity - ids.numel()), value=topk_ids.numel()),
+            torch.nn.functional.pad(experts, (0, blocks - experts.numel())),
+            count,
+        )
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        block_size = self.call.params["block_size"]
+        numel = inputs[0].numel()
+
+        def validate(got, expected):
+            tokens, experts, count = got
+            ref_tokens, ref_experts, ref_count = expected
+            assert tokens.dtype == ref_tokens.dtype and experts.dtype == ref_experts.dtype
+            torch.testing.assert_close(count, ref_count, rtol=0, atol=0)
+            size = int(ref_count.item())
+            blocks = size // block_size
+            assert tokens.numel() >= size and experts.numel() >= blocks
+            torch.testing.assert_close(experts[:blocks], ref_experts[:blocks], rtol=0, atol=0)
+            tokens = tokens[:size].long()
+            assert ((tokens >= 0) & (tokens <= numel)).all(), "invalid padding/token id"
+            valid = tokens < numel
+            # Every route occurs exactly once, and belongs to its block's expert.
+            torch.testing.assert_close(
+                tokens[valid].sort().values,
+                torch.arange(numel, device=tokens.device),
+                rtol=0,
+                atol=0,
+            )
+            owners = experts[:blocks].repeat_interleave(block_size)
+            torch.testing.assert_close(
+                inputs[0].flatten()[tokens[valid]],
+                owners[valid],
+                rtol=0,
+                atol=0,
+            )
+
+        return Custom(validate, "all valid routes and expert ownership; unused capacity ignored")
 
 
 class MoePrePermuteWorkload(CallWorkload):
@@ -64,6 +139,31 @@ class MoePrePermuteWorkload(CallWorkload):
         inverse = torch.empty_like(order, dtype=torch.int32)
         inverse[order] = torch.arange(order.numel(), dtype=torch.int32, device=order.device)
         return expert_input, ends, inverse
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        hidden_states, local_ids = inputs
+
+        def validate(got, expected):
+            rows, ends, inverse = got
+            ref_rows, ref_ends, ref_inverse = expected
+            assert rows.shape == ref_rows.shape and rows.dtype == ref_rows.dtype
+            assert inverse.shape == ref_inverse.shape and inverse.dtype == ref_inverse.dtype
+            torch.testing.assert_close(ends, ref_ends, rtol=0, atol=0)
+            torch.testing.assert_close(
+                inverse.long().sort().values,
+                torch.arange(inverse.numel(), device=inverse.device),
+                rtol=0,
+                atol=0,
+            )
+            torch.testing.assert_close(
+                rows[inverse.long()], ref_rows[ref_inverse.long()], rtol=0, atol=0
+            )
+            owners = torch.searchsorted(ends, inverse, right=True)
+            torch.testing.assert_close(owners, local_ids.flatten().to(owners.dtype), rtol=0, atol=0)
+
+        return Custom(validate, "route permutation and expert segment ownership")
 
 
 def valid_rows(layout, layout_metadata: torch.Tensor, rows: int, num_experts: int) -> torch.Tensor:
@@ -137,6 +237,25 @@ class MoeGroupedGemmWorkload(CallWorkload):
             a, b, layout_metadata, p["layout"], out_dtype, activation=p["activation"]
         )
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        x = inputs[0]
+        metadata = inputs[-1]
+        mask = valid_rows(
+            self.call.params["layout"], metadata, x.numel() // x.shape[-1], inputs[1].shape[0]
+        )
+
+        def validate(got, expected):
+            torch.testing.assert_close(
+                got.reshape(-1, got.shape[-1])[mask].float(),
+                expected.reshape(-1, expected.shape[-1])[mask].float(),
+                rtol=1e-3 if got.dtype == torch.float32 else 2e-2,
+                atol=1e-2 if got.dtype == torch.float32 else 1e-1,
+            )
+
+        return Custom(validate, "defined rows of grouped expert layout")
+
 
 class MoeExpertMLPWorkload(CallWorkload):
     """Expert-materialized input, stacked gate/up and down weights, generated metadata."""
@@ -158,6 +277,25 @@ class MoeExpertMLPWorkload(CallWorkload):
         )
         return ref_moe_grouped_gemm(activated, w_down, layout_metadata, p["layout"])
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        x = inputs[0]
+        metadata = inputs[-1]
+        mask = valid_rows(
+            self.call.params["layout"], metadata, x.numel() // x.shape[-1], inputs[2].shape[0]
+        )
+
+        def validate(got, expected):
+            torch.testing.assert_close(
+                got.reshape(-1, got.shape[-1])[mask].float(),
+                expected.reshape(-1, expected.shape[-1])[mask].float(),
+                rtol=2e-2,
+                atol=1e-1,
+            )
+
+        return Custom(validate, "defined rows of grouped expert layout")
+
 
 class MoePostPermuteWorkload(CallWorkload):
     """Expert outputs, routing weights and inverse indices of one ``MoEPostPermuteFwdOp`` call."""
@@ -178,6 +316,19 @@ class MoePostPermuteWorkload(CallWorkload):
             out = out * p["epilogue"].routed_scaling_factor
         dtype = expert_output.dtype if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
         return out.to(dtype)
+
+    def verification(self, *inputs):
+        epilogue = self.call.params["epilogue"]
+        return post_permute_verification(
+            1.0 if epilogue is None else epilogue.routed_scaling_factor
+        )
+
+
+def post_permute_verification(routed_scaling_factor=1.0):
+    """Routing reduction error scales with the public epilogue multiplier."""
+    from workloads.numerics import Exact
+
+    return Exact(atol=2e-2 * routed_scaling_factor, rtol=2e-2)
 
 
 def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
@@ -248,6 +399,9 @@ class MoeExpertsWorkload(CallWorkload):
             p["routed_scaling_factor"],
         )
 
+    def verification(self, *inputs):
+        return moe_verification(2)
+
 
 class IndexedExpertMLPWorkload(MoeExpertsWorkload):
     """One ``IndexedExpertMLPFwdOp`` call: the same inputs and reference as the expert MLP."""
@@ -296,6 +450,9 @@ class FusedMoeWorkload(CallWorkload):
     def ref_program(self, hidden_states, gating_output, w_gate_up, w_down, correction_bias=None):
         return self.ref_routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
 
+    def verification(self, *inputs):
+        return moe_verification(2)
+
 
 class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
     """One ``FusedMoESharedExpertFwdOp`` call: FusedMoe's inputs plus the shared weights."""
@@ -326,9 +483,7 @@ class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
         shard = ffn // p["tp_size"]
         lo, hi = p["tp_rank"] * shard, (p["tp_rank"] + 1) * shard
         gate_up = torch.cat([shared_w_gate_up[lo:hi], shared_w_gate_up[ffn + lo : ffn + hi]])
-        act = gated_activation(hidden_states.float() @ gate_up.float().T, "silu_and_mul")
-        shared = act @ shared_w_down[:, lo:hi].float().T
-        return shared.to(hidden_states.dtype), routed
+        return ref_shared_expert(hidden_states, gate_up, shared_w_down[:, lo:hi]), routed
 
 
 class SharedExpertMLPWorkload(CallWorkload):
@@ -343,8 +498,16 @@ class SharedExpertMLPWorkload(CallWorkload):
         self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:
         """``down(silu(gate) * up)`` in fp32, cast to the hidden dtype."""
-        act = gated_activation(hidden_states.float() @ w_gate_up.float().T, "silu_and_mul")
-        return (act @ w_down.float().T).to(hidden_states.dtype)
+        return ref_shared_expert(hidden_states, w_gate_up, w_down)
+
+    def verification(self, *inputs):
+        return moe_verification(1)
+
+
+def ref_shared_expert(hidden, gate_up, down):
+    """Shared expert MLP in FP32, narrowed once to the token dtype."""
+    act = gated_activation(hidden.float() @ gate_up.float().T, "silu_and_mul")
+    return (act @ down.float().T).to(hidden.dtype)
 
 
 def ref_permute_align(
@@ -393,4 +556,32 @@ def ref_permute_align(
         torch.tensor(sorted_token_ids, dtype=torch.int32, device=device),
         torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
         torch.tensor([total_padded], dtype=torch.int32, device=device),
+    )
+
+
+def moe_verification(gate_up_index):
+    from workloads.numerics import Custom, NegativeControl, assert_normalized_error
+
+    """Check both individual errors and scale-independent energy, including gate order."""
+
+    def validate(got, expected):
+        if isinstance(expected, (tuple, list)):
+            for value, target in zip(got, expected, strict=True):
+                validate(value, target)
+        elif expected is None:
+            assert got is None
+        else:
+            torch.testing.assert_close(got, expected, rtol=1e-2, atol=1e-2)
+            assert_normalized_error(got, expected, bound=1e-4)
+
+    def swapped(reference, inputs):
+        changed = list(inputs)
+        gate, up = changed[gate_up_index].chunk(2, dim=-2)
+        changed[gate_up_index] = torch.cat((up, gate), dim=-2)
+        return reference(*changed)
+
+    return Custom(
+        validate,
+        "elementwise atol/rtol 1e-2 and normalized squared error <= 1e-4",
+        controls=(NegativeControl("gate-up-swapped", swapped),),
     )

@@ -2,9 +2,8 @@
 
 import pytest
 import torch
-import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm.ada_layer_norm import (
     AdaLayerNormKernel,
     _should_use_cp_async,
@@ -13,6 +12,7 @@ from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
 from workloads.norm import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
+from workloads.numerics import compare_outputs
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
@@ -49,7 +49,7 @@ class AdaLayerNormFixture(FixtureBase):
 def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormTest(m, n, dtype)
     op = AdaLayerNormFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -65,7 +65,7 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    compare_outputs(actual, expected, test.verification(*inputs))
 
 
 @pytest.mark.cuda_only
@@ -86,7 +86,7 @@ def test_ada_layer_norm_async_copy_handles_row_tail() -> None:
     assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    compare_outputs(actual, expected, test.verification(*inputs))
 
 
 @pytest.mark.smoke
@@ -141,7 +141,7 @@ def test_ada_layer_norm_async_policy_edge_correctness(
         assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    compare_outputs(actual, expected, test.verification(*inputs))
 
 
 class AdaLayerNorm3DFixture(FixtureBase):
@@ -166,21 +166,8 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
 
     op = AdaLayerNormFwdOp()
 
-    # Reference: scale * LayerNorm(x) + shift
-    eps = 1e-5
-    normed = F.layer_norm(
-        x.float(),
-        (hidden,),
-        weight=None,
-        bias=None,
-        eps=eps,
-    )
-    y_ref = (scale.float() * normed + shift.float()).to(dtype)
-
-    y = op(x, scale, shift)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"3D test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    test = AdaLayerNormTest(batch * seq, hidden, dtype)
+    test.check(op, x, scale, shift)
 
 
 class AdaLayerNormZeroTest(AdaLayerNormZeroWorkload, TestBase):
@@ -217,7 +204,7 @@ class AdaLayerNormZeroFixture(FixtureBase):
 def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     op = AdaLayerNormZeroFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -233,7 +220,7 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    compare_outputs(actual, expected, test.verification(*inputs))
 
 
 @pytest.mark.cuda_only
@@ -254,7 +241,7 @@ def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
     assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    compare_outputs(actual, expected, test.verification(*inputs))
 
 
 class AdaLayerNormZero3DFixture(FixtureBase):
@@ -280,18 +267,5 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
 
     op = AdaLayerNormZeroFwdOp()
 
-    # Reference: gate * (scale * LayerNorm(x) + shift)
-    eps = 1e-5
-    normed = F.layer_norm(
-        x.float(),
-        (hidden,),
-        weight=None,
-        bias=None,
-        eps=eps,
-    )
-    y_ref = (gate.float() * (scale.float() * normed + shift.float())).to(dtype)
-
-    y = op(x, scale, shift, gate)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"3D test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    test = AdaLayerNormZeroTest(batch * seq, hidden, dtype)
+    test.check(op, x, scale, shift, gate)

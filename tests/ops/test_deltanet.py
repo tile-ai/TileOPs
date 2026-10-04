@@ -1,15 +1,12 @@
 """Tests for the DeltaNet ops: chunkwise forward and backward, inference, decode."""
 
-from functools import partial
-
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall
-from tileops.kernels.linear_attention.deltanet import chunk_bwd as deltanet_bwd
 from tileops.kernels.linear_attention.deltanet.chunk_bwd import DeltaNetBwdKernel
 from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
@@ -24,22 +21,16 @@ from workloads.linear_attention.deltanet import (
     DeltaNetDecodeWorkload,
     DeltaNetFwdWorkload,
     DeltaNetInferenceWorkload,
+    chunkwise_verification,
+    decode_verification,
     deltanet_autograd_bwd_torch,
     deltanet_decode_torch,
 )
+from workloads.numerics import compare_outputs
 
 
 class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
     pass
-
-
-def _get_tolerances(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.float16:
-        return {"atol": 2e-2, "rtol": 2e-2}
-    else:  # bfloat16
-        return {"atol": 5e-2, "rtol": 5e-2}
 
 
 class DeltaNetFwdFixture(FixtureBase):
@@ -98,25 +89,12 @@ def test_deltanet_fwd(
     torch.manual_seed(42)
     test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     op = DeltaNetChunkFwdOp(chunk_size=chunk_size, tune=tune)
-    tols = _get_tolerances(dtype)
-    inputs = test.gen_inputs()
-    ref_o = test.ref_program(*inputs)
-    op_o, _S, _Aw, _Au, _w, _u = op(*inputs)
-    torch.testing.assert_close(op_o, ref_o, **tols)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op) and tune:
         # The forward above already proves the selected config builds and runs;
         # this pins it to the declared candidate set the sweep draws from.
         (kernel,) = op.built_kernels("deltanet_fwd").values()
         assert kernel.config in kernel.autotune_configs
-
-
-def _get_tolerances_deltanet_chunkwise_bwd(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.float16:
-        return {"atol": 5e-3, "rtol": 5e-3}
-    else:  # bfloat16
-        return {"atol": 2e-2, "rtol": 2e-2}
 
 
 class DeltaNetBwdFixture(FixtureBase):
@@ -180,15 +158,11 @@ def test_deltanet_bwd(
     op = DeltaNetChunkBwdOp(chunk_size=BC, tune=tune)
     op_outputs = op.forward(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
 
-    tols = _get_tolerances_deltanet_chunkwise_bwd(dtype)
-    names = ["dq", "dk", "dv", "dbeta"]
-    for name, ref_out, op_out in zip(names, ref_outputs, op_outputs, strict=True):
-        torch.testing.assert_close(
-            op_out,
-            ref_out.to(dtype),
-            **tols,
-            msg=lambda m, n=name: f"{n}: {m}",
-        )
+    compare_outputs(
+        op_outputs,
+        tuple(t.to(dtype) for t in ref_outputs),
+        chunkwise_verification(dtype, backward=True),
+    )
 
 
 @pytest.mark.smoke
@@ -207,7 +181,6 @@ def test_deltanet_bwd(
     ],
 )
 def test_deltanet_bwd_config_follows_the_shared_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
     budget: int,
     chunk_size: int,
     dim_k: int,
@@ -232,11 +205,8 @@ def test_deltanet_bwd_config_follows_the_shared_memory_budget(
         assert "needs at least" in DeltaNetBwdKernel.refusal(call)
         return
     assert DeltaNetBwdKernel.refusal(call) is None
-    monkeypatch.setattr(DeltaNetBwdKernel, "_check_arch", lambda self: None)
-    monkeypatch.setattr(deltanet_bwd, "get_shared_memory_optin", lambda index=None: budget)
-    dtype_str = DeltaNetBwdKernel.dtype_to_str(dtype)
-    kernel = DeltaNetBwdKernel(1, 1, 4 * chunk_size, chunk_size, dim_k, dim_v, dtype_str)
-    assert kernel.config["num_stages"] == stages
+    config = DeltaNetBwdKernel._default_config_for(budget, chunk_size, dim_k, dim_v, dtype.itemsize)
+    assert config["num_stages"] == stages
 
 
 class DeltaNetInferenceTest(DeltaNetInferenceWorkload, TestBase):
@@ -325,17 +295,11 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
     op = DeltaNetInferenceFwdOp()
     if dtype == torch.float16:
-        # The output meets the standard 1e-3 tolerance. The FP32 final state
-        # has a measured 2.10e-3 maximum error for seeded and zero-state calls.
-        compare = [
-            partial(allclose_compare, atol=1e-3, rtol=1e-3),
-            partial(allclose_compare, atol=3e-3, rtol=1e-3),
-        ]
-        test.check(op, *inputs, compare=compare)
-        test.check(op, *inputs[:4], compare=compare)
+        test.check(op, *inputs)
+        test.check(op, *inputs[:4])
     else:
-        test.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
-        test.check(op, *inputs[:4], atol=1.6e-2, rtol=1.6e-2)
+        test.check(op, *inputs)
+        test.check(op, *inputs[:4])
 
 
 @pytest.mark.smoke
@@ -346,7 +310,7 @@ def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
     op = DeltaNetInferenceFwdOp(use_qk_l2norm_in_kernel=True)
-    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -356,7 +320,7 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
     """Lengths below, across and on a chunk boundary in one packed call."""
     torch.manual_seed(42)
     test = DeltaNetInferenceTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=3e-3, rtol=3e-3)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -365,7 +329,7 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
 def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = DeltaNetInferenceTest(2, 100, 4, 64, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=3e-3, rtol=3e-3)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -379,7 +343,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
         2, 4, 512, 2, False, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
     )
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
-    test.check(kernel, *inputs, atol=1.6e-2, rtol=1.6e-2)
+    test.check(DeltaNetInferenceFwdOp(), *inputs, runs=kernel)
 
 
 @pytest.mark.smoke
@@ -393,10 +357,9 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetInferenceFwdOp()
-    # One token over a 128-wide state puts the output at 5e-2, which the prefill tolerance
-    # covers whole; the measured agreement is 4e-9, and exact from a zero state.
-    test.check(op, *inputs, atol=4e-8, rtol=4e-8)
-    test.check(op, *inputs[:4], atol=4e-8, rtol=4e-8)
+    # The workload preserves the single-step 4e-8 bound (measured error 4e-9).
+    test.check(op, *inputs)
+    test.check(op, *inputs[:4])
 
 
 @pytest.mark.smoke
@@ -406,26 +369,11 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
 
 
 class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):
     pass
-
-
-def _get_tolerances_deltanet_recurrence(dtype: torch.dtype) -> dict:
-    """Ten times the agreement one decode step and four chained ones reach, by dtype.
-
-    One token leaves the output around 4e-1 and the error three to six orders below it, so
-    a bound set by the dtype's own rounding passes a step that was never taken. Re-fit by
-    measuring the step against ``ref_program`` over the fixture's whole grid.
-    """
-    if dtype == torch.float32:
-        return {"atol": 2e-6, "rtol": 2e-6}
-    elif dtype == torch.float16:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    else:  # bfloat16
-        return {"atol": 2e-3, "rtol": 2e-3}
 
 
 class DeltaNetDecodeFixture(FixtureBase):
@@ -449,18 +397,12 @@ class DeltaNetDecodeFixture(FixtureBase):
 
 @DeltaNetDecodeFixture
 def test_deltanet_decode(
-    batch: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: torch.dtype,
-    tune: bool,
+    batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype, tune: bool
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
     op = DeltaNetRecurrentFwdOp(tune=tune)
-    tols = _get_tolerances_deltanet_recurrence(dtype)
-    test.check(op, *test.gen_inputs(), **tols)
+    test.check(op, *test.gen_inputs())
 
 
 @DeltaNetDecodeFixture
@@ -478,7 +420,6 @@ def test_deltanet_decode_multi_step(
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
     op = DeltaNetRecurrentFwdOp(tune=tune)
-    tols = _get_tolerances_deltanet_recurrence(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -496,8 +437,8 @@ def test_deltanet_decode_multi_step(
         with torch.no_grad():
             o_op, state_op = op(q, k, v, beta, state_op)
 
-        torch.testing.assert_close(o_op, o_ref, **tols)
-        torch.testing.assert_close(state_op, state_ref, **tols)
+        compare_outputs(o_op, o_ref, decode_verification(dtype))
+        compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
 @pytest.mark.sm90
@@ -514,7 +455,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
     op(*inputs)
     (kernel,) = op.built_kernels("deltanet_decode").values()
     assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
-    test.check(op, *inputs, **_get_tolerances_deltanet_recurrence(dtype))
+    test.check(op, *inputs)
 
 
 @pytest.mark.sm90
@@ -530,7 +471,6 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
     op = DeltaNetRecurrentFwdOp(tune=False, target=BUILTIN)
-    tols = _get_tolerances_deltanet_recurrence(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -551,8 +491,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
         (kernel,) = op.built_kernels("deltanet_decode").values()
         assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
 
-        torch.testing.assert_close(o_op, o_ref, **tols)
-        torch.testing.assert_close(state_op, state_ref, **tols)
+        compare_outputs(o_op, o_ref, decode_verification(dtype))
+        compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
 @pytest.mark.cuda_only

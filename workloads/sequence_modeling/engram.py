@@ -38,6 +38,12 @@ class EngramGateConvFwdWorkload(WorkloadBase):
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
         return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        atol = 0.1 if inputs[0].dtype == torch.float16 else 0.2
+        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.1)
+
 
 class EngramGateConvBwdWorkload(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
@@ -97,6 +103,12 @@ class EngramGateConvBwdWorkload(WorkloadBase):
             self.eps,
         )
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        atol = 0.2 if inputs[0].dtype == torch.float16 else 0.3
+        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.2)
+
 
 class EngramDecodeWorkload(WorkloadBase):
     def __init__(
@@ -153,6 +165,12 @@ class EngramDecodeWorkload(WorkloadBase):
             self.eps,
         )
         return y_ref, state_ref
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        atol = 0.05 if inputs[0].dtype == torch.float16 else 0.1
+        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.05)
 
 
 def _rmsnorm(x, w, eps=1e-6):

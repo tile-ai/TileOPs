@@ -17,17 +17,21 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
 from tileops.kernels.reduction.softmax import SoftmaxSplitKernel
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.device import run_device, run_device_available
-from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
+from workloads.numerics import compare_outputs
 
 # Tolerances (from docs/design/testing.md)
-
-
 # Softmax — spec-conformant interface (shape, dim, dtype)
+from workloads.reduction import (
+    LogSoftmaxCase,
+    LogSumExpCase,
+    SoftmaxCase,
+    softmax_verification,
+)
 
 
 class SoftmaxFixture(FixtureBase):
@@ -85,20 +89,15 @@ class SoftmaxFixture(FixtureBase):
     ]
 
 
-class SoftmaxTest(SoftmaxWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.softmax(x.float(), dim=self.dim).to(x.dtype)
-
-    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
+class SoftmaxTest(SoftmaxCase, TestBase):
+    pass
 
 
 @SoftmaxFixture
 def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(shape, dtype, dim=dim)
     op = SoftmaxFwdOp(dim=dim, tune=tune)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Softmax — non-contiguous input (spec interface)
@@ -131,9 +130,7 @@ def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
 
     y_ref = F.softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"Non-contiguous softmax failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
 
 
 # Softmax — 1D input (spec interface)
@@ -163,9 +160,7 @@ def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
 
     y_ref = F.softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"1D softmax failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
 
 
 # LogSoftmax — spec-conformant interface (shape, dim, dtype)
@@ -226,20 +221,15 @@ class LogSoftmaxFixture(FixtureBase):
     ]
 
 
-class LogSoftmaxTest(LogSoftmaxWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
-
-    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
+class LogSoftmaxTest(LogSoftmaxCase, TestBase):
+    pass
 
 
 @LogSoftmaxFixture
 def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(shape, dtype, dim=dim)
     op = LogSoftmaxFwdOp(dim=dim, tune=tune)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize(
@@ -264,7 +254,11 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
     assert y.dtype == torch.float32
     # Relative only: softmax values sit below any absolute floor that would let a
     # bfloat16-rounded output pass.
-    torch.testing.assert_close(y, ref_fn(x, dim=-1, dtype=torch.float32), rtol=1e-4, atol=0)
+    compare_outputs(
+        y,
+        ref_fn(x, dim=-1, dtype=torch.float32),
+        softmax_verification(y.dtype, input_dtype=x.dtype, logarithmic=op_cls is LogSoftmaxFwdOp),
+    )
 
 
 # LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)
@@ -328,20 +322,15 @@ class LogSumExpFixture(FixtureBase):
     ]
 
 
-class LogSumExpTest(LogSumExpWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logsumexp(x.float(), dim=self.dim).to(x.dtype)
-
-    def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
+class LogSumExpTest(LogSumExpCase, TestBase):
+    pass
 
 
 @LogSumExpFixture
 def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(shape, dtype, dim=dim)
     op = LogSumExpFwdOp(dim=dim, tune=tune)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # LogSumExp — keepdim=True (exercises _reshape_output keepdim path)
@@ -375,9 +364,7 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
     y = op(x)
     assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"keepdim logsumexp failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 @pytest.mark.smoke
@@ -422,9 +409,7 @@ def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None
     assert torch.isnan(y[6])
     assert torch.isnan(y[7])
     finite = torch.isfinite(y_ref)
-    assert torch.allclose(y[finite], y_ref[finite], **standard_tolerance(dtype)), (
-        f"special-value logsumexp failed, max err: {(y[finite] - y_ref[finite]).abs().max()}"
-    )
+    compare_outputs(y[finite], y_ref[finite], softmax_verification(x.dtype, logarithmic=True))
 
 
 # Non-contiguous input tests (spec interface)
@@ -457,9 +442,7 @@ def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
 
     y_ref = F.log_softmax(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"Non-contiguous log_softmax failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 class LogSumExpNonContigFixture(FixtureBase):
@@ -489,9 +472,7 @@ def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
 
     y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"Non-contiguous logsumexp failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 # 1D input tests (spec interface)
@@ -521,9 +502,7 @@ def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
 
     y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
     y = op(x)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"1D log_softmax failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 class LogSumExp1DFixture(FixtureBase):
@@ -551,9 +530,7 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
     y = op(x)
     assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"1D logsumexp failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 @pytest.mark.smoke
@@ -571,7 +548,7 @@ def test_logsumexp_accepts_multidim() -> None:
     op = LogSumExpFwdOp(dim=[0, 1])
     y = op(x)
     y_ref = torch.logsumexp(x.float(), dim=[0, 1])
-    assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 class SoftmaxImplicitDimFixture(FixtureBase):
@@ -612,10 +589,7 @@ def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> Non
         _warnings.simplefilter("ignore", UserWarning)
         y_ref = F.softmax(x.float(), dim=None).to(dtype)
 
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"dim=None softmax (shape={shape}, dtype={dtype}) failed, "
-        f"max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
 
 
 @SoftmaxImplicitDimFixture
@@ -638,10 +612,7 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
         _warnings.simplefilter("ignore", UserWarning)
         y_ref = F.log_softmax(x.float(), dim=None).to(dtype)
 
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
-        f"dim=None log_softmax (shape={shape}, dtype={dtype}) failed, "
-        f"max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
 @pytest.mark.smoke
@@ -666,10 +637,9 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
 
     assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
 
-    tolerance = standard_tolerance(torch.float32)
-    assert torch.allclose(y1, y1_ref, **tolerance)
-    assert torch.allclose(y2, y2_ref, **tolerance)
-    assert torch.allclose(y3, y3_ref, **tolerance)
+    compare_outputs(y1, y1_ref, softmax_verification(y1.dtype, logarithmic=False))
+    compare_outputs(y2, y2_ref, softmax_verification(y2.dtype, logarithmic=False))
+    compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=False))
 
 
 @pytest.mark.smoke
@@ -694,10 +664,9 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
 
     assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
 
-    tolerance = standard_tolerance(torch.float32)
-    assert torch.allclose(y1, y1_ref, **tolerance)
-    assert torch.allclose(y2, y2_ref, **tolerance)
-    assert torch.allclose(y3, y3_ref, **tolerance)
+    compare_outputs(y1, y1_ref, softmax_verification(y1.dtype, logarithmic=True))
+    compare_outputs(y2, y2_ref, softmax_verification(y2.dtype, logarithmic=True))
+    compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=True))
 
 
 # Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
@@ -731,10 +700,16 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     contribute ``exp(-inf) = 0`` to the fold.
     """
     x = torch.randn(4, 102400, dtype=dtype, device=run_device())
-    atol, rtol = (1e-6, 1e-6) if dtype == torch.float32 else (1e-3, 1e-3)
-    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), atol=atol, rtol=rtol)
-    torch.testing.assert_close(
-        LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
+
+    compare_outputs(
+        SoftmaxFwdOp(dim=-1)(x),
+        F.softmax(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=False),
+    )
+    compare_outputs(
+        LogSoftmaxFwdOp(dim=-1)(x),
+        F.log_softmax(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
     )
 
 
@@ -743,8 +718,10 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
 def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     """logsumexp folds the shared segment statistics without re-reading the input."""
     x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
-    torch.testing.assert_close(
-        LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
+    compare_outputs(
+        LogSumExpFwdOp(dim=-1)(x),
+        torch.logsumexp(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
     )
 
 
@@ -760,16 +737,34 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     """
     x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
     x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
-    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
-    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+    compare_outputs(
+        SoftmaxFwdOp(dim=-1)(x),
+        F.softmax(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=False),
+    )
+    compare_outputs(
+        LogSumExpFwdOp(dim=-1)(x),
+        torch.logsumexp(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
+    )
 
-    torch.testing.assert_close(
-        LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
+    compare_outputs(
+        LogSoftmaxFwdOp(dim=-1)(x),
+        F.log_softmax(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
     )
 
     x[0, :] = float("-inf")
-    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
-    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+    compare_outputs(
+        SoftmaxFwdOp(dim=-1)(x),
+        F.softmax(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=False),
+    )
+    compare_outputs(
+        LogSumExpFwdOp(dim=-1)(x),
+        torch.logsumexp(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
+    )
 
 
 @pytest.mark.smoke
@@ -795,8 +790,8 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
     x[1, ::512] = x[1].max()
 
     expected = F.log_softmax(x.double(), dim=-1).to(torch.float32)
-    torch.testing.assert_close(
-        LogSoftmaxFwdOp(dim=-1)(x), expected, **standard_tolerance(torch.float32)
+    compare_outputs(
+        LogSoftmaxFwdOp(dim=-1)(x), expected, softmax_verification(x.dtype, logarithmic=True)
     )
 
 
@@ -826,7 +821,11 @@ def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) 
     x[0, :20480] = float("-inf")
     x[1, :] = float("-inf")
 
-    torch.testing.assert_close(op(dim=-1)(x), reference(x), equal_nan=True)
+    compare_outputs(
+        op(dim=-1)(x),
+        reference(x),
+        softmax_verification(x.dtype, logarithmic=op is LogSoftmaxFwdOp),
+    )
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}

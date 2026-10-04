@@ -17,6 +17,8 @@ import torch
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.values import convert
 from workloads.device import run_device, run_device_available
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 pytestmark = pytest.mark.skipif(
     not run_device_available(), reason="the run device is not available"
@@ -74,7 +76,7 @@ def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_f
 
     ref = torch_fn(x.float(), dim=dim).to(x.dtype)
     assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -89,7 +91,7 @@ def test_the_scalar_path_honours_dtype_and_keepdim(dtype, keepdim) -> None:
     ref = torch.sum(x.float(), dim=None, keepdim=keepdim).to(dtype)
     assert y.shape == ref.shape
     assert y.dtype == dtype
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -102,7 +104,7 @@ def test_prod_of_one_element_is_that_element(dim) -> None:
 
     ref = torch.prod(x.float(), dim=dim).to(x.dtype)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -119,7 +121,7 @@ def test_a_welford_reduction_of_one_element_matches_torch(op_name, dim) -> None:
 
     for g, w in zip(got, _welford_ref(op_name, x, dim, False), strict=True):
         assert g.shape == w.shape, f"{op_name} dim={dim}: {g.shape} vs {w.shape}"
-        torch.testing.assert_close(g, w, atol=1e-4, rtol=1e-4, equal_nan=True)
+        compare_outputs(g, w, reduction_verification((w).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -137,7 +139,7 @@ def test_a_reduction_with_no_degrees_of_freedom_matches_torch(op_name, shape, di
     got = _as_tuple(_op(op_name, dim=dim)(x))
 
     for g, w in zip(got, _welford_ref(op_name, x, dim, False), strict=True):
-        torch.testing.assert_close(g, w, atol=1e-4, rtol=1e-4, equal_nan=True)
+        compare_outputs(g, w, reduction_verification((w).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -155,7 +157,7 @@ def test_a_logical_reduction_of_one_element_matches_torch(
     ref = torch_fn(x, dim=dim)
     assert y.dtype == out_dtype, f"{op_name}: {y.dtype}"
     assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 #: How each op's manifest formula prices a scalar: one element read, then what it

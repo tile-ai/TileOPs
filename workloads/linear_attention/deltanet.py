@@ -47,20 +47,13 @@ class DeltaNetFwdWorkload(WorkloadBase):
         beta = torch.rand(B, H, S, device=run_device(), dtype=self.dtype) * 0.5
         return q, k, v, beta
 
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        B, H, S, DK = k.shape
-        _, _, _, DV = v.shape
-        Aw, Au = prepare_wy_repr_deltanet_torch(k, beta, self.chunk_size)
-        w, u = compute_w_u_torch(Aw, Au, k, v, beta, self.chunk_size)
-        S_0 = torch.zeros(B, H, DK, DV, dtype=torch.float32, device=q.device)
-        _S, o = kernel2_deltanet_torch(q, k, w, u, S_0, self.chunk_size)
-        return o.to(self.dtype)
+    def ref_program(self, q, k, v, beta):
+        return deltanet_differentiable_fwd_torch(
+            q.float(), k.float(), v.float(), beta.float(), self.chunk_size
+        ).to(q.dtype)
+
+    def verification(self, *inputs):
+        return chunkwise_verification(inputs[0].dtype)
 
 
 class DeltaNetDecodeWorkload(WorkloadBase):
@@ -97,6 +90,9 @@ class DeltaNetDecodeWorkload(WorkloadBase):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         o, new_state = deltanet_decode_torch(q, k, v, beta, state)
         return o.to(self.dtype), new_state.to(self.dtype)
+
+    def verification(self, *inputs):
+        return decode_verification(inputs[0].dtype)
 
 
 class DeltaNetInferenceWorkload(WorkloadBase):
@@ -171,6 +167,11 @@ class DeltaNetInferenceWorkload(WorkloadBase):
             output_final_state=True,
             cu_seqlens=cu_seqlens,
             use_qk_l2norm_in_kernel=self.l2norm,
+        )
+
+    def verification(self, *inputs):
+        return inference_verification(
+            inputs[0].dtype, decode=inputs[0].shape[1] == 1, l2norm=self.l2norm
         )
 
 
@@ -321,6 +322,9 @@ class DeltaNetDecodeCall(CallWorkload):
         o, new_state = deltanet_decode_torch(q, k, v, beta, state)
         return o.to(q.dtype), new_state.to(q.dtype)
 
+    def verification(self, *inputs):
+        return decode_verification(inputs[0].dtype)
+
 
 class DeltaNetChunkwiseCall(CallWorkload):
     """A manifest call of DeltaNetChunkFwdOp or DeltaNetChunkBwdOp.
@@ -332,6 +336,21 @@ class DeltaNetChunkwiseCall(CallWorkload):
     def gen_inputs(self):
         tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
         return tuple(_step_sizes(t) if name == "beta" else _small(t) for name, t in tensors.items())
+
+    def ref_program(self, *inputs):
+        chunk = self.arguments()["chunk_size"]
+        if self.call.signature.name == "DeltaNetChunkFwdOp":
+            q, k, v, beta = inputs
+            return deltanet_differentiable_fwd_torch(
+                q.float(), k.float(), v.float(), beta.float(), chunk
+            ).to(q.dtype)
+        do, q, k, v, beta, *_ = inputs
+        return tuple(t.to(q.dtype) for t in deltanet_autograd_bwd_torch(do, q, k, v, beta, chunk))
+
+    def verification(self, *inputs):
+        return chunkwise_verification(
+            inputs[0].dtype, backward=self.call.signature.name == "DeltaNetChunkBwdOp"
+        )
 
 
 class DeltaNetInferenceCall(CallWorkload):
@@ -369,3 +388,62 @@ class DeltaNetInferenceCall(CallWorkload):
             cu_seqlens=cu_seqlens,
             use_qk_l2norm_in_kernel=self.call.ix["use_qk_l2norm_in_kernel"],
         )
+
+    def verification(self, *inputs):
+        return inference_verification(
+            inputs[0].dtype,
+            decode=inputs[0].shape[1] == 1,
+            l2norm=self.call.ix["use_qk_l2norm_in_kernel"],
+        )
+
+
+def decode_verification(dtype):
+    from workloads.numerics import Exact
+
+    tol = {torch.float32: 2e-06, torch.float16: 0.0001, torch.bfloat16: 0.002}[dtype]
+    return Exact(atol=tol, rtol=tol)
+
+
+def inference_verification(dtype, *, decode=False, l2norm=False):
+    from workloads.numerics import Custom, assert_close
+
+    # FLA materializes normalized Q/K in the input dtype; our fused decode
+    # keeps them in FP32. That path includes input rounding, even for one token.
+    if decode and not l2norm:
+
+        def validate_decode(got, expected):
+            # A single step keeps its state in FP32: prefill's accumulation bound
+            # does not apply. The stored output may straddle a half/bfloat rounding
+            # boundary after two FP32 reduction orders; allow one adjacent value,
+            # then apply the original absolute bound to the remaining error.
+            actual, target = got[0], expected[0]
+            adjacent = torch.nextafter(target, actual)
+            residual = (actual.float() - adjacent.float()).abs()
+            assert_close(residual, torch.zeros_like(residual), atol=4e-8, rtol=0)
+            assert_close(got[1], expected[1], atol=4e-8, rtol=4e-8)
+
+        return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
+
+    tol = {torch.float32: 4e-08, torch.float16: 1e-3, torch.bfloat16: 1.6e-2}[dtype]
+    state_tol = 0.003 if dtype == torch.float16 else tol
+
+    def validate(got, expected):
+        assert_close(got[0], expected[0], atol=tol, rtol=tol)
+        assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
+
+    return Custom(validate, "output and accumulated FP32 state")
+
+
+def chunkwise_verification(dtype, *, backward=False):
+    from workloads.numerics import Exact, Partial
+
+    tol = (
+        {torch.float32: 1e-3, torch.float16: 5e-3, torch.bfloat16: 2e-2}
+        if backward
+        else {torch.float32: 1e-3, torch.float16: 2e-2, torch.bfloat16: 5e-2}
+    )[dtype]
+    if backward:
+        return Exact(atol=tol, rtol=tol)
+    return Partial(
+        1, "chunk intermediates are not produced by the independent oracle", atol=tol, rtol=tol
+    )

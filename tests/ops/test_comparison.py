@@ -10,26 +10,12 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from workloads.device import run_device
-from workloads.elementwise import RandnPairWorkload
+from workloads.elementwise import ComparisonCase, ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 
-def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for boolean outputs."""
-    assert output.dtype == torch.bool, f"Expected bool dtype, got {output.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Bool mismatch: {(output != output_ref).sum().item()} elements differ"
-    )
-
-
-class ComparisonTest(RandnPairWorkload, TestBase):
-    """Reusable test body for comparison ops."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        super().__init__(n_total, dtype)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a, b)
+class ComparisonTest(ComparisonCase, TestBase):
+    pass
 
 
 class EqFixture(FixtureBase):
@@ -47,9 +33,9 @@ class EqFixture(FixtureBase):
 
 @EqFixture
 def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.eq)
+    test = ComparisonTest(n_total, dtype, "EqFwdOp")
     op = EqFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class NeFixture(FixtureBase):
@@ -67,9 +53,9 @@ class NeFixture(FixtureBase):
 
 @NeFixture
 def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.ne)
+    test = ComparisonTest(n_total, dtype, "NeFwdOp")
     op = NeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class GtFixture(FixtureBase):
@@ -87,9 +73,9 @@ class GtFixture(FixtureBase):
 
 @GtFixture
 def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.gt)
+    test = ComparisonTest(n_total, dtype, "GtFwdOp")
     op = GtFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class LtFixture(FixtureBase):
@@ -107,9 +93,9 @@ class LtFixture(FixtureBase):
 
 @LtFixture
 def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.lt)
+    test = ComparisonTest(n_total, dtype, "LtFwdOp")
     op = LtFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class GeFixture(FixtureBase):
@@ -127,9 +113,9 @@ class GeFixture(FixtureBase):
 
 @GeFixture
 def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.ge)
+    test = ComparisonTest(n_total, dtype, "GeFwdOp")
     op = GeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class LeFixture(FixtureBase):
@@ -147,9 +133,9 @@ class LeFixture(FixtureBase):
 
 @LeFixture
 def test_le_op(n_total: int, dtype: torch.dtype) -> None:
-    test = ComparisonTest(n_total, dtype, torch.le)
+    test = ComparisonTest(n_total, dtype, "LeFwdOp")
     op = LeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests for all comparison ops (L3)
@@ -204,10 +190,8 @@ def test_comparison_broadcast(
     a = torch.randn(*a_shape, dtype=dtype, device=run_device())
     b = torch.randn(*b_shape, dtype=dtype, device=run_device())
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, op_cls.__name__)
+    test.check(op, a, b)
 
 
 # L4 edge case: eq with some equal elements
@@ -236,7 +220,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     with torch.no_grad():
         out = op(a, b)
     assert out.dtype == torch.bool
-    assert torch.equal(out, ref)
+    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
 # Per-dtype correctness across the manifest dtype union
@@ -281,10 +265,8 @@ def test_comparison_integer_dtype_eq(dtype: torch.dtype) -> None:
     n = 4_096
     a, b = _gen_int_inputs(n, dtype)
     op = EqFwdOp()
-    ref = torch.eq(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, "EqFwdOp")
+    test.check(op, a, b)
 
 
 # Op-coverage axis: at a fixed integer dtype, every comparison op must
@@ -309,10 +291,8 @@ def test_comparison_op_int32(op_cls, ref_fn) -> None:
     n = 4_096
     a, b = _gen_int_inputs(n, torch.int32)
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, op_cls.__name__)
+    test.check(op, a, b)
 
 
 class ComparisonBoolDtypeFixture(FixtureBase):
@@ -334,10 +314,8 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
     a = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     b = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, op_cls.__name__)
+    test.check(op, a, b)
 
 
 # Dtype rejection tests (dtypes outside the manifest dtype union: fp8 and
@@ -393,7 +371,7 @@ def test_comparison_bool_result_per_strategy(strategy: str) -> None:
     b = torch.randn(shape, device="cuda", dtype=torch.float16)
     out = GtFwdKernel(shape, shape, torch.float16, config={"strategy": strategy}).forward(a, b)
     assert out.dtype == torch.bool
-    assert torch.equal(out, torch.gt(a, b))
+    compare_outputs(out, torch.gt(a, b), ElementwiseWorkload("GtFwdOp", (a, b)).verification(a, b))
 
 
 @pytest.mark.smoke
@@ -417,4 +395,8 @@ def test_comparison_nan_ordering(dtype: torch.dtype) -> None:
         (GtFwdOp, torch.gt),
         (GeFwdOp, torch.ge),
     ):
-        assert torch.equal(op_cls()(a, b), ref_fn(a, b)), op_cls.__name__
+        compare_outputs(
+            op_cls()(a, b),
+            ref_fn(a, b),
+            ElementwiseWorkload(op_cls.__name__, (a, b)).verification(a, b),
+        )

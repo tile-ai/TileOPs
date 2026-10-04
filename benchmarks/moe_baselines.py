@@ -3,7 +3,6 @@
 import torch
 
 from benchmarks.baselines import flashinfer_op
-from benchmarks.verification import Custom, NegativeControl, assert_normalized_error
 
 
 def flashinfer_experts(hidden, w1, w2, top_k):
@@ -32,29 +31,3 @@ def flashinfer_experts(hidden, w1, w2, top_k):
         )[0]
 
     return baseline
-
-
-def moe_evidence(gate_up_index):
-    """Check both individual errors and scale-independent energy, including gate order."""
-
-    def validate(got, expected):
-        if isinstance(expected, (tuple, list)):
-            for value, target in zip(got, expected, strict=True):
-                validate(value, target)
-        elif expected is None:
-            assert got is None
-        else:
-            torch.testing.assert_close(got, expected, rtol=3e-2, atol=3e-2)
-            assert_normalized_error(got, expected, tolerance=1e-4)
-
-    def swapped(reference, inputs):
-        changed = list(inputs)
-        gate, up = changed[gate_up_index].chunk(2, dim=-2)
-        changed[gate_up_index] = torch.cat((up, gate), dim=-2)
-        return reference(*changed)
-
-    return Custom(
-        validate,
-        "elementwise atol/rtol 3e-2 and normalized squared error <= 1e-4",
-        controls=(NegativeControl("gate-up-swapped", swapped),),
-    )

@@ -11,31 +11,14 @@ reduction dimension is non-aligned.
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
-from workloads.workload_base import RandnWorkload
+from workloads.numerics import compare_outputs
+from workloads.reduction import WelfordNonAlignedCase, reduction_verification
 
 
-class WelfordNonAlignedTest(RandnWorkload, TestBase):
-    def __init__(self, shape: tuple, dtype, op_kind: str, correction: int = 1):
-        super().__init__(shape, dtype)
-        self.op_kind = op_kind
-        self.correction = correction
-
-    """Test helper for Welford ops with non-aligned N values."""
-
-    def ref_program(self, x: torch.Tensor) -> object:
-        x_f32 = x.float()
-        if self.op_kind == "var":
-            return x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
-        elif self.op_kind == "std":
-            return x_f32.std(dim=-1, correction=self.correction).to(x.dtype)
-        elif self.op_kind == "var_mean":
-            v = x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
-            m = x_f32.mean(dim=-1).to(x.dtype)
-            return (v, m)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+class WelfordNonAlignedTest(WelfordNonAlignedCase, TestBase):
+    pass
 
 
 # Fixtures — non-aligned N values (not multiples of 256)
@@ -216,7 +199,7 @@ def test_var_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordNonAlignedTest((m, n), dtype, "var", correction=1)
     op = VarFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # StdFwdOp — non-aligned N (single-dim, dim=-1)
@@ -229,7 +212,7 @@ def test_std_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordNonAlignedTest((m, n), dtype, "std", correction=1)
     op = StdFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # VarMeanFwdOp — non-aligned N (single-dim, dim=-1)
@@ -242,7 +225,7 @@ def test_var_mean_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordNonAlignedTest((m, n), dtype, "var_mean", correction=1)
     op = VarMeanFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # 3D tests — non-aligned hidden dim
@@ -257,8 +240,8 @@ def test_var_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch.dtyp
     op = VarFwdOp(dim=-1)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D var non-aligned max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @WelfordNonAligned3DFixture
@@ -270,8 +253,8 @@ def test_std_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch.dtyp
     op = StdFwdOp(dim=-1)
     ref = x.float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(y, ref, **tol), f"3D std non-aligned max err: {(y - ref).abs().max()}"
+
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @WelfordNonAligned3DFixture
@@ -284,13 +267,9 @@ def test_var_mean_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch
     ref_var = x.float().var(dim=-1, correction=1).to(dtype)
     ref_mean = x.float().mean(dim=-1).to(dtype)
     var_out, mean_out = op(x)
-    tol = reduction_tolerance(dtype)
-    assert torch.allclose(var_out, ref_var, **tol), (
-        f"3D var_mean var non-aligned max err: {(var_out - ref_var).abs().max()}"
-    )
-    assert torch.allclose(mean_out, ref_mean, **tol), (
-        f"3D var_mean mean non-aligned max err: {(mean_out - ref_mean).abs().max()}"
-    )
+
+    compare_outputs(var_out, ref_var, reduction_verification((ref_var).dtype))
+    compare_outputs(mean_out, ref_mean, reduction_verification((ref_mean).dtype))
 
 
 # Multi-dim tests — flattened reduction size is non-aligned
@@ -307,11 +286,9 @@ def test_var_multidim_non_aligned(
     op = VarFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), (
-        f"var multidim non-aligned max err: {(y - ref).abs().max()}"
-    )
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @WelfordNonAlignedMultiDimFixture
@@ -325,11 +302,9 @@ def test_std_multidim_non_aligned(
     op = StdFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), (
-        f"std multidim non-aligned max err: {(y - ref).abs().max()}"
-    )
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @WelfordNonAlignedMultiDimFixture
@@ -344,14 +319,10 @@ def test_var_mean_multidim_non_aligned(
     ref_var = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert var_out.shape == ref_var.shape, f"var shape mismatch: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, (
         f"mean shape mismatch: {mean_out.shape} vs {ref_mean.shape}"
     )
-    assert torch.allclose(var_out, ref_var, **tol), (
-        f"var_mean multidim var non-aligned max err: {(var_out - ref_var).abs().max()}"
-    )
-    assert torch.allclose(mean_out, ref_mean, **tol), (
-        f"var_mean multidim mean non-aligned max err: {(mean_out - ref_mean).abs().max()}"
-    )
+    compare_outputs(var_out, ref_var, reduction_verification((ref_var).dtype))
+    compare_outputs(mean_out, ref_mean, reduction_verification((ref_mean).dtype))

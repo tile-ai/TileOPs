@@ -123,6 +123,17 @@ class DsaDecodeWorkload(WorkloadBase):
             output[:, start:stop] = out.reshape(b, stop - start, h, self.dim)
         return output
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, reference_tolerance
+
+        tolerance = {"atol": 3e-4, "rtol": 1e-5}
+        if inputs[0].dtype == torch.bfloat16 or self.dim_tail == 0:
+            tolerance = reference_tolerance(inputs[0].dtype)
+        # Ignored/padded slots change normalization and fp16 rounding at the boundary.
+        if inputs[0].dtype == torch.float16 and (inputs[2] >= self.seq_len_kv).any():
+            tolerance = {"atol": 2e-3, "rtol": 2e-3}
+        return Exact(**tolerance)
+
 
 class DsaDecodeCall(CallWorkload, DsaDecodeWorkload):
     """A manifest call of DeepSeekSparseAttentionDecodeWithKVCacheFwdOp; the row's generator
