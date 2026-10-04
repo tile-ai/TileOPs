@@ -92,6 +92,10 @@ RUN for pkg in \
         uv pip install --no-build-isolation "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
+# Prebuilt here: a first-use JIT build would otherwise land inside a timed benchmark.
+RUN DS_BUILD_OPS=0 DS_BUILD_QUANTIZER=1 DS_ACCELERATOR=cuda \
+        uv pip install --no-build-isolation deepspeed \
+    && python -c "import torch; from deepspeed.ops.quantizer import quantizer_op; assert callable(quantizer_op.quantize)"
 # --no-deps, so not in the loop: flag_gems pins numpy==1.26.4 and this stack is on 2.2.6.
 RUN uv pip install sqlalchemy \
     && uv pip install --no-deps flag_gems \
