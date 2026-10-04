@@ -18,9 +18,9 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.norm import BatchNormBwdCall, RunningStatsCall
+from workloads.numerics import Exact
 
 
 def _flaggems_bn_fwd(running_mean, running_var, training: bool, momentum: float, eps: float):

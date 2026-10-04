@@ -26,7 +26,6 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -37,6 +36,7 @@ from tileops.ops.reduction.reduce import (
     VarFwdOp,
     VarMeanFwdOp,
 )
+from workloads.numerics import Exact
 from workloads.reduction import ProdCall, ReductionCall
 
 

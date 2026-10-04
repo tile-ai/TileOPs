@@ -15,9 +15,9 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFp8Workload, BmmWorkload
+from workloads.numerics import Exact, zeroed_input
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(

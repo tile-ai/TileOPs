@@ -20,9 +20,9 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.ops import TopKSelectFwdOp
 from workloads.attention.topk_select import TopkSelectorCall
+from workloads.numerics import Custom
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.

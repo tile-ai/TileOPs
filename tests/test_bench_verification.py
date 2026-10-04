@@ -15,16 +15,17 @@ pytestmark = pytest.mark.smoke
 @pytest.fixture(scope="module")
 def bench():
     """What the benchmark layer exposes, imported here because tests may not at module level."""
-    from benchmarks import benchmark_base, verification
+    from benchmarks import benchmark_base
+    from workloads import numerics
 
     return types.SimpleNamespace(
         verify=benchmark_base.OpBenchmark._verify,
         resolve=benchmark_base.OpBenchmark._resolve_evidence,
-        Exact=verification.Exact,
-        Partial=verification.Partial,
-        Custom=verification.Custom,
-        zeroed_input=verification.zeroed_input,
-        Control=verification.NegativeControl,
+        Exact=numerics.Exact,
+        Partial=numerics.Partial,
+        Custom=numerics.Custom,
+        zeroed_input=numerics.zeroed_input,
+        Control=numerics.NegativeControl,
         OpBenchmark=benchmark_base.OpBenchmark,
     )
 
@@ -193,9 +194,9 @@ def test_partial_control_must_change_the_checked_prefix(bench):
 
 
 def test_normal_benchmark_rejects_bad_warmup_before_sampling(bench, monkeypatch):
-    from benchmarks import benchmark_base, verification
+    from benchmarks import benchmark_base
 
-    monkeypatch.setattr(verification, "_VERIFYING", False)
+    monkeypatch.setattr(benchmark_base, "verifying", False)
     monkeypatch.setattr(
         benchmark_base, "bench_kernel", lambda *_a, **_k: pytest.fail("timed a wrong result")
     )
@@ -271,7 +272,7 @@ def test_custom_control_uses_the_declared_validator(bench):
 
 
 def test_quantization_validator_rejects_scale_and_code_faults():
-    from benchmarks.verification import assert_quantized
+    from workloads.numerics import assert_quantized
 
     scale = torch.ones(1)
     q = torch.tensor([1.0, 2.0, -1.0]).to(torch.float8_e4m3fn)
@@ -282,7 +283,7 @@ def test_quantization_validator_rejects_scale_and_code_faults():
 
 
 def test_normalized_validator_rejects_wrong_nonfinite_values_and_scale():
-    from benchmarks.verification import assert_normalized_error
+    from workloads.numerics import assert_normalized_error
 
     expected = torch.tensor([1.0, 2.0, float("-inf")])
     assert_normalized_error(expected, expected)
@@ -292,7 +293,7 @@ def test_normalized_validator_rejects_wrong_nonfinite_values_and_scale():
 
 
 def test_mask_validator_checks_boundary_values_and_distant_mask_faults():
-    from benchmarks.verification import logit_mask_validator
+    from workloads.numerics import logit_mask_validator
 
     logits = torch.tensor([[1.0, 2.0, 3.0]])
     expected = torch.tensor([[float("-inf"), 2.0, 3.0]])
@@ -304,7 +305,7 @@ def test_mask_validator_checks_boundary_values_and_distant_mask_faults():
 
 
 def test_int8_quantization_rejects_more_than_one_code_step():
-    from benchmarks.verification import assert_quantized
+    from workloads.numerics import assert_quantized
 
     expected = (torch.tensor([-127, 0, 127], dtype=torch.int8), torch.ones(1))
     assert_quantized((torch.tensor([-126, 1, 126], dtype=torch.int8), torch.ones(1)), expected)

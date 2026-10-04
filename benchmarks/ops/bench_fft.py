@@ -5,9 +5,9 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import FFTC2CFwdOp
 from workloads.fft import FFTWorkload
+from workloads.numerics import Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(FFTC2CFwdOp))

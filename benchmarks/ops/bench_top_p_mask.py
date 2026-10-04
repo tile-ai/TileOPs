@@ -15,8 +15,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import TopPMaskFwdOp
+from workloads.numerics import Custom, logit_mask_validator
 from workloads.sampling import TopPMaskWorkload, probability_above
 
 

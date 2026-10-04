@@ -17,7 +17,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
-from benchmarks.verification import Exact
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluTanhAndMulFwdKernel,
@@ -32,6 +31,7 @@ from workloads.elementwise import (
     ElementwiseCall,
     FusedGatedBenchCase,
 )
+from workloads.numerics import Exact
 from workloads.workload_base import FixtureBase
 
 

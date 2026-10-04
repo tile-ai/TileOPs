@@ -222,7 +222,7 @@ def test_silu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
     test = SiluAndMulTest(m, n, dtype)
     kernel = SiluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
     atol, rtol = _get_tolerances(dtype)
-    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(SiluAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
 
 
 @pytest.mark.cuda_only
@@ -232,7 +232,7 @@ def test_gelu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
     test = GeluAndMulTest(m, n, dtype)
     kernel = GeluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
     atol, rtol = _get_tolerances(dtype)
-    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(GeluAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
 
 
 @pytest.mark.cuda_only
@@ -247,7 +247,7 @@ def test_gelu_tanh_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -
         config={"strategy": "direct"},
     )
     atol, rtol = _get_tolerances(dtype)
-    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(GeluTanhAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
 
 
 @pytest.mark.smoke

@@ -14,7 +14,6 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from benchmarks.verification import Exact, Partial
 from tileops.ops import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
@@ -28,6 +27,7 @@ from workloads.linear_attention.deltanet import (
     deltanet_autograd_bwd_torch,
     deltanet_differentiable_fwd_torch,
 )
+from workloads.numerics import Exact, Partial
 
 
 # Chunkwise: FLA's chunk_delta_rule is required. TileOPs uses BHSD (q/k [B, H, S, DK], v [B, H, S, DV],

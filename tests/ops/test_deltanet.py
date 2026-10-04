@@ -379,7 +379,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
         2, 4, 512, 2, False, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
     )
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
-    test.check(kernel, *inputs, atol=1.6e-2, rtol=1.6e-2)
+    test.check(DeltaNetInferenceFwdOp(), *inputs, atol=1.6e-2, rtol=1.6e-2, runs=kernel)
 
 
 @pytest.mark.smoke

@@ -26,9 +26,9 @@ from benchmarks.baselines import (
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
+from workloads.numerics import Exact
 
 # Bench-local: autotuning is benchmark infrastructure, not a workload property.
 _TUNE = True

@@ -16,8 +16,8 @@ from benchmarks.baselines import (
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+from workloads.numerics import Exact
 from workloads.reduction import ReductionCall
 
 

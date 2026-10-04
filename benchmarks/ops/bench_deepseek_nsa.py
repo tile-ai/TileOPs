@@ -15,9 +15,9 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, zeroed_input
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
+from workloads.numerics import Custom, zeroed_input
 
 
 def _setup(op_cls, workload_cls, call):

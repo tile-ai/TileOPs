@@ -15,8 +15,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerTensorFwdOp
+from workloads.numerics import Custom, assert_quantized
 from workloads.quantization.quantize import INT8QuantPerTensorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest

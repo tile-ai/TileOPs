@@ -389,7 +389,9 @@ def test_general_kernel_serves_sliding_windows(
         window_size_left=wl,
         window_size_right=wr,
     )
-    test.check(kernel, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(
+        GroupedQueryAttentionVarlenFwdOp(), *test.gen_inputs(), atol=1e-3, rtol=1e-3, runs=kernel
+    )
 
 
 @pytest.mark.smoke

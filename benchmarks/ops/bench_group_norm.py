@@ -13,9 +13,9 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.norm import NormCall
+from workloads.numerics import Exact
 
 _CALLS = manifest_calls(GroupNormFwdOp)
 

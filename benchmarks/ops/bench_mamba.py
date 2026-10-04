@@ -13,7 +13,6 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -30,6 +29,7 @@ from workloads.mamba import (
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
 )
+from workloads.numerics import Exact
 
 # Optional mamba_ssm Triton baselines
 try:

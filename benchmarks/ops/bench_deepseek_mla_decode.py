@@ -5,9 +5,9 @@ import torch
 
 from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_normalized_error, zeroed_input
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.mla import MlaDecodeCall
+from workloads.numerics import Custom, assert_normalized_error, zeroed_input
 
 
 @pytest.mark.parametrize("call", manifest_calls(MultiHeadLatentAttentionDecodeWithKVCacheFwdOp))

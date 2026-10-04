@@ -287,7 +287,13 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
-    """After test execution, attach Op metadata from TestBase.check() to the item."""
+    """Record what check() ran and what it measured.
+
+    The op a test establishes something about is read off the Op that check()
+    ran. A test declares it instead only where that object cannot name one: a
+    kernel several ops register, or a compiled callable, which keeps no handle
+    on the Op it wraps.
+    """
     yield
     op_name = getattr(_check_result, "op_name", None)
     if op_name:

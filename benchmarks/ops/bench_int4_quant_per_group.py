@@ -5,8 +5,8 @@ import torch
 
 from benchmarks.baselines import DEEPSPEED_TAG, deepspeed_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, zeroed_input
 from tileops.quantization import INT4QuantPerGroupFwdOp
+from workloads.numerics import Custom, zeroed_input
 from workloads.quantization.quantize import INT4QuantPerGroupWorkload
 
 

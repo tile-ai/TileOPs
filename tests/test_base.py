@@ -6,6 +6,7 @@ from abc import abstractmethod
 from functools import partial
 from typing import Any
 
+import pytest
 import torch
 
 from tileops.backend import BUILTIN
@@ -15,6 +16,23 @@ _logger = logging.getLogger("tileops.ops")
 
 # Thread-local storage for conftest hook to pick up per-test Op info.
 _check_result = threading.local()
+
+
+def _refuse_non_op(op: object, op_name: str) -> None:
+    """Raise unless *op* is an Op, which is what the result is reported under.
+
+    Raised before the reference runs, so a test handing check() a kernel or a
+    compiled callable is told where that belongs -- in ``runs=`` -- rather than
+    producing a result filed under a name that is not an op.
+    """
+    from tileops.ops.op_base import Op
+
+    if not isinstance(op, Op):
+        raise AssertionError(
+            f"check() takes the Op the result belongs to, got {op_name}; "
+            f"pass what to execute as runs="
+        )
+
 
 # Canonical import hub: tests import fixture types from here, not workloads.
 __all__ = [
@@ -54,8 +72,13 @@ def standard_tolerance(dtype: torch.dtype) -> dict[str, float]:
 def allclose_compare(
     output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5
 ) -> None:
-    """Default comparison using torch.allclose."""
-    output, output_ref = torch.broadcast_tensors(output, output_ref)
+    """Default comparison using torch.allclose.
+
+    Shapes must match. Broadcasting them first accepted a ``(1, 3)`` result
+    where the reference is ``(2, 3)``, which is a wrong shape carrying right
+    values. A test that means to compare across a broadcast passes its own
+    comparator.
+    """
     torch.testing.assert_close(
         output,
         output_ref,
@@ -101,13 +124,23 @@ class TestBase(WorkloadBase):
         raise NotImplementedError
 
     def check(
-        self, op, *inputs: torch.Tensor, compare=None, atol: float = 1e-08, rtol: float = 1e-05
+        self,
+        op,
+        *inputs: torch.Tensor,
+        runs=None,
+        compare=None,
+        atol: float = 1e-08,
+        rtol: float = 1e-05,
     ) -> None:
         """Check the correctness of the op against ref_program.
 
         Args:
             op: The operator to test.
             *inputs: Input tensors.
+            runs: What to execute, when that is not *op* itself -- one of its
+                kernels, or a compiled form of it. The result is reported under
+                *op* either way: a kernel's correctness is its op's, and a
+                compiled callable keeps no handle on the Op it wraps.
             compare: Custom comparison callable(output, output_ref) or list of
                 callables (one per output). Defaults to allclose_compare.
             atol: Absolute tolerance for default allclose_compare.
@@ -118,19 +151,23 @@ class TestBase(WorkloadBase):
 
         op_name = op.__class__.__name__
         op_module = op.__class__.__module__
+        _refuse_non_op(op, op_name)
+        subject = op if runs is None else runs
 
         try:
             outputs_ref = self.ref_program(*inputs)
         except RuntimeError as e:
             if "out of memory" in str(e):
                 _logger.warning("op=%s module=%s status=skip_oom", op_name, op_module)
-                return
+                # Skipped, not returned: nothing was compared, and a green
+                # result would report the case as establishing the op.
+                pytest.skip(f"reference ran out of memory for {op_name}")
             raise e
 
         outputs_ref = _to_tuple(outputs_ref)
 
         with torch.no_grad():
-            outputs = op(*inputs)
+            outputs = subject(*inputs)
 
         outputs = _to_tuple(outputs)
 
@@ -140,25 +177,40 @@ class TestBase(WorkloadBase):
 
         # Error metrics before the comparison, so a failing case still reports them.
         max_abs_err = 0.0
+        compared = False
         for output, output_ref in zip(outputs, outputs_ref, strict=True):
-            if output_ref is not None:
-                # Widen before subtracting so narrow dtypes do not lose the
-                # error to rounding. .float() alone would drop the imaginary
-                # part of a complex output and under-report it.
-                wide = torch.complex64 if output.is_complex() else torch.float32
-                err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
-                max_abs_err = max(max_abs_err, err)
+            if output_ref is None:
+                # The reference could not produce this output for these inputs:
+                # MoE's shared half is absent when no shared weight is passed.
+                # A reference that always checks a prefix states that with
+                # Partial instead, which carries the reason.
+                continue
+            compared = True
+            if output.numel() == 0:
+                # .max() of an empty tensor raises; shape, dtype and device are
+                # still compared below, which is all an empty result can carry.
+                continue
+            # Widen before subtracting so narrow dtypes do not lose the
+            # error to rounding. .float() alone would drop the imaginary
+            # part of a complex output and under-report it.
+            wide = torch.complex64 if output.is_complex() else torch.float32
+            err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
+            max_abs_err = max(max_abs_err, err)
 
-        # Store for conftest hook to attach to pytest report.
         _check_result.op_name = op_name
         _check_result.op_module = op_module
-        _check_result.max_abs_err = max_abs_err
 
         comparators = [compare] * len(outputs) if callable(compare) else list(compare)
 
         for output, output_ref, cmp in zip(outputs, outputs_ref, comparators, strict=True):
             if output_ref is not None:
                 cmp(output, output_ref)
+
+        # After the comparators, not before: this is the report's evidence that
+        # the op's values were established, and a test may catch a failing
+        # comparison without the op having been.
+        if compared:
+            _check_result.max_abs_err = max_abs_err
 
         _logger.info(
             "op=%s module=%s status=pass max_abs_err=%.2e", op_name, op_module, max_abs_err

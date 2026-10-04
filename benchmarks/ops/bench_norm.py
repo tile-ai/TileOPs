@@ -20,7 +20,6 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
@@ -28,6 +27,7 @@ from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.norm import NormCall
+from workloads.numerics import Exact
 
 
 def _flaggems_rms_norm(n: int, eps: float):

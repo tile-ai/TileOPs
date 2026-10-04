@@ -311,7 +311,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     )
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    test.check(kernel, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(AddFwdOp(), *test.gen_inputs(), **standard_tolerance(dtype), runs=kernel)
 
 
 # Generic binary test helper
@@ -583,23 +583,37 @@ class MaxMinNanFixture(FixtureBase):
     ]
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("op_cls", [MaximumFwdOp, MinimumFwdOp])
-def test_max_min_return_a_canonical_nan(op_cls) -> None:
-    """The NaN handed back is a canonical one, not the operand torch would return.
-
-    Deliberate: naming which operand costs a second select, which costs the
-    element body its float4 lanes. Nothing comparing floats can see the
-    difference, so this reads the bits, and pins the deviation rather than
-    leaving a later change to make it by accident.
-    """
+def _nan_against_one(op_cls) -> torch.Tensor:
+    """``op_cls`` applied to a negative NaN and 1.0, which torch answers with the NaN."""
     negative_nan = torch.tensor([0xFE00], dtype=torch.uint16, device=run_device()).view(
         torch.float16
     )
     other = torch.tensor([1.0], dtype=torch.float16, device=run_device())
-    out = op_cls()(negative_nan, other)
-    assert torch.isnan(out).all()
-    assert out.view(torch.uint16).item() == 0x7FFF
+    return op_cls()(negative_nan, other)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls", [MaximumFwdOp, MinimumFwdOp])
+def test_max_min_propagate_nan(op_cls) -> None:
+    """A NaN operand makes the result NaN, whichever backend serves the op."""
+    assert torch.isnan(_nan_against_one(op_cls)).all()
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("op_cls", [MaximumFwdOp, MinimumFwdOp])
+def test_max_min_canonicalize_the_nan_payload(op_cls) -> None:
+    """The in-tree kernels answer with one NaN bit pattern, not the operand's.
+
+    Deliberate: naming which operand costs a second select, which costs the
+    element body its float4 lanes. Nothing comparing floats can see the
+    difference, so this reads the bits.
+
+    The public docs promise canonicalization, not this exact payload, so the
+    pattern is pinned for the in-tree implementation alone; another backend
+    canonicalizing to a different NaN still satisfies the documented contract.
+    """
+    assert _nan_against_one(op_cls).view(torch.uint16).item() == 0x7FFF
 
 
 @MaxMinNanFixture

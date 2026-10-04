@@ -13,9 +13,9 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact, zeroed_input
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
+from workloads.numerics import Exact, zeroed_input
 from workloads.sequence_modeling.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,

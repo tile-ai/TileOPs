@@ -33,7 +33,16 @@ def _make_item(
     """Build a lightweight mock pytest.Item for tier validation tests."""
     markers = markers or []
     item = MagicMock(
-        spec=["nodeid", "path", "name", "originalname", "get_closest_marker", "callspec"]
+        spec=[
+            "nodeid",
+            "path",
+            "name",
+            "originalname",
+            "get_closest_marker",
+            "iter_markers",
+            "callspec",
+            "user_properties",
+        ]
     )
     item.nodeid = f"{path}::{name}"
     item.path = Path(path)
@@ -41,6 +50,9 @@ def _make_item(
     item.originalname = originalname
 
     marker_set = set(markers)
+
+    item.iter_markers = lambda name=None: iter(())
+    item.user_properties = []
 
     def _get_closest_marker(marker_name: str):
         if marker_name in marker_set:

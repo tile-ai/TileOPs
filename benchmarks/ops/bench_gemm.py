@@ -18,7 +18,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
-from benchmarks.verification import Exact, zeroed_input
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
@@ -28,6 +27,7 @@ from workloads.gemm import (
     GemmWorkload,
     dequantize_w4a16_weight,
 )
+from workloads.numerics import Exact, zeroed_input
 
 CUBLASLT_TAG = "cublaslt-best"
 

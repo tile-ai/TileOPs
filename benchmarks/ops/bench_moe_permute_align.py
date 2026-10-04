@@ -23,9 +23,9 @@ except ImportError:
 
 from benchmarks.baselines import VLLM_TAG, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
+from workloads.numerics import Custom
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 

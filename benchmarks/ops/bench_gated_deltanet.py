@@ -6,9 +6,9 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op, reference_tolerance
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall
+from workloads.numerics import Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(GatedDeltaNetFwdOp))

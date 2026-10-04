@@ -18,7 +18,6 @@ from benchmarks.benchmark_base import (
     backward_of,
     manifest_calls,
 )
-from benchmarks.verification import Exact, zeroed_input
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -39,6 +38,7 @@ from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenScaledCall,
 )
 from workloads.device import run_device
+from workloads.numerics import Exact, zeroed_input
 
 
 def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall, inputs: tuple):

@@ -450,3 +450,209 @@ def test_a_named_history_that_does_not_exist_is_refused(tmp_path):
     )
     assert result.returncode != 0
     assert "--history file does not exist" in result.stderr
+
+
+def _summary_report(report, scale, monkeypatch):
+    monkeypatch.setattr(report, "_library_scale", lambda: scale)
+    return report.generate_report(
+        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        bench_ops=_bench_ops(1.0),
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+    )
+
+
+def test_the_summary_names_the_scale_rows_verbatim(report, monkeypatch):
+    """The Lark card looks these rows up by key, from another repository.
+
+    Renaming either key drops a column from the card and breaks nothing here,
+    so the names are pinned rather than left to the renderer.
+    """
+    md = _summary_report(
+        report,
+        {"operators": 186, "kernels": 272, "specs": 19, "workloads": 1135},
+        monkeypatch,
+    )
+    assert "| **Operators** | 186 |" in md
+    assert "| **Kernels** | 272 |" in md
+    assert "| **Specs** | 19 |" in md
+    assert "| **Workloads** | 1135 |" in md
+    # An entry that is only a specification is not something the library offers.
+    assert "| **Operators** | 205 |" not in md
+
+
+def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report, monkeypatch):
+    """Benchmark data stands on its own; an unreadable manifest costs two rows."""
+    md = _summary_report(report, None, monkeypatch)
+    assert "**Operators**" not in md
+    assert "**Kernels**" not in md
+    assert "**Specs**" not in md
+    assert "**Workloads**" not in md
+    assert "| **Correctness** |" in md
+
+
+def _result(outcome, op, name="test_x", compared=True):
+    """One parse_test_xml row, with the fields that function always fills."""
+    return {
+        "outcome": outcome,
+        "op": op,
+        "op_module": None,
+        "nodeid": f"tests/ops/test_f.py::{name}",
+        "name": name,
+        "compared": compared,
+        "failure_message": "boom" if outcome == "failed" else None,
+    }
+
+
+def _counted(report, monkeypatch, results):
+    """The whole report, built over *results* as the suite that ran."""
+    monkeypatch.setattr(report, "_library_scale", lambda: None)
+    monkeypatch.setattr(report, "_ops_verified", lambda *_: None)
+    md = report.generate_report(
+        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        bench_ops=None,
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+        test_results=results,
+    )
+    return md
+
+
+def test_correctness_counts_every_test_not_only_the_attributed_ones(report, monkeypatch):
+    """Counting only tests a reference attributed reported a rate over half the suite."""
+    results = [_result("passed", _OP)] + [_result("passed", None) for _ in range(3)]
+
+    assert "(4/4 tests)" in _counted(report, monkeypatch, results)
+
+
+def test_an_unattributed_failure_is_counted_and_named(report, monkeypatch):
+    """A test with no op property fails the job, so the report must not lose it.
+
+    Counting it and leaving it out of the failure table reports a number with
+    nothing behind it: the reader sees N failed and a table holding fewer rows.
+    """
+    row = _result("failed", None, "test_sum")
+    md = _counted(report, monkeypatch, [_result("passed", _OP), row])
+
+    assert "(1/2 tests)" in md
+    assert report._FAIL in md
+    assert row["nodeid"] in md
+
+
+def test_ops_verified_unions_both_verifiers(report, monkeypatch):
+    """Unit tests and benchmark rows verify different ops; neither alone is coverage."""
+    monkeypatch.setattr(
+        report,
+        "load_manifest",
+        lambda: {"A": {"status": "implemented"}, "B": {"status": "implemented"}},
+        raising=False,
+    )
+    import tileops.manifest
+
+    monkeypatch.setattr(
+        tileops.manifest,
+        "load_manifest",
+        lambda: {
+            "A": {"status": "implemented"},
+            "B": {"status": "implemented"},
+            "C": {"status": "spec-only"},
+        },
+    )
+
+    tested = {"A": {"passed": 1, "failed": 0, "compared": 1}}
+    benched = {"B": {"configs": [{"baseline_ratio": 0.9}]}}
+
+    assert report._ops_verified(tested, benched) == (2, 2)
+    assert report._ops_verified(tested, None) == (1, 2)
+    assert report._ops_verified(tested, {"C": {"configs": [{"baseline_ratio": 0.9}]}}) == (1, 2)
+    # A name alone is not evidence: every test for this op failed.
+    assert report._ops_verified({"A": {"passed": 0, "failed": 3, "compared": 0}}, None) == (0, 2)
+    # Nor is a passing test that compared nothing. After ownership becomes a
+    # declaration, a constructor-rejection test carries the op name and no value.
+    rejection_only = {"A": {"passed": 4, "failed": 0, "compared": 0}}
+    assert report._ops_verified(rejection_only, None) == (0, 2)
+    # Nor is a benchmark row with no baseline to compare against.
+    assert report._ops_verified(None, {"B": {"configs": [{}]}}) == (0, 2)
+    # A timed but noncomparable baseline leaves a populated dict and no ratio:
+    # the conftest writes timing before deciding whether a tag may publish one.
+    noncomparable = {"B": {"configs": [{"baselines": {"torch": {"latency_ms": 1.0}}}]}}
+    assert report._ops_verified(None, noncomparable) == (0, 2)
+    rated = {"B": {"configs": [{"baselines": {"torch": {"ratio": 0.9}}}]}}
+    assert report._ops_verified(None, rated) == (1, 2)
+
+
+def test_the_kernel_count_is_what_packages_export(report):
+    """Concrete Kernel subclasses a package re-exports, by type and at any depth.
+
+    Three ways to get it wrong, and the figure looks plausible after each: read
+    it off the manifest and it becomes the op count; walk every module and the
+    private implementation bases under `_base` join it; filter on the name and
+    `IndexedExpertGemmTemplate` drops out.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import tileops.kernels as kernels_pkg
+    from tileops.kernels.kernel_base import Kernel
+
+    def exported(module):
+        return {
+            attribute
+            for attribute in (getattr(module, n, None) for n in getattr(module, "__all__", ()))
+            if inspect.isclass(attribute)
+            and issubclass(attribute, Kernel)
+            and not inspect.isabstract(attribute)
+        }
+
+    every_module = exported(kernels_pkg)
+    off_name = set()
+    for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops.kernels."):
+        try:
+            package = importlib.import_module(module.name)
+        except Exception:
+            continue
+        every_module |= exported(package)
+        if module.ispkg:
+            off_name |= {c for c in exported(package) if not c.__name__.endswith("Kernel")}
+
+    count = report._kernel_count()
+
+    assert off_name, "no off-name kernel left; the name filter would now be equivalent"
+    # Walking every module pulls in the private bases under `_base`.
+    assert count < len(every_module)
+
+
+def test_a_case_that_compared_nothing_is_not_evidence(report):
+    """A rejection or dispatch test owns the op and establishes none of its values."""
+    results = [
+        _result("passed", _OP, "compares"),
+        _result("passed", _OP, "rejects", compared=False),
+        _result("failed", _OP, "breaks"),
+    ]
+    aggregated = report.aggregate_test_results(results)
+
+    assert aggregated[_OP]["passed"] == 2
+    assert aggregated[_OP]["compared"] == 1
+
+
+def test_an_exclusion_reason_is_not_a_ratio(report, tmp_path):
+    """`<tag>_no_ratio` says why a tag published none; it is not a comparison."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(
+        '<testsuite><testcase classname="b" name="t"><properties>'
+        '<property name="op" value="AddFwdOp"/>'
+        '<property name="tileops_no_ratio" value="no reference"/>'
+        '<property name="tileops_unverified" value="no reference"/>'
+        "</properties></testcase></testsuite>",
+        encoding="utf-8",
+    )
+    rows = report.parse_bench_xml(str(xml))
+    bench_ops = report.aggregate_bench_results(rows)
+
+    assert "tileops_no" not in (rows[0].get("baselines") or {})
+    assert report.baseline_standing(bench_ops) == (0, 0)

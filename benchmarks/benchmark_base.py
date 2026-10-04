@@ -26,17 +26,24 @@ from benchmarks.timing import (
     bench_kernel,
     median_busy_ms,
 )
-from benchmarks.verification import (
-    Evidence,
-    Exact,
-    Unestablished,
-    describe,
-    ratio_allowed,
-    verifying,
-)
 from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_key
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
+from workloads.numerics import Evidence, Exact, Unestablished, describe
+
+# --tileops-verify runs correctness warmup only, omitting timing. The benchmark
+# conftest sets it; this module is the only reader.
+verifying = False
+
+
+def ratio_allowed(evidence: Evidence) -> bool:
+    """Whether *evidence* establishes enough to publish a ratio against the op.
+
+    A publication policy, which is the benchmark's to make: the same evidence
+    tells a test what was established with no ratio involved.
+    """
+    return evidence.kind in ("exact", "custom", "partial")
+
 
 __all__ = [
     "BenchmarkBase",
@@ -441,7 +448,7 @@ class OpBenchmark(BenchmarkBase[W]):
         evidence = self._resolve_evidence(plan, evidence)
         # Release verification temporaries before allocating timer buffers.
         self._verify(plan, evidence, inputs)
-        if verifying():
+        if verifying:
             return {}
         if any(ratio_allowed(mark) for mark in evidence.values()):
             torch.cuda.synchronize()

@@ -22,7 +22,6 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.rope import (
     RopeFwdOp,
     RopeLlama31FwdOp,
@@ -31,6 +30,7 @@ from tileops.ops.rope import (
     RopeYarnFwdOp,
 )
 from workloads.device import run_device
+from workloads.numerics import Exact
 from workloads.rope import (
     llama31_frequency_tables,
     longrope_frequency_tables,

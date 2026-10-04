@@ -89,7 +89,9 @@ def test_gated_deltanet_partitioned_prefill_carries_a_value_major_state() -> Non
     )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(kernel, q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2)
+    test.check(
+        GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2, runs=kernel
+    )
 
 
 @pytest.mark.sm90
@@ -202,7 +204,7 @@ def test_gated_deltanet_partitioned_prefill_normalizes_the_key_it_stages() -> No
         config={"max_local_chunks": 4},
     )
     q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
-    test.check(kernel, q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2, runs=kernel)
 
 
 @pytest.mark.sm90
@@ -220,7 +222,9 @@ def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(kernel, q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2)
+    test.check(
+        GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2, runs=kernel
+    )
 
 
 @pytest.mark.sm90

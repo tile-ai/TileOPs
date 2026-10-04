@@ -20,6 +20,7 @@ from tileops.sampling import (
     TopPMaskFwdOp,
 )
 from workloads.device import run_device
+from workloads.numerics import logit_mask_validator
 from workloads.sampling import (
     ChainSpeculativeSamplingWorkload,
     MinPMaskWorkload,
@@ -70,14 +71,6 @@ def _assert_nucleus(masked, logits, p, *, margin):
     assert ((probs * (kept & (probs > lowest))).sum(-1) < p + margin).all()
     # Tokens tied with the least probable kept one are kept with it.
     assert not (~kept & (probs == lowest)).any()
-
-
-def _assert_same_mask(out, ref, logits, near):
-    """Equal kept sets away from the threshold, and kept logits passed through unchanged."""
-    assert out.dtype == logits.dtype
-    kept = out != -_INF
-    assert not ((kept ^ (ref != -_INF)) & ~near).any()
-    assert torch.equal(out[kept], logits[kept])
 
 
 def _assert_follows(samples, probs):
@@ -190,7 +183,7 @@ def test_min_p_mask(dtype):
     out = _run(MinPMaskFwdOp(), logits, min_p)
     values = logits.float()
     threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
-    _assert_same_mask(out, ref, logits, (values - threshold).abs() <= margin)
+    logit_mask_validator(logits, (values - threshold).abs() <= margin)(out, ref)
 
 
 def test_min_p_mask_rows_without_a_finite_threshold():
@@ -224,7 +217,7 @@ def test_top_p_mask(dtype):
     _assert_nucleus(ref, logits, p, margin=margin)
     out = _run(TopPMaskFwdOp(), logits, p)
     above = probability_above(logits.float().softmax(-1))
-    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= margin)
+    logit_mask_validator(logits, (above - p[:, None]).abs() <= margin)(out, ref)
 
 
 @pytest.mark.in_tree_kernels
@@ -276,7 +269,7 @@ def test_top_k_top_p_mask(dtype):
     _assert_nucleus(ref, top_k, p, margin=margin)
     out = _run(TopKTopPMaskFwdOp(), logits, k, p)
     above = probability_above(top_k.float().softmax(-1))
-    _assert_same_mask(out, ref, logits, (above - p[:, None]).abs() <= margin)
+    logit_mask_validator(logits, (above - p[:, None]).abs() <= margin)(out, ref)
 
 
 @pytest.mark.parametrize(

@@ -16,8 +16,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.sampling import SamplingFromProbsFwdOp
+from workloads.numerics import Custom
 from workloads.sampling import SamplingFromProbsWorkload
 
 

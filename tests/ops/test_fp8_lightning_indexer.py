@@ -1,3 +1,5 @@
+from functools import partial
+
 import pytest
 import torch
 
@@ -10,41 +12,11 @@ from tileops.kernels.attention import (
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
+from workloads.numerics import assert_normalized_error
 
 
 class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
-    @staticmethod
-    def _compute_correlation(a: torch.Tensor, b: torch.Tensor) -> float:
-        a, b = a.data.double(), b.data.double()
-        norm_sum = (a * a + b * b).sum()
-        return 2 * (a * b).sum() / norm_sum
-
-    @staticmethod
-    def _validate_tensor_match(
-        output: torch.Tensor, output_ref: torch.Tensor, tolerance: float = 1e-3
-    ) -> None:
-        if isinstance(output, tuple):
-            output = output[0]
-        if isinstance(output_ref, tuple):
-            output_ref = output_ref[0]
-
-        a_finite = torch.isfinite(output)
-        b_finite = torch.isfinite(output_ref)
-        assert torch.all(a_finite == b_finite), "Error: isfinite mask mismatch"
-        assert torch.isclose(
-            output.masked_fill(a_finite, 0),
-            output_ref.masked_fill(b_finite, 0),
-            rtol=0,
-            atol=0,
-            equal_nan=True,
-        ).all(), "Error: nonfinite value mismatch"
-        output = output.masked_fill(~a_finite, 0)
-        output_ref = output_ref.masked_fill(~b_finite, 0)
-        correlation = FP8LightningIndexerTest._compute_correlation(output, output_ref)
-        difference = 1.0 - correlation
-        assert 0 <= difference <= tolerance, (
-            f"outputs is not close to outputs_ref, difference: {difference}"
-        )
+    pass
 
 
 class FP8LightningIndexerFixture(FixtureBase):
@@ -79,7 +51,7 @@ def test_indexer(
         batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits
     )
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
-    test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
+    test.check(op, *test.gen_inputs(), compare=partial(assert_normalized_error, bound=1e-3))
 
 
 @pytest.mark.smoke

@@ -172,8 +172,8 @@ def test_compiled_reference_warmup_updates_state_once():
 def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
     from benchmarks.benchmark_base import OpBenchmark
     from benchmarks.ops.bench_gqa import _torch_gqa_bwd
-    from benchmarks.verification import Exact
     from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
+    from workloads.numerics import Exact
 
     workload = GroupedQueryAttentionBwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
     inputs = workload.gen_inputs()

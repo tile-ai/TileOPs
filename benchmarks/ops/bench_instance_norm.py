@@ -18,9 +18,9 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.norm import RunningStatsCall
+from workloads.numerics import Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(InstanceNormFwdOp))

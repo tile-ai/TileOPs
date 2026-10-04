@@ -11,8 +11,8 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerBlockFwdOp
+from workloads.numerics import Custom, assert_quantized
 from workloads.quantization.quantize import INT8QuantPerBlockWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest

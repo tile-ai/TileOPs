@@ -19,8 +19,8 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+from workloads.numerics import Exact
 from workloads.reduction import ReductionCall
 
 

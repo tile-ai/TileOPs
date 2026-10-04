@@ -3,12 +3,13 @@ import gc
 import pytest
 import torch
 
+import benchmarks.baselines  # noqa: F401
+
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
-import benchmarks.baselines  # noqa: F401
+from benchmarks import benchmark_base
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
-from benchmarks.verification import set_verifying
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
@@ -115,7 +116,7 @@ def pytest_configure(config):
             "so they run on cuda only"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
-    set_verifying(config.getoption("--tileops-verify"))
+    benchmark_base.verifying = config.getoption("--tileops-verify")
     set_events_fallback_allowed(config.getoption("--tileops-allow-events-fallback"))
 
 

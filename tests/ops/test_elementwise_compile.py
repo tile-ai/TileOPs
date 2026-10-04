@@ -135,7 +135,7 @@ def test_relu_compile(n_total, dtype):
     op = ReluFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
 
 
 # Binary compile test: add
@@ -166,7 +166,7 @@ def test_add_compile(a_shape, b_shape, dtype):
     op = AddFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
 
 
 # Comparison compile test: eq (bool output)
@@ -196,7 +196,7 @@ def test_eq_compile(a_shape, b_shape, dtype):
     op = EqFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, compare=exact_compare)
+    test.check(op, *inputs, compare=exact_compare, runs=compiled_op)
 
 
 # FusedGated compile test: silu_and_mul
@@ -226,7 +226,7 @@ def test_silu_and_mul_compile(M, N, dtype):
     op = SiluAndMulFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, atol=1e-2, rtol=1e-2)
+    test.check(op, *inputs, atol=1e-2, rtol=1e-2, runs=compiled_op)
 
 
 # Additional unary compile tests: abs, sign
@@ -257,7 +257,7 @@ def test_abs_compile(n_total, dtype):
     op = AbsFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
 
 
 class SignCompileFixture(FixtureBase):
@@ -285,7 +285,7 @@ def test_sign_compile(n_total, dtype):
     op = SignFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
 
 
 # register_fake shape/dtype correctness

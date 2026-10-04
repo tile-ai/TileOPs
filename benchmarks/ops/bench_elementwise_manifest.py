@@ -14,7 +14,6 @@ from benchmarks.baselines import (
     compiled_reference,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -85,6 +84,7 @@ from tileops.elementwise import (
     WhereFwdOp,
 )
 from workloads.elementwise import ElementwiseCall
+from workloads.numerics import Custom
 
 
 def _bench(op_cls, call, *, torch_tag: str = "torch", count_copies: bool = False):

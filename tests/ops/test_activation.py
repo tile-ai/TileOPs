@@ -67,7 +67,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
     kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    test.check(kernel, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(ReluFwdOp(), *test.gen_inputs(), **standard_tolerance(dtype), runs=kernel)
 
 
 # Template-based activation ops

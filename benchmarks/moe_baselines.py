@@ -3,7 +3,7 @@
 import torch
 
 from benchmarks.baselines import flashinfer_op
-from benchmarks.verification import Custom, NegativeControl, assert_normalized_error
+from workloads.numerics import Custom, NegativeControl, assert_normalized_error
 
 
 def flashinfer_experts(hidden, w1, w2, top_k):
@@ -45,7 +45,7 @@ def moe_evidence(gate_up_index):
             assert got is None
         else:
             torch.testing.assert_close(got, expected, rtol=3e-2, atol=3e-2)
-            assert_normalized_error(got, expected, tolerance=1e-4)
+            assert_normalized_error(got, expected, bound=1e-4)
 
     def swapped(reference, inputs):
         changed = list(inputs)

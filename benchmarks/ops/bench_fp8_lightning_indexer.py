@@ -5,9 +5,9 @@ import torch
 
 from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_normalized_error, zeroed_input
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
+from workloads.numerics import Custom, assert_normalized_error, zeroed_input
 
 
 @pytest.mark.parametrize("call", manifest_calls(FP8LightningIndexerFwdOp))

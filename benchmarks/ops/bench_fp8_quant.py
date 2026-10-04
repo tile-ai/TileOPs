@@ -9,8 +9,8 @@ import pytest
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, assert_quantized
 from tileops.ops import FP8QuantFwdOp
+from workloads.numerics import Custom, assert_quantized
 from workloads.quantization.fp8_quant import FP8QuantWorkload
 
 

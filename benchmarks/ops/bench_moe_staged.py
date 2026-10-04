@@ -9,7 +9,6 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
 
 from benchmarks.baselines import VLLM_TAG, flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom, Exact
 from tileops.ops.moe import (
     MoEExpertMLPFwdOp,
     MoEGroupedGemmFwdOp,
@@ -24,6 +23,7 @@ from workloads.moe import (
     gated_activation,
     valid_rows,
 )
+from workloads.numerics import Custom, Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(MoEPrePermuteFwdOp))

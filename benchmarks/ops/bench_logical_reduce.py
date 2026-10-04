@@ -18,8 +18,8 @@ from benchmarks.baselines import (
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+from workloads.numerics import Exact
 from workloads.reduction import LogicalCall
 
 

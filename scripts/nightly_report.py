@@ -85,6 +85,8 @@ _RED = "\U0001f534"  # 🔴
 _YELLOW = "\U0001f7e1"  # 🟡
 _BLUE = "\U0001f535"  # 🔵
 _GREEN = "\U0001f7e2"  # 🟢
+_UP = "\u2191"  # ↑
+_DOWN = "\u2193"  # ↓
 
 # ---------------------------------------------------------------------------
 # JUnit XML parsing
@@ -103,6 +105,10 @@ _DERIVED_COUNT_RTOL = 1e-3
 # has room before it starts catching built kernels.
 _KERNEL_BUILT_PCT = 25
 # Below this, one statement swings the percentage too far to read.
+# Unattributed failures listed before the table says how many it left out. The
+# attributed table above caps its per-op test names at three for the same reason.
+_UNATTRIBUTED_SHOWN = 10
+
 _COVERAGE_MIN_STMTS = 20
 _COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
@@ -138,6 +144,9 @@ def parse_test_xml(path: str) -> list[dict]:
                 "outcome": outcome,
                 "op": props.get("op"),
                 "op_module": props.get("op_module"),
+                # Present only where a comparison completed, which is what
+                # distinguishes establishing a value from merely running.
+                "compared": "max_abs_err" in props,
                 "failure_message": (
                     failure.attrib.get("message", "")
                     if failure is not None
@@ -213,8 +222,14 @@ def parse_bench_xml(path: str) -> list[dict]:
                 tag = pkey.removesuffix("_tflops")
                 baselines.setdefault(tag, {})["tflops"] = _try_float(pval)
             elif pkey.endswith("_ratio") and pkey not in ("baseline_ratio",):
-                tag = pkey.removesuffix("_ratio")
-                baselines.setdefault(tag, {})["ratio"] = _try_float(pval)
+                # `<tag>_no_ratio` states why a tag publishes none. Treated as a
+                # ratio it invents a `<tag>_no` baseline whose ratio is a
+                # sentence, which then reads as a comparison that happened.
+                if pkey.endswith("_no_ratio"):
+                    continue
+                ratio = _try_float(pval)
+                if isinstance(ratio, float):
+                    baselines.setdefault(pkey.removesuffix("_ratio"), {})["ratio"] = ratio
         if baselines:
             entry["baselines"] = baselines
 
@@ -285,19 +300,21 @@ def aggregate_test_results(results: list[dict]) -> dict:
             "passed": 0,
             "failed": 0,
             "skipped": 0,
+            "compared": 0,
             "failing_tests": [],
         }
     )
     for r in results:
         op = r.get("op")
-        if not op:
-            continue
-        d = ops[op]
-        if not d["module"]:
-            d["module"] = r.get("op_module")
-        d[r["outcome"]] += 1
-        if r["outcome"] == "failed":
-            d["failing_tests"].append(r["name"])
+        if op:
+            d = ops[op]
+            if not d["module"]:
+                d["module"] = r.get("op_module")
+            d[r["outcome"]] += 1
+            if r["outcome"] == "passed" and r.get("compared"):
+                d["compared"] += 1
+            if r["outcome"] == "failed":
+                d["failing_tests"].append(r["name"])
     return dict(ops)
 
 
@@ -609,9 +626,13 @@ def _unverified_rows(bench_ops: dict) -> list[tuple[str, str, str]]:
     return found
 
 
-def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
-    """Find configs where tileops is slower than its strongest baseline: one alert each."""
-    alerts = []
+def _rated_configs(bench_ops: dict):
+    """Yield ``(op, cfg, ratio, tag, baseline_ms)`` per row that has a timed baseline.
+
+    The ratio is the row's lowest, so every consumer judges a row against the
+    strongest baseline that was timed for it rather than against whichever one
+    the manifest happens to name first.
+    """
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             primary = cfg.get("baseline_tag", "baseline")
@@ -628,21 +649,38 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
                 if tag != primary
             ]
             timed = [c for c in candidates if c[0] is not None]
-            if not timed:
-                continue
-            ratio, tag, baseline_ms = min(timed, key=lambda c: c[0])
-            if ratio < BASELINE_RATIO_ALERT:
-                alerts.append(
-                    {
-                        "op": op,
-                        "config": cfg["name"],
-                        "tileops_ms": _conclusion_ms(cfg),
-                        "baseline_ms": baseline_ms,
-                        "ratio": ratio,
-                        "baseline_tag": tag,
-                    }
-                )
-    return alerts
+            if timed:
+                ratio, tag, baseline_ms = min(timed, key=lambda c: c[0])
+                yield op, cfg, ratio, tag, baseline_ms
+
+
+def baseline_standing(bench_ops: dict) -> tuple[int, int]:
+    """``(rows at or above baseline, rows below it)``, over rows that have one.
+
+    The alert count says how many rows are far behind; it cannot say whether
+    the rest are ahead, because a row that never alerts is absent from it. These
+    two cover every comparable row, so their sum is the population the alert
+    count is drawn from.
+    """
+    ratios = [ratio for _, _, ratio, _, _ in _rated_configs(bench_ops)]
+    at_or_above = sum(1 for r in ratios if r >= 1.0)
+    return at_or_above, len(ratios) - at_or_above
+
+
+def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
+    """Find configs where tileops is slower than its strongest baseline: one alert each."""
+    return [
+        {
+            "op": op,
+            "config": cfg["name"],
+            "tileops_ms": _conclusion_ms(cfg),
+            "baseline_ms": baseline_ms,
+            "ratio": ratio,
+            "baseline_tag": tag,
+        }
+        for op, cfg, ratio, tag, baseline_ms in _rated_configs(bench_ops)
+        if ratio < BASELINE_RATIO_ALERT
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +813,123 @@ def _delta(current: int | float, previous: int | float | None, unit: str = "") -
     sign = "+" if change > 0 else "−"
     magnitude = f"{abs(change):.1f}" if unit == "pp" else f"{abs(change):.0f}"
     return f" **{sign}{magnitude}{unit}**"
+
+
+def _ops_verified(test_ops: dict | None, bench_ops: dict | None) -> tuple[int, int] | None:
+    """``(ops with a verified result, implemented ops)``, or None without a manifest.
+
+    An op counts as verified when a reference established one of its results
+    tonight, from either verifier: unit tests compare against ``ref_program``,
+    and a benchmark row is checked against its baseline before it is timed. The
+    two cover different ops, and neither alone is the library's coverage.
+    """
+    try:
+        from tileops.manifest import load_manifest
+
+        manifest = load_manifest()
+    except Exception:
+        return None
+    implemented = {name for name, op in manifest.items() if op.get("status") == "implemented"}
+    # Attribution says which op a test belongs to, not what it established: a
+    # constructor rejection passes without comparing any of the op's values.
+    passed = {op for op, d in (test_ops or {}).items() if d.get("compared", 0) > 0}
+    # A baseline dict is not evidence either: the benchmark conftest writes a
+    # tag's timing fields before deciding whether that tag may publish a ratio,
+    # so a noncomparable baseline still leaves a populated entry. Only a ratio
+    # says a reference was compared against.
+    compared = {
+        op
+        for op, data in (bench_ops or {}).items()
+        if any(
+            cfg.get("baseline_ratio") is not None
+            or any(bl.get("ratio") is not None for bl in cfg.get("baselines", {}).values())
+            for cfg in data.get("configs", ())
+        )
+    }
+    return len((passed | compared) & implemented), len(implemented)
+
+
+def _kernel_count() -> int | None:
+    """Concrete kernels the library exports, or None when they will not import.
+
+    Counted from each ``tileops.kernels`` subpackage's ``__all__``, which
+    .claude/rules/code-style.md requires to be explicit: a kernel the package
+    does not export is not one a caller can reach, which leaves out the shared
+    implementation bases under ``_base`` and the private ``_`` classes. One op
+    carries several kernels, so this never matches the op count.
+
+    A class counts by being a concrete ``Kernel``, not by its name: a kernel
+    whose name ends in ``Template`` is still a kernel.
+    """
+    try:
+        import importlib
+        import inspect
+        import pkgutil
+
+        import tileops.kernels as kernels_pkg
+        from tileops.kernels.kernel_base import Kernel
+
+        def exported(module) -> set:
+            names = getattr(module, "__all__", ())
+            return {
+                attribute
+                for attribute in (getattr(module, name, None) for name in names)
+                if inspect.isclass(attribute)
+                and issubclass(attribute, Kernel)
+                and not inspect.isabstract(attribute)
+            }
+
+        # Packages at every depth, plus the root: gemm.grouped and
+        # linear_attention.gla are nested, and the root re-exports what the
+        # modules beside the packages define. A private module's own ``__all__``
+        # is not an export -- elementwise/_base.py lists its shared bases there
+        # and no package re-exports them, so no caller can reach one.
+        found = exported(kernels_pkg)
+        for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops.kernels."):
+            if not module.ispkg:
+                continue
+            try:
+                found |= exported(importlib.import_module(module.name))
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return len(found)
+
+
+def _library_scale() -> dict[str, int] | None:
+    """What the op library holds, or None when the manifest will not load.
+
+    ``operators`` counts the ops that have an implementation, which is what the
+    library offers; an entry that is still only a specification is counted by
+    ``specs`` and by nothing else. ``kernels`` counts what those ops dispatch
+    to, which is the larger number: one op carries a kernel per strategy, dtype
+    class and architecture it serves. A workload added to an implemented op
+    moves ``workloads`` alone.
+
+    ``collect_stats`` is the same reader the manifest stats job publishes from,
+    so the two never disagree on how an op is counted.
+
+    Returns None rather than raising: a night whose benchmark data is intact
+    still has a report to render, and the caller drops these rows instead.
+    """
+    try:
+        from manifest_stats import collect_stats
+
+        from tileops.manifest import load_manifest
+
+        stats = collect_stats(load_manifest())
+    except Exception:
+        return None
+    scale = {
+        "operators": stats["by_status"].get("implemented", 0),
+        "specs": stats["by_status"].get("spec-only", 0),
+        "workloads": stats["workloads_implemented_total"],
+    }
+    kernels = _kernel_count()
+    if kernels is not None:
+        scale["kernels"] = kernels
+    return scale
 
 
 def _get_git_commit() -> str:
@@ -962,6 +1117,7 @@ def generate_report(
     sol_anomalies: list[dict] | None = None,
     have_gpu_profile: bool = False,
     history_window: str = "not read",
+    test_results: list[dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -971,11 +1127,21 @@ def generate_report(
     sol_fails = [a for a in (sol_anomalies or []) if a["level"] == "FAIL"]
 
     # ── Header ────────────────────────────────────────────────────────────
-    n_test_ops = len(test_ops) if test_ops else 0
+    # Every testcase, not only those a reference comparison attributed to an op:
+    # the rest run and fail the job just the same, and counting only the attributed
+    # ones reported a pass rate over half the suite.
+    outcomes = [r["outcome"] for r in (test_results or [])]
     n_bench_ops = len(bench_ops) if bench_ops else 0
     n_failures = sum(1 for d in (test_ops or {}).values() if d["failed"] > 0)
-    total_tests = sum(d["passed"] + d["failed"] + d["skipped"] for d in (test_ops or {}).values())
-    total_passed = sum(d["passed"] for d in (test_ops or {}).values())
+    if outcomes:
+        total_tests = len(outcomes)
+        total_passed = sum(1 for o in outcomes if o == "passed")
+        n_failures = sum(1 for o in outcomes if o == "failed")
+    else:
+        total_tests = sum(
+            d["passed"] + d["failed"] + d["skipped"] for d in (test_ops or {}).values()
+        )
+        total_passed = sum(d["passed"] for d in (test_ops or {}).values())
 
     health = (
         _PASS
@@ -997,15 +1163,37 @@ def generate_report(
 
     lines.append("| | |")
     lines.append("|---|---|")
+    # Ahead of the run's own figures: these two say how large the library is,
+    # and the rows under them say how it did tonight.
+    scale = _library_scale()
+    if scale:
+        lines.append(f"| **Operators** | {scale['operators']} |")
+        if "kernels" in scale:
+            lines.append(f"| **Kernels** | {scale['kernels']} |")
+        lines.append(f"| **Specs** | {scale['specs']} |")
+        lines.append(f"| **Workloads** | {scale['workloads']} |")
+    # Ops first: the question the row answers is how much of the library was
+    # established tonight, and the test count is the evidence, not the answer.
+    verified = _ops_verified(test_ops, bench_ops)
+    scope = f"{verified[0]}/{verified[1]} ops verified, " if verified else ""
     lines.append(
-        f"| **Correctness** | {corr_icon}"
-        f" &ensp; ({total_passed}/{total_tests} tests across"
-        f" {n_test_ops} ops) |"
+        f"| **Correctness** | {corr_icon} &ensp; ({scope}{total_passed}/{total_tests} tests) |"
     )
     lines.append(f"| **Benchmarked Ops** | {n_bench_ops} |")
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
+    # The alert count cannot say how the rows that did not alert are doing, so
+    # it sits above the split of every row that had a baseline to compare with.
+    # The total is stated because it is not the workload count above it: a
+    # workload is benchmarked once per dtype it declares, so these rows run
+    # about 1.6x the manifest entries they come from.
+    at_or_above, behind = baseline_standing(bench_ops or {})
+    if at_or_above or behind:
+        lines.append(
+            f"| **vs Baseline** | {_UP} {at_or_above} &ensp;·&ensp; {_DOWN} {behind}"
+            f" &ensp;/&ensp; {at_or_above + behind} rows |"
+        )
     unverified = _unverified_rows(bench_ops or {})
     if unverified:
         lines.append(f"| **Rows no reference checked** | {_WARN} {len(unverified)} |")
@@ -1089,6 +1277,22 @@ def generate_report(
             lines.append(
                 f"| **{op}** | `{d['module'] or 'N/A'}` | {d['failed']}/{total} | {tests_str} |"
             )
+        lines.append("")
+
+    # Failures no reference comparison attributed to an op. They are counted in
+    # Correctness above, so leaving them out here reports a number with nothing
+    # behind it: the reader sees N failed and a table that does not hold N rows.
+    unattributed = [r for r in (test_results or []) if r["outcome"] == "failed" and not r.get("op")]
+    if unattributed:
+        lines.append(f"## {_FAIL} Test Failures (no op attributed)")
+        lines.append("")
+        lines.append("| Test | Message |")
+        lines.append("|:-----|:--------|")
+        for r in sorted(unattributed, key=lambda r: r["nodeid"])[:_UNATTRIBUTED_SHOWN]:
+            message = (r.get("failure_message") or "").replace("|", "\\|")[:120]
+            lines.append(f"| `{r['nodeid']}` | {message} |")
+        if len(unattributed) > _UNATTRIBUTED_SHOWN:
+            lines.append(f"| ... | (+{len(unattributed) - _UNATTRIBUTED_SHOWN} more) |")
         lines.append("")
 
     # ── Benchmark Failures (only if any) ─────────────────────────────────
@@ -1307,6 +1511,7 @@ def main():
         parser.error(f"--history file does not exist: {args.history}")
 
     test_ops = None
+    test_results = None
     if args.test_xml and Path(args.test_xml).exists():
         test_results = parse_test_xml(args.test_xml)
         test_ops = aggregate_test_results(test_results)
@@ -1351,6 +1556,7 @@ def main():
         sol_anomalies,
         have_gpu_profile=gpu_profile is not None,
         history_window=_history_window(history_runs, bool(args.history)),
+        test_results=test_results,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

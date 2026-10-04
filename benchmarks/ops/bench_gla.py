@@ -11,7 +11,6 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from benchmarks.verification import Exact
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.linear_attention.gla import (
     GLAChunkwiseCall,
@@ -20,6 +19,7 @@ from workloads.linear_attention.gla import (
     gla_autograd_bwd_torch,
     gla_fwd_chunked_torch,
 )
+from workloads.numerics import Exact
 
 try:
     from fla.ops.gla import fused_recurrent_gla

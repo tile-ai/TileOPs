@@ -19,9 +19,9 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
 
 from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.verification import Custom
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.moe import FusedTopKWorkload
+from workloads.numerics import Custom
 
 
 @pytest.mark.parametrize("call", manifest_calls(FusedTopKFwdOp))
