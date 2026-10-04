@@ -63,7 +63,7 @@ def test_mla_decode(
 ):
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(tune=tune)
-    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -82,7 +82,7 @@ def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
     """A cache the tiles do not fill must not reach past its last key."""
     test = MlaDecodeTest(2, 128, 1, seq_len_kv, 512, 64, torch.float16)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp()
-    test.check(op, *test.gen_inputs(), atol=2e-3, rtol=2e-3)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

@@ -256,17 +256,8 @@ def test_conv1d(
     tune: bool,
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv1dFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        tune=tune,
-    )
-    atol, rtol = (1e-3, 1e-3)
-    if dtype == torch.bfloat16:
-        atol, rtol = (1.6e-2, 1.6e-2)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    op = Conv1dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op) and groups > 1:
         depthwise = c_in // groups == 1 and c_out // groups == 1
         assert isinstance(op.kernel, DepthwiseConv1dKernel if depthwise else GroupConv1dKernel)
@@ -653,18 +644,8 @@ def test_conv2d(
     tune: bool,
 ) -> None:
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv2dFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        tune=tune,
-    )
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    if dtype == torch.float32:
-        # TF32 products on both sides, summed in different orders: 0.045 measured at worst.
-        atol = 6e-2
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    op = Conv2dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op) and groups > 1:
         depthwise = c_in // groups == 1 and c_out // groups == 1
         assert isinstance(op.kernel, DepthwiseConv2dKernel if depthwise else GroupConv2dKernel)
@@ -1008,18 +989,8 @@ def test_conv3d(
     test = Conv3dTest(
         n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype
     )
-    op = Conv3dFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        tune=tune,
-    )
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    if dtype == torch.float32:
-        # TF32 products on both sides, summed in different orders: 0.045 measured at worst.
-        atol = 6e-2
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    op = Conv3dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op):
         out_d, out_h, out_w = op.last_call.tensors["output"][0][2:]
         if Conv3dNdhwcKernel.applies(

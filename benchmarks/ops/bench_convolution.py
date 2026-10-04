@@ -18,17 +18,10 @@ from typing import Callable, Optional
 import pytest
 import torch
 
-from benchmarks.baselines import (
-    FLAGGEMS_TAG,
-    TORCH_COMPILE_TAG,
-    assert_matches_reference,
-    compiled_reference,
-    flaggems_op,
-)
+from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
-from workloads.numerics import Exact
 
 # Bench-local: autotuning is benchmark infrastructure, not a workload property.
 _TUNE = True
@@ -63,39 +56,23 @@ def _flaggems_conv_baseline(rank: int, workload) -> Callable:
 
 
 def _run_conv(
-    op,
-    bm: ManifestBenchmark,
-    workload,
-    *,
-    rank: int,
-    static_weight: bool = False,
+    op, bm: ManifestBenchmark, workload, *, rank: int, static_weight: bool = False
 ) -> None:
     """Profile op against flag_gems and torch on the same inputs, recording all.
 
     flag_gems takes per-axis padding only, so a row padding by mode drops its tag.
     """
-    baseline_tolerance = {"rtol": 2e-2, "atol": 2e-2}
     inputs = workload.gen_inputs()
     baseline = workload.ref_program
     baselines = {"torch": baseline, TORCH_COMPILE_TAG: compiled_reference(baseline)}
     if not isinstance(workload.padding, str):
         flaggems = _flaggems_conv_baseline(rank, workload)
-        # Triton and cuDNN sum the same products in a different order, so agreement is
-        # relative to the output scale: across the manifest's workloads flag_gems lands
-        # within a fraction of cuDNN where the reference reaches the hundreds.
-        assert_matches_reference(
-            flaggems,
-            baseline,
-            *inputs,
-            **baseline_tolerance,
-        )
         baselines = {FLAGGEMS_TAG: flaggems, **baselines}
     _profile_conv(
         op,
         bm,
         inputs,
         baselines,
-        baseline_tolerance=baseline_tolerance,
         static_weight=static_weight,
     )
 
@@ -106,7 +83,6 @@ def _profile_conv(
     inputs: tuple[torch.Tensor, ...],
     baselines: dict[str, Callable],
     *,
-    baseline_tolerance: dict[str, float],
     static_weight: bool = False,
 ) -> None:
     """Profile op and every baseline on the same inputs and record them all."""
@@ -131,14 +107,12 @@ def _profile_conv(
                 **{tag: (bind_static_weight(fn), (x,)) for tag, fn in baselines.items()},
             },
             *inputs,
-            evidence=dict.fromkeys(("tileops", *baselines), Exact(**baseline_tolerance)),
         )
         return
 
     bm.compare(
         {"tileops": op, **baselines},
         *inputs,
-        evidence=dict.fromkeys(("tileops", *baselines), Exact(**baseline_tolerance)),
     )
 
 

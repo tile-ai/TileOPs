@@ -16,11 +16,9 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_dims,
     flaggems_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.vector_norm import VectorNormFwdOp
-from workloads.numerics import Exact
 from workloads.reduction import ReductionCall
 
 
@@ -32,16 +30,10 @@ def _bench(op_cls: type, call) -> None:
     """
     p = call.params
     dtype = getattr(torch, p["dtype"]) if p.get("dtype") else None
-
-    def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(), ord=p["ord"], dim=p["dim"], keepdim=p["keepdim"]
-        ).to(dtype or x.dtype)
-
     workload = ReductionCall(call)
+    baseline_fn = workload.ref_program
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
-    tolerance = reference_tolerance(inputs[0].dtype)
     functors = {"tileops": op}
     if dtype is None:
         fn = flaggems_op("vector_norm")
@@ -53,11 +45,7 @@ def _bench(op_cls: type, call) -> None:
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(VectorNormFwdOp))

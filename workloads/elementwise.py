@@ -33,6 +33,9 @@ class FusedGatedBenchCase:
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (torch.randn(self.M, 2 * self.N, device=run_device(), dtype=self.dtype),)
 
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
+
 
 class AddBroadcastWorkload(WorkloadBase):
     def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
@@ -127,6 +130,9 @@ class SiluAndMulCompileWorkload(WorkloadBase):
         gate = x[:, : self.N].float()
         value = x[:, self.N :].float()
         return (torch.nn.functional.silu(gate) * value).to(x.dtype)
+
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
 
 
 class LogicalNotWorkload(WorkloadBase):
@@ -454,3 +460,217 @@ class ElementwiseCall(CallWorkload):
 
     def ref_program(self, *inputs):
         return _REFERENCES[self.call.signature.name](self.arguments(), *inputs)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, Exact
+
+        name = self.call.signature.name
+        if name in ("SiluAndMulFwdOp", "GeluAndMulFwdOp", "GeluTanhAndMulFwdOp"):
+            return fused_gated_verification(inputs[0].dtype)
+        if name == "FloorDivideFwdOp":
+            return FloorDivideCase.verification(self, *inputs)
+        if name == "LerpScalarFwdOp":
+            return lerp_verification(inputs[0].dtype)
+        if name != "DropoutFwdOp":
+            return Exact()
+        x = inputs[0]
+        a = self.arguments()
+        p = a["p"] if a["training"] else 0.0
+
+        def validate(got, _expected):
+            if p in (0.0, 1.0):
+                torch.testing.assert_close(got, x if p == 0 else torch.zeros_like(x))
+                return
+            # Independent generators need not choose identical masks.
+            torch.testing.assert_close(got, torch.where(got != 0, x / (1 - p), 0))
+            eligible = x != 0
+            n = eligible.sum()
+            dropped = ((got == 0) & eligible).sum()
+            assert (dropped - n * p).abs() <= 6 * (n * p * (1 - p)).sqrt() + 1
+
+        return Custom(validate, "dropout scaling and six-sigma mask rate")
+
+
+def fused_gated_verification(dtype):
+    from workloads.numerics import Exact, reference_tolerance
+
+    return (
+        Exact(atol=1e-2, rtol=1e-2)
+        if dtype == torch.float16
+        else Exact(**reference_tolerance(dtype))
+    )
+
+
+class ReluCompileCase(RandnFlatWorkload):
+    def ref_program(self, x):
+        return torch.relu(x.float()).to(x.dtype)
+
+
+class AbsCompileCase(RandnFlatWorkload):
+    def ref_program(self, x):
+        return torch.abs(x.float()).to(x.dtype)
+
+
+class SignCompileCase(RandnFlatWorkload):
+    def ref_program(self, x):
+        return torch.sign(x.float()).to(x.dtype)
+
+
+class SiluAndMulCase(GatedRandnWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        gate = x_f32[:, : self.n]
+        value = x_f32[:, self.n :]
+        return (F.silu(gate) * value).to(x.dtype)
+
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
+
+
+class GeluAndMulCase(GatedRandnWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        gate = x_f32[:, : self.n]
+        value = x_f32[:, self.n :]
+        return (F.gelu(gate) * value).to(x.dtype)
+
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
+
+
+class GeluTanhAndMulCase(GatedRandnWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        gate = x_f32[:, : self.n]
+        value = x_f32[:, self.n :]
+        return (F.gelu(gate, approximate="tanh") * value).to(x.dtype)
+
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
+
+
+class AddSameShapeCase(RandnPairWorkload):
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return (a.float() + b.float()).to(a.dtype)
+
+
+class BinarySameShapeCase(RandnPairWorkload):
+    """Reusable test body for binary same-shape ops."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
+        super().__init__(n_total, dtype)
+        self.ref_fn = ref_fn
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.ref_fn(a.float(), b.float()).to(a.dtype)
+
+
+class BinaryPositiveCase(PositivePairWorkload):
+    """Test body for ops that need positive inputs (div, remainder, pow, etc.)."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
+        super().__init__(n_total, dtype)
+        self.ref_fn = ref_fn
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.ref_fn(a.float(), b.float()).to(a.dtype)
+
+
+class RemainderCase(PositivePairWorkload):
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.remainder(a, b)
+
+
+class FloorDivideCase(PositivePairWorkload):
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.floor_divide(a, b)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
+
+class LerpCase(RandnPairWorkload):
+    def __init__(self, n_total: int, dtype, weight: float = 0.5):
+        super().__init__(n_total, dtype)
+        self.weight = weight
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.lerp(a.float(), b.float(), self.weight).to(a.dtype)
+
+    def verification(self, *inputs):
+        return lerp_verification(inputs[0].dtype)
+
+
+class SpecialCase(SpecialWorkload):
+    """Generic test fixture for special predicate ops."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn, gen_fn=None):
+        super().__init__(n_total, dtype, gen_fn=gen_fn)
+        self._ref_fn = ref_fn
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return self._ref_fn(x)
+
+
+class BitwiseCase(BitwiseWorkload):
+    """Reusable test body for bitwise ops."""
+
+    def __init__(self, n_total: int, ref_fn):
+        super().__init__(n_total)
+        self.ref_fn = ref_fn
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.ref_fn(a, b)
+
+
+class UnaryActivationCase(RandnFlatWorkload):
+    """Generic test fixture for a single-input, single-output unary op."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
+        super().__init__(n_total, dtype, gen_fn=gen_fn)
+        self._ref_fn = ref_fn
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return self._ref_fn(x)
+
+
+class UnaryMathCase(RandnFlatWorkload):
+    """Generic test fixture for a single-input, single-output unary op."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
+        super().__init__(n_total, dtype, gen_fn=gen_fn)
+        self._ref_fn = ref_fn
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return self._ref_fn(x)
+
+
+class ComparisonCase(RandnPairWorkload):
+    """Reusable test body for comparison ops."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
+        super().__init__(n_total, dtype)
+        self.ref_fn = ref_fn
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.ref_fn(a, b)
+
+
+class LogicalCase(LogicalWorkload):
+    """Reusable test body for logical ops."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
+        super().__init__(n_total, dtype)
+        self.ref_fn = ref_fn
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.ref_fn(a.bool(), b.bool())
+
+
+def lerp_verification(dtype):
+    """Native-dtype multiply/add round separately before the final lerp result."""
+    from workloads.numerics import Exact
+
+    return Exact(atol=5e-3, rtol=5e-3) if dtype == torch.float16 else Exact()

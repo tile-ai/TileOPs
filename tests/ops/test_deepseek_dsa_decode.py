@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DsaDecodeWorkload
@@ -91,7 +91,7 @@ def test_sparse_mla_decode(
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
-    test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -107,7 +107,7 @@ def test_sparse_mla_decode_tail_and_dtype(dim_tail, dtype) -> None:
     """BF16 preserves the output dtype; a zero tail omits the extra QK contraction."""
     test = DsaDecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, 1, 256)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 def _padded_topk_indices(
@@ -153,7 +153,7 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
         batch, seq_len, heads_kv, topk, seq_len_kv, seq_len_kv, generator
     )
     # The reference sums in float32 and rounds once; one fp16 ulp here is 1e-3.
-    test.check(op, q, kv, in_range_pad, atol=2e-3, rtol=2e-3)
+    test.check(op, q, kv, in_range_pad)
 
     expected = op(q, kv, in_range_pad)
     assert torch.isfinite(expected).all(), "an in-range padding slot produced a non-finite output"

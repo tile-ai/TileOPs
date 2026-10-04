@@ -97,6 +97,15 @@ class MlaDecodeWorkload(WorkloadBase):
         out = rearrange(out, "b g h d -> b (h g) d")  # [batch_size, heads, dim]
         return out
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        # Split-K tail tiles change the accumulation order.
+        tol = 2e-3 if self.seq_len_kv % 64 else 1e-3
+        # With zero or one key, attention does not depend on the query.
+        controls = (zeroed_input(0, "first-input-zeroed"),) if self.seq_len_kv > 1 else ()
+        return Exact(controls=controls, atol=tol, rtol=tol)
+
 
 class MlaDecodeCall(CallWorkload, MlaDecodeWorkload):
     """A manifest call of MultiHeadLatentAttentionDecodeWithKVCacheFwdOp."""

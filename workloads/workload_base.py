@@ -4,7 +4,7 @@ WorkloadBase defines the contract: gen_inputs() for input generation.
 A class named for one op also carries that op's ref_program.
 FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
 
-Tolerances, check() and roofline numbers stay in tests/ and benchmarks/.
+Correctness declarations live beside references. Tests and benchmarks consume the same declaration.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import torch
 
 from tileops.manifest.primitives import WORKLOAD_SEED
 from workloads.device import run_device
+from workloads.numerics import Evidence, Exact
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -26,16 +27,19 @@ class WorkloadBase(ABC):
 
     Subclass must implement gen_inputs(). A subclass named for one op also
     defines that op's ref_program; a subclass describing only an input shape
-    leaves ref_program to its consumers.
+    leaves ref_program to a concrete workload subclass.
     Used by both tests (via TestBase) and benchmarks (via BenchmarkBase).
 
-    Tolerances, check() and roofline methods are decisions and belong to the
-    consumer — not here.
+    verification() owns numerical policy. Consumers own scheduling and reporting.
     """
 
     @abstractmethod
     def gen_inputs(self) -> tuple[Any, ...]:
         raise NotImplementedError
+
+    def verification(self, *inputs: Any) -> Evidence:
+        """The correctness declaration shared by tests and every benchmark tag."""
+        return Exact()
 
     def rng(self, tag: str = "", *, device: torch.device | str = "cpu") -> torch.Generator:
         """A generator private to this workload class and *tag*.

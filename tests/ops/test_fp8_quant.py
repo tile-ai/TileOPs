@@ -3,7 +3,6 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FP8QuantFwdOp
-from workloads.numerics import assert_quantized
 from workloads.quantization.fp8_quant import FP8QuantWorkload
 
 
@@ -33,4 +32,4 @@ def test_fp8_quant_op(
 ) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, dtype)
     op = FP8QuantFwdOp(tune=tune)
-    test.check(op, *test.gen_inputs(), compare=assert_quantized)
+    test.check(op, *test.gen_inputs())

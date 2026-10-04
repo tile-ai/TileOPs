@@ -10,7 +10,6 @@ do not take. logsumexp has no flag_gems entry point.
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
@@ -19,21 +18,19 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_op,
     quack_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from workloads.numerics import Exact
 from workloads.reduction import ReductionCall
 
 
-def _bench(op_cls: type, call, baseline_fn, flaggems_name: "str | None") -> None:
+def _bench(op_cls: type, call, flaggems_name: "str | None") -> None:
     workload = ReductionCall(call)
+    baseline_fn = workload.ref_program
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments(), tune=True)
-    tolerance = reference_tolerance(inputs[0].dtype)
     functors = {"tileops": op}
-    if flaggems_name is not None and not call.params.get("dtype"):
+    if flaggems_name is not None and (not call.params.get("dtype")):
         fn = flaggems_op(flaggems_name)
         dim = call.params["dim"]
 
@@ -52,11 +49,7 @@ def _bench(op_cls: type, call, baseline_fn, flaggems_name: "str | None") -> None
         functors[QUACK_TAG] = quack_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 def _dtype(params: dict) -> "torch.dtype | None":
@@ -65,29 +58,14 @@ def _dtype(params: dict) -> "torch.dtype | None":
 
 @pytest.mark.parametrize("call", manifest_calls(SoftmaxFwdOp))
 def test_softmax_bench(call) -> None:
-    dim, dtype = call.params["dim"], _dtype(call.params)
-
-    def baseline_fn(x):
-        return F.softmax(x, dim=dim, dtype=dtype)
-
-    _bench(SoftmaxFwdOp, call, baseline_fn, "softmax")
+    _bench(SoftmaxFwdOp, call, "softmax")
 
 
 @pytest.mark.parametrize("call", manifest_calls(LogSoftmaxFwdOp))
 def test_log_softmax_bench(call) -> None:
-    dim, dtype = call.params["dim"], _dtype(call.params)
-
-    def baseline_fn(x):
-        return F.log_softmax(x, dim=dim, dtype=dtype)
-
-    _bench(LogSoftmaxFwdOp, call, baseline_fn, "log_softmax")
+    _bench(LogSoftmaxFwdOp, call, "log_softmax")
 
 
 @pytest.mark.parametrize("call", manifest_calls(LogSumExpFwdOp))
 def test_logsumexp_bench(call) -> None:
-    dim, keepdim = call.params["dim"], call.params["keepdim"]
-
-    def baseline_fn(x):
-        return torch.logsumexp(x, dim=dim, keepdim=keepdim)
-
-    _bench(LogSumExpFwdOp, call, baseline_fn, None)
+    _bench(LogSumExpFwdOp, call, None)

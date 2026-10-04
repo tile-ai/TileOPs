@@ -65,26 +65,13 @@ class FFTFixture(FixtureBase):
 @FFTFixture
 def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     batch = math.prod(batch_shape) if batch_shape else 1
-    # Allow for input, scratch, output, reference, and allocator overlap.
     need = 5 * batch * n * (8 if dtype == torch.complex64 else 16)
     free, _total = torch.cuda.mem_get_info(run_device())
     if need > free:
         pytest.skip(f"n={n} {dtype} needs {need >> 20} MiB free, device has {free >> 20} MiB")
     test = FFTTest(n, dtype, batch_shape=batch_shape)
     op = FFTC2CFwdOp()
-    if dtype == torch.complex64:
-        tolerances = {"atol": 1e-4, "rtol": 1e-4}
-    else:
-        tolerances = {"atol": 1e-8, "rtol": 1e-8}
-    if n >= 1 << 15:
-        # FFT output magnitude, and therefore absolute error, scales with sqrt(n).
-        scale = math.sqrt(n / (1 << 20))
-        tolerances = (
-            {"atol": 6e-3 * scale, "rtol": 1e-4}
-            if dtype == torch.complex64
-            else {"atol": 2e-11 * scale, "rtol": 1e-8}
-        )
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

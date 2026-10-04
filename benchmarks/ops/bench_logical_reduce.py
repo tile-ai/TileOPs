@@ -8,7 +8,6 @@ and compiled. count_nonzero has none: its entry point raises on a list of dims.
 """
 
 import pytest
-import torch
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
@@ -19,16 +18,16 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
-from workloads.numerics import Exact
 from workloads.reduction import LogicalCall
 
 
-def _bench(op_cls: type, call, baseline_fn, flaggems_name=None) -> None:
+def _bench(op_cls: type, call, flaggems_name=None) -> None:
     """Check the op and flag_gems where it has a kernel against torch, then time them.
 
     A boolean reduction is exact or wrong, so the check takes no tolerance.
     """
     workload = LogicalCall(call)
+    baseline_fn = workload.ref_program
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
     functors = {"tileops": op}
@@ -46,35 +45,19 @@ def _bench(op_cls: type, call, baseline_fn, flaggems_name=None) -> None:
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
     )
 
 
 @pytest.mark.parametrize("call", manifest_calls(AnyFwdOp))
 def test_any_bench(call) -> None:
-    dim, keepdim = call.params["dim"], call.params["keepdim"]
-
-    def baseline_fn(x):
-        return x.bool().any(dim=dim, keepdim=keepdim)
-
-    _bench(AnyFwdOp, call, baseline_fn, "any_dims")
+    _bench(AnyFwdOp, call, "any_dims")
 
 
 @pytest.mark.parametrize("call", manifest_calls(AllFwdOp))
 def test_all_bench(call) -> None:
-    dim, keepdim = call.params["dim"], call.params["keepdim"]
-
-    def baseline_fn(x):
-        return x.bool().all(dim=dim, keepdim=keepdim)
-
-    _bench(AllFwdOp, call, baseline_fn, "all_dims")
+    _bench(AllFwdOp, call, "all_dims")
 
 
 @pytest.mark.parametrize("call", manifest_calls(CountNonzeroFwdOp))
 def test_count_nonzero_bench(call) -> None:
-    dim = call.params["dim"]
-
-    def baseline_fn(x):
-        return torch.count_nonzero(x, dim=dim).to(torch.int64)
-
-    _bench(CountNonzeroFwdOp, call, baseline_fn)
+    _bench(CountNonzeroFwdOp, call)

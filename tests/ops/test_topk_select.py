@@ -75,7 +75,7 @@ def test_topk_select_op(
 
         torch.testing.assert_close(selected(output), selected(output_ref))
 
-    test.check(op, *inputs, compare=compare)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke

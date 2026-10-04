@@ -85,6 +85,9 @@ class Conv1dWorkload(WorkloadBase):
         )
         return out.contiguous()
 
+    def verification(self, *inputs):
+        return convolution_verification(inputs[0].dtype)
+
 
 class Conv2dWorkload(WorkloadBase):
     def __init__(
@@ -165,6 +168,9 @@ class Conv2dWorkload(WorkloadBase):
             groups=self.groups,
         )
         return out.contiguous()
+
+    def verification(self, *inputs):
+        return convolution_verification(inputs[0].dtype)
 
 
 class Conv3dWorkload(WorkloadBase):
@@ -256,3 +262,16 @@ class Conv3dWorkload(WorkloadBase):
             groups=self.groups,
         )
         return out.contiguous()
+
+    def verification(self, *inputs):
+        return convolution_verification(inputs[0].dtype)
+
+
+def convolution_verification(dtype):
+    """One numerical policy for the 1D, 2D and 3D convolution families."""
+    from workloads.numerics import Exact, reference_tolerance
+
+    tolerance = reference_tolerance(dtype)
+    if dtype == torch.float32:
+        tolerance = {"atol": 6e-2, "rtol": 1.6e-2}
+    return Exact(**tolerance)

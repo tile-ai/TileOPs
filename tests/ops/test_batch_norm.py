@@ -148,27 +148,7 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
 @BatchNormBwdFixture
 def test_batch_norm_bwd(N, C, spatial, dtype):
     test = BatchNormBwdTest(N, C, spatial, dtype)
-    grad_out, x, weight, mean, rstd = test.gen_inputs()
-
-    op = BatchNormBwdOp()
-    grad_x, grad_weight, grad_bias = op(grad_out, x, weight, mean, rstd)
-
-    ref_gx, ref_gw, ref_gb = test.ref_program(grad_out, x, weight, mean, rstd)
-
-    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
-    # grad_weight and grad_bias sum N * spatial terms per channel in another order than
-    # torch; where the terms cancel, atol alone carries float32's rounding of the sum.
-    sum_atol = 1e-4 if dtype == torch.float32 else atol
-
-    for name, got, ref, tol in [
-        ("grad_x", grad_x.float(), ref_gx.float(), atol),
-        ("grad_weight", grad_weight.float(), ref_gw.float(), sum_atol),
-        ("grad_bias", grad_bias.float(), ref_gb.float(), sum_atol),
-    ]:
-        max_err = (got - ref).abs().max()
-        assert torch.allclose(got, ref, atol=tol, rtol=rtol), (
-            f"bwd {name} mismatch: max_err={max_err:.4e}"
-        )
+    test.check(BatchNormBwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke

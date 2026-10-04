@@ -4,11 +4,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op, reference_tolerance
+from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall
-from workloads.numerics import Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(GatedDeltaNetFwdOp))
@@ -111,5 +110,4 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(**reference_tolerance(inputs[0].dtype))),
     )

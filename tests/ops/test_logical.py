@@ -8,10 +8,10 @@ binary logical ops, and all supported dtypes for logical_not.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, exact_compare
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from workloads.device import run_device
-from workloads.elementwise import LogicalNotWorkload, LogicalWorkload
+from workloads.elementwise import LogicalCase, LogicalNotWorkload
 
 
 def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -22,15 +22,8 @@ def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class LogicalTest(LogicalWorkload, TestBase):
-    """Reusable test body for logical ops."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        super().__init__(n_total, dtype)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a.bool(), b.bool())
+class LogicalTest(LogicalCase, TestBase):
+    pass
 
 
 class LogicalAndFixture(FixtureBase):
@@ -50,7 +43,7 @@ class LogicalAndFixture(FixtureBase):
 def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_and)
     op = LogicalAndFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class LogicalOrFixture(FixtureBase):
@@ -70,7 +63,7 @@ class LogicalOrFixture(FixtureBase):
 def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_or)
     op = LogicalOrFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests for binary logical ops (L3)
@@ -170,7 +163,7 @@ class LogicalNotTest(LogicalNotWorkload, TestBase):
 def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalNotTest(n_total, dtype)
     op = LogicalNotFwdOp()
-    test.check(op, *test.gen_inputs(), compare=exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 # Per-dtype correctness across the manifest dtype union for binary logical

@@ -23,7 +23,6 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_dims,
     flaggems_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.reduce import (
@@ -36,34 +35,20 @@ from tileops.ops.reduction.reduce import (
     VarFwdOp,
     VarMeanFwdOp,
 )
-from workloads.numerics import Exact
 from workloads.reduction import ProdCall, ReductionCall
 
 
-def _bench(
-    op_cls: type,
-    workload: ReductionCall,
-    baseline_fn: Callable,
-    flaggems_fn: Optional[Callable] = None,
-) -> None:
+def _bench(op_cls: type, workload: ReductionCall, flaggems_fn: Optional[Callable] = None) -> None:
     """Check flag_gems against the reference, then time it and the op with torch."""
+    baseline_fn = workload.ref_program
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
-    tolerance = reference_tolerance(inputs[0].dtype)
-    if inputs[0].dtype == torch.float32:
-        # Summation order moves the low bits of a long float32 reduction by more than the
-        # elementwise float32 tolerance allows.
-        tolerance = {"rtol": 1e-4, "atol": 1e-4}
     functors = {"tileops": op}
     if flaggems_fn is not None:
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 def _out_dtype(x: torch.Tensor, params: dict) -> torch.dtype:
@@ -83,48 +68,31 @@ def _flaggems(name: str, params: dict, *extra, **kwargs) -> Optional[Callable]:
 def test_sum_bench(call) -> None:
     p = call.params
 
-    def baseline_fn(x):
-        return x.float().sum(dim=p["dim"], keepdim=p["keepdim"]).to(_out_dtype(x, p))
-
-    _bench(SumFwdOp, ReductionCall(call), baseline_fn, _flaggems("sum_dim", p))
+    _bench(SumFwdOp, ReductionCall(call), _flaggems("sum_dim", p))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MeanFwdOp))
 def test_mean_bench(call) -> None:
     p = call.params
 
-    def baseline_fn(x):
-        return x.float().mean(dim=p["dim"], keepdim=p["keepdim"]).to(_out_dtype(x, p))
-
-    _bench(MeanFwdOp, ReductionCall(call), baseline_fn, _flaggems("mean_dim", p))
+    _bench(MeanFwdOp, ReductionCall(call), _flaggems("mean_dim", p))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AmaxFwdOp))
 def test_amax_bench(call) -> None:
     p = call.params
 
-    def baseline_fn(x):
-        return x.amax(dim=p["dim"], keepdim=p["keepdim"])
-
-    _bench(AmaxFwdOp, ReductionCall(call), baseline_fn, _flaggems("amax", p))
+    _bench(AmaxFwdOp, ReductionCall(call), _flaggems("amax", p))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AminFwdOp))
 def test_amin_bench(call) -> None:
-    p = call.params
-
-    def baseline_fn(x):
-        return x.amin(dim=p["dim"], keepdim=p["keepdim"])
-
-    _bench(AminFwdOp, ReductionCall(call), baseline_fn)
+    _bench(AminFwdOp, ReductionCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(ProdFwdOp))
 def test_prod_bench(call) -> None:
     p = call.params
-
-    def baseline_fn(x):
-        return x.float().prod(dim=p["dim"], keepdim=p["keepdim"]).to(_out_dtype(x, p))
 
     flaggems_fn = None
     if not p.get("dtype"):
@@ -133,7 +101,7 @@ def test_prod_bench(call) -> None:
         def flaggems_fn(x):
             return flaggems_prod(x, p["dim"], p["keepdim"])
 
-    _bench(ProdFwdOp, ProdCall(call), baseline_fn, flaggems_fn)
+    _bench(ProdFwdOp, ProdCall(call), flaggems_fn)
 
 
 def _correction(params: dict):
@@ -145,10 +113,7 @@ def test_std_bench(call) -> None:
     p = call.params
     c = _correction(p)
 
-    def baseline_fn(x):
-        return x.float().std(dim=p["dim"], keepdim=p["keepdim"], correction=c).to(x.dtype)
-
-    _bench(StdFwdOp, ReductionCall(call), baseline_fn, _flaggems("std", p, correction=c))
+    _bench(StdFwdOp, ReductionCall(call), _flaggems("std", p, correction=c))
 
 
 @pytest.mark.parametrize("call", manifest_calls(VarFwdOp))
@@ -156,10 +121,7 @@ def test_var_bench(call) -> None:
     p = call.params
     c = _correction(p)
 
-    def baseline_fn(x):
-        return x.float().var(dim=p["dim"], keepdim=p["keepdim"], correction=c).to(x.dtype)
-
-    _bench(VarFwdOp, ReductionCall(call), baseline_fn, _flaggems("var_dim", p, correction=c))
+    _bench(VarFwdOp, ReductionCall(call), _flaggems("var_dim", p, correction=c))
 
 
 @pytest.mark.parametrize("call", manifest_calls(VarMeanFwdOp))
@@ -167,9 +129,4 @@ def test_var_mean_bench(call) -> None:
     p = call.params
     c = _correction(p)
 
-    def baseline_fn(x):
-        v = x.float().var(dim=p["dim"], keepdim=p["keepdim"], correction=c).to(x.dtype)
-        m = x.float().mean(dim=p["dim"], keepdim=p["keepdim"]).to(x.dtype)
-        return (v, m)
-
-    _bench(VarMeanFwdOp, ReductionCall(call), baseline_fn, _flaggems("var_mean", p, correction=c))
+    _bench(VarMeanFwdOp, ReductionCall(call), _flaggems("var_mean", p, correction=c))

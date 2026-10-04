@@ -57,9 +57,7 @@ class RMSNormFixture(FixtureBase):
 def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormTest(m, n, dtype)
     op = RMSNormFwdOp(normalized_shape=(n,))
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    rtol = atol
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 class RMSNormNonContigFixture(FixtureBase):
@@ -293,8 +291,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormTest(m, n, dtype)
     op = FusedAddRMSNormFwdOp(tune=tune)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):

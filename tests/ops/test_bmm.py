@@ -145,11 +145,7 @@ class BmmFixture(FixtureBase):
 def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     test = BmmTest(batch, m, n, k, dtype)
     op = BmmFwdOp(tune=tune)
-    if dtype == torch.float16:
-        tolerances = {"atol": 1e-3, "rtol": 1e-3}
-    else:
-        tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -258,7 +254,7 @@ def test_bmm_fp8(
     test = BmmFp8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
     op = BmmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=2e-2, rtol=2e-2)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke

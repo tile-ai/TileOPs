@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm.ada_layer_norm import (
     AdaLayerNormKernel,
     _should_use_cp_async,
@@ -13,6 +13,7 @@ from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
 from workloads.norm import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
+from workloads.numerics import reference_tolerance
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
@@ -49,7 +50,7 @@ class AdaLayerNormFixture(FixtureBase):
 def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormTest(m, n, dtype)
     op = AdaLayerNormFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -65,7 +66,7 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    torch.testing.assert_close(actual, expected, **reference_tolerance(dtype))
 
 
 @pytest.mark.cuda_only
@@ -86,7 +87,7 @@ def test_ada_layer_norm_async_copy_handles_row_tail() -> None:
     assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    torch.testing.assert_close(actual, expected, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -141,7 +142,7 @@ def test_ada_layer_norm_async_policy_edge_correctness(
         assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    torch.testing.assert_close(actual, expected, **reference_tolerance(dtype))
 
 
 class AdaLayerNorm3DFixture(FixtureBase):
@@ -178,7 +179,7 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
     y_ref = (scale.float() * normed + shift.float()).to(dtype)
 
     y = op(x, scale, shift)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -217,7 +218,7 @@ class AdaLayerNormZeroFixture(FixtureBase):
 def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     op = AdaLayerNormZeroFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -233,7 +234,7 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    torch.testing.assert_close(actual, expected, **reference_tolerance(dtype))
 
 
 @pytest.mark.cuda_only
@@ -254,7 +255,7 @@ def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
     assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
+    torch.testing.assert_close(actual, expected, **reference_tolerance(dtype))
 
 
 class AdaLayerNormZero3DFixture(FixtureBase):
@@ -292,6 +293,6 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
     y_ref = (gate.float() * (scale.float() * normed + shift.float())).to(dtype)
 
     y = op(x, scale, shift, gate)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
     )

@@ -3,9 +3,10 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, standard_tolerance
+from tests.test_base import FixtureBase
 from tileops.ops import GroupedQueryAttentionPagedFwdOp
 from workloads.attention.gqa.paged import GroupedQueryAttentionPagedFwdWorkload
+from workloads.numerics import reference_tolerance
 
 
 def _decode(
@@ -39,7 +40,7 @@ def _decode(
 
 def _check(op, workload, inputs) -> None:
     torch.testing.assert_close(
-        op(*inputs), workload.ref_program(*inputs), **standard_tolerance(workload.dtype)
+        op(*inputs), workload.ref_program(*inputs), **reference_tolerance(workload.dtype)
     )
 
 

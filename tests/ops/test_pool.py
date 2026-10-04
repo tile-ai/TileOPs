@@ -464,8 +464,7 @@ def _run_avg_pool_case(
     if ndim > 1:
         op_kwargs["divisor_override"] = divisor_override
     op = _AVG_POOL_OPS[ndim](**op_kwargs)
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *test.gen_inputs(*shape), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(*shape))
 
 
 @AvgPool1dFixture
@@ -1151,7 +1150,7 @@ def _run_max_pool_case(
             ceil_mode=ceil_mode,
             tune=tune,
         )
-        test.check(op, *test.gen_inputs(*shape), atol=0, rtol=0)
+        test.check(op, *test.gen_inputs(*shape))
 
 
 @MaxPool1dFixture
@@ -1798,8 +1797,7 @@ def test_adaptive_avg_pool2d(
 ) -> None:
     test = AdaptiveAvgPool2dTest(n, c_in, h_in, w_in, output_size, dtype)
     op = AdaptiveAvgPool2dFwdOp(output_size, tune=tune)
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op):
         assert isinstance(op.kernel, AdaptiveAvgPool2dKernel)
 
@@ -1821,7 +1819,7 @@ def test_adaptive_max_pool2d(
         )
         op_cls = AdaptiveMaxPool2dIndicesFwdOp if return_indices else AdaptiveMaxPool2dFwdOp
         op = op_cls(output_size, tune=tune)
-        test.check(op, *test.gen_inputs(), atol=0, rtol=0)
+        test.check(op, *test.gen_inputs())
         expected_kernel = (
             AdaptiveMaxPool2dWithIndicesKernel if return_indices else AdaptiveMaxPool2dKernel
         )

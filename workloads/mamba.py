@@ -173,6 +173,12 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
         return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.n_groups)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        atol = 1e-3 if inputs[0].dtype == torch.float16 else 2e-3
+        return Exact(atol=atol, rtol=1e-5)
+
 
 class SSDChunkStateFwdFixture(FixtureBase):
     @classmethod
@@ -316,6 +322,12 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        atol = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
+        return Exact(atol=atol, rtol=1e-3)
+
 
 class SSDDecodeFixture(FixtureBase):
     @classmethod
@@ -458,6 +470,12 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
 
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        atol = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
+        return Exact(atol=atol, rtol=1e-3)
 
 
 def da_cumsum_fwd_ref(
@@ -704,7 +722,7 @@ def _step_sizes(like: torch.Tensor) -> torch.Tensor:
     return torch.rand(like.shape, device=like.device).to(like.dtype) * 0.1 + 0.01
 
 
-class DaCumsumFwdCall(CallWorkload):
+class DaCumsumFwdCall(CallWorkload, DaCumsumFwdWorkload):
     """A manifest call of SSDChunkCumsumFwdOp with a negative decay ``A``."""
 
     def gen_inputs(self):
@@ -737,7 +755,7 @@ class CBProducerFwdCall(CallWorkload):
         return cb_producer_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
 
 
-class SSDChunkStateFwdCall(CallWorkload):
+class SSDChunkStateFwdCall(CallWorkload, SSDChunkStateFwdWorkload):
     """A manifest call of SSDChunkStateFwdOp; a passed ``seq_idx`` packs two sequences."""
 
     def gen_inputs(self):
@@ -751,7 +769,7 @@ class SSDChunkStateFwdCall(CallWorkload):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.call.ix["G"], seq_idx=seq_idx)
 
 
-class SSDStatePassingFwdCall(CallWorkload):
+class SSDStatePassingFwdCall(CallWorkload, SSDStatePassingFwdWorkload):
     """A manifest call of SSDStatePassingFwdOp."""
 
     def gen_inputs(self):
@@ -766,7 +784,7 @@ class SSDStatePassingFwdCall(CallWorkload):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
 
-class SSDChunkScanFwdCall(CallWorkload):
+class SSDChunkScanFwdCall(CallWorkload, SSDChunkScanFwdWorkload):
     """A manifest call of SSDChunkScanFwdOp."""
 
     def gen_inputs(self):
@@ -922,3 +940,9 @@ class Mamba2FwdCall(CallWorkload):
         return mamba2_fwd_ref(
             x, dt, A, B, C, dt_bias, ix["chunk_size"], ix["dt_softplus"], initial_states
         )
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        atol = 1e-2 if inputs[0].dtype == torch.float16 else 2e-2
+        return Exact(atol=atol, rtol=1e-3)

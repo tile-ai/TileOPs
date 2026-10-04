@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree, standard_tolerance
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
@@ -13,6 +13,7 @@ from workloads.norm import (
     FusedAddLayerNormWorkload,
     LayerNormWorkload,
 )
+from workloads.numerics import reference_tolerance
 
 
 class LayerNormTest(LayerNormWorkload, TestBase):
@@ -64,8 +65,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
     op = LayerNormFwdOp(normalized_shape=(n,))
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -302,7 +302,7 @@ class FusedAddLayerNormFixture(FixtureBase):
 def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
     op = FusedAddLayerNormFwdOp(tune=tune)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class FusedAddLayerNormNonContigFixture(FixtureBase):
@@ -335,7 +335,7 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
-    tolerance = standard_tolerance(dtype)
+    tolerance = reference_tolerance(dtype)
     assert torch.allclose(y, y_ref, **tolerance), (
         f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
     )
@@ -372,7 +372,7 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     y_ref, add_ref = test.ref_program(x, residual, weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
-    tolerance = standard_tolerance(dtype)
+    tolerance = reference_tolerance(dtype)
     assert torch.allclose(y, y_ref, **tolerance), (
         f"3D y test failed, max err: {(y - y_ref).abs().max()}"
     )

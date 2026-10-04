@@ -58,7 +58,7 @@ def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tun
         test.sinkhorn_eps,
         tune=tune,
     )
-    test.check(op, *test.gen_inputs(), compare=_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class MHCPostTest(MHCPostWorkload, TestBase):
@@ -84,4 +84,4 @@ class MHCPostFixture(FixtureBase):
 def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tune: bool) -> None:
     test = MHCPostTest(batch, n_expand, c_x, dtype)
     op = MHCPostFwdOp(tune=tune)
-    test.check(op, *test.gen_inputs(), compare=_compare)
+    test.check(op, *test.gen_inputs())

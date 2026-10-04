@@ -29,7 +29,6 @@ from workloads.mamba import (
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
 )
-from workloads.numerics import Exact
 
 # Optional mamba_ssm Triton baselines
 try:
@@ -127,9 +126,6 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 2e-3, rtol=1e-5)
-        ),
     )
 
 
@@ -152,9 +148,6 @@ def test_ssd_chunk_state_fwd_bench(call) -> None:
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 1.6e-2, rtol=1e-3)
-        ),
     )
 
 
@@ -262,7 +255,4 @@ def test_mamba2_fwd_bench(call):
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(atol=1e-2 if x.dtype == torch.float16 else 2e-2, rtol=1e-3)
-        ),
     )

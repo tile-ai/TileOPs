@@ -94,6 +94,20 @@ class MhaDecodePagedWorkload(WorkloadBase):
             out_list.append((probs @ v_b).transpose(0, 1).unsqueeze(0).to(q.dtype))
         return torch.cat(out_list, dim=0)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        atol = {torch.float16: 1e-3, torch.bfloat16: 5e-3}[inputs[0].dtype]
+
+        def validate(got, expected):
+            torch.testing.assert_close(got, expected, atol=atol, rtol=atol)
+            cosine = torch.nn.functional.cosine_similarity(
+                got.reshape(self.batch, -1), expected.reshape(self.batch, -1), dim=-1
+            )
+            assert cosine.min() > 0.99
+
+        return Custom(validate, "attention values and cosine agreement")
+
 
 class MhaDecodePagedCall(CallWorkload, MhaDecodePagedWorkload):
     """A manifest call of MultiHeadAttentionDecodePagedWithKVCacheFwdOp."""

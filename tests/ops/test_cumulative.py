@@ -8,10 +8,9 @@ Output has the same shape as input.
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.device import run_device
-from workloads.reduction import CumulativeWorkload
+from workloads.reduction import CumulativeWorkload, reduction_tolerance
 
 
 class CumulativeBasicFixture(FixtureBase):
@@ -103,7 +102,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = CumulativeTest((m, n), dtype, "cumsum")
     op = CumsumFwdOp()
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @CumulativeNonContigFixture
@@ -177,7 +176,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = CumulativeTest((m, n), dtype, "cumprod", use_small_range=True)
     op = CumprodFwdOp()
-    test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @CumulativeNonContigFixture

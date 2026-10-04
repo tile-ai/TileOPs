@@ -4,7 +4,6 @@ import math
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
@@ -16,7 +15,6 @@ from benchmarks.baselines import (
     flaggems_op,
     flashinfer_op,
     quack_op,
-    reference_tolerance,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -27,7 +25,6 @@ from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.norm import NormCall
-from workloads.numerics import Exact
 
 
 def _flaggems_rms_norm(n: int, eps: float):
@@ -87,15 +84,8 @@ def test_rms_norm_bench(call) -> None:
     inputs = workload.gen_inputs()
     x, weight = inputs
     op = RMSNormFwdOp(**workload.arguments(), tune=True)
-    shape, eps = tuple(call.params["normalized_shape"]), _eps(call)
-
-    def reference(x, weight):
-        return F.rms_norm(x.float(), shape, None if weight is None else weight.float(), eps).to(
-            x.dtype
-        )
-
-    tolerance = reference_tolerance(x.dtype)
-    # The library kernels take a 2-D input and a weight; a row without one has no tag.
+    shape, eps = (tuple(call.params["normalized_shape"]), _eps(call))
+    reference = workload.ref_program
     library = {}
     if weight is not None and x.ndim == 2:
         library = {
@@ -103,7 +93,6 @@ def test_rms_norm_bench(call) -> None:
             FLASHINFER_TAG: _flashinfer_rms_norm(eps),
             VLLM_TAG: _vllm_rms_norm(x, eps),
         }
-
     quack_rms = quack_op("rmsnorm")
     width = math.prod(shape)
 
@@ -113,19 +102,13 @@ def test_rms_norm_bench(call) -> None:
         ).reshape_as(x)
 
     library[QUACK_TAG] = quack_fn
-
     functors = {
         "tileops": op,
         **library,
         "torch-ref": reference,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
-
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=reference, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(FusedAddRMSNormFwdOp))
@@ -134,15 +117,7 @@ def test_fused_add_rms_norm_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = FusedAddRMSNormFwdOp(**workload.arguments(), tune=True)
     eps = call.params["eps"]
-
-    # Baseline: add + manual rmsnorm (separate ops)
-    def baseline_fn(x, residual, weight):
-        add_result = (x.float() + residual.float()).to(x.dtype)
-        rms = torch.sqrt(add_result.float().pow(2).mean(dim=-1, keepdim=True) + eps)
-        y = ((add_result.float() / rms) * weight.float()).to(x.dtype)
-        return y, add_result
-
-    tolerance = reference_tolerance(inputs[0].dtype)
+    baseline_fn = workload.ref_program
     fused_kernels = {
         FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
         VLLM_TAG: vllm_op("fused_add_rms_norm"),
@@ -152,12 +127,7 @@ def test_fused_add_rms_norm_bench(call) -> None:
         functors[tag] = _in_place_fused_add(fn, inputs, eps)
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(LayerNormFwdOp))
@@ -166,20 +136,14 @@ def test_layer_norm_bench(call) -> None:
     inputs = workload.gen_inputs()
     x, weight, bias = inputs
     op = LayerNormFwdOp(**workload.arguments(), tune=True)
-    shape, eps = tuple(call.params["normalized_shape"]), call.params["eps"]
-
-    def baseline_fn(x, weight, bias):
-        return F.layer_norm(x, shape, weight=weight, bias=bias, eps=eps)
-
-    tolerance = reference_tolerance(x.dtype)
-    # The library kernels take both affine tensors; a row without them has no tag.
+    shape, eps = (tuple(call.params["normalized_shape"]), call.params["eps"])
+    baseline_fn = workload.ref_program
     library = {}
     if weight is not None and bias is not None:
         flaggems_layer_norm = flaggems_op("layer_norm")
         flashinfer_layer_norm = flashinfer_op("layernorm")
 
         def flaggems_fn(x, weight, bias):
-            # Returns (output, mean, rstd); the row reports the output.
             return flaggems_layer_norm(x, list(shape), weight, bias, eps)[0]
 
         def flashinfer_fn(x, weight, bias):
@@ -203,19 +167,13 @@ def test_layer_norm_bench(call) -> None:
         return out.reshape_as(x)
 
     library[QUACK_TAG] = quack_fn
-
     functors = {
         "tileops": op,
         **library,
         "torch": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
-
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(FusedAddLayerNormFwdOp))
@@ -226,10 +184,7 @@ def test_fused_add_layer_norm_bench(call) -> None:
     eps = call.params["eps"]
 
     # Baseline: add + F.layer_norm (separate ops)
-    def baseline_fn(x, residual, weight, bias):
-        add_result = (x.float() + residual.float()).to(x.dtype)
-        n = x.shape[-1]
-        return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=eps), add_result
+    baseline_fn = workload.ref_program
 
     from flash_attn.ops.triton.layer_norm import layer_norm_fn
 
@@ -257,15 +212,13 @@ def test_fused_add_layer_norm_bench(call) -> None:
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
-        ),
     )
 
 
 # AdaLayerNorm and AdaLayerNormZero: no library ships either kernel.
-def _bench(op_cls: type, call, baseline_fn) -> None:
+def _bench(op_cls: type, call) -> None:
     workload = NormCall(call)
+    baseline_fn = workload.ref_program
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
     functors = {
@@ -277,29 +230,14 @@ def _bench(op_cls: type, call, baseline_fn) -> None:
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
-        ),
     )
 
 
 @pytest.mark.parametrize("call", manifest_calls(AdaLayerNormFwdOp))
 def test_ada_layer_norm_bench(call) -> None:
-    eps = call.params["eps"]
-
-    def baseline_fn(x, scale, shift):
-        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
-        return (scale.float() * normed + shift.float()).to(x.dtype)
-
-    _bench(AdaLayerNormFwdOp, call, baseline_fn)
+    _bench(AdaLayerNormFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(AdaLayerNormZeroFwdOp))
 def test_ada_layer_norm_zero_bench(call) -> None:
-    eps = call.params["eps"]
-
-    def baseline_fn(x, scale, shift, gate):
-        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
-        return (gate.float() * (scale.float() * normed + shift.float())).to(x.dtype)
-
-    _bench(AdaLayerNormZeroFwdOp, call, baseline_fn)
+    _bench(AdaLayerNormZeroFwdOp, call)

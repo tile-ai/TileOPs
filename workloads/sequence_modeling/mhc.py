@@ -71,6 +71,11 @@ class MHCPreWorkload(WorkloadBase):
             self.sinkhorn_eps,
         )
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=1e-2, rtol=1e-2)
+
 
 class MHCPostWorkload(WorkloadBase):
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
@@ -96,6 +101,11 @@ class MHCPostWorkload(WorkloadBase):
             self.batch, self.n_expand * self.c_x
         ) + x_res.float()
         return x_out_ref.bfloat16()
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=1e-2, rtol=1e-2)
 
 
 def mhc_pre_ref(

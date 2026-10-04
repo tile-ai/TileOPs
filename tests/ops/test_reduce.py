@@ -7,13 +7,13 @@ Each op reduces along dim=-1 and supports 1D-4D input.
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.device import run_device
 from workloads.reduction import (
     ProdWorkload,
-    StdWorkload,
-    SumWorkload,
+    ReduceCase,
+    WelfordCase,
+    reduction_tolerance,
 )
 
 
@@ -122,30 +122,8 @@ class BesselFixture(FixtureBase):
     ]
 
 
-class ReduceTest(SumWorkload, TestBase):
-    """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
-
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        dtype: torch.dtype,
-        op_kind: str,
-    ):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        if self.op_kind == "sum":
-            return x_f32.sum(dim=-1).to(x.dtype)
-        elif self.op_kind == "mean":
-            return x_f32.mean(dim=-1).to(x.dtype)
-        elif self.op_kind == "amax":
-            return x_f32.amax(dim=-1).to(x.dtype)
-        elif self.op_kind == "amin":
-            return x_f32.amin(dim=-1).to(x.dtype)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+class ReduceTest(ReduceCase, TestBase):
+    pass
 
 
 class ProdTest(ProdWorkload, TestBase):
@@ -155,25 +133,8 @@ class ProdTest(ProdWorkload, TestBase):
         super().__init__((m, n), dtype)
 
 
-class WelfordTest(StdWorkload, TestBase):
-    """Test helper for Welford-based ops (std, var, var_mean)."""
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-        self.correction = correction
-
-    def ref_program(self, x: torch.Tensor) -> object:
-        x_f32 = x.float()
-        if self.op_kind == "var":
-            return x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
-        elif self.op_kind == "std":
-            return x_f32.std(dim=-1, correction=self.correction).to(x.dtype)
-        elif self.op_kind == "var_mean":
-            v = x_f32.var(dim=-1, correction=self.correction).to(x.dtype)
-            m = x_f32.mean(dim=-1).to(x.dtype)
-            return (v, m)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+class WelfordTest(WelfordCase, TestBase):
+    pass
 
 
 # Helper to get tolerances
@@ -185,7 +146,7 @@ def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceTiledFixture
@@ -194,7 +155,7 @@ def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceTiledFixture
@@ -203,8 +164,7 @@ def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ProdTest(m, n, dtype)
     op = ProdFwdOp(dim=-1)
-    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceTiledFixture
@@ -213,7 +173,7 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
     op = VarFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -268,7 +228,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     m, n, dtype = 8, 7935, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1, tune=True)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
     if served_in_tree(op):
         (kernel,) = op.built_kernels("reduce").values()
@@ -299,7 +259,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     else:
         test = WelfordTest(m, n, dtype, "var", correction=1)
         op = VarFwdOp(dim=-1, tune=True)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
     if served_in_tree(op):
         (kernel,) = op.built_kernels("reduce").values()
@@ -350,7 +310,7 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "mean")
     op = MeanFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -359,7 +319,7 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "amin")
     op = AminFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -368,7 +328,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ReduceTest(m, n, dtype, "amax")
     op = AmaxFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -377,9 +337,7 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ProdTest(m, n, dtype)
     op = ProdFwdOp(dim=-1)
-    # Prod is more numerically sensitive
-    tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -388,7 +346,7 @@ def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordTest(m, n, dtype, "std", correction=1)
     op = StdFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @BesselFixture
@@ -397,7 +355,7 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
 
     test = WelfordTest(m, n, dtype, "std", correction=correction)
     op = StdFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -406,7 +364,7 @@ def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
     op = VarFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @BesselFixture
@@ -415,7 +373,7 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
 
     test = WelfordTest(m, n, dtype, "var", correction=correction)
     op = VarFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
@@ -424,7 +382,7 @@ def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=1)
     op = VarMeanFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @BesselFixture
@@ -433,7 +391,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
     op = VarMeanFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Multi-dim tests for non-contiguous (3D) for Welford ops

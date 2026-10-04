@@ -1,10 +1,8 @@
-"""Numerical comparison mechanics shared by tests and benchmarks.
+"""The shared correctness protocol for workloads, tests and benchmarks.
 
-What belongs here is how a quantity is measured, not what bound it must meet.
-Tolerances, which outputs a case compares and which deviations it allows stay
-with the consumer; two copies of the measurement itself drift apart in silence,
-and a benchmark then reports a ratio against a quantity no test computes the
-same way.
+Workloads declare Evidence. Only compare_outputs interprets it; verify executes
+callables with isolated inputs and uses that same comparison for negative controls.
+Consumers record CheckResult and own pytest/timing policy, never numerical policy.
 """
 
 import dataclasses
@@ -13,6 +11,7 @@ from typing import Any, Callable, Optional
 import torch
 
 __all__ = [
+    "CheckResult",
     "Custom",
     "Evidence",
     "Exact",
@@ -21,10 +20,14 @@ __all__ = [
     "Partial",
     "ReferenceInfeasible",
     "Unestablished",
+    "assert_close",
     "assert_normalized_error",
     "assert_quantized",
+    "compare_outputs",
     "describe",
     "logit_mask_validator",
+    "reference_tolerance",
+    "verify",
     "zeroed_input",
 ]
 
@@ -107,10 +110,13 @@ def assert_quantized(got: Any, expected: Any, scale_rtol: float = 1e-6) -> None:
         assert output.shape == target.shape and output.dtype == target.dtype
         if output.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             step = (output.view(torch.uint8).int() - target.view(torch.uint8).int()).abs()
-            assert step.max().item() <= 1, "FP8 quantization differs by more than one code"
+            assert not step.numel() or step.max().item() <= 1, (
+                "FP8 quantization differs by more than one code"
+            )
             assert torch.isfinite(output.float()).all() and torch.isfinite(target.float()).all()
         elif output.dtype == torch.int8:
-            assert (output.int() - target.int()).abs().max().item() <= 1, "INT8 code differs by > 1"
+            step = (output.int() - target.int()).abs()
+            assert not step.numel() or step.max().item() <= 1, "INT8 code differs by > 1"
         else:
             torch.testing.assert_close(output, target, rtol=scale_rtol, atol=0)
 
@@ -138,34 +144,31 @@ def zeroed_input(index: int, name: str) -> NegativeControl:
 class Exact:
     """Compare every returned output with an independent reference.
 
-    Explicit tolerances override dtype defaults; ``reference`` overrides the workload oracle."""
+    Explicit tolerances override dtype defaults."""
 
     rtol: Optional[float] = None
     atol: Optional[float] = None
-    reference: Optional[Callable] = None
     controls: tuple[NegativeControl, ...] = ()
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
         """Use explicit tolerances, or the dtype defaults."""
         named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}
-        return named or default
+        return {"rtol": 0.0, "atol": 0.0} | named if named else default
 
 
 @dataclasses.dataclass(frozen=True)
 class Partial:
     """Check the first ``outputs`` results; ``reason`` identifies unchecked outputs.
 
-    For a reference that never produces the rest. One that produces them for
-    some inputs and not others returns None in their place, which is decided
-    per call rather than declared once.
+    Use this when the reference does not establish the remaining outputs.
+    Workloads may choose the prefix per call; None never means unchecked.
     """
 
     outputs: int
     reason: str
     rtol: Optional[float] = None
     atol: Optional[float] = None
-    reference: Optional[Callable] = None
     controls: tuple[NegativeControl, ...] = ()
     kind: str = "partial"
 
@@ -180,7 +183,7 @@ class Partial:
     def tolerance(self, default: dict) -> dict:
         """Use explicit tolerances, or the dtype defaults."""
         named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}
-        return named or default
+        return {"rtol": 0.0, "atol": 0.0} | named if named else default
 
 
 @dataclasses.dataclass(frozen=True)
@@ -197,6 +200,7 @@ class Custom:
     validator: Callable[[Any, Any], None]
     reason: str
     controls: tuple[NegativeControl, ...] = ()
+    probe: Optional[Callable[[Callable, tuple], None]] = None
     kind: str = "custom"
 
 
@@ -233,3 +237,209 @@ def describe(evidence: Evidence) -> Optional[str]:
     if evidence.kind == "reference_infeasible":
         return f"unestablished, needs {evidence.missing}: {evidence.reason}"
     return "unestablished: no benchmark reference contract declared or available"
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckResult:
+    """Completed comparisons, independent of pytest, Op attribution or timing."""
+
+    checked_outputs: int
+    total_outputs: int | None
+    max_abs_err: float | None
+    unchecked_reason: str | None = None
+
+
+def reference_tolerance(dtype: torch.dtype) -> dict[str, float]:
+    """One default table, applied to each output's dtype independently."""
+    tol = {
+        torch.float16: 1e-3,
+        torch.bfloat16: 1.6e-2,
+        torch.float32: 1e-5,
+        torch.float64: 1e-7,
+        torch.complex64: 1e-5,
+        torch.complex128: 1e-7,
+    }.get(dtype, 0.0)
+    return {"rtol": tol, "atol": tol}
+
+
+def _outputs(value: Any) -> tuple:
+    return tuple(value) if isinstance(value, (tuple, list)) else (value,)
+
+
+def _tensor_pairs(got: Any, expected: Any):
+    """Validate structure before any numerical strategy can accept an output."""
+    if isinstance(expected, torch.Tensor):
+        assert isinstance(got, torch.Tensor), "expected a tensor output"
+        assert got.shape == expected.shape, f"shape mismatch: {got.shape} != {expected.shape}"
+        assert got.dtype == expected.dtype, f"dtype mismatch: {got.dtype} != {expected.dtype}"
+        assert got.device == expected.device, f"device mismatch: {got.device} != {expected.device}"
+        yield got, expected
+    elif isinstance(expected, dict):
+        assert isinstance(got, dict) and got.keys() == expected.keys(), "mapping outputs differ"
+        for key in expected:
+            yield from _tensor_pairs(got[key], expected[key])
+    elif isinstance(expected, (tuple, list)):
+        assert isinstance(got, (tuple, list)) and len(got) == len(expected), (
+            "output structure mismatch"
+        )
+        for a, b in zip(got, expected, strict=True):
+            yield from _tensor_pairs(a, b)
+    elif expected is None:
+        assert got is None, "None is an output value, not an unchecked tensor"
+    else:
+        assert got == expected, f"non-tensor output mismatch: {got!r} != {expected!r}"
+
+
+def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckResult:
+    """The only interpreter of output coverage, structure and numerical policy.
+
+    Exact checks every output. Partial explicitly checks a prefix. Custom receives
+    the complete result after structural checks; it cannot bypass those checks.
+    None is an actual output value, not an implicit permission to omit validation.
+    """
+    if evidence.kind not in ("exact", "partial", "custom"):
+        return CheckResult(0, None, None, describe(evidence))
+    outputs, targets = _outputs(produced), _outputs(expected)
+    width = len(outputs)
+    claimed = evidence.outputs if isinstance(evidence, Partial) else width
+    if not width or not targets:
+        raise ValueError("the reference or implementation returned no outputs")
+    if isinstance(evidence, Partial):
+        if claimed > min(width, len(targets)):
+            raise ValueError(
+                f"claims {claimed} outputs, implementation returns {width} and reference {len(targets)}"
+            )
+    elif width != len(targets):
+        raise ValueError(
+            f"reference establishes {len(targets)} of {width} outputs; declare Partial explicitly"
+        )
+    pairs = [
+        list(_tensor_pairs(a, b)) for a, b in zip(outputs[:claimed], targets[:claimed], strict=True)
+    ]
+    if isinstance(evidence, Custom):
+        evidence.validator(produced, expected)
+    else:
+        for output_pairs in pairs:
+            for got, target in output_pairs:
+                torch.testing.assert_close(
+                    got,
+                    target,
+                    equal_nan=True,
+                    **evidence.tolerance(reference_tolerance(got.dtype)),
+                )
+    # Metrics are diagnostics computed only after all comparisons succeed.
+    maximum = 0.0
+    checked = 0
+    for output_pairs in pairs:
+        if not output_pairs:
+            continue
+        checked += 1
+        for got, target in output_pairs:
+            if not got.numel():
+                continue
+            dtype = torch.complex128 if got.is_complex() else torch.float64
+            for a, b in zip(
+                got.reshape(-1).split(1 << 20), target.reshape(-1).split(1 << 20), strict=True
+            ):
+                a, b = a.to(dtype), b.to(dtype)
+                finite = torch.isfinite(a) & torch.isfinite(b)
+                if finite.any():
+                    maximum = max(maximum, (a[finite] - b[finite]).abs().max().item())
+    reason = describe(evidence) if isinstance(evidence, Partial) else None
+    if not checked:
+        reason = "no numerical output was compared"
+    return CheckResult(checked, width, maximum if checked else None, reason)
+
+
+def _tensors(value: Any):
+    if isinstance(value, torch.Tensor):
+        yield value
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _tensors(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _tensors(item)
+
+
+def _copy_outputs(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().clone()
+    if isinstance(value, tuple):
+        return tuple(_copy_outputs(v) for v in value)
+    if isinstance(value, list):
+        return [_copy_outputs(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _copy_outputs(v) for k, v in value.items()}
+    return value
+
+
+def verify(
+    subject: Callable,
+    inputs: tuple,
+    *,
+    reference: Callable | None,
+    evidence: Evidence,
+    subject_inputs: tuple | None = None,
+) -> CheckResult:
+    """Execute a workload's contract, restoring original inputs even on failure.
+
+    Snapshots are restored into the original tensors, preserving argument aliases.
+    Outputs are copied before restoring inputs so an in-place error stays visible.
+    Reference OOM establishes nothing; subject failures always propagate.
+    """
+    if evidence.kind not in ("exact", "partial", "custom"):
+        return CheckResult(0, None, None, describe(evidence))
+    oracle = reference
+    if oracle is None:
+        raise ValueError(
+            "a checked workload must supply ref_program; declare Unestablished explicitly"
+        )
+    args = inputs if subject_inputs is None else subject_inputs
+    live = {id(t): t for t in _tensors((inputs, args))}
+    pristine = {key: tensor.detach().clone() for key, tensor in live.items()}
+
+    def restore():
+        with torch.no_grad():
+            for key, tensor in live.items():
+                target, source = tensor, pristine[key]
+                # Expanded read-only inputs share storage along zero-stride axes.
+                # Restore each stored element once, preserving the original view.
+                for axis in range(tensor.ndim - 1, -1, -1):
+                    if tensor.stride(axis) == 0 and tensor.shape[axis] > 1:
+                        target, source = target.select(axis, 0), source.select(axis, 0)
+                target.copy_(source)
+
+    try:
+        try:
+            expected = _copy_outputs(oracle(*inputs))
+        except torch.OutOfMemoryError:
+            return CheckResult(0, None, None, "reference ran out of memory")
+        restore()
+        with torch.no_grad():
+            produced = _copy_outputs(subject(*args))
+        restore()
+        result = compare_outputs(produced, expected, evidence)
+        del produced
+        if isinstance(evidence, Custom) and evidence.probe is not None:
+            evidence.probe(subject, args)
+            restore()
+        for control in evidence.controls:
+            restore()
+            faulty = _copy_outputs(control.run(oracle, inputs))
+            restore()
+            try:
+                compare_outputs(faulty, expected, evidence)
+            except AssertionError:
+                pass
+            else:
+                raise ValueError(f"negative control {control.name!r} was accepted")
+        return result
+    finally:
+        restore()
+
+
+def assert_close(got: Any, expected: Any, *, atol: float, rtol: float) -> None:
+    """A numerical strategy for an explicitly bounded complete output structure."""
+    for a, b in _tensor_pairs(got, expected):
+        torch.testing.assert_close(a, b, atol=atol, rtol=rtol, equal_nan=True)

@@ -127,15 +127,11 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         """The five packed tensors, plus the RoPE tables when the call carries them."""
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)
-        q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device=run_device()) * 0.1
-        k = (
-            torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
-            * 0.1
-        )
-        v = (
-            torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
-            * 0.1
-        )
+        # Unit-scale Q/K keep softmax away from a near-uniform distribution;
+        # otherwise ignoring Q can fit inside the storage-dtype error bound.
+        q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device=run_device())
+        k = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
+        v = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
 
         cu_seqlens_q = torch.tensor(
             [0] + list(torch.cumsum(torch.tensor(self.seqlens_q), 0).tolist()),
@@ -218,6 +214,28 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
             )
             outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
         return torch.cat(outputs, dim=0)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        if inputs[0].dtype == torch.float8_e4m3fn:
+            # FP8 softmax and optional fused QK rotation each round once.
+            atol, rtol = (0.12, 0.04) if getattr(self, "rotary_dim", 0) else (0.08, 0.02)
+        else:
+            atol = rtol = 1e-3 if inputs[0].dtype == torch.float16 else 1e-2
+        # Query removal is observable only when attention can select among keys.
+        # Empty KV and one-key/window-only-self cases are independent of Q by definition.
+        control = (
+            self.sm_scale != 0
+            and self.wl != 0
+            and any(
+                q_len > 1 and k_len > 1
+                for q_len, k_len in zip(self.seqlens_q, self.seqlens_k, strict=True)
+            )
+        )
+        return Exact(
+            atol=atol, rtol=rtol, controls=(zeroed_input(0, "query-zeroed"),) if control else ()
+        )
 
 
 class GroupedQueryAttentionVarlenScaledWorkload(GroupedQueryAttentionVarlenFwdWorkload):

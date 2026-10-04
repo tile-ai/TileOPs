@@ -96,7 +96,7 @@ class INT8DequantFixture(FixtureBase):
 def test_int8_dequant_op(op_cls: type, m: int, k: int, out_dtype: torch.dtype) -> None:
     test = _TESTS[op_cls](m, k, out_dtype)
     # One float32 multiply and one cast: a conforming kernel is bit-exact.
-    test.check(op_cls(out_dtype), *test.gen_inputs(), atol=0, rtol=0)
+    test.check(op_cls(out_dtype), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -125,7 +125,7 @@ def test_int8_dequant_misaligned_input(op_cls: type) -> None:
     q, scale = test.gen_inputs()
     q = torch.cat([q.new_zeros(1, 1001), q])[1:]
     assert q.is_contiguous() and q.data_ptr() % 16
-    test.check(op_cls(torch.bfloat16), q, scale, atol=0, rtol=0)
+    test.check(op_cls(torch.bfloat16), q, scale)
 
 
 @pytest.mark.smoke

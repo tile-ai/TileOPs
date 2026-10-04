@@ -5,7 +5,6 @@ Covers L1 smoke correctness, multi-dtype coverage, and strategy selection.
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import (
@@ -17,7 +16,11 @@ from tileops.kernels.elementwise import (
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
-from workloads.elementwise import GatedRandnWorkload
+from workloads.elementwise import (
+    GeluAndMulCase,
+    GeluTanhAndMulCase,
+    SiluAndMulCase,
+)
 
 
 class SiluAndMulFixture(FixtureBase):
@@ -35,12 +38,8 @@ class SiluAndMulFixture(FixtureBase):
     ]
 
 
-class SiluAndMulTest(GatedRandnWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.silu(gate) * value).to(x.dtype)
+class SiluAndMulTest(SiluAndMulCase, TestBase):
+    pass
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
@@ -56,8 +55,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = SiluAndMulTest(m, n, dtype)
     op = SiluAndMulFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -66,8 +64,7 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
     op = SiluAndMulFwdOp()
     for m, n in [(32, 64), (16, 128)]:
         test = SiluAndMulTest(m, n, torch.float16)
-        atol, rtol = _get_tolerances(torch.float16)
-        test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+        test.check(op, *test.gen_inputs())
 
 
 class GeluAndMulFixture(FixtureBase):
@@ -84,20 +81,15 @@ class GeluAndMulFixture(FixtureBase):
     ]
 
 
-class GeluAndMulTest(GatedRandnWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.gelu(gate) * value).to(x.dtype)
+class GeluAndMulTest(GeluAndMulCase, TestBase):
+    pass
 
 
 @GeluAndMulFixture
 def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluAndMulTest(m, n, dtype)
     op = GeluAndMulFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 class GeluTanhAndMulFixture(FixtureBase):
@@ -114,20 +106,15 @@ class GeluTanhAndMulFixture(FixtureBase):
     ]
 
 
-class GeluTanhAndMulTest(GatedRandnWorkload, TestBase):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.gelu(gate, approximate="tanh") * value).to(x.dtype)
+class GeluTanhAndMulTest(GeluTanhAndMulCase, TestBase):
+    pass
 
 
 @GeluTanhAndMulFixture
 def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluTanhAndMulTest(m, n, dtype)
     op = GeluTanhAndMulFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -221,8 +208,7 @@ def test_silu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
     """SiluAndMul with config strategy='direct' produces correct results."""
     test = SiluAndMulTest(m, n, dtype)
     kernel = SiluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
-    atol, rtol = _get_tolerances(dtype)
-    test.check(SiluAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
+    test.check(SiluAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 @pytest.mark.cuda_only
@@ -231,8 +217,7 @@ def test_gelu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
     """GeluAndMul with config strategy='direct' produces correct results."""
     test = GeluAndMulTest(m, n, dtype)
     kernel = GeluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
-    atol, rtol = _get_tolerances(dtype)
-    test.check(GeluAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
+    test.check(GeluAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 @pytest.mark.cuda_only
@@ -246,8 +231,7 @@ def test_gelu_tanh_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -
         dtype=dtype,
         config={"strategy": "direct"},
     )
-    atol, rtol = _get_tolerances(dtype)
-    test.check(GeluTanhAndMulFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol, runs=kernel)
+    test.check(GeluTanhAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 @pytest.mark.smoke

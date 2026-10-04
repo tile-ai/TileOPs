@@ -1,5 +1,3 @@
-from functools import partial
-
 import pytest
 import torch
 
@@ -8,7 +6,6 @@ from tileops.kernels.attention import FP8LightningIndexerCall, FP8LightningIndex
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
-from workloads.numerics import assert_normalized_error
 
 
 class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
@@ -47,7 +44,7 @@ def test_indexer(
         batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits
     )
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
-    test.check(op, *test.gen_inputs(), compare=partial(assert_normalized_error, bound=1e-3))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

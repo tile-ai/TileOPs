@@ -180,6 +180,16 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         """*state* between the caller's layout and the ``[HV, K, V]`` the recurrence uses."""
         return state.transpose(-1, -2) if self.state_v_first else state
 
+    def verification(self, *inputs):
+        return gated_verification(
+            inputs,
+            raw_gate=self.raw_gate,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
+            l2norm=self.l2norm,
+            state_v_first=self.state_v_first,
+        )
+
 
 def _decay_rates(like: torch.Tensor) -> torch.Tensor:
     """``A_log``, as Gated DeltaNet initializes it: the log of a rate in ``[1, 16]``."""
@@ -248,3 +258,56 @@ class GatedDeltaNetFwdCall(CallWorkload):
         return chunk_gated_delta_rule(
             q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_seqlens_cpu, **arguments
         )
+
+    def verification(self, *inputs):
+        p = self.call.ix
+        return gated_verification(
+            inputs,
+            raw_gate=p["use_gate_in_kernel"],
+            beta_sigmoid=p["use_beta_sigmoid_in_kernel"],
+            allow_neg_eigval=p["allow_neg_eigval"],
+            l2norm=p["use_qk_l2norm_in_kernel"],
+            state_v_first=p["state_v_first"],
+        )
+
+
+def gated_verification(
+    inputs,
+    *,
+    raw_gate=False,
+    beta_sigmoid=False,
+    allow_neg_eigval=False,
+    l2norm=False,
+    state_v_first=False,
+):
+    from workloads.numerics import Custom, assert_close
+
+    q = inputs[0]
+    if q.shape[1] == 1:
+        tol = 6e-7 if q.dtype == torch.float16 else 1e-7
+        if q.shape[-1] == 64:
+            tol = 1e-5
+        if state_v_first or l2norm:
+            tol = 4e-8
+        if raw_gate:
+            tol = 3e-4
+        if beta_sigmoid and allow_neg_eigval:
+            tol = 4e-3
+        output_atol, state_atol, rtol = tol, tol, tol
+    else:
+        output_atol = rtol = 1e-3 if q.dtype == torch.float16 else 1.6e-2
+        state_atol = (
+            1e-4
+            if q.shape[1] == 64
+            and q.shape[-1] == 128
+            and all(value is None for value in inputs[5:])
+            else output_atol
+        )
+        if q.dtype == torch.float16 and (raw_gate or beta_sigmoid or l2norm):
+            output_atol, state_atol = 2e-3, 6e-3
+
+    def validate(got, expected):
+        assert_close(got[0], expected[0], atol=output_atol, rtol=rtol)
+        assert_close(got[1], expected[1], atol=state_atol, rtol=rtol)
+
+    return Custom(validate, "output and FP32 recurrence state, including input transforms")

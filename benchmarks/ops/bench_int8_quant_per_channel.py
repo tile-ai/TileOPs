@@ -11,7 +11,6 @@ import torch
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT8QuantPerChannelFwdOp
-from workloads.numerics import Custom, assert_quantized
 from workloads.quantization.quantize import INT8QuantPerChannelWorkload
 
 
@@ -48,8 +47,9 @@ def test_int8_quant_per_channel_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
-        evidence={
-            tag: Custom(assert_quantized, "scales checked; INT8 rounding within one code")
-            for tag in ("tileops", VLLM_TAG, TORCH_COMPILE_TAG, "vllm-cuda")
+        noncomparable={
+            VLLM_TAG: "vendor multiplies by 127 / amax; reciprocal rounding can change an INT8 code",
+            "vllm-cuda": "vendor multiplies by 127 / amax; reciprocal rounding can change an INT8 code",
+            TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes",
         },
     )

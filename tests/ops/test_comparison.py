@@ -10,7 +10,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from workloads.device import run_device
-from workloads.elementwise import RandnPairWorkload
+from workloads.elementwise import ComparisonCase
 
 
 def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -21,15 +21,8 @@ def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class ComparisonTest(RandnPairWorkload, TestBase):
-    """Reusable test body for comparison ops."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        super().__init__(n_total, dtype)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a, b)
+class ComparisonTest(ComparisonCase, TestBase):
+    pass
 
 
 class EqFixture(FixtureBase):
@@ -49,7 +42,7 @@ class EqFixture(FixtureBase):
 def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.eq)
     op = EqFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class NeFixture(FixtureBase):
@@ -69,7 +62,7 @@ class NeFixture(FixtureBase):
 def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ne)
     op = NeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class GtFixture(FixtureBase):
@@ -89,7 +82,7 @@ class GtFixture(FixtureBase):
 def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.gt)
     op = GtFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class LtFixture(FixtureBase):
@@ -109,7 +102,7 @@ class LtFixture(FixtureBase):
 def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.lt)
     op = LtFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class GeFixture(FixtureBase):
@@ -129,7 +122,7 @@ class GeFixture(FixtureBase):
 def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ge)
     op = GeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 class LeFixture(FixtureBase):
@@ -149,7 +142,7 @@ class LeFixture(FixtureBase):
 def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.le)
     op = LeFwdOp()
-    test.check(op, *test.gen_inputs(), compare=_bool_compare)
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests for all comparison ops (L3)

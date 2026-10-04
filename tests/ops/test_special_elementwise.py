@@ -8,7 +8,7 @@ import inspect
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, exact_compare, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
     ClampScalarFwdOp,
     HardtanhFwdOp,
@@ -17,7 +17,12 @@ from tileops.ops.elementwise import (
     IsnanFwdOp,
 )
 from workloads.device import run_device
-from workloads.elementwise import SpecialWorkload, alibi_reference, sinusoidal_reference
+from workloads.elementwise import (
+    SpecialCase,
+    alibi_reference,
+    sinusoidal_reference,
+)
+from workloads.numerics import reference_tolerance
 
 
 class SpecialFixture(FixtureBase):
@@ -48,21 +53,14 @@ class SpecialEdgeFixture(FixtureBase):
     ]
 
 
-class SpecialTest(SpecialWorkload, TestBase):
-    """Generic test fixture for special predicate ops."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn, gen_fn=None):
-        super().__init__(n_total, dtype, gen_fn=gen_fn)
-        self._ref_fn = ref_fn
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return self._ref_fn(x)
+class SpecialTest(SpecialCase, TestBase):
+    pass
 
 
 def _make_special_test(n_total, dtype, op_cls, ref_fn, gen_fn=None) -> None:
     test = SpecialTest(n_total, dtype, ref_fn=ref_fn, gen_fn=gen_fn)
     op = op_cls()
-    test.check(op, *test.gen_inputs(), compare=exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @SpecialFixture
@@ -183,7 +181,7 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 # --- L1: masked_fill ---
@@ -200,7 +198,7 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 # --- L1: nan_to_num ---
@@ -218,7 +216,7 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype), equal_nan=True)
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype), equal_nan=True)
 
 
 # --- L1: alibi ---
@@ -316,7 +314,7 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 # L4 — Edge Cases (8 cases, fp32, 4K)
@@ -477,7 +475,7 @@ def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> N
     else:
         out, ref = ew.HardsigmoidFwdOp()(x), F.hardsigmoid(x)
     assert torch.isnan(ref).any()
-    torch.testing.assert_close(out, ref, equal_nan=True, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, equal_nan=True, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke

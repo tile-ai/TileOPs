@@ -2,28 +2,17 @@
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MHADecodePagedWsKernel
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MhaDecodePagedWorkload
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
 
 
 class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):
-    #: Bounds the error absolutely and relatively: past unit scale a 16-bit
-    #: rounding grows with the value.
-    ATOL = {torch.float16: 0.001, torch.bfloat16: 0.005}
-
-    def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor) -> None:
-        """Compare within ATOL, absolute and relative, and by cosine similarity."""
-        atol = self.ATOL[self.dtype]
-        torch.testing.assert_close(output, output_ref, atol=atol, rtol=atol)
-        cos_sim = F.cosine_similarity(
-            output.reshape(self.batch, -1), output_ref.reshape(self.batch, -1), dim=-1, eps=1e-8
-        )
-        assert cos_sim.min() > 0.99, f"cosine similarity {cos_sim.min().item()} too low"
+    pass
 
 
 class MhaDecodePagedFixture(FixtureBase):
@@ -114,7 +103,7 @@ def test_mha_decode_paged_op(
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         page_size=page_size, is_causal=is_causal, tune=tune
     )
-    test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize(
@@ -154,7 +143,9 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     output = op(q, k, v, real_seqlen_kv, block_table)
 
     assert torch.isfinite(output).all(), "output is not finite for a partly filled cache"
-    test._maxdiff_cosine_compare(output, test.ref_program(q, k, v, real_seqlen_kv, block_table))
+    compare_outputs(
+        output, test.ref_program(q, k, v, real_seqlen_kv, block_table), test.verification(q)
+    )
 
 
 @pytest.mark.smoke
@@ -166,7 +157,9 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
     for width in (2, 4):
         block_table = table[:, :width].contiguous()
         output = op(q, k, v, lengths, block_table)
-        test._maxdiff_cosine_compare(output, test.ref_program(q, k, v, lengths, block_table))
+        compare_outputs(
+            output, test.ref_program(q, k, v, lengths, block_table), test.verification(q)
+        )
 
 
 @pytest.mark.smoke

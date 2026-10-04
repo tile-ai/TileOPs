@@ -50,6 +50,16 @@ class GemmWorkload(WorkloadBase):
             b = b.T
         return torch.matmul(a, b)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        tol = 1e-3 if self.dtype == torch.float16 else 1.6e-2
+        gemv = not self.trans_a and (
+            (self.m == 1 and self.trans_b) or (self.n == 1 and not self.trans_b)
+        )
+        atol = tol * max(1.0, self.k / 2048) if gemv else tol
+        return Exact(atol=atol, rtol=tol)
+
 
 class GemmFp8Workload(WorkloadBase):
     def __init__(
@@ -141,6 +151,9 @@ class GemmFp8Workload(WorkloadBase):
         if bias is not None:
             out = out + bias.float()
         return out.to(self.out_dtype)
+
+    def verification(self, *inputs):
+        return fp8_matmul_verification(self.k)
 
 
 def quantize_weight_int4(
@@ -310,6 +323,11 @@ class GemmW4A16Workload(WorkloadBase):
         weight = dequantize_w4a16_weight(packed_weight, weight_scale, weight_zero)
         return torch.matmul(activation, weight.to(activation.dtype).T)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=7e-2, rtol=5e-2)
+
 
 class BmmWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
@@ -400,6 +418,9 @@ class BmmFp8Workload(WorkloadBase):
         b_f = b.float() * scale_b
         out = torch.bmm(a_f, b_f)
         return out.to(self.out_dtype)
+
+    def verification(self, *inputs):
+        return fp8_matmul_verification(self.k)
 
 
 def _generate_batch_sizes(batch_sum: int, batch_count: int):
@@ -547,3 +568,14 @@ class GroupedGemmWorkload(WorkloadBase):
                     output[i] = torch.mm(A[start:end].transpose(0, 1), B[start:end])
                     start = end
         return output
+
+
+def fp8_matmul_verification(k):
+    """FP8 accumulation noise grows with the square root of the reduction length."""
+    from workloads.numerics import Exact, zeroed_input
+
+    return Exact(
+        atol=2e-2 * max(1.0, k / 1024) ** 0.5,
+        rtol=2e-2,
+        controls=(zeroed_input(0, "left-operand-zeroed"),),
+    )

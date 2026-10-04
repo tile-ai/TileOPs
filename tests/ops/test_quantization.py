@@ -1,9 +1,7 @@
-from functools import partial
-
 import pytest
 import torch
 
-from tests.test_base import TestBase, allclose_compare, exact_compare
+from tests.test_base import TestBase
 from tileops.backend import BUILTIN, OpNotAvailableError
 from tileops.kernels.quantization import (
     INT8QuantPerChannelFwdKernel,
@@ -39,21 +37,6 @@ _WORKLOADS = {
     FP8QuantPerBlockFwdOp: FP8QuantPerBlockWorkload,
     INT4QuantPerGroupFwdOp: INT4QuantPerGroupWorkload,
     SmoothQuantFwdOp: SmoothQuantWorkload,
-}
-
-_scale_compare = partial(allclose_compare, atol=0.0, rtol=1e-6)
-
-
-def _bitwise_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Bit for bit, so that NaN codes and signed zeros compare too."""
-    assert output.dtype == output_ref.dtype and output.shape == output_ref.shape
-    assert torch.equal(output.view(torch.uint8), output_ref.view(torch.uint8))
-
-
-_COMPARE = {
-    INT8QuantPerBlockFwdOp: [exact_compare, exact_compare],
-    FP8QuantPerBlockFwdOp: [_bitwise_compare, _bitwise_compare],
-    INT4QuantPerGroupFwdOp: [exact_compare, _scale_compare],
 }
 
 
@@ -103,9 +86,8 @@ def _case(op_cls, rows, cols, dtype, marks=()):
 )
 def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
     test = type("QuantizeTest", (_WORKLOADS[op_cls], TestBase), {})(rows, cols, dtype)
-    compare = _COMPARE.get(op_cls, [exact_compare, _scale_compare])
     try:
-        test.check(op_cls(), *test.gen_inputs(), compare=compare)
+        test.check(op_cls(), *test.gen_inputs())
     except OpNotAvailableError as e:
         pytest.skip(str(e))
 
@@ -163,7 +145,7 @@ def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make, kernel) -> 
     (w,) = test.gen_inputs()
     kernel_map = {"int8_quant_per_channel_fwd": kernel} if kernel else None
     op = INT8QuantPerChannelFwdOp(kernel_map=kernel_map)
-    test.check(op, make(w), compare=[exact_compare, exact_compare])
+    test.check(op, make(w))
 
 
 @pytest.mark.smoke
@@ -206,7 +188,7 @@ def test_int8_quant_per_tensor_reaches_every_residency(dtype) -> None:
     ragged last round of tiles and a tail that ends in a partial vector, on 114 or 132 SMs."""
     test = type("QuantizeTest", (INT8QuantPerTensorWorkload, TestBase), {})(1497, 4995, dtype)
     op = INT8QuantPerTensorFwdOp(kernel_map={"int8_quant_per_tensor_fwd": _OneTileHeldEach})
-    test.check(op, *test.gen_inputs(), compare=[exact_compare, exact_compare])
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -234,7 +216,7 @@ def test_int8_quant_per_tensor_reaches_every_residency(dtype) -> None:
 def test_int8_quant_per_tensor_edge_inputs(dtype, make) -> None:
     test = type("QuantizeTest", (INT8QuantPerTensorWorkload, TestBase), {})(64, 1024, dtype)
     (x,) = test.gen_inputs()
-    test.check(INT8QuantPerTensorFwdOp(), make(x), compare=[exact_compare, exact_compare])
+    test.check(INT8QuantPerTensorFwdOp(), make(x))
 
 
 @pytest.mark.smoke
@@ -308,7 +290,7 @@ def _misaligned(x: torch.Tensor) -> torch.Tensor:
 def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (INT8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
     (x,) = test.gen_inputs()
-    test.check(INT8QuantPerBlockFwdOp(), make(x), compare=[exact_compare, exact_compare])
+    test.check(INT8QuantPerBlockFwdOp(), make(x))
 
 
 @pytest.mark.smoke
@@ -387,7 +369,7 @@ def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
     sign = torch.where(torch.rand(cols, device=smooth.device) < 0.5, -1.0, 1.0)
     shifted = torch.empty(cols + offset, dtype=smooth.dtype, device=smooth.device)[offset:]
     shifted.copy_(smooth * sign)
-    test.check(SmoothQuantFwdOp(), x, shifted, compare=[exact_compare, exact_compare])
+    test.check(SmoothQuantFwdOp(), x, shifted)
 
 
 @pytest.mark.smoke
@@ -472,7 +454,7 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
         rows, cols, torch.float16, group_size
     )
     (w,) = test.gen_inputs()
-    test.check(INT4QuantPerGroupFwdOp(group_size), make(w), compare=[exact_compare, _scale_compare])
+    test.check(INT4QuantPerGroupFwdOp(group_size), make(w))
 
 
 @pytest.mark.smoke
@@ -570,7 +552,7 @@ def _tiny(w: torch.Tensor) -> torch.Tensor:
 def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (FP8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
     (w,) = test.gen_inputs()
-    test.check(FP8QuantPerBlockFwdOp(), make(w), compare=[_bitwise_compare, _bitwise_compare])
+    test.check(FP8QuantPerBlockFwdOp(), make(w))
 
 
 @pytest.mark.smoke

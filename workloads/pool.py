@@ -103,6 +103,11 @@ class MaxPoolWorkload(WorkloadBase):
             return_indices=self.return_indices,
         )
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
 
 class AdaptivePool2dWorkload(WorkloadBase):
     """One NCHW tensor for the adaptive 2D pool family.
@@ -153,6 +158,11 @@ class AdaptiveMaxPool2dWorkload(AdaptivePool2dWorkload):
         # torch rejects a scalar None here; (None, None) means the same.
         size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_max_pool2d(input, size, return_indices=self.return_indices)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
 
 
 def _input_spec(call: Any) -> tuple[tuple[int, ...], torch.dtype]:

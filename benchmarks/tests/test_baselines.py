@@ -14,13 +14,12 @@ import torch
 
 from benchmarks.baselines import (
     _FlagGemsImportOrder,
-    assert_matches_reference,
     assert_output_spec,
     compiled_reference,
     flaggems_op,
-    reference_tolerance,
     vllm_op,
 )
+from workloads.numerics import Exact, reference_tolerance, verify
 
 # flag_gems refuses to import without a device, so its tests need one.
 _BOTH_LIBRARIES = (
@@ -97,10 +96,10 @@ def test_flaggems_op_refuses_a_pointwise_entry_point():
 def test_reference_tolerance_follows_the_dtype():
     assert reference_tolerance(torch.float16) == {"rtol": 1e-3, "atol": 1e-3}
     # The other branch: an unlisted dtype leaves assert_close on its own defaults.
-    assert reference_tolerance(torch.int32) == {}
+    assert reference_tolerance(torch.int32) == {"atol": 0.0, "rtol": 0.0}
 
 
-def test_assert_matches_reference_compares_every_output_the_reference_returns():
+def test_shared_verification_rejects_undeclared_extra_outputs():
     value = torch.ones(4)
     other = torch.zeros(4)
 
@@ -108,22 +107,17 @@ def test_assert_matches_reference_compares_every_output_the_reference_returns():
         return x
 
     def two_outputs(x):
-        return x, other
+        return (x, other)
 
-    # A baseline that returns more than the reference names is fine.
-    assert_matches_reference(two_outputs, one_output, value)
+    with pytest.raises(ValueError, match="outputs"):
+        verify(two_outputs, (value,), reference=one_output, evidence=Exact())
     with pytest.raises(AssertionError):
-        assert_matches_reference(lambda x: x + 1, one_output, value)
-
-    # The output the reference names second is checked too: comparing only the
-    # first would accept this baseline.
-    assert_matches_reference(two_outputs, two_outputs, value)
-    with pytest.raises(AssertionError, match="output 1"):
-        assert_matches_reference(lambda x: (x, other + 1), two_outputs, value)
-
-    # Returning fewer outputs than the reference is a mismatch, not a pass.
-    with pytest.raises(AssertionError, match="output"):
-        assert_matches_reference(one_output, two_outputs, value)
+        verify(lambda x: x + 1, (value,), reference=one_output, evidence=Exact())
+    verify(two_outputs, (value,), reference=two_outputs, evidence=Exact())
+    with pytest.raises(AssertionError, match="Tensor-likes"):
+        verify(lambda x: (x, other + 1), (value,), reference=two_outputs, evidence=Exact())
+    with pytest.raises(ValueError, match="outputs"):
+        verify(one_output, (value,), reference=two_outputs, evidence=Exact())
 
 
 def test_compiled_reference_refuses_a_reference_dynamo_splits():
@@ -170,17 +164,12 @@ def test_compiled_reference_warmup_updates_state_once():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA SDPA backward")
 def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
-    from benchmarks.benchmark_base import OpBenchmark
     from benchmarks.ops.bench_gqa import _torch_gqa_bwd
     from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
-    from workloads.numerics import Exact
 
     workload = GroupedQueryAttentionBwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
     inputs = workload.gen_inputs()
     backward = _torch_gqa_bwd(workload, *inputs[:3])
-    OpBenchmark._verify(
-        SimpleNamespace(workload=workload),
-        {"torch-sdpa": (backward, inputs)},
-        {"torch-sdpa": Exact(rtol=1e-3, atol=5e-3)},
-        inputs,
+    verify(
+        backward, inputs, reference=workload.ref_program, evidence=workload.verification(*inputs)
     )

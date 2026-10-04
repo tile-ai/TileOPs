@@ -1,166 +1,227 @@
-"""Tests for what TestBase.check() establishes, and what it must refuse to.
-
-A helper that reports a pass where it compared nothing is worse than no helper:
-the op's row then carries a result that stands for nothing.
-"""
-
-import threading
-from contextlib import nullcontext
-from types import SimpleNamespace
+"""The shared verifier's correctness protocol, independent of Op attribution."""
 
 import pytest
 import torch
 
-from tests import test_base
-from tests.test_base import TestBase, allclose_compare
-from tileops.ops.elementwise import AbsFwdOp, NegFwdOp
+from workloads.numerics import (
+    Custom,
+    Exact,
+    NegativeControl,
+    Partial,
+    Unestablished,
+    assert_quantized,
+    compare_outputs,
+    verify,
+    zeroed_input,
+)
 
 pytestmark = pytest.mark.smoke
 
 
-@pytest.fixture(autouse=True)
-def check_result(monkeypatch):
-    """Keep synthetic comparisons out of the recorder the pytest hook reads.
-
-    The framework's own tests execute fixed results, not the named ops. Give
-    them a private recorder for the whole test, including successive checks.
-    """
-    result = threading.local()
-    monkeypatch.setattr(test_base, "_check_result", result)
-    return result
-
-
-class _Reference:
-    """Supplies check() its reference and nothing else.
-
-    Not a workload: inputs are passed to check() directly, so this never
-    authors gen_inputs, which belongs to the workloads layer.
-    """
-
-    def __init__(self, outputs):
-        self._outputs = outputs
-
-    def ref_program(self, *_):
-        return self._outputs
+@pytest.mark.parametrize("fault", ["shape", "dtype", "arity", "value", "none", "nan", "inf"])
+def test_incorrect_results_are_rejected(fault):
+    expected = torch.ones(2)
+    got = {
+        "shape": torch.ones(1),
+        "dtype": torch.ones(2, dtype=torch.float64),
+        "arity": (expected, expected),
+        "value": torch.zeros(2),
+        "none": None,
+        "nan": torch.full((2,), float("nan")),
+        "inf": torch.full((2,), float("inf")),
+    }[fault]
+    with pytest.raises((AssertionError, ValueError)):
+        compare_outputs(got, expected, Exact())
 
 
-def _compare(reference, returned):
-    """Compare *returned* against *reference* through check().
-
-    The Op is incidental -- it names what the result is filed under, while
-    ``runs`` supplies the values under test. Returns the error the run
-    recorded, or None where it recorded no comparison.
-    """
-    TestBase.check(_Reference(reference), AbsFwdOp(), torch.zeros(1), runs=lambda *_: returned)
-    return getattr(test_base._check_result, "max_abs_err", None)
+def test_empty_tensors_compare_and_matching_nonfinite_values_are_allowed():
+    for values in (torch.empty(0), torch.tensor([float("nan"), float("inf"), -float("inf")])):
+        result = compare_outputs(values, values.clone(), Exact())
+        assert result.checked_outputs == 1
+        assert result.max_abs_err == 0
 
 
-def test_a_wrong_shape_carrying_right_values_is_not_close():
-    """Broadcasting the two first accepted (1, 3) where the reference is (2, 3)."""
+@pytest.mark.parametrize("output", [(None,), {"state": None}, {}])
+def test_no_numeric_output_does_not_establish_verification(output):
+    result = compare_outputs(output, output, Exact())
+    assert result.checked_outputs == 0
+    assert result.max_abs_err is None
+    assert result.unchecked_reason
+
+
+def test_none_is_a_value_not_permission_to_skip_an_output():
     with pytest.raises(AssertionError):
-        allclose_compare(torch.ones(1, 3), torch.ones(2, 3))
+        compare_outputs(torch.ones(1), None, Exact())
 
 
-def test_an_empty_result_compares_without_reducing_over_nothing():
-    """`.max()` of an empty tensor raises; an empty result is still comparable."""
-    empty = torch.empty(0)
-
-    assert _compare(empty, empty) == 0.0
-
-
-def test_framework_comparisons_do_not_publish_op_evidence():
-    """The real report hook must not attribute these synthetic results to Abs."""
-    from tests.conftest import pytest_runtest_call
-
-    item = SimpleNamespace(user_properties=[])
-    hook = pytest_runtest_call(item)
-    next(hook)
-    assert _compare(torch.ones(1), torch.ones(1)) == 0.0
-    with pytest.raises(StopIteration):
-        next(hook)
-    assert item.user_properties == []
+def test_partial_is_explicit_and_reports_its_coverage():
+    value = torch.ones(2)
+    result = compare_outputs((value, value * 9), value, Partial(1, "saved state not checked"))
+    assert (result.checked_outputs, result.total_outputs) == (1, 2)
+    assert "saved state" in result.unchecked_reason
+    with pytest.raises(ValueError):
+        Partial(0, "nothing")
 
 
-def test_a_reference_that_skipped_every_output_records_no_comparison():
-    """`max_abs_err` is the report's evidence that a comparison ran.
-
-    A reference returns None in an output's place when it cannot produce that
-    output. Doing so for every output leaves check() green having compared
-    nothing, which the report must not read as the op verified.
-    """
-    assert _compare((None,), (torch.ones(2),)) is None
-
-
-def test_a_reference_that_checked_one_output_records_the_comparison():
-    """The same call shape, with one output compared, does leave evidence."""
-    assert _compare((None, torch.ones(2)), (torch.zeros(2), torch.ones(2))) == 0.0
-
-
-def test_a_failed_comparison_leaves_no_evidence(check_result):
-    """A test may catch the AssertionError; the op is still not established."""
+@pytest.mark.parametrize("got", [torch.ones(1), torch.ones(2, dtype=torch.float64)])
+def test_custom_comparison_cannot_bypass_structure(got):
     with pytest.raises(AssertionError):
-        _compare((torch.zeros(1),), (torch.full((1,), 999.0),))
-
-    assert check_result.max_abs_err is None
+        compare_outputs(got, torch.ones(2), Custom(lambda *_: None, "always accepts"))
 
 
-@pytest.mark.parametrize("outcome", ["mismatch", "shape", "arity", "unchecked"])
-def test_a_later_check_cannot_inherit_another_ops_comparison(check_result, outcome):
-    """A caught failure or unchecked result must not reuse the first op's evidence."""
-    assert _compare(torch.ones(1), torch.ones(1)) == 0.0
-    reference, returned = {
-        "mismatch": (torch.zeros(1), torch.ones(1)),
-        "shape": (torch.ones(1, 3), torch.ones(2, 3)),
-        "arity": ((torch.ones(1), torch.ones(1)), (torch.ones(1),)),
-        "unchecked": ((None,), (torch.ones(1),)),
-    }[outcome]
-    expected = nullcontext() if outcome == "unchecked" else pytest.raises(AssertionError)
-    with expected:
-        TestBase.check(_Reference(reference), NegFwdOp(), runs=lambda: returned)
-
-    assert check_result.op_name == "NegFwdOp"
-    assert check_result.op_module == NegFwdOp.__module__
-    assert check_result.max_abs_err is None
+def test_each_output_uses_its_own_dtype_bound():
+    expected = (torch.ones(2, dtype=torch.bfloat16), torch.ones(2))
+    with pytest.raises(AssertionError):
+        compare_outputs((expected[0], expected[1] + 0.01), expected, Exact())
 
 
-@pytest.mark.parametrize("stage", ["reference", "execution"])
-def test_an_execution_failure_replaces_the_previous_attribution(check_result, stage):
-    """Failures before comparison belong to the new op and establish no values."""
-    assert _compare(torch.ones(1), torch.ones(1)) == 0.0
-
-    def fail(*_):
-        raise RuntimeError("computation failed")
-
-    class Reference(_Reference):
-        def ref_program(self, *_):
-            return fail() if stage == "reference" else super().ref_program()
-
-    with pytest.raises(RuntimeError, match="computation failed"):
-        TestBase.check(Reference(torch.ones(1)), NegFwdOp(), runs=fail)
-
-    assert check_result.op_name == "NegFwdOp"
-    assert check_result.max_abs_err is None
+def test_explicit_absolute_bound_does_not_inherit_relative_slack():
+    with pytest.raises(AssertionError):
+        compare_outputs(torch.tensor([100001.0]), torch.tensor([100000.0]), Exact(atol=0.1))
 
 
-def test_reference_oom_skips_without_comparison_evidence(check_result):
-    """An infeasible oracle must produce a skip, not a successful comparison."""
+@pytest.mark.parametrize("failure", ["reference", "subject", "comparison"])
+def test_inputs_are_restored_on_every_failure(failure):
+    x = torch.ones(2)
 
-    class Reference(_Reference):
-        def ref_program(self, *_):
-            raise torch.OutOfMemoryError("out of memory")
+    def reference(value):
+        if failure == "reference":
+            value.add_(5)
+            raise RuntimeError("reference failed")
+        return value
 
-    with pytest.raises(pytest.skip.Exception, match="reference ran out of memory"):
-        TestBase.check(Reference(None), AbsFwdOp())
+    def subject(value):
+        value.add_(7)
+        if failure == "subject":
+            raise RuntimeError("subject failed")
+        return value
 
-    assert check_result.max_abs_err is None
+    with pytest.raises((RuntimeError, AssertionError)):
+        verify(subject, (x,), reference=reference, evidence=Exact())
+    torch.testing.assert_close(x, torch.ones(2))
 
 
-def test_non_op_is_refused_before_running_the_reference():
-    """A raw callable belongs in runs= and cannot own an op's report row."""
+def test_in_place_output_is_copied_before_restoration():
+    x = torch.ones(2)
+    with pytest.raises(AssertionError):
+        verify(lambda v: {"out": v.add_(1)}, (x,), reference=lambda v: {"out": v}, evidence=Exact())
+    torch.testing.assert_close(x, torch.ones(2))
 
-    class Reference(_Reference):
-        def ref_program(self, *_):
-            pytest.fail("the reference must not run for an invalid owner")
 
-    with pytest.raises(AssertionError, match="pass what to execute as runs="):
-        TestBase.check(Reference(None), lambda: torch.ones(1))
+def test_argument_aliases_are_preserved_and_subject_arguments_are_isolated():
+    x, alternate = torch.ones(2), torch.ones(2)
+
+    def subject(a, b):
+        assert a is b
+        return a.add_(1) - 1
+
+    result = verify(
+        subject,
+        (x,),
+        reference=lambda v: v,
+        evidence=Exact(),
+        subject_inputs=(alternate, alternate),
+    )
+    assert result.checked_outputs == 1
+    torch.testing.assert_close(alternate, x)
+
+
+def test_reference_oom_is_distinct_from_subject_failure():
+    def oom(*_):
+        raise torch.OutOfMemoryError("out of memory")
+
+    result = verify(lambda x: x, (torch.ones(1),), reference=oom, evidence=Exact())
+    assert result.checked_outputs == 0 and "reference" in result.unchecked_reason
+    with pytest.raises(torch.OutOfMemoryError):
+        verify(oom, (torch.ones(1),), reference=lambda x: x, evidence=Exact())
+
+
+def test_missing_oracle_requires_an_explicit_unestablished_declaration():
+    with pytest.raises(ValueError, match="ref_program"):
+        verify(lambda: torch.ones(1), (), reference=None, evidence=Exact())
+    result = verify(lambda: pytest.fail("executed"), (), reference=None, evidence=Unestablished())
+    assert result.checked_outputs == 0 and result.unchecked_reason
+
+
+@pytest.mark.parametrize("atol", [0.0, 2.0])
+def test_negative_control_exposes_a_weak_contract(atol):
+    evidence = Exact(atol=atol, rtol=0, controls=(zeroed_input(0, "dropped-input"),))
+    if atol:
+        with pytest.raises(ValueError, match="was accepted"):
+            verify(lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence)
+    else:
+        assert (
+            verify(
+                lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence
+            ).checked_outputs
+            == 1
+        )
+
+
+def test_broken_negative_control_is_not_a_successful_rejection():
+    def broken(*_):
+        raise RuntimeError("invalid control")
+
+    with pytest.raises(RuntimeError, match="invalid control"):
+        verify(
+            lambda x: x,
+            (torch.ones(1),),
+            reference=lambda x: x,
+            evidence=Exact(controls=(NegativeControl("broken", broken),)),
+        )
+
+
+def test_partial_control_must_change_the_checked_output():
+    mark = Partial(
+        1,
+        "state omitted",
+        controls=(NegativeControl("state only", lambda ref, args: (args[0], args[0] + 9)),),
+    )
+    with pytest.raises(ValueError, match="was accepted"):
+        verify(lambda x: (x, x), (torch.ones(1),), reference=lambda x: (x, x), evidence=mark)
+
+
+def test_custom_probe_failure_is_a_verification_failure():
+    def reject(subject, inputs):
+        raise AssertionError("distribution wrong")
+
+    with pytest.raises(AssertionError, match="distribution"):
+        verify(
+            lambda x: x,
+            (torch.ones(1),),
+            reference=lambda x: x,
+            evidence=Custom(lambda *_: None, "statistical check", probe=reject),
+        )
+
+
+@pytest.mark.parametrize("fault", ["scale", "codes"])
+def test_quantization_rejects_wrong_scales_and_codes(fault):
+    codes = torch.tensor([12, 20], dtype=torch.int8)
+    scale = torch.ones(2)
+    got = (codes, scale * 2) if fault == "scale" else (torch.zeros_like(codes), scale)
+    with pytest.raises(AssertionError):
+        compare_outputs(got, (codes, scale), Custom(assert_quantized, "quantization"))
+
+
+def test_a_completed_result_is_not_mutated_by_later_failure():
+    good = compare_outputs(torch.ones(2), torch.ones(2), Exact())
+    with pytest.raises(AssertionError):
+        compare_outputs(torch.zeros(2), torch.ones(2), Exact())
+    assert good.checked_outputs == 1 and good.max_abs_err == 0
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_broadcast_input_views_restore_shared_storage(mutate):
+    base = torch.ones(3)
+    expanded = base.expand(4, 3)
+
+    def subject(value):
+        if mutate:
+            value[0].add_(1)
+            return value - 1
+        return value
+
+    result = verify(subject, (expanded,), reference=lambda value: value, evidence=Exact())
+    assert result.checked_outputs == 1
+    assert expanded.stride(0) == 0
+    torch.testing.assert_close(base, torch.ones(3))

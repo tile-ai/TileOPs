@@ -12,7 +12,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
-from workloads.reduction import ArgmaxWorkload
+from workloads.reduction import ArgreduceCase
 
 
 def _call(op, x: torch.Tensor) -> torch.Tensor:
@@ -141,32 +141,8 @@ class SpecArgreduceFixture(FixtureBase):
     ]
 
 
-class ArgreduceTest(ArgmaxWorkload, TestBase):
-    """Parameterized test helper for argreduce ops."""
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-
-    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        (x,) = inputs
-        if self.op_kind == "argmax":
-            return x.argmax(dim=-1)
-        elif self.op_kind == "argmin":
-            return x.argmin(dim=-1)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
-
-
-def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact match comparison using torch.equal."""
-    assert output.dtype == torch.int64, f"Expected int64, got {output.dtype}"
-    assert output_ref.dtype == torch.int64, f"Expected ref int64, got {output_ref.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Indices mismatch.\n"
-        f"  output:     {output[:10]}...\n"
-        f"  output_ref: {output_ref[:10]}...\n"
-        f"  mismatches: {(output != output_ref).sum().item()} / {output.numel()}"
-    )
+class ArgreduceTest(ArgreduceCase, TestBase):
+    pass
 
 
 @ArgreduceBasicFixture
@@ -175,7 +151,7 @@ def test_argmax_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ArgreduceTest(m, n, dtype, "argmax")
     op = ArgmaxFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @ArgreduceNonContigFixture
@@ -303,7 +279,7 @@ def test_argmin_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = ArgreduceTest(m, n, dtype, "argmin")
     op = ArgminFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+    test.check(op, *test.gen_inputs())
 
 
 @ArgreduceNonContigFixture

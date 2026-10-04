@@ -231,6 +231,15 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             )
         return (logits,)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, assert_normalized_error, zeroed_input
+
+        return Custom(
+            assert_normalized_error,
+            "normalized squared error <= 1e-3",
+            controls=(zeroed_input(0, "query-zeroed"),),
+        )
+
 
 class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
     """A manifest call of FP8LightningIndexerFwdOp; the row's generator gives the windows.

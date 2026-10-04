@@ -1,12 +1,11 @@
 """Tests for the GLA ops: chunkwise forward and backward, inference, decode."""
 
 import itertools
-from functools import partial
 
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, allclose_compare, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention.call_spec import GLAChunkCall
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
@@ -23,10 +22,13 @@ from workloads.device import run_device, run_device_is_cuda
 from workloads.linear_attention.gla import (
     GLADecodeWorkload,
     GLAInferenceWorkload,
+    chunkwise_verification,
+    decode_verification,
     gla_autograd_bwd_torch,
     gla_decode_torch,
     gla_fwd_chunked_torch,
 )
+from workloads.numerics import compare_outputs, reference_tolerance
 
 try:
     from fla.ops.gla import chunk_gla
@@ -37,16 +39,6 @@ try:
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None
-
-
-def get_tolerances(dtype: torch.dtype) -> dict:
-    """Return atol/rtol dict for GLA correctness tests."""
-    if dtype == torch.float32:
-        return {"atol": 1e-2, "rtol": 1e-2}
-    elif dtype == torch.float16:
-        return {"atol": 5e-2, "rtol": 5e-2}
-    else:  # bfloat16
-        return {"atol": 1e-1, "rtol": 1e-1}
 
 
 def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -111,15 +103,9 @@ def test_gla_fwd(
     )
     op_o, _ = fwd_op.forward(q, k, v, g)
 
-    tols = get_tolerances(dtype)
     cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
-    torch.testing.assert_close(
-        op_o.float(),
-        ref_o.float(),
-        **tols,
-        msg=lambda m: f"o: {m}",
-    )
+    compare_outputs(op_o, ref_o.to(op_o.dtype), chunkwise_verification(dtype))
 
     # --- TileOPs vs FLA ---
     if fla:
@@ -224,18 +210,11 @@ def test_gla_bwd(
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
-    # The gradients are about 1e-2, so the tolerance is 1% of each one's largest entry.
-    for name in ["dq", "dk", "dv", "dg"]:
-        ref = ref_grads[name].float()
-        cos = cosine_sim(ref, op_grads[name])
-        print(f"  TileOPs vs ref {name}: cosine={cos:.6f}")
-        torch.testing.assert_close(
-            op_grads[name].float(),
-            ref,
-            atol=1e-2 * ref.abs().max().item(),
-            rtol=0,
-            msg=lambda m, n=name: f"{n}: {m}",
-        )
+    compare_outputs(
+        tuple(op_grads.values()),
+        tuple(ref_grads.values()),
+        chunkwise_verification(dtype, backward=True),
+    )
 
     # Validate TileOPs vs FLA (if available)
     if chunk_gla is not None:
@@ -455,10 +434,10 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     _skip_unless_kernel_serves(GLADensePrefillSubchunkKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp()
-    test.check(op, *inputs, **standard_tolerance(dtype))
-    test.check(op, *inputs[:4], **standard_tolerance(dtype))
+    test.check(op, *inputs)
+    test.check(op, *inputs[:4])
     inputs[3].mul_(3.0)
-    test.check(op, *inputs, **standard_tolerance(dtype))
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -485,7 +464,7 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
     cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
     seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
     op = GLAInferenceFwdOp(scale)
-    tolerance = standard_tolerance(dtype)
+    tolerance = reference_tolerance(dtype)
     for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
         o, final_state = op(q, k, v, g, state, cu_seqlens, host)
         ref_o, ref_state = chunk_gla(
@@ -529,7 +508,7 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
         q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
     )
     assert torch.isfinite(o).all()
-    tolerance = standard_tolerance(dtype)
+    tolerance = reference_tolerance(dtype)
     torch.testing.assert_close(o, ref_o, **tolerance)
     torch.testing.assert_close(final_state, ref_state, **tolerance)
 
@@ -542,7 +521,7 @@ def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
     torch.manual_seed(2237)
     test = GLAInferenceTest(2, 100, 4, 64, 64, torch.bfloat16, has_initial_state=True)
     op = GLAInferenceFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(torch.bfloat16))
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -561,7 +540,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAInferenceFwdOp()
-    tolerance = standard_tolerance(dtype)
+    tolerance = reference_tolerance(dtype)
     state_tolerance = tolerance.copy()
     if dtype == torch.float16:
         # FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:
@@ -571,10 +550,6 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     test.check(
         op,
         *inputs,
-        compare=[
-            partial(allclose_compare, **tolerance),
-            partial(allclose_compare, **state_tolerance),
-        ],
     )
     assert any(
         isinstance(kernel, GLADensePrefillPartitionedKernel)
@@ -603,7 +578,7 @@ def test_gla_dense_decode_matches_fla(
     op = GLAInferenceFwdOp(scale)
     # One token puts the output at 4e-1 against a measured 3e-8, which the dtype's standard
     # tolerance covers whole.
-    test.check(op, *inputs, atol=3e-7, rtol=3e-7)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -640,28 +615,13 @@ def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     for t in range(steps):
         o, state = op(*(x[:, t : t + 1] for x in (q, k, v, g)), state)
         outputs.append(o)
-    tolerance = standard_tolerance(torch.bfloat16)
+    tolerance = reference_tolerance(torch.bfloat16)
     torch.testing.assert_close(torch.cat(outputs, dim=1), ref_o, **tolerance)
     torch.testing.assert_close(state, ref_state, **tolerance)
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):
     pass
-
-
-def _get_tolerances(dtype: torch.dtype) -> dict:
-    """Ten times the agreement one decode step and four chained ones reach, by dtype.
-
-    One token leaves the output around 4e-1 and the error three to six orders below it, so
-    a bound set by the dtype's own rounding passes a step that was never taken. Re-fit by
-    measuring the step against ``ref_program`` over the fixture's whole grid.
-    """
-    if dtype == torch.float32:
-        return {"atol": 3e-6, "rtol": 3e-6}
-    elif dtype == torch.float16:
-        return {"atol": 7e-4, "rtol": 7e-4}
-    else:  # bfloat16
-        return {"atol": 3e-3, "rtol": 3e-3}
 
 
 class GLADecodeFixture(FixtureBase):
@@ -683,18 +643,12 @@ class GLADecodeFixture(FixtureBase):
 
 @GLADecodeFixture
 def test_gla_decode(
-    batch: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: torch.dtype,
-    tune: bool,
+    batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype, tune: bool
 ) -> None:
     torch.manual_seed(42)
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
     op = GLARecurrentFwdOp(tune=tune)
-    tols = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), **tols)
+    test.check(op, *test.gen_inputs())
 
 
 @GLADecodeFixture
@@ -712,7 +666,7 @@ def test_gla_decode_multi_step(
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
     op = GLARecurrentFwdOp(tune=tune)
-    tols = _get_tolerances(dtype)
+    tols = decode_verification(dtype).tolerance({})
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -780,6 +734,6 @@ def test_gla_decode_vs_fla(
     )
     o_fla = o_fla.squeeze(1).to(dtype)
 
-    tols = _get_tolerances(dtype)
+    tols = decode_verification(dtype).tolerance({})
     torch.testing.assert_close(o_tile, o_fla, **tols)
     torch.testing.assert_close(s_tile, s_fla.to(dtype), **tols)

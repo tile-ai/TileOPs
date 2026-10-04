@@ -10,9 +10,9 @@ manifest spec rules (.claude/domain-rules/manifest-spec.md).
 import pytest
 import torch
 
-from tests.test_base import standard_tolerance
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
+from workloads.numerics import reference_tolerance
 
 # WhereFwdOp full broadcasting
 
@@ -85,7 +85,7 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
 
     op = ClampTensorFwdOp()
     out = op(inp, mn, mx)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 # ClampTensorFwdOp must accept Tensor min with max=None and

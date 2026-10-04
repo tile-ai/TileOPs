@@ -21,7 +21,6 @@ from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.moe import FusedTopKWorkload
-from workloads.numerics import Custom
 
 
 @pytest.mark.parametrize("call", manifest_calls(FusedTopKFwdOp))
@@ -50,7 +49,7 @@ def test_fused_topk_bench(call) -> None:
                 e_score_correction_bias=correction_bias,
                 topk=top_k,
                 renormalize=renormalize,
-            )
+            )[:2]
 
     else:
 
@@ -61,38 +60,11 @@ def test_fused_topk_bench(call) -> None:
                 topk=top_k,
                 renormalize=renormalize,
                 scoring_func=scoring_func,
-            )
+            )[:2]
 
     functors[VLLM_TAG] = _vllm_fn
-
-    def validate(got, expected):
-        weights, ids = got[:2]
-        ref_weights, ref_ids = expected
-        assert weights.shape == ref_weights.shape and weights.dtype == ref_weights.dtype
-        assert ids.shape == ref_ids.shape and ids.dtype == ref_ids.dtype
-        assert ((ids >= 0) & (ids < gating_output.shape[-1])).all()
-        ordered = ids.sort(-1).values
-        assert (ordered[:, 1:] != ordered[:, :-1]).all(), "duplicate expert"
-        logits = gating_output.float()
-        scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
-        selection = scores if correction_bias is None else scores + correction_bias
-        # Validate selected scores and per-expert weights independently of tie order.
-        torch.testing.assert_close(
-            selection.gather(1, ids.long()).sort(-1).values,
-            selection.gather(1, ref_ids.long()).sort(-1).values,
-            rtol=1e-5,
-            atol=1e-5,
-        )
-        selected = scores.gather(1, ids.long())
-        if renormalize:
-            selected = selected / selected.sum(-1, keepdim=True)
-        torch.testing.assert_close(weights, selected, rtol=1e-3, atol=1e-3)
 
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors,
-            Custom(validate, "selected experts and their weights, independent of tie order"),
-        ),
     )

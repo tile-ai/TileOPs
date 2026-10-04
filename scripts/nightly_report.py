@@ -146,7 +146,7 @@ def parse_test_xml(path: str) -> list[dict]:
                 "op_module": props.get("op_module"),
                 # Present only where a comparison completed, which is what
                 # distinguishes establishing a value from merely running.
-                "compared": "max_abs_err" in props,
+                "compared": int(props.get("checked_outputs", "0")) > 0,
                 "failure_message": (
                     failure.attrib.get("message", "")
                     if failure is not None

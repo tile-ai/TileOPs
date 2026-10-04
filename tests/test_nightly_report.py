@@ -638,3 +638,13 @@ def test_an_exclusion_reason_is_not_a_ratio(report, tmp_path):
 
     assert "tileops_no" not in (rows[0].get("baselines") or {})
     assert report.baseline_standing(bench_ops) == (0, 0)
+
+
+@pytest.mark.parametrize("count, expected", [("0", False), ("1", True)])
+def test_junit_uses_explicit_coverage_even_for_zero_error(report, tmp_path, count, expected):
+    xml = tmp_path / "results.xml"
+    xml.write_text(f"""<testsuites><testsuite><testcase name="exact" classname="tests.ops.test_x">
+      <properties><property name="max_abs_err" value="0"/>
+      <property name="checked_outputs" value="{count}"/></properties>
+    </testcase></testsuite></testsuites>""")
+    assert report.parse_test_xml(str(xml))[0]["compared"] is expected

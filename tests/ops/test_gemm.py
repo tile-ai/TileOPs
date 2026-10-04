@@ -599,19 +599,10 @@ def test_gemm(
     tune: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
-    if dtype == torch.float16:
-        # Only GEMV sums in a different order than cuBLAS; there cancellation
-        # leaves atol alone to carry the reduction error, 3.3e-3 at K=16384.
-        gemv = not trans_a and ((m == 1 and trans_b) or (n == 1 and not trans_b))
-        atol = 1e-3 * max(1.0, k / 2048) if gemv else 1e-3
-        tolerances = {"atol": atol, "rtol": 1e-3}
-    else:
-        tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @GemmFp8Fixture
@@ -631,14 +622,14 @@ def test_gemm_fp8(
         with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
             op(*inputs)
         return
-    test.check(op, *inputs, atol=2e-2, rtol=2e-2)
+    test.check(op, *inputs)
 
 
 @GemmW4A16Fixture
 def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16FwdOp()
-    test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -689,7 +680,7 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
     op = GemmFP8FwdOp()
-    test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
+    test.check(op, *test.gen_inputs())
     if served_in_tree(op):
         assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
 
@@ -857,18 +848,16 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -
     """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True, tune=tune)
-    tolerances = {"atol": 1e-2, "rtol": 1e-2}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @GemvBoundaryFixture
 def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
-    m = n  # reuse fixture's n as the non-aligned m dimension
+    m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
     op = GemmFwdOp(trans_a=False, trans_b=False, tune=tune)
-    tolerances = {"atol": 1e-2, "rtol": 1e-2}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.sm90

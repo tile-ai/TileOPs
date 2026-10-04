@@ -7,11 +7,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
 from workloads.device import run_device
-from workloads.elementwise import RandnFlatWorkload, ReluWorkload
+from workloads.elementwise import ReluWorkload, UnaryActivationCase
+from workloads.numerics import reference_tolerance
 
 
 class ReluTest(ReluWorkload, TestBase):
@@ -43,7 +44,7 @@ class ReluFixture(FixtureBase):
 def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test = ReluTest(n_total, dtype)
     op = ReluFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class ReluStrategyFixture(FixtureBase):
@@ -67,7 +68,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
     kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    test.check(ReluFwdOp(), *test.gen_inputs(), **standard_tolerance(dtype), runs=kernel)
+    test.check(ReluFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 # Template-based activation ops
@@ -101,15 +102,8 @@ class ActivationEdgeFixture(FixtureBase):
     ]
 
 
-class UnaryActivationTest(RandnFlatWorkload, TestBase):
-    """Generic test fixture for a single-input, single-output unary op."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
-        super().__init__(n_total, dtype, gen_fn=gen_fn)
-        self._ref_fn = ref_fn
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return self._ref_fn(x)
+class UnaryActivationTest(UnaryActivationCase, TestBase):
+    pass
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
@@ -120,7 +114,7 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls(**op_kwargs)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 @ActivationFixture
@@ -335,7 +329,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 
     op = PreluFwdOp()
     out = op(x, weight)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke

@@ -9,18 +9,10 @@ kernel by itself. The difference between them is the forward the autograd one re
 import pytest
 import torch
 
-from benchmarks.baselines import (
-    FLAGGEMS_TAG,
-    TORCH_COMPILE_TAG,
-    assert_matches_reference,
-    compiled_reference,
-    flaggems_op,
-    reference_tolerance,
-)
+from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.norm import BatchNormBwdCall, RunningStatsCall
-from workloads.numerics import Exact
 
 
 def _flaggems_bn_fwd(running_mean, running_var, training: bool, momentum: float, eps: float):
@@ -48,7 +40,8 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
         rm = torch.zeros(x.shape[1], device=x.device, dtype=torch.float32)
         rv = torch.ones(x.shape[1], device=x.device, dtype=torch.float32)
         y = torch.nn.functional.batch_norm(x32, rm, rv, w32, b32, training=True, eps=1e-5)
-    return backward_of(y)(grad_out.float())
+    dx, dw, db = backward_of(y)(grad_out.float())
+    return dx.to(x.dtype), dw, db
 
 
 def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
@@ -58,7 +51,7 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
     forms the channel gradients in float16 too, and the reduction over every spatial
     element then lands far outside tolerance.
     """
-    return torch.ops.aten.native_batch_norm_backward(
+    dx, dw, db = torch.ops.aten.native_batch_norm_backward(
         grad_out.float(),
         x.float(),
         weight.float(),
@@ -70,6 +63,7 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
         1e-5,
         [True, True, True],
     )
+    return dx.to(x.dtype), dw, db
 
 
 @pytest.mark.parametrize("call", manifest_calls(BatchNormFwdOp))
@@ -78,27 +72,14 @@ def test_batch_norm_fwd_bench(call):
     inputs = workload.gen_inputs()
     op = BatchNormFwdOp(**workload.arguments())
     training, momentum, eps = (call.params[k] for k in ("training", "momentum", "eps"))
-
-    def torch_fn(x, rm, rv, w, b):
-        rm, rv = (None, None) if rm is None else (rm.clone(), rv.clone())
-        return torch.nn.functional.batch_norm(
-            x.float(), rm, rv, w, b, training=training, momentum=momentum, eps=eps
-        ).to(x.dtype)
-
-    # cuDNN and the kernels reduce over N*H*W in fp32; agreement is at the storage dtype's.
-    tolerance = reference_tolerance(inputs[0].dtype)
+    torch_fn = workload.ref_program
     functors = {"tileops": op}
-    # flag_gems' entry point takes every tensor; a row omitting one has no tag.
-    if all(t is not None for t in inputs):
+    if all((t is not None for t in inputs)):
         flaggems_fn = _flaggems_bn_fwd(inputs[1], inputs[2], training, momentum, eps)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch-cudnn"] = torch_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=torch_fn, **tolerance)),
-    )
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(BatchNormBwdOp))
@@ -106,23 +87,7 @@ def test_batch_norm_bwd_bench(call):
     workload = BatchNormBwdCall(call)
     inputs = workload.gen_inputs()
     op = BatchNormBwdOp(**workload.arguments())
-
-    # A reduction this long disagrees with the reference's order past float32's tolerance.
-    assert_matches_reference(_aten_bn_bwd, _torch_bn_bwd, *inputs, rtol=1e-3, atol=1e-3)
-    assert_matches_reference(
-        op, workload.ref_program, *inputs, **reference_tolerance(inputs[0].dtype)
-    )
-
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            "torch-autograd": _torch_bn_bwd,
-            "torch-native-batch-norm": _aten_bn_bwd,
-        },
+        {"tileops": op, "torch-autograd": _torch_bn_bwd, "torch-native-batch-norm": _aten_bn_bwd},
         *inputs,
-        evidence={
-            "tileops": Exact(**reference_tolerance(inputs[0].dtype)),
-            "torch-autograd": Exact(reference=_torch_bn_bwd, rtol=1e-3, atol=1e-3),
-            "torch-native-batch-norm": Exact(reference=_torch_bn_bwd, rtol=1e-3, atol=1e-3),
-        },
     )

@@ -1,12 +1,12 @@
 # Testing and Benchmarking
 
-Tests and benchmarks are separated by concern: `pytest tests/` validates correctness only; `pytest benchmarks/` runs profiling only and auto-generates `profile_run.log`.
+Tests and benchmarks are separated by concern: `pytest tests/` validates correctness only; `pytest benchmarks/` validates the shared correctness contract, profiles execution, and generates `profile_run.log`.
 
 ## Core Abstractions
 
 | Class              | Location                                                             | Role                                                                                                                                                                |
 | ------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base used by both tests and benchmarks; a subclass named for one op also defines that op's `ref_program()`.                     |
+| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()` and `verification(*inputs)`. Concrete operator workloads supply `ref_program()` and own numerical policy.                               |
 | `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                     |
 | `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Declares `ref_program()` abstract and adds `check()`. Each op subclasses this for correctness testing.                                     |
 | `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Takes `(flops, bytes)` from `op.eval_roofline()`. Provides `profile()`. |
@@ -16,15 +16,15 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 Workload is defined once; test and benchmark each reference it but do not depend on each other:
 
-- **Workload** (`workloads/`) — `WorkloadBase` subclass: `ref_program()` when named for one op, and input construction the rows do not determine
-- **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adds tolerances; defines `ref_program()` only on a shape-only workload
+- **Workload** (`workloads/`) — `WorkloadBase` subclass: `ref_program()`, `verification(*inputs)`, and input construction the rows do not determine
+- **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adapts the shared verifier to pytest; supplies no reference or numerical overrides
 - **Benchmark** (`benchmarks/ops/`) — composes workload and op via `ManifestBenchmark(op, workload)`
 
 Rules:
 
 - **Fixture usage**: every semantic call a benchmark publishes comes from a manifest workload row and its `dtype_cases`; fixture parameters are reserved for controls that change no call
 - **Dependency direction**: benchmark imports workload, never test
-- **ref_program locality**: the reference lives on the narrowest shared class that names one operator — the workload, unless the workload describes only an input shape
+- **ref_program locality**: the reference lives on the narrowest shared class that names one operator — a concrete workload, including when its base describes only an input shape
 
 ## Tests
 
@@ -40,13 +40,27 @@ Rules:
 
 1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs()` and, when the class is named for one op, `ref_program()`.
 1. **Fixture class** — subclass `FixtureBase`, define `PARAMS` with `smoke`/`full` marks.
-1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`. Implement `ref_program()` here only when the workload describes an input shape rather than an op.
+1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`. Keep `ref_program()` and `verification()` in the concrete workload.
 1. **Test function** — `@YourFixture` decorated, call `test.check(op, *test.gen_inputs())`.
+
+### Shared correctness contract
+
+The concrete workload's `verification(*inputs)` returns an `Exact`, `Partial`, or
+`Custom` declaration from `workloads.numerics`. Tests and benchmark tags use the
+same reference, output coverage, dtype checks and tolerances. Change this method
+when operator semantics require a different numerical rule; change the shared
+verifier only when the protocol changes. `check()` and `compare()` do not accept
+per-call comparators, tolerances or alternative evidence maps.
+
+Reference OOM records no verification. Subject failures propagate. Partial checks
+state what remains unchecked; absent evidence never becomes a valid ratio. JUnit
+records `checked_outputs` explicitly, including when error is zero. Framework
+self-tests call the shared verifier directly and do not impersonate an operator.
 
 ### Tolerance
 
 - Use `torch.testing.assert_close` for floating-point verification. The standard per-dtype
-  tolerances are below; `standard_tolerance(dtype)` in `tests/test_base.py` returns them.
+  tolerances are below; `reference_tolerance(dtype)` in `workloads/numerics.py` returns them.
   - **FP32**: `rtol=1e-5`, `atol=1e-5`
   - **FP16**: `rtol=1e-3`, `atol=1e-3`
   - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
@@ -105,7 +119,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 ```
 
 - **No growth on existing files**: nothing to report.
-- **Growth on existing files**: include script output and a one-line justification in PR description.
+- **Growth on existing files**: include script output and a one-line justification in the PR validation comment.
 - **New test files only**: no delta to report — follow the policy above.
 
 ### Testing layers

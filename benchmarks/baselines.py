@@ -13,7 +13,7 @@ import contextlib
 import importlib
 import importlib.abc
 import sys
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import torch
 
@@ -26,7 +26,6 @@ __all__ = [
     "QUACK_TAG",
     "TORCH_COMPILE_TAG",
     "VLLM_TAG",
-    "assert_matches_reference",
     "assert_output_spec",
     "compiled_reference",
     "deepgemm_op",
@@ -37,7 +36,6 @@ __all__ = [
     "flaggems_op",
     "flashinfer_op",
     "quack_op",
-    "reference_tolerance",
     "vllm_op",
 ]
 
@@ -244,26 +242,6 @@ def vllm_op(name: str, module: str = "_custom_ops") -> Callable:
     return _resolve(f"vllm.{module}", name, "vllm")
 
 
-def reference_tolerance(dtype: torch.dtype) -> dict[str, float]:
-    """Return ``rtol``/``atol`` for *dtype*, ready to splat into an assertion.
-
-    A dtype outside the table takes no tolerance override, leaving
-    ``assert_close`` on its own defaults.
-    """
-    # docs/design/testing.md's per-dtype tolerances. A baseline is checked at the same
-    # strength a test checks an op: the question is the same one.
-    tolerances = {
-        torch.float16: (1e-3, 1e-3),
-        torch.bfloat16: (1.6e-2, 1.6e-2),
-        torch.float32: (1e-5, 1e-5),
-        torch.float64: (1e-7, 1e-7),
-    }
-    rtol_atol = tolerances.get(dtype)
-    if rtol_atol is None:
-        return {}
-    return {"rtol": rtol_atol[0], "atol": rtol_atol[1]}
-
-
 def assert_output_spec(got: Any, spec: Any, tag: str) -> None:
     """Check one timed tag's output against the manifest's declared output spec.
 
@@ -282,48 +260,4 @@ def assert_output_spec(got: Any, spec: Any, tag: str) -> None:
         raise AssertionError(
             f"{tag} returned {tuple(got.shape)} {got.dtype}, the manifest entry declares "
             f"{tuple(spec.shape)} {dtype}"
-        )
-
-
-def assert_matches_reference(
-    fn: Callable,
-    reference: Callable,
-    *inputs: Any,
-    rtol: Optional[float] = None,
-    atol: Optional[float] = None,
-) -> None:
-    """Check a baseline against the reference, output by output.
-
-    A baseline may return more than the reference does — saved statistics an aten
-    signature carries — and those extra outputs go unchecked.
-
-    Raises:
-        AssertionError: When an output disagrees, or the baseline returns fewer
-            outputs than the reference.
-    """
-    got, expected = fn(*inputs), reference(*inputs)
-    tolerances = {}
-    if rtol is not None:
-        tolerances["rtol"] = rtol
-    if atol is not None:
-        tolerances["atol"] = atol
-    if tolerances:
-        tolerances.setdefault("rtol", 0.0)
-        tolerances.setdefault("atol", 0.0)
-
-    if not isinstance(expected, (tuple, list)):
-        got = got[0] if isinstance(got, (tuple, list)) else got
-        torch.testing.assert_close(got, expected, **tolerances)
-        return
-    if not isinstance(got, (tuple, list)) or len(got) < len(expected):
-        raise AssertionError(
-            f"baseline returned {1 if not isinstance(got, (tuple, list)) else len(got)} "
-            f"output(s), the reference {len(expected)}"
-        )
-    for index, (got_i, expected_i) in enumerate(zip(got[: len(expected)], expected, strict=True)):
-        torch.testing.assert_close(
-            got_i,
-            expected_i,
-            msg=lambda message, index=index: f"output {index}: {message}",
-            **tolerances,
         )

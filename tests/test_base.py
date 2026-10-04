@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import threading
 from abc import abstractmethod
-from functools import partial
 from typing import Any
 
 import pytest
 import torch
 
 from tileops.backend import BUILTIN
+from workloads.numerics import verify
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
 _logger = logging.getLogger("tileops.ops")
@@ -39,53 +39,8 @@ __all__ = [
     "FixtureBase",
     "FixtureMeta",
     "TestBase",
-    "allclose_compare",
-    "exact_compare",
     "served_in_tree",
-    "standard_tolerance",
 ]
-
-
-def _to_tuple(outputs):
-    """Normalize outputs to a tuple."""
-    if isinstance(outputs, torch.Tensor):
-        return (outputs,)
-    if isinstance(outputs, list):
-        return tuple(outputs)
-    if isinstance(outputs, tuple):
-        return outputs
-    raise ValueError(f"Unsupported output type: {type(outputs)}")
-
-
-def standard_tolerance(dtype: torch.dtype) -> dict[str, float]:
-    """Return the standard ``atol``/``rtol`` for *dtype*, ready to splat into a check."""
-    # docs/design/testing.md §Tolerance.
-    tolerances = {
-        torch.float32: 1e-5,
-        torch.float16: 1e-3,
-        torch.bfloat16: 1.6e-2,
-    }
-    tol = tolerances[dtype]
-    return {"atol": tol, "rtol": tol}
-
-
-def allclose_compare(
-    output: torch.Tensor, output_ref: torch.Tensor, atol: float = 1e-8, rtol: float = 1e-5
-) -> None:
-    """Default comparison using torch.allclose.
-
-    Shapes must match. Broadcasting them first accepted a ``(1, 3)`` result
-    where the reference is ``(2, 3)``, which is a wrong shape carrying right
-    values. A test that means to compare across a broadcast passes its own
-    comparator.
-    """
-    torch.testing.assert_close(
-        output,
-        output_ref,
-        atol=atol,
-        rtol=rtol,
-        equal_nan=True,
-    )
 
 
 def served_in_tree(op: Any) -> bool:
@@ -97,17 +52,10 @@ def served_in_tree(op: Any) -> bool:
     return op.settled_target is BUILTIN
 
 
-def exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for bool/int outputs."""
-    assert torch.equal(output, output_ref), "output does not exactly match reference"
-
-
 class TestBase(WorkloadBase):
     """Abstract base class for op correctness testing.
 
-    Inherits gen_inputs() from WorkloadBase, and ref_program() too when the
-    workload is named for one op; a test on a shape-only workload defines
-    ref_program itself.
+    The concrete workload supplies gen_inputs(), ref_program() and verification().
     Provides check() for comparing op output against reference.
     """
 
@@ -117,104 +65,39 @@ class TestBase(WorkloadBase):
     def ref_program(self, *inputs: Any) -> Any:
         """Reference implementation for correctness checking.
 
-        Supplied by the workload for ops whose workload names them, otherwise
-        by the test subclass. Returns the same outputs as the op under test,
+        Supplied by the concrete workload. Returns the same outputs as the op under test,
         using a simpler/trusted implementation (e.g. PyTorch built-ins).
         """
         raise NotImplementedError
 
-    def check(
-        self,
-        op,
-        *inputs: torch.Tensor,
-        runs=None,
-        compare=None,
-        atol: float = 1e-08,
-        rtol: float = 1e-05,
-    ) -> None:
-        """Check the correctness of the op against ref_program.
+    def check(self, op, *inputs: torch.Tensor, runs=None) -> None:
+        """Verify a workload's declaration and attribute the result to its Op.
 
-        Args:
-            op: The operator to test.
-            *inputs: Input tensors.
-            runs: What to execute, when that is not *op* itself -- one of its
-                kernels, or a compiled form of it. The result is reported under
-                *op* either way: a kernel's correctness is its op's, and a
-                compiled callable keeps no handle on the Op it wraps.
-            compare: Custom comparison callable(output, output_ref) or list of
-                callables (one per output). Defaults to allclose_compare.
-            atol: Absolute tolerance for default allclose_compare.
-            rtol: Relative tolerance for default allclose_compare.
+        Numerical policy belongs to verification(), never to the call site.
+        runs supplies a kernel or compiled implementation owned by the Op.
         """
-        if compare is None:
-            compare = partial(allclose_compare, atol=atol, rtol=rtol)
-
-        op_name = op.__class__.__name__
-        op_module = op.__class__.__module__
-        _refuse_non_op(op, op_name)
-        subject = op if runs is None else runs
-        # Each invocation owns its attribution and comparison evidence. A test
-        # may call check() again and catch its failure; it must not report the
-        # previous invocation's error under the new op's name.
-        _check_result.op_name = op_name
-        _check_result.op_module = op_module
+        _check_result.op_name = None
+        _check_result.op_module = None
         _check_result.max_abs_err = None
-
-        try:
-            outputs_ref = self.ref_program(*inputs)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                _logger.warning("op=%s module=%s status=skip_oom", op_name, op_module)
-                # Skipped, not returned: nothing was compared, and a green
-                # result would report the case as establishing the op.
-                pytest.skip(f"reference ran out of memory for {op_name}")
-            raise e
-
-        outputs_ref = _to_tuple(outputs_ref)
-
-        with torch.no_grad():
-            outputs = subject(*inputs)
-
-        outputs = _to_tuple(outputs)
-
-        assert len(outputs) == len(outputs_ref), (
-            f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
+        _check_result.checked_outputs = 0
+        name, module = type(op).__name__, type(op).__module__
+        _refuse_non_op(op, name)
+        _check_result.op_name = name
+        _check_result.op_module = module
+        result = verify(
+            op if runs is None else runs,
+            inputs,
+            reference=self.ref_program,
+            evidence=self.verification(*inputs),
         )
-
-        # Compute the metric now, but publish it only after every comparison succeeds.
-        max_abs_err = 0.0
-        compared = False
-        for output, output_ref in zip(outputs, outputs_ref, strict=True):
-            if output_ref is None:
-                # The reference could not produce this output for these inputs:
-                # MoE's shared half is absent when no shared weight is passed.
-                # A reference that always checks a prefix states that with
-                # Partial instead, which carries the reason.
-                continue
-            compared = True
-            if output.numel() == 0:
-                # .max() of an empty tensor raises; shape, dtype and device are
-                # still compared below, which is all an empty result can carry.
-                continue
-            # Widen before subtracting so narrow dtypes do not lose the
-            # error to rounding. .float() alone would drop the imaginary
-            # part of a complex output and under-report it.
-            wide = torch.complex64 if output.is_complex() else torch.float32
-            err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
-            max_abs_err = max(max_abs_err, err)
-
-        comparators = [compare] * len(outputs) if callable(compare) else list(compare)
-
-        for output, output_ref, cmp in zip(outputs, outputs_ref, comparators, strict=True):
-            if output_ref is not None:
-                cmp(output, output_ref)
-
-        # After the comparators, not before: this is the report's evidence that
-        # the op's values were established, and a test may catch a failing
-        # comparison without the op having been.
-        if compared:
-            _check_result.max_abs_err = max_abs_err
-
+        if not result.checked_outputs:
+            pytest.skip(result.unchecked_reason)
+        _check_result.checked_outputs = result.checked_outputs
+        _check_result.max_abs_err = result.max_abs_err
         _logger.info(
-            "op=%s module=%s status=pass max_abs_err=%.2e", op_name, op_module, max_abs_err
+            "op=%s module=%s status=pass checked_outputs=%s max_abs_err=%s",
+            name,
+            module,
+            result.checked_outputs,
+            result.max_abs_err,
         )

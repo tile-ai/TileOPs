@@ -203,6 +203,15 @@ class TopPMaskWorkload(CallWorkload):
     def ref_program(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         return top_p_mask(logits, p)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, logit_mask_validator
+
+        logits, p = inputs
+        near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= 1e-4
+        return Custom(
+            logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"
+        )
+
 
 class TopKTopPMaskWorkload(CallWorkload):
     """Logits and per-row ``k`` of one ``TopKTopPMaskFwdOp`` call, with ``p`` uniform in ``[0.5, 0.95)``."""
@@ -213,6 +222,17 @@ class TopKTopPMaskWorkload(CallWorkload):
 
     def ref_program(self, logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         return top_p_mask(top_k_mask(logits, k), p)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, logit_mask_validator
+
+        logits, k, p = inputs
+        near = (
+            probability_above(top_k_mask(logits, k).float().softmax(-1)) - p[:, None]
+        ).abs() <= 1e-4
+        return Custom(
+            logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"
+        )
 
 
 class SamplingFromProbsWorkload(CallWorkload):
@@ -226,6 +246,37 @@ class SamplingFromProbsWorkload(CallWorkload):
         self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
     ) -> torch.Tensor:
         return sampling_from_probs(probs, seed, offset)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        probs, seed, offset = inputs
+
+        def validate(tokens, expected):
+            assert tokens.dtype == torch.int32
+            assert ((tokens >= 0) & (tokens < probs.shape[1])).all()
+            assert (probs.gather(1, tokens.long()[:, None]) > 0).all()
+
+        def distribution(draw, _args):
+            # An additional fixed statistical experiment distinguishes a real categorical
+            # sampler from a callable that always returns any positive-weight token.
+            draws, vocab = 65536, 64
+            weights = torch.rand(
+                vocab, device=probs.device, generator=self.rng("distribution", device=probs.device)
+            )
+            weights[::4] = 0
+            share = (weights / weights.sum()).double()
+            trial = (weights / weights.sum()).expand(draws, vocab).contiguous()
+            tokens = draw(trial, seed, offset)
+            assert tokens.shape == (draws,) and tokens.dtype == torch.int32
+            assert ((tokens >= 0) & (tokens < vocab)).all()
+            counts = torch.bincount(tokens.long(), minlength=vocab).double()
+            bound = 6 * (draws * share * (1 - share)).sqrt() + 5 * (share > 0)
+            assert ((counts - draws * share).abs() <= bound).all()
+
+        return Custom(
+            validate, "categorical support and six-sigma distribution", probe=distribution
+        )
 
 
 class ChainSpeculativeSamplingWorkload(CallWorkload):
@@ -245,3 +296,25 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
         offset: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return chain_speculative_sampling(draft_probs, draft_token_ids, target_probs, seed, offset)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        draft, draft_ids, target, seed, offset = inputs
+        batch, num_draft, vocab = draft.shape
+
+        def validate(got, expected):
+            tokens, accepted = got
+            assert ((tokens >= -1) & (tokens < vocab)).all()
+            assert ((accepted >= 0) & (accepted <= num_draft)).all()
+            positions = torch.arange(num_draft + 1, device=tokens.device)[None, :]
+            assert torch.equal(tokens == -1, positions > accepted[:, None])
+            prefix = positions[:, :num_draft] < accepted[:, None]
+            assert torch.equal(tokens[:, :num_draft][prefix], draft_ids[prefix])
+            got_counts = torch.bincount(accepted.long(), minlength=num_draft + 1).double()
+            ref_counts = torch.bincount(expected[1].long(), minlength=num_draft + 1).double()
+            share = ref_counts / batch
+            bound = 5 * (2 * batch * share * (1 - share)).sqrt() + 5
+            assert ((got_counts - ref_counts).abs() <= bound).all()
+
+        return Custom(validate, "valid accepted prefix and accepted-length distribution")

@@ -113,6 +113,19 @@ class _QuantizeWorkload(WorkloadBase):
         x = torch.randn(self.rows, self.cols, dtype=self.dtype, device=run_device())
         return (x,)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            codes, scales = got
+            ref_codes, ref_scales = expected
+            assert torch.equal(codes.view(torch.uint8), ref_codes.view(torch.uint8)), (
+                "quantized codes differ"
+            )
+            torch.testing.assert_close(scales, ref_scales, rtol=1e-6, atol=0, equal_nan=True)
+
+        return Custom(validate, "exact quantized codes and scale rounding")
+
 
 class INT8QuantPerTensorWorkload(_QuantizeWorkload):
     def ref_program(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -130,12 +143,28 @@ class INT8QuantPerBlockWorkload(_QuantizeWorkload):
     def ref_program(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int8_quant_per_block(x)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
 
 class FP8QuantPerBlockWorkload(_QuantizeWorkload):
     _ROWS = "N"
 
     def ref_program(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return fp8_quant_per_block(w)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            for actual, reference in zip(got, expected, strict=True):
+                assert torch.equal(actual.view(torch.uint8), reference.view(torch.uint8)), (
+                    "quantization bits differ"
+                )
+
+        return Custom(validate, "bitwise FP8 codes and block scales, including NaN and signed zero")
 
 
 class INT4QuantPerGroupWorkload(_QuantizeWorkload):
@@ -152,6 +181,19 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
 
     def ref_program(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int4_quant_per_group(w, self.group_size)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, zeroed_input
+
+        def validate(got, expected):
+            assert torch.equal(got[0], expected[0]), "packed INT4 codes differ"
+            torch.testing.assert_close(got[1], expected[1], rtol=1e-6, atol=0)
+
+        return Custom(
+            validate,
+            "exact packed INT4 codes and scale/offset rounding",
+            controls=(zeroed_input(0, "weight-zeroed"),),
+        )
 
 
 class SmoothQuantWorkload(_QuantizeWorkload):

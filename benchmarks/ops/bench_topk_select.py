@@ -22,7 +22,6 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import TopKSelectFwdOp
 from workloads.attention.topk_select import TopkSelectorCall
-from workloads.numerics import Custom
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -67,34 +66,7 @@ def test_topk_select_bench(call) -> None:
     if flashinfer_fn is not None:
         functors[FLASHINFER_TAG] = flashinfer_fn
 
-    def validate(got, expected):
-        assert got.shape == expected.shape and got.dtype == expected.dtype
-        scores, starts, ends = inputs
-        padding = got == scores.shape[2]
-        assert (
-            padding | ((got >= starts[:, :, None, None]) & (got < ends[:, :, None, None]))
-        ).all()
-        assert torch.equal(padding.sum(-1), (expected == scores.shape[2]).sum(-1))
-        ordered = got.sort(-1).values
-        assert (
-            (ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] == scores.shape[2])
-        ).all(), "duplicate selected index"
-        scores = torch.nn.functional.pad(scores.movedim(2, -1), (0, 1), value=-float("inf"))
-        torch.testing.assert_close(
-            scores.gather(-1, got.long()).sort(-1).values,
-            scores.gather(-1, expected.long()).sort(-1).values,
-            rtol=0,
-            atol=0,
-        )
-
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors,
-            Custom(
-                validate,
-                "same top-k scores with distinct in-window indices; tie order is unspecified",
-            ),
-        ),
     )

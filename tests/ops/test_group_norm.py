@@ -2,11 +2,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.device import run_device
 from workloads.norm import GroupNormWorkload
+from workloads.numerics import reference_tolerance
 
 
 class GroupNormTest(GroupNormWorkload, TestBase):
@@ -51,7 +52,7 @@ def test_group_norm_op(
 ) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
     op = GroupNormFwdOp(num_groups=g)
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class GroupNormNonContigFixture(FixtureBase):
@@ -88,7 +89,7 @@ def test_group_norm_non_contiguous(
     ).to(dtype)
 
     y = op(x, weight, bias)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -101,7 +102,7 @@ def test_group_norm_no_affine_matches_torch() -> None:
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"max err: {(y - y_ref).abs().max()}"
     )
 
@@ -124,7 +125,7 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
             bias=bias.float(),
             eps=1e-5,
         ).to(dtype)
-        assert torch.allclose(y, y_ref, **standard_tolerance(dtype))
+        assert torch.allclose(y, y_ref, **reference_tolerance(dtype))
 
     run_case(2, 16, (4, 4), torch.float16)
     assert len(op.built_kernels("group_norm")) == 1
@@ -195,7 +196,7 @@ def test_group_norm_no_affine_op(
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"max err: {(y - y_ref).abs().max()}"
     )
 
@@ -222,7 +223,7 @@ def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
     t = torch.randn((c,), dtype=dtype, device=run_device())
     kwargs = {give: t}
     torch.testing.assert_close(
-        op(x, **kwargs), F.group_norm(x, g, **kwargs), **standard_tolerance(dtype)
+        op(x, **kwargs), F.group_norm(x, g, **kwargs), **reference_tolerance(dtype)
     )
 
 
@@ -243,7 +244,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"max err: {(y - y_ref).abs().max()}"
     )
 

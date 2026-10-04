@@ -10,7 +10,7 @@ import functools
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import (
     AddFwdKernel,
     DivTruncFwdKernel,
@@ -34,15 +34,19 @@ from tileops.ops.elementwise import (
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AddBroadcastWorkload,
-    PositivePairWorkload,
+    AddSameShapeCase,
+    BinaryPositiveCase,
+    BinarySameShapeCase,
+    FloorDivideCase,
+    LerpCase,
     PowPositiveWorkload,
-    RandnPairWorkload,
+    RemainderCase,
 )
+from workloads.numerics import reference_tolerance
 
 
-class AddSameShapeTest(RandnPairWorkload, TestBase):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return (a.float() + b.float()).to(a.dtype)
+class AddSameShapeTest(AddSameShapeCase, TestBase):
+    pass
 
 
 # coalesce_broadcast_dims unit tests
@@ -113,7 +117,7 @@ class AddSameShapeFixture(FixtureBase):
 def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
     test = AddSameShapeTest(n_total, dtype)
     op = AddFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests (L3)
@@ -161,7 +165,7 @@ class AddBroadcastTest(AddBroadcastWorkload, TestBase):
 def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
     test = AddBroadcastTest(a_shape, b_shape, dtype)
     op = AddFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # Broadcast pattern tests for all binary arith ops (L3)
@@ -283,7 +287,7 @@ def test_binary_arith_broadcast(
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 class AddStrategyFixture(FixtureBase):
@@ -311,40 +315,25 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     )
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    test.check(AddFwdOp(), *test.gen_inputs(), **standard_tolerance(dtype), runs=kernel)
+    test.check(AddFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 # Generic binary test helper
 
 
-class BinarySameShapeTest(RandnPairWorkload, TestBase):
-    """Reusable test body for binary same-shape ops."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        super().__init__(n_total, dtype)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a.float(), b.float()).to(a.dtype)
+class BinarySameShapeTest(BinarySameShapeCase, TestBase):
+    pass
 
 
-class BinaryPositiveTest(PositivePairWorkload, TestBase):
-    """Test body for ops that need positive inputs (div, remainder, pow, etc.)."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        super().__init__(n_total, dtype)
-        self.ref_fn = ref_fn
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.ref_fn(a.float(), b.float()).to(a.dtype)
+class BinaryPositiveTest(BinaryPositiveCase, TestBase):
+    pass
 
 
 # Same-shape correctness for simple binary arith ops
 
 
-class RemainderTest(PositivePairWorkload, TestBase):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.remainder(a, b)
+class RemainderTest(RemainderCase, TestBase):
+    pass
 
 
 class PowPositiveTest(PowPositiveWorkload, TestBase):
@@ -394,7 +383,7 @@ class BinaryArithOpFixture(FixtureBase):
 def test_binary_arith_op(op_cls, make_test, n_total: int, dtype: torch.dtype) -> None:
     test = make_test(n_total, dtype)
     op = op_cls()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class FloorDivideFixture(FixtureBase):
@@ -410,16 +399,15 @@ class FloorDivideFixture(FixtureBase):
     ]
 
 
-class FloorDivideTest(PositivePairWorkload, TestBase):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.floor_divide(a, b)
+class FloorDivideTest(FloorDivideCase, TestBase):
+    pass
 
 
 @FloorDivideFixture
 def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
     op = FloorDivideFwdOp()
-    test.check(op, *test.gen_inputs(), atol=0.0, rtol=0.0)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -534,30 +522,17 @@ class LerpFixture(FixtureBase):
     ]
 
 
-class LerpTest(RandnPairWorkload, TestBase):
-    def __init__(self, n_total: int, dtype, weight: float = 0.5):
-        super().__init__(n_total, dtype)
-        self.weight = weight
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.lerp(a.float(), b.float(), self.weight).to(a.dtype)
+class LerpTest(LerpCase, TestBase):
+    pass
 
 
 @LerpFixture
 def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
     """Validate lerp across multiple construction-time weight values."""
-    # Lerp computes a + w*(b-a) in native dtype; the intermediate multiply
-    # adds rounding error proportional to weight magnitude in fp16.
-    if dtype == torch.float32:
-        atol, rtol = 1e-5, 1e-5
-    elif dtype == torch.float16:
-        atol, rtol = 5e-3, 5e-3
-    else:  # bfloat16
-        atol, rtol = 1.6e-2, 1.6e-2
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
         op = LerpScalarFwdOp(weight=weight)
-        test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+        test.check(op, *test.gen_inputs())
 
 
 # Maximum/Minimum NaN propagation tests
@@ -1154,7 +1129,7 @@ def _gen_int_pair(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tenso
     return a, b
 
 
-def _exact_compare(out: torch.Tensor, ref: torch.Tensor) -> None:
+def _assert_close(out: torch.Tensor, ref: torch.Tensor) -> None:
     assert out.dtype == ref.dtype, f"dtype mismatch: {out.dtype} vs {ref.dtype}"
     assert torch.equal(out, ref), f"Mismatch: {(out != ref).sum().item()} elements differ"
 
@@ -1178,7 +1153,7 @@ def test_binary_arith_integer_dtype_add(dtype: torch.dtype) -> None:
     ref = torch.add(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, ref)
+    _assert_close(out, ref)
 
 
 # Op-coverage axis: at fixed dtype = int32, every full-union arithmetic
@@ -1207,7 +1182,7 @@ def test_binary_arith_op_int32(op_cls, ref_fn) -> None:
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, ref)
+    _assert_close(out, ref)
 
 
 # Bool-axis reference mapping. The kernel implements:
@@ -1254,7 +1229,7 @@ def test_binary_arith_bool_dtype(op_cls, ref_fn) -> None:
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, ref)
+    _assert_close(out, ref)
 
 
 @pytest.mark.smoke
@@ -1272,7 +1247,7 @@ def test_add_bool_is_or_not_xor() -> None:
     expected = torch.tensor([True, True, True, False], device=run_device())
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, expected)
+    _assert_close(out, expected)
 
 
 @pytest.mark.smoke
@@ -1338,7 +1313,7 @@ def test_add_bool_broadcast() -> None:
     ref = torch.logical_or(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _exact_compare(out, ref)
+    _assert_close(out, ref)
 
 
 @pytest.mark.smoke

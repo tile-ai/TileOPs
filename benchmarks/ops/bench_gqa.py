@@ -11,7 +11,6 @@ from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
     flashinfer_op,
-    reference_tolerance,
 )
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
@@ -38,7 +37,6 @@ from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenScaledCall,
 )
 from workloads.device import run_device
-from workloads.numerics import Exact, zeroed_input
 
 
 def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall, inputs: tuple):
@@ -108,18 +106,9 @@ def test_gqa_bwd_bench(call) -> None:
     else:
         functors["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
 
-    tolerance = reference_tolerance(inputs[0].dtype)
-    tolerance["atol"] = max(5e-3, tolerance["atol"])
     bm.compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(
-            functors,
-            Exact(
-                **tolerance,
-                controls=(zeroed_input(0, "query-zeroed"),),
-            ),
-        ),
     )
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
@@ -256,14 +245,6 @@ def test_gqa_dense_prefill_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionDenseFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no
-    # per-dtype one covers dequantization against a 16-bit reference.
-    tolerance = (
-        {"atol": 8e-2, "rtol": 2e-2}
-        if workload.dtype == torch.float8_e4m3fn
-        else reference_tolerance(workload.dtype)
-    )
-
     from flash_attn_interface import flash_attn_func
 
     rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
@@ -307,7 +288,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
                 cache,
                 workload.rope_layout == "neox",
             )
-            q, k = q_rot.reshape_as(q), k_rot.reshape_as(k)
+            q, k = (q_rot.reshape_as(q), k_rot.reshape_as(k))
         return flash_attn_func(
             q,
             k,
@@ -323,9 +304,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
         "torch-ref": workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    bm.compare(
-        functors, *inputs, count_copies=True, evidence=dict.fromkeys(functors, Exact(**tolerance))
-    )
+    bm.compare(functors, *inputs, count_copies=True)
 
 
 def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tensor):
@@ -511,20 +490,11 @@ def test_gqa_varlen_scaled_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    # FP8 is held to the tolerance tests/ops/test_gqa.py uses: no per-dtype one
-    # covers dequantization against a 16-bit reference.
-    tolerance = (
-        {"atol": 8e-2, "rtol": 2e-2}
-        if workload.dtype == torch.float8_e4m3fn
-        else reference_tolerance(workload.dtype)
-    )
-
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
     if fa3_fn is not None:
         functors["fa3"] = (fa3_fn, inputs[:8])
-    checked = Exact(**tolerance, controls=(zeroed_input(0, "query-zeroed"),))
-    bm.compare(functors, *inputs, evidence=dict.fromkeys(functors, checked))
+    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_prefill_paged(workload, inputs):

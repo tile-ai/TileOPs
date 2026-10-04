@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import TestBase, allclose_compare
+from tests.test_base import TestBase
 from tileops.backend import BUILTIN
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
@@ -27,6 +27,7 @@ from workloads.mamba import (
     mamba2_fwd_ref,
     ssd_chunk_state_fwd_ref,
 )
+from workloads.numerics import assert_close
 
 
 @pytest.mark.parametrize(
@@ -58,7 +59,7 @@ def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype,
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
     out = op(C_mat, B_mat)
-    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
+    assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
@@ -75,7 +76,7 @@ def test_cb_producer_fwd_noncontiguous():
     assert not B_mat.is_contiguous()
     ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
     out = SSDChunkCouplingFwdOp(chunk_len)(C_mat, B_mat)
-    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
+    assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
@@ -102,7 +103,7 @@ def test_da_cumsum_fwd(
         tune=tune,
     )
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-5, rtol=1e-5)
+    test.check(op, *inputs)
 
 
 @pytest.mark.cuda_only
@@ -159,9 +160,7 @@ def test_ssd_chunk_scan_fwd(
     )
     op = SSDChunkScanFwdOp(tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-3 if dtype == torch.float16 else 2e-3
-    rtol = 1e-5
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs)
 
 
 class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
@@ -170,33 +169,14 @@ class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
 
 @SSDChunkStateFwdFixture
 def test_ssd_chunk_state_fwd(
-    batch,
-    num_chunks,
-    chunk_len,
-    n_heads,
-    d_head,
-    d_state,
-    n_groups,
-    dtype,
-    tune,
-    has_seq_idx,
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx
 ):
     test = SSDChunkStateFwdTest(
-        batch,
-        num_chunks,
-        chunk_len,
-        n_heads,
-        d_head,
-        d_state,
-        n_groups,
-        dtype,
-        has_seq_idx,
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx
     )
     op = SSDChunkStateFwdOp(tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
-    rtol = 1e-3
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs)
 
 
 @pytest.mark.cuda_only
@@ -223,15 +203,15 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     out = op(x, Bmat, dt, dA_cumsum, seq_idx)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
 
-    from tests.test_base import allclose_compare
+    from workloads.numerics import assert_close
 
     atol = 1e-3
     rtol = 1e-3
-    allclose_compare(out, ref, atol=atol, rtol=rtol)
+    assert_close(out, ref, atol=atol, rtol=rtol)
 
     # Pin the semantic: chunk 0 (seq_idx == -1 throughout) must be exactly zero;
     # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
-    allclose_compare(out[:, 0], torch.zeros_like(out[:, 0]), atol=0.0, rtol=0.0)
+    assert_close(out[:, 0], torch.zeros_like(out[:, 0]), atol=0.0, rtol=0.0)
     assert out[:, 1].abs().max().item() > 0
 
     poison = torch.full((b, seq_len), -1, dtype=torch.int32, device="cuda")
@@ -239,7 +219,7 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     del poison
     out = op(x, Bmat, dt, dA_cumsum)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g)
-    allclose_compare(out, ref, atol=atol, rtol=rtol)
+    assert_close(out, ref, atol=atol, rtol=rtol)
 
 
 class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
@@ -251,9 +231,7 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     op = SSDStatePassingFwdOp(tune=tune)
     inputs = test.gen_inputs()
-    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
-    rtol = 1e-3
-    test.check(op, *inputs, atol=atol, rtol=rtol)
+    test.check(op, *inputs)
 
 
 @pytest.mark.cuda_only
@@ -269,15 +247,14 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_ssd_state_passing_fwd_vectorize(config, dtype):
     """Exercises the vectorize=True code path (lo/hi split per thread)."""
-    batch, num_chunks, n_heads, d_state = 2, 4, 8, 128
+    batch, num_chunks, n_heads, d_state = (2, 4, 8, 128)
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     op = SSDStatePassingFwdOp(tune=False, target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
     (kernel,) = op.built_kernels("ssd_state_passing_fwd").values()
     kernel.config = config
-    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
-    test.check(op, *inputs, atol=atol, rtol=1e-3)
+    test.check(op, *inputs)
 
 
 class SSDDecodeTest(SSDDecodeWorkload, TestBase):
@@ -299,8 +276,8 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
 
     atol = 1e-3
     rtol = 1e-3
-    allclose_compare(y_op, y_ref, atol=atol, rtol=rtol)
-    allclose_compare(state, state_ref, atol=atol, rtol=rtol)
+    assert_close(y_op, y_ref, atol=atol, rtol=rtol)
+    assert_close(state, state_ref, atol=atol, rtol=rtol)
 
 
 @pytest.mark.smoke
@@ -329,4 +306,4 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     y_ref, _ = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
 
     atol = 1e-2 if dtype == torch.float16 else 2e-2
-    allclose_compare(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
+    assert_close(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)

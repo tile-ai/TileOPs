@@ -59,9 +59,9 @@ op's reference from [`workloads/`](../../workloads/) — the same definition the
 test checks against — and times it as the torch baseline.
 
 The `tests/` boundary buys decoupling: nightly benchmarks keep running across
-test-side refactors, and a tolerance or comparator change cannot move a
-baseline number. Sharing the reference costs none of that, and removes the
-second copy that used to drift.
+test-side refactors. Correctness uses the same workload declaration in both
+consumers; timing remains the benchmark's responsibility. A policy change
+therefore changes validation everywhere, at one explicit location.
 
 A baseline that is another idiom for the same computation, or a different
 implementation, is timed under its own tag next to the reference: the tag is
@@ -95,33 +95,43 @@ and input construction the entry's workload rows do not determine. Shapes,
 dtypes, presence and metadata values come from instantiating the rows
 ([manifest.md § Workloads](manifest.md#workloads)).
 
-**Must not contain**: tolerances, `check`, `calculate_flops` /
-`calculate_memory`, or the choice of what to time against. Those are decisions,
-the first three the test's and the last the benchmark's, and a decision placed
-here reaches the other consumer.
+**Must contain**: `verification(*inputs)`, when the default exact comparison with
+per-output dtype tolerances is insufficient. The declaration and `ref_program`
+belong to the narrowest shared class naming an operator. Shape-only bases are
+extended here, never by a consumer-local reference or comparator.
 
-The reference computation is not a decision. It is the executable semantics
-of the op, whether or not the entry records a `ref_api`: what the operator
-means, the same for whoever asks.
-Assigning it to one consumer obliges the other to keep a second copy, and two
-copies of the same math drift apart in silence — the benchmark then reports a
-ratio against a computation no test validated.
+**Must not contain**: pytest outcomes, `check`, timing, roofline calculations,
+or the choice of benchmark competitors.
 
-It belongs to the narrowest shared class that names one operator. That is
-normally the workload; a workload describing only an input shape — one random
-tensor, a matching pair — is reused across ops, names none of them, and so its
-consumers carry the reference instead. `TestBase` already declares
-`ref_program` abstract, so whichever class supplies it, a test without one
-cannot be instantiated.
+The only execution and comparison implementation is `workloads/numerics.py`:
 
-```
-WorkloadBase (workloads/workload_base.py)  # gen_inputs(), and ref_program()
-  |                                        # on the classes named for an op
-  ├── TestBase (tests/test_base.py)        # adds check() and tolerances
-  └── concrete subclasses per op
+- `verify(subject, inputs, *, reference, evidence, subject_inputs=None)` executes
+  the reference and subject, restores inputs on success and failure, and runs
+  declared negative controls.
+- `compare_outputs(produced, expected, evidence)` checks output structure and
+  numerical policy. `Exact` covers every output; `Partial` names an unchecked
+  suffix; `Custom` supplies a numerical assertion after mandatory structure checks.
+  A statistical `Custom` may additionally declare a `probe(subject, inputs)` for
+  repeated draws. Unavailable verification must be explicitly declared.
+- `CheckResult` carries checked/total output counts, the diagnostic maximum error,
+  and an unchecked reason. A metric alone is never proof of comparison.
 
-BenchmarkBase[W] (benchmarks/)             # generic over workload type; reads
-                                           # roofline off the op, not the workload
+`TestBase.check(op, *inputs, runs=None)` adapts this result to pytest and JUnit.
+`OpBenchmark.compare(functors, *inputs, ...)` reads the same declaration once for
+all tags, then owns timing and reporting. Neither accepts numerical overrides.
+An external competitor with different semantics may be explicitly named in
+`noncomparable={tag: reason}`; its timing has no correctness-backed ratio.
+
+```text
+Concrete workload: gen_inputs + ref_program + verification
+             |                      |
+       TestBase.check       OpBenchmark.compare
+             |                      |
+             +------ verify --------+
+                       |
+                compare_outputs
+                       |
+                  CheckResult
 ```
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

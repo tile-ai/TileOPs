@@ -7,7 +7,7 @@ L4 edge cases for numerically sensitive ops.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
     AbsFwdOp,
     CeilFwdOp,
@@ -32,7 +32,8 @@ from tileops.ops.elementwise import (
 )
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
-from workloads.elementwise import RandnFlatWorkload
+from workloads.elementwise import UnaryMathCase
+from workloads.numerics import reference_tolerance
 
 
 class MathFixture(FixtureBase):
@@ -63,15 +64,8 @@ class MathEdgeFixture(FixtureBase):
     ]
 
 
-class UnaryMathTest(RandnFlatWorkload, TestBase):
-    """Generic test fixture for a single-input, single-output unary op."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
-        super().__init__(n_total, dtype, gen_fn=gen_fn)
-        self._ref_fn = ref_fn
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return self._ref_fn(x)
+class UnaryMathTest(UnaryMathCase, TestBase):
+    pass
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
@@ -97,7 +91,7 @@ def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     """Build test, instantiate op, and run check."""
     test = UnaryMathTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 # L1 tests (17 ops)
@@ -482,7 +476,7 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
     # The decimals path runs entirely in fp32 internally and only down-casts
     # once at the end, so the standard per-dtype tolerances apply.
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -500,7 +494,7 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
     out = op(x)
     ref = torch.round(x.float(), decimals=4).to(dtype)
     assert torch.isfinite(out).all(), f"output contains non-finite values: {out}"
-    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke

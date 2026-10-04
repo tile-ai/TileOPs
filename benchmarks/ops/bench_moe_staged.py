@@ -21,9 +21,7 @@ from workloads.moe import (
     MoePostPermuteWorkload,
     MoePrePermuteWorkload,
     gated_activation,
-    valid_rows,
 )
-from workloads.numerics import Custom, Exact
 
 
 @pytest.mark.parametrize("call", manifest_calls(MoEPrePermuteFwdOp))
@@ -35,34 +33,12 @@ def test_moe_pre_permute_bench(call) -> None:
 
     def _vllm_reference(hidden: torch.Tensor, expert_ids: torch.Tensor):
         rows, _, offsets, inverse, _ = moe_permute(hidden, None, expert_ids, op.num_local_experts)
-        return rows, offsets[1:].int(), inverse
-
-    def validate(got, expected):
-        rows, ends, inverse = got
-        ref_rows, ref_ends, ref_inverse = expected
-        assert rows.shape == ref_rows.shape and rows.dtype == ref_rows.dtype
-        assert inverse.shape == ref_inverse.shape and inverse.dtype == ref_inverse.dtype
-        torch.testing.assert_close(ends, ref_ends, rtol=0, atol=0)
-        torch.testing.assert_close(
-            inverse.long().sort().values,
-            torch.arange(inverse.numel(), device=inverse.device),
-            rtol=0,
-            atol=0,
-        )
-        torch.testing.assert_close(
-            rows[inverse.long()], ref_rows[ref_inverse.long()], rtol=0, atol=0
-        )
-        owners = torch.searchsorted(ends, inverse, right=True)
-        torch.testing.assert_close(owners, local_ids.flatten().to(owners.dtype), rtol=0, atol=0)
+        return (rows, offsets[1:].int(), inverse)
 
     benchmark.compare(
         {"tileops": op, VLLM_TAG: _vllm_reference, "torch-ref": workload.ref_program},
         hidden_states,
         local_ids,
-        evidence=dict.fromkeys(
-            ("tileops", VLLM_TAG),
-            Custom(validate, "route permutation and expert segment ownership"),
-        ),
     )
 
 
@@ -88,15 +64,7 @@ def test_moe_post_permute_bench(call) -> None:
         expert_output,
         weights,
         inverse,
-        evidence=dict.fromkeys(("tileops", VLLM_TAG), Exact(rtol=2e-2, atol=2e-2)),
     )
-
-
-def _assert_valid_rows_match(out: torch.Tensor, ref: torch.Tensor, valid: torch.Tensor) -> None:
-    assert out.shape == ref.shape and out.dtype == ref.dtype
-    flat_out = out.reshape(-1, out.shape[-1])[valid].float()
-    flat_ref = ref.reshape(-1, ref.shape[-1])[valid].float()
-    torch.testing.assert_close(flat_out, flat_ref, rtol=2e-2, atol=1e-1)
 
 
 def _flashinfer_segment_gemm(ends: torch.Tensor):
@@ -129,10 +97,7 @@ def test_moe_grouped_gemm_bench(call) -> None:
     a, b, metadata = workload.gen_inputs()
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
-    valid = valid_rows(op.layout, metadata, a.numel() // a.shape[-1], b.shape[0])
     functors = {"tileops": op}
-
-    # torch._grouped_mm takes tight segments and writes the operand dtype.
     if _tight_psum(op) and op.out_dtype is None:
         b_kn = b.transpose(1, 2).contiguous()
 
@@ -141,19 +106,7 @@ def test_moe_grouped_gemm_bench(call) -> None:
             return output if op.activation is None else gated_activation(output, op.activation)
 
         functors["torch-grouped-mm"] = _torch_grouped_mm
-    benchmark.compare(
-        functors,
-        a,
-        b,
-        metadata,
-        evidence=dict.fromkeys(
-            functors,
-            Custom(
-                lambda got, ref: _assert_valid_rows_match(got, ref, valid),
-                "defined rows of grouped layout",
-            ),
-        ),
-    )
+    benchmark.compare(functors, a, b, metadata)
 
 
 @pytest.mark.parametrize("call", manifest_calls(MoEExpertMLPFwdOp))
@@ -162,8 +115,6 @@ def test_moe_expert_mlp_bench(call) -> None:
     x, w_gate_up, w_down, metadata = workload.gen_inputs()
     op = MoEExpertMLPFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
-    valid = valid_rows(op.layout, metadata, x.numel() // x.shape[-1], w_down.shape[0])
-
     gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
     down_kn = w_down.transpose(1, 2).contiguous()
 
@@ -188,11 +139,4 @@ def test_moe_expert_mlp_bench(call) -> None:
         w_gate_up,
         w_down,
         metadata,
-        evidence=dict.fromkeys(
-            ("tileops", "torch-grouped-mm", "flashinfer-segment-mlp"),
-            Custom(
-                lambda got, ref: _assert_valid_rows_match(got, ref, valid),
-                "defined rows of expert layout",
-            ),
-        ),
     )

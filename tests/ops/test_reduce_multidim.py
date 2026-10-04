@@ -11,9 +11,9 @@ the corresponding PyTorch reference.
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase
 from workloads.device import run_device
+from workloads.reduction import reduction_tolerance
 
 
 class MultiDimFixture(FixtureBase):

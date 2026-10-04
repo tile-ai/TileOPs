@@ -14,7 +14,7 @@ import torch
 
 import tileops.ops.elementwise as elementwise_mod
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
-from tests.test_base import FixtureBase, TestBase, exact_compare
+from tests.test_base import FixtureBase, TestBase
 from tileops.elementwise import DropoutFwdOp
 from tileops.ops.elementwise import (
     AbsFwdOp,
@@ -82,9 +82,11 @@ from tileops.ops.elementwise import (
 )
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
+    AbsCompileCase,
     AddCompileWorkload,
     EqCompileWorkload,
-    RandnFlatWorkload,
+    ReluCompileCase,
+    SignCompileCase,
     SiluAndMulCompileWorkload,
 )
 
@@ -121,9 +123,8 @@ class ReluCompileFixture(FixtureBase):
     ]
 
 
-class ReluCompileTest(RandnFlatWorkload, TestBase):
-    def ref_program(self, x):
-        return torch.relu(x.float()).to(x.dtype)
+class ReluCompileTest(ReluCompileCase, TestBase):
+    pass
 
 
 register_compile_contract(ReluFwdOp)
@@ -135,7 +136,7 @@ def test_relu_compile(n_total, dtype):
     op = ReluFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 # Binary compile test: add
@@ -166,7 +167,7 @@ def test_add_compile(a_shape, b_shape, dtype):
     op = AddFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 # Comparison compile test: eq (bool output)
@@ -196,7 +197,7 @@ def test_eq_compile(a_shape, b_shape, dtype):
     op = EqFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, compare=exact_compare, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 # FusedGated compile test: silu_and_mul
@@ -226,7 +227,7 @@ def test_silu_and_mul_compile(M, N, dtype):
     op = SiluAndMulFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-2, rtol=1e-2, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 # Additional unary compile tests: abs, sign
@@ -243,9 +244,8 @@ class AbsCompileFixture(FixtureBase):
     ]
 
 
-class AbsCompileTest(RandnFlatWorkload, TestBase):
-    def ref_program(self, x):
-        return torch.abs(x.float()).to(x.dtype)
+class AbsCompileTest(AbsCompileCase, TestBase):
+    pass
 
 
 register_compile_contract(AbsFwdOp)
@@ -257,7 +257,7 @@ def test_abs_compile(n_total, dtype):
     op = AbsFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 class SignCompileFixture(FixtureBase):
@@ -271,9 +271,8 @@ class SignCompileFixture(FixtureBase):
     ]
 
 
-class SignCompileTest(RandnFlatWorkload, TestBase):
-    def ref_program(self, x):
-        return torch.sign(x.float()).to(x.dtype)
+class SignCompileTest(SignCompileCase, TestBase):
+    pass
 
 
 register_compile_contract(SignFwdOp)
@@ -285,7 +284,7 @@ def test_sign_compile(n_total, dtype):
     op = SignFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3, runs=compiled_op)
+    test.check(op, *inputs, runs=compiled_op)
 
 
 # register_fake shape/dtype correctness

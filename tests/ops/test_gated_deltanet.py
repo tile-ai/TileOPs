@@ -1,9 +1,7 @@
-from functools import partial
-
 import pytest
 import torch
 
-from tests.test_base import TestBase, allclose_compare
+from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
@@ -35,15 +33,10 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     test = GatedDeltaNetFwdTest(1, 64, 2, 128, dtype)
     inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     # The FP32 state must not inherit rounding of the chunk's cumulative log-gates.
     test.check(
         op,
         *inputs,
-        compare=[
-            partial(allclose_compare, atol=atol, rtol=rtol),
-            partial(allclose_compare, atol=1e-4, rtol=1e-3),
-        ],
     )
 
 
@@ -51,7 +44,7 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
 def test_gated_deltanet_dense_prefill_continues_an_initial_state() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -62,7 +55,7 @@ def test_gated_deltanet_dense_prefill_carries_a_value_major_state() -> None:
         1, 64, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
     )
     op = GatedDeltaNetFwdOp(state_v_first=True)
-    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -89,16 +82,14 @@ def test_gated_deltanet_partitioned_prefill_carries_a_value_major_state() -> Non
     )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(
-        GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2, runs=kernel
-    )
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, runs=kernel)
 
 
 @pytest.mark.sm90
 def test_gated_deltanet_dense_prefill_runs_a_64_wide_state() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 64, 2, 64, torch.bfloat16)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -115,14 +106,14 @@ def test_gated_deltanet_prefill_packs_ragged_sequences_with_grouped_value_heads(
         value_heads=8,
         sequence_lengths=(1, 63, 100, 192),
     )
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90
 def test_gated_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(2, 100, 2, 64, torch.bfloat16)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -175,13 +166,9 @@ def test_gated_deltanet_prefill_takes_each_input_transform(
         test.check(
             op,
             *test.gen_inputs(),
-            compare=[
-                partial(allclose_compare, atol=2e-3, rtol=1e-3),
-                partial(allclose_compare, atol=6e-3, rtol=1e-3),
-            ],
         )
         return
-    test.check(op, *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -204,7 +191,7 @@ def test_gated_deltanet_partitioned_prefill_normalizes_the_key_it_stages() -> No
         config={"max_local_chunks": 4},
     )
     q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
-    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2, runs=kernel)
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, runs=kernel)
 
 
 @pytest.mark.sm90
@@ -222,41 +209,33 @@ def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(
-        GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, atol=1.6e-2, rtol=1.6e-2, runs=kernel
-    )
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, runs=kernel)
 
 
 @pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
-def test_gated_deltanet_dense_decode_matches_reference(
-    dtype: torch.dtype,
-    batch: int,
-) -> None:
+def test_gated_deltanet_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(batch, 1, 16, 128, dtype, has_initial_state=True)
-    # One token over a 128-wide state puts the output at 5e-2, which the prefill tolerance
-    # covers whole; the measured agreement is 6e-8.
-    tolerance = 6e-7 if dtype == torch.float16 else 1e-7
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=tolerance, rtol=tolerance)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("flags", "atol"),
+    "flags",
     [
         # Each bound is ten times the agreement that flag reaches, so the case fails when
         # the transform it names is dropped. A flag that stiffens the recurrence carries a
         # looser one: doubling beta puts the state at 1.7e-1 rather than 4e-2.
-        ({"state_v_first": True}, 4e-8),
-        ({"use_gate_in_kernel": True}, 3e-4),
-        ({"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True}, 4e-3),
-        ({"use_qk_l2norm_in_kernel": True}, 4e-8),
+        {"state_v_first": True},
+        {"use_gate_in_kernel": True},
+        {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
+        {"use_qk_l2norm_in_kernel": True},
     ],
     ids=["v-first", "gate-fused", "beta-sigmoid-neg", "l2norm"],
 )
-def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict, atol: float) -> None:
+def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict) -> None:
     torch.manual_seed(42)
     workload_flags = {
         "state_v_first": "state_v_first",
@@ -274,7 +253,7 @@ def test_gated_deltanet_decode_runs_each_recurrence_flag(flags: dict, atol: floa
         has_initial_state=True,
         **{workload_flags[name]: value for name, value in flags.items()},
     )
-    test.check(GatedDeltaNetFwdOp(**flags), *test.gen_inputs(), atol=atol, rtol=atol)
+    test.check(GatedDeltaNetFwdOp(**flags), *test.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -284,7 +263,7 @@ def test_gated_deltanet_decode_groups_value_heads_over_a_64_wide_state() -> None
     test = GatedDeltaNetFwdTest(
         17, 1, 6, 64, torch.bfloat16, has_initial_state=True, value_heads=12
     )
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1e-5, rtol=1e-5)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.sm90

@@ -17,7 +17,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
-from workloads.numerics import Exact
 from workloads.reduction import ReductionCall
 
 
@@ -47,15 +46,13 @@ def test_argmax_bench(call) -> None:
     op = ArgmaxFwdOp(**workload.arguments())
     dim, keepdim = call.params["dim"], call.params["keepdim"]
 
-    def baseline_fn(x):
-        return x.argmax(dim=dim, keepdim=keepdim)
+    baseline_fn = workload.ref_program
 
     functors = _functors(op, baseline_fn, "argmax", dim, keepdim, inputs)
 
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
     )
 
 
@@ -66,13 +63,11 @@ def test_argmin_bench(call) -> None:
     op = ArgminFwdOp(**workload.arguments())
     dim, keepdim = call.params["dim"], call.params["keepdim"]
 
-    def baseline_fn(x):
-        return x.argmin(dim=dim, keepdim=keepdim)
+    baseline_fn = workload.ref_program
 
     functors = _functors(op, baseline_fn, "argmin", dim, keepdim, inputs)
 
     ManifestBenchmark(op, workload).compare(
         functors,
         *inputs,
-        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
     )

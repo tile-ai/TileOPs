@@ -14,9 +14,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tests.ops.reduction_test_utils import reduction_tolerance
 from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 from workloads.device import run_device
+from workloads.reduction import reduction_tolerance
 
 _DIMS = [
     pytest.param(-1, id="dim=int"),

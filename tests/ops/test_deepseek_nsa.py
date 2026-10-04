@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
@@ -120,7 +120,7 @@ def test_nsa_varlen_op(
         block_size=block_size,
         tune=tune,
     )
-    test.check(op, *test.gen_inputs(), atol=5e-4, rtol=1e-5)
+    test.check(op, *test.gen_inputs())
 
 
 class NsaCmpFwdTest(NsaCmpFwdWorkload, TestBase):
@@ -168,15 +168,10 @@ def test_nsa_cmp_fwd_varlen_op(
     tune: bool,
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
-
     test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
-
     op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
-    tolerance = (
-        standard_tolerance(dtype) if dtype == torch.bfloat16 else {"atol": 4e-3, "rtol": 1e-5}
-    )
-    test.check(op, *inputs, **tolerance)
+    test.check(op, *inputs)
 
 
 class NsaTopkTest(NsaTopkWorkload, TestBase):

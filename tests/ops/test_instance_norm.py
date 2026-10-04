@@ -4,11 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
 from workloads.norm import InstanceNormWorkload
+from workloads.numerics import reference_tolerance
 
 
 class InstanceNormTest(InstanceNormWorkload, TestBase):
@@ -42,7 +43,7 @@ class InstanceNormFixture(FixtureBase):
 def test_instance_norm_op(n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)
     op = InstanceNormFwdOp()
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+    test.check(op, *test.gen_inputs())
 
 
 class InstanceNormNonContigFixture(FixtureBase):
@@ -76,7 +77,7 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: tor
     ).to(dtype)
 
     y = op(x, weight=weight, bias=bias)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -118,7 +119,7 @@ def test_instance_norm_affine_free_op(
         bias=None,
         eps=1e-5,
     ).to(dtype)
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"NoAffine forward mismatch, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -146,7 +147,7 @@ def test_instance_norm_affine_free_running_stats(
         use_input_stats=False,
         eps=1e-5,
     )
-    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+    assert torch.allclose(y, y_ref, **reference_tolerance(dtype)), (
         f"Running-stats mismatch, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -185,7 +186,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
             bias=bias.float(),
             eps=1e-5,
         ).to(dtype)
-        assert torch.allclose(y, y_ref, **standard_tolerance(dtype))
+        assert torch.allclose(y, y_ref, **reference_tolerance(dtype))
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(op.built_kernels("instance_norm")) == 1
@@ -264,7 +265,7 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     bias = torch.randn((c,), dtype=dtype, device=run_device())
     y1 = op_default(x, weight=weight, bias=bias)
     y2 = op_other(x, weight=weight, bias=bias)
-    assert torch.allclose(y1, y2, **standard_tolerance(dtype))
+    assert torch.allclose(y1, y2, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -286,8 +287,8 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
     op = InstanceNormFwdOp(use_input_stats=use_input_stats)
     y = op(x, *mine, weight, bias)
     y_ref = F.instance_norm(x, *ref, weight, bias, use_input_stats=use_input_stats)
-    torch.testing.assert_close(y, y_ref, **standard_tolerance(dtype))
-    torch.testing.assert_close(mine, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(y, y_ref, **reference_tolerance(dtype))
+    torch.testing.assert_close(mine, ref, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -301,8 +302,8 @@ def test_instance_norm_updates_running_statistics_across_blocks(n, spatial) -> N
     mine, ref = [s.clone() for s in stats], [s.clone() for s in stats]
     y = InstanceNormFwdOp(momentum=0.3)(x, *mine)
     y_ref = F.instance_norm(x, *ref, momentum=0.3)
-    torch.testing.assert_close(y, y_ref, **standard_tolerance(dtype))
-    torch.testing.assert_close(mine, ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(y, y_ref, **reference_tolerance(dtype))
+    torch.testing.assert_close(mine, ref, **reference_tolerance(dtype))
 
 
 @pytest.mark.smoke
