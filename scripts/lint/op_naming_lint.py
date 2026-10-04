@@ -12,6 +12,10 @@ M2  No agentive noun. A name says what the step computes, not who computes it.
     its reason, not something the rule derives.
 M3  Entries sharing one `ref_api` each carry the word that tells them apart, unless the
     torch API's own switch has a default: the plain name is then the default side.
+M4  M1 again, over the class definitions a caller reads. M1 reaches manifest entries only,
+    and a spelling that holds there drifts in the layers underneath unless something checks
+    them too. M4 checks one thing, how an abbreviation is written, and leaves every other
+    naming question to review.
 
 A name no rule reaches is left alone. Most entries are in that position: a little over
 half name no `ref_api` at all, and for those neither an upstream name nor a sibling
@@ -20,6 +24,7 @@ constrains the choice.
 Usage: ``op_naming_lint.py``. Exits 1 on a finding.
 """
 
+import ast
 import re
 import sys
 from collections import defaultdict
@@ -44,6 +49,14 @@ ABBREVIATIONS = {
     "MLA": r"Mla",
     "GQA": r"Gqa",
     "SSD": r"Ssd",
+    "MHA": r"Mha",
+    "DSA": r"Dsa",
+    "RoPE": r"Rope",
+    "YaRN": r"Yarn",
+    "WS": r"Ws(?=[A-Z0-9]|$)",
+    "MMA": r"Mma",
+    "WGMMA": r"Wgmma",
+    "TMA": r"Tma",
 }
 
 # M2: a noun naming an actor rather than the step.
@@ -99,8 +112,36 @@ def findings(ops: dict) -> list[str]:
     return out
 
 
+CLASS_ROOTS = ("src/tileops", "workloads")
+
+
+def class_findings() -> list[str]:
+    """M4 over every class under CLASS_ROOTS, by the spellings M1 already fixes.
+
+    Every class, not a suffix-filtered subset: a base class and a bare `FusedMoE` carry the
+    same abbreviations as the kernels beside them.
+    """
+    out = []
+    for root in CLASS_ROOTS:
+        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text())
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                for right, wrong in ABBREVIATIONS.items():
+                    if re.search(wrong, node.name):
+                        rel = path.relative_to(REPO_ROOT)
+                        out.append(
+                            f"M4 {rel}:{node.lineno} {node.name}: spell this abbreviation {right}"
+                        )
+    return out
+
+
 def main() -> int:
-    found = findings(entries())
+    found = findings(entries()) + class_findings()
     for line in found:
         print(line, file=sys.stderr)
     if found:

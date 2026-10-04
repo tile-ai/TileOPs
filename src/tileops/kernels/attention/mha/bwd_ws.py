@@ -14,7 +14,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
 
-__all__ = ["MHABwdWsKernel"]
+__all__ = ["MHABwdWSKernel"]
 
 # Key rows one CTA owns, 64 per consumer warpgroup.
 _BLOCK_M = 128
@@ -443,7 +443,7 @@ def _mha_bwd_ws_post_kernel(batch: int, heads: int, seq_len: int, dim: int, dtyp
     return _mha_bwd_ws_post_func
 
 
-class MHABwdWsKernel(Kernel, GQABwdInterface):
+class MHABwdWSKernel(Kernel, GQABwdInterface):
     """Warp-specialized causal or full MHA backward for head dim 128 on SM90.
 
     Persistent: one CTA per SM claims key-block tiles in launch order, and the next

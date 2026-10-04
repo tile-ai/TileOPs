@@ -27,7 +27,7 @@ from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.grouped_tiling import GroupTiling
 
 __all__ = [
-    "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
+    "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
 ]
 
 
@@ -345,7 +345,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_varlen_wgmma_pipelined_func
 
 
-class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
+class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
 
     supported_archs: list[int] = [90]

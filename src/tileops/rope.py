@@ -1,17 +1,17 @@
 """The rotary position embedding ops, at the public path ``tileops.rope``."""
 
 from tileops.ops.rope import (
-    RopeFwdOp,
-    RopeLlama31FwdOp,
-    RopeLongRopeFwdOp,
-    RopeNeoxPositionIdsFwdOp,
-    RopeYarnFwdOp,
+    LongRoPEFwdOp,
+    RoPEFwdOp,
+    RoPELlama31FwdOp,
+    RoPENeoxPositionIdsFwdOp,
+    YaRNFwdOp,
 )
 
 __all__ = [
-    "RopeFwdOp",
-    "RopeLlama31FwdOp",
-    "RopeLongRopeFwdOp",
-    "RopeNeoxPositionIdsFwdOp",
-    "RopeYarnFwdOp",
+    "LongRoPEFwdOp",
+    "RoPEFwdOp",
+    "RoPELlama31FwdOp",
+    "RoPENeoxPositionIdsFwdOp",
+    "YaRNFwdOp",
 ]

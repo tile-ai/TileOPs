@@ -1,6 +1,6 @@
 """MoE modular interface — ABC definitions and shared data structures.
 
-Strategy-pattern layering alongside the Op/Kernel hierarchy. ``FusedMoe``
+Strategy-pattern layering alongside the Op/Kernel hierarchy. ``FusedMoE``
 wires the pipeline: ``FusedTopKFwdOp`` -> ``FusedMoEPrepareAndFinalize.prepare``
 -> ``FusedMoEExpertsModular.forward`` -> ``FusedMoEPrepareAndFinalize.finalize``.
 

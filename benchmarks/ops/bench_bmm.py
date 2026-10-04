@@ -8,11 +8,11 @@ import torch
 from benchmarks.baselines import FLAGGEMS_TAG, QUACK_TAG, flaggems_op, quack_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
-from workloads.gemm import BmmFp8Workload, BmmWorkload
+from workloads.gemm import BmmFP8Workload, BmmWorkload
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
-    workload: BmmFp8Workload,
+    workload: BmmFP8Workload,
     a: torch.Tensor,
     b_kmajor: torch.Tensor,
     scale_a: torch.Tensor,
@@ -39,7 +39,7 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
     )
 
 
-def _flashinfer_bmm_fp8_row(workload: BmmFp8Workload, *inputs: torch.Tensor) -> Optional[tuple]:
+def _flashinfer_bmm_fp8_row(workload: BmmFP8Workload, *inputs: torch.Tensor) -> Optional[tuple]:
     """The flashinfer entry for this case, or ``None`` when it cannot serve it.
 
     Preferred, not selected: a flashinfer row that cannot run drops its tag
@@ -94,7 +94,7 @@ def test_bmm_bench(call) -> None:
 def test_bmm_fp8_bench(call) -> None:
     """Both orders of ``b``: ``[B, K, N]`` reaches the kernel through a transpose,
     ``[B, N, K]`` (``trans_b``) lies K-innermost already."""
-    workload = BmmFp8Workload.from_call(call)
+    workload = BmmFP8Workload.from_call(call)
     a, b, scale_a, scale_b = workload.gen_inputs()
     b_kn = b.transpose(-2, -1) if workload.trans_b else b
     op = BmmFP8FwdOp(**call.arguments({}), tune=True)

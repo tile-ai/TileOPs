@@ -23,14 +23,14 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.rope import (
-    RopeFwdOp,
-    RopeLlama31FwdOp,
-    RopeLongRopeFwdOp,
-    RopeNeoxPositionIdsFwdOp,
-    RopeYarnFwdOp,
+    LongRoPEFwdOp,
+    RoPEFwdOp,
+    RoPELlama31FwdOp,
+    RoPENeoxPositionIdsFwdOp,
+    YaRNFwdOp,
 )
 from workloads.rope import (
-    RopeCall,
+    RoPECall,
     llama31_frequency_tables,
     longrope_frequency_tables,
     rope_frequency_tables,
@@ -95,7 +95,7 @@ def _vllm_rope(
 
 def _bench_rope(op_cls, call) -> None:
     """Check and time the rotation using this variant's independent frequency tables."""
-    workload = RopeCall(call)
+    workload = RoPECall(call)
     tensors = workload.tensors
     op = op_cls(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
@@ -103,10 +103,10 @@ def _bench_rope(op_cls, call) -> None:
     input_layout = call.params["input_layout"]
     seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
     table_fn = {
-        RopeFwdOp: rope_frequency_tables,
-        RopeLlama31FwdOp: llama31_frequency_tables,
-        RopeYarnFwdOp: yarn_frequency_tables,
-        RopeLongRopeFwdOp: longrope_frequency_tables,
+        RoPEFwdOp: rope_frequency_tables,
+        RoPELlama31FwdOp: llama31_frequency_tables,
+        YaRNFwdOp: yarn_frequency_tables,
+        LongRoPEFwdOp: longrope_frequency_tables,
     }[op_cls]
     parameters = {k: v for k, v in call.params.items() if k not in ("input_layout", "rope_layout")}
     if "rescale_factors" in tensors:
@@ -147,33 +147,33 @@ def _bench_rope(op_cls, call) -> None:
     bm.compare(functors, x)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(RoPEFwdOp))
 def test_rope_bench(call) -> None:
-    _bench_rope(RopeFwdOp, call)
+    _bench_rope(RoPEFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeLlama31FwdOp))
+@pytest.mark.parametrize("call", manifest_calls(RoPELlama31FwdOp))
 def test_rope_llama31_bench(call) -> None:
-    _bench_rope(RopeLlama31FwdOp, call)
+    _bench_rope(RoPELlama31FwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeYarnFwdOp))
-def test_rope_yarn_bench(call) -> None:
-    _bench_rope(RopeYarnFwdOp, call)
+@pytest.mark.parametrize("call", manifest_calls(YaRNFwdOp))
+def test_yarn_bench(call) -> None:
+    _bench_rope(YaRNFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeLongRopeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(LongRoPEFwdOp))
 def test_rope_longrope_bench(call) -> None:
-    _bench_rope(RopeLongRopeFwdOp, call)
+    _bench_rope(LongRoPEFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeNeoxPositionIdsFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(RoPENeoxPositionIdsFwdOp))
 def test_rope_neox_position_ids_bench(call) -> None:
-    workload = RopeCall(call)
+    workload = RoPECall(call)
     tensors = workload.tensors
     x, position_ids = (tensors["x"], tensors["position_ids"])
     head_dim = x.shape[-1]
-    op = RopeNeoxPositionIdsFwdOp(**call.arguments(tensors))
+    op = RoPENeoxPositionIdsFwdOp(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
     cos, sin = _rope_tables(
         call.params["max_position"], head_dim, x.dtype, base=call.params["base"]

@@ -6,15 +6,15 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "MlaDecodeCall",
-    "MlaDecodeWorkload",
-    "MlaVarlenWorkload",
+    "MLADecodeCall",
+    "MLADecodeWorkload",
+    "MLAVarlenWorkload",
     "mla_varlen_inputs",
     "mla_varlen_reference",
 ]
 
 
-class MlaDecodeWorkload(WorkloadBase):
+class MLADecodeWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -113,13 +113,13 @@ class MlaDecodeWorkload(WorkloadBase):
         return Exact(controls=controls, atol=tol, rtol=tol)
 
 
-class MlaDecodeCall(CallWorkload, MlaDecodeWorkload):
-    """A manifest call of MultiHeadLatentAttentionDecodeWithKVCacheFwdOp."""
+class MLADecodeCall(CallWorkload, MLADecodeWorkload):
+    """A manifest call of MLADecodeWithKVCacheFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix = call.ix
-        MlaDecodeWorkload.__init__(
+        MLADecodeWorkload.__init__(
             self,
             ix["B"],
             ix["H"],
@@ -194,7 +194,7 @@ def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm
     return out, lse
 
 
-class MlaVarlenWorkload(WorkloadBase):
+class MLAVarlenWorkload(WorkloadBase):
     """Packed MLA prefill, including its FP32 log-sum-exp output."""
 
     def __init__(

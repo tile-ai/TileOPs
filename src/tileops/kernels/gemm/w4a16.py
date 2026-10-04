@@ -82,7 +82,7 @@ _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
 _CONFIG_SPACE = _ConfigSpace()
 
-__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MmaKernel", "W4A16Layout"]
+__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MMAKernel", "W4A16Layout"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -855,7 +855,7 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     # ``packed_weight`` and ``weight_zero`` are uint8 payloads, not extents.
     autotune_accepts_random_int_inputs: bool = True
 
-    # WGMMA, warp specialization and `setmaxnreg`; `GemmW4A16MmaKernel` serves below SM90.
+    # WGMMA, warp specialization and `setmaxnreg`; `GemmW4A16MMAKernel` serves below SM90.
     supported_archs: list[int] = [90]
     # Where both run, a caller's replacement of this key wins over the MMA kernel.
     preferred_over = frozenset({"gemm_w4a16_mma"})
@@ -1056,7 +1056,7 @@ def _gemm_w4a16_mma_kernel(m: int, n: int, k: int, dtype: str) -> Callable:
     return _gemm_w4a16_mma_func
 
 
-class GemmW4A16MmaKernel(GemmW4A16Kernel):
+class GemmW4A16MMAKernel(GemmW4A16Kernel):
     """The same GEMM on MMA tiles, for GPUs without WGMMA; the weight is dequantized in
     shared memory one 128-wide group at a time."""
 

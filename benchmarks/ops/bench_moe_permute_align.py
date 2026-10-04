@@ -24,7 +24,7 @@ except ImportError:
 from benchmarks.baselines import VLLM_TAG, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import MoEPermuteAlignFwdOp
-from workloads.moe import MoePermuteAlignWorkload
+from workloads.moe import MoEPermuteAlignWorkload
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 
@@ -141,7 +141,7 @@ def _triton_permute_align(
 
 @pytest.mark.parametrize("call", manifest_calls(MoEPermuteAlignFwdOp))
 def test_permute_align_bench(call) -> None:
-    workload = MoePermuteAlignWorkload(call)
+    workload = MoEPermuteAlignWorkload(call)
     inputs = workload.gen_inputs()
     op = MoEPermuteAlignFwdOp(**call.arguments({}))
     num_experts, block_size = op.num_experts, op.block_size

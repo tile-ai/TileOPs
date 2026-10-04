@@ -9,7 +9,7 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class MhaDecodePagedWorkload(WorkloadBase):
+class MHADecodePagedWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -109,13 +109,13 @@ class MhaDecodePagedWorkload(WorkloadBase):
         return Custom(validate, "attention values and cosine agreement")
 
 
-class MhaDecodePagedCall(CallWorkload, MhaDecodePagedWorkload):
-    """A manifest call of MultiHeadAttentionDecodePagedWithKVCacheFwdOp."""
+class MHADecodePagedCall(CallWorkload, MHADecodePagedWorkload):
+    """A manifest call of MHADecodePagedWithKVCacheFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        MhaDecodePagedWorkload.__init__(
+        MHADecodePagedWorkload.__init__(
             self,
             ix["B"],
             ix["H"],

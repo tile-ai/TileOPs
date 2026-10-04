@@ -21,7 +21,7 @@ from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
 from workloads.gemm import (
-    GemmFp8Workload,
+    GemmFP8Workload,
     GemmW4A16Workload,
     GemmWorkload,
     dequantize_w4a16_weight,
@@ -130,7 +130,7 @@ def cublaslt_best(
 
 
 def _flashinfer_fp8_blockscale_1d2d(
-    workload: GemmFp8Workload, *inputs: torch.Tensor
+    workload: GemmFP8Workload, *inputs: torch.Tensor
 ) -> Callable[..., torch.Tensor]:
     """FlashInfer's FP8 block-scale GEMM over 1D2D scales.
 
@@ -160,7 +160,7 @@ def _flashinfer_fp8_blockscale_1d2d(
     return run
 
 
-def _deepgemm_fp8(workload: GemmFp8Workload) -> Callable[..., torch.Tensor]:
+def _deepgemm_fp8(workload: GemmFP8Workload) -> Callable[..., torch.Tensor]:
     """FP8 GEMM with dynamic scale layout conversion and a full-precision epilogue."""
     gemm = deepgemm_op("fp8_gemm_nt")
     per_tensor = workload.scale_mode == "per_tensor"
@@ -352,7 +352,7 @@ def test_gemm_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(GemmFP8FwdOp))
 def test_gemm_fp8_bench(call) -> None:
-    workload = GemmFp8Workload.from_call(call)
+    workload = GemmFP8Workload.from_call(call)
     inputs = workload.gen_inputs()
     scale_mode, out_dtype = (workload.scale_mode, workload.out_dtype)
     op = GemmFP8FwdOp(**call.arguments({}))

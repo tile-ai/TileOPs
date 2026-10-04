@@ -16,6 +16,7 @@ from tileops.kernels.kernel_base import KernelInterface
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
+    "DSADecodeCall",
     "GQABwdInterface",
     "GQADenseFwdInterface",
     "GQAPagedFwdInterface",
@@ -23,16 +24,15 @@ __all__ = [
     "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
+    "MLADecodeCall",
     "MLADecodeFwdInterface",
-    "MlaDecodeCall",
-    "MlaVarlenCall",
-    "MlaVarlenFwdInterface",
+    "MLAVarlenCall",
+    "MLAVarlenFwdInterface",
     "NSACall",
-    "NSACmpFwdInterface",
+    "NSACompressedFwdInterface",
     "NSAFwdInterface",
-    "NSATopkFwdInterface",
+    "NSATopKFwdInterface",
     "SparseMLADecodeFwdInterface",
-    "SparseMlaCall",
 ]
 
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
@@ -134,7 +134,7 @@ class AttentionCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MlaDecodeCall(CallSpec):
+class MLADecodeCall(CallSpec):
     """One Multi-Head Latent Attention (MLA) decode call: shapes and element type."""
 
     batch: int = 0
@@ -147,7 +147,7 @@ class MlaDecodeCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class SparseMlaCall(CallSpec):
+class DSADecodeCall(CallSpec):
     """One sparse MLA decode call: shapes, element type and the op's fixed params."""
 
     batch: int = 0
@@ -190,7 +190,7 @@ class NSACall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MlaVarlenCall(CallSpec):
+class MLAVarlenCall(CallSpec):
     """What one packed-varlen MLA prefill call is, as the op knows it.
 
     Packed totals are absent: the kernel reads them from the tensors it is
@@ -456,7 +456,7 @@ class GQABwdInterface(KernelInterface):
 class MLADecodeFwdInterface(KernelInterface):
     """Multi-Head Latent Attention (MLA) decode of one query position against a cache."""
 
-    request = MlaDecodeCall
+    request = MLADecodeCall
 
     @abstractmethod
     def forward(
@@ -477,10 +477,10 @@ class MLADecodeFwdInterface(KernelInterface):
         """
 
 
-class MlaVarlenFwdInterface(KernelInterface):
+class MLAVarlenFwdInterface(KernelInterface):
     """MLA prefill over packed requests, after the latent is decompressed."""
 
-    request = MlaVarlenCall
+    request = MLAVarlenCall
 
     @abstractmethod
     def forward(
@@ -517,7 +517,7 @@ class MlaVarlenFwdInterface(KernelInterface):
 class SparseMLADecodeFwdInterface(KernelInterface):
     """Sparse MLA decode: each query attends to the ``call.topk`` cache rows it indexes."""
 
-    request = SparseMlaCall
+    request = DSADecodeCall
 
     @abstractmethod
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
@@ -536,7 +536,7 @@ class SparseMLADecodeFwdInterface(KernelInterface):
         """
 
 
-class NSATopkFwdInterface(KernelInterface):
+class NSATopKFwdInterface(KernelInterface):
     """Native Sparse Attention (NSA) block selection with FLA's importance scores."""
 
     request = NSACall
@@ -600,7 +600,7 @@ class NSAFwdInterface(KernelInterface):
         """
 
 
-class NSACmpFwdInterface(KernelInterface):
+class NSACompressedFwdInterface(KernelInterface):
     """NSA attention of each token to its request's compressed chunks."""
 
     request = NSACall

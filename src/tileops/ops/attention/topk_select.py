@@ -4,9 +4,9 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention.topk_select import (
-    TopkSelectorCall,
-    TopkSelectorFwdInterface,
-    TopkSelectorKernel,
+    TopKSelectCall,
+    TopKSelectFwdInterface,
+    TopKSelectKernel,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
@@ -28,18 +28,16 @@ class TopKSelectFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "topk_selector_kernel": TopkSelectorKernel
-    }
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"topk_select_kernel": TopKSelectKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "topk_selector": TopkSelectorFwdInterface
+        "topk_select": TopKSelectFwdInterface
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The scores this call's windows hold, which its flops and score reads follow."""
-        from tileops.perf.formulas import topk_selector_window_scores
+        from tileops.perf.formulas import topk_select_window_scores
 
-        return {"window_scores": topk_selector_window_scores(self.last_call)}
+        return {"window_scores": topk_select_window_scores(self.last_call)}
 
     def __init__(
         self,
@@ -91,7 +89,7 @@ class TopKSelectFwdOp(Op):
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
         index_score = index_score.contiguous()
         starts, ends = starts.contiguous(), ends.contiguous()
-        call = TopkSelectorCall(
+        call = TopKSelectCall(
             batch=batch,
             seq_len=seq_len,
             seq_len_kv=seq_len_kv,
@@ -101,5 +99,5 @@ class TopKSelectFwdOp(Op):
             out_dtype=self.out_dtype,
             device=index_score.device,
         )
-        self.kernel = self.kernel_for("topk_selector", call)
+        self.kernel = self.kernel_for("topk_select", call)
         return self.kernel(index_score, starts, ends)

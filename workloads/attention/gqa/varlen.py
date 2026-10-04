@@ -10,11 +10,11 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "GQAPrefillVarlenFwdWorkload",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenCall",
-    "GroupedQueryAttentionVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenScaledCall",
-    "GroupedQueryAttentionVarlenScaledWorkload",
+    "GQASlidingWindowVarlenFwdWorkload",
+    "GQAVarlenCall",
+    "GQAVarlenFwdWorkload",
+    "GQAVarlenScaledCall",
+    "GQAVarlenScaledWorkload",
 ]
 
 
@@ -80,7 +80,7 @@ class GQAPrefillVarlenFwdWorkload(WorkloadBase):
         return q, k, v, cu_seqlens_q, cu_seqlens_kv
 
 
-class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
+class GQAVarlenFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -238,7 +238,7 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
         )
 
 
-class GroupedQueryAttentionVarlenScaledWorkload(GroupedQueryAttentionVarlenFwdWorkload):
+class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
     """Packed varlen GQA through the op's optional inputs: FP8 scales, fused RoPE.
 
     An FP8 ``dtype`` adds the per-request, per-KV-head scales and needs a 16-bit
@@ -387,18 +387,18 @@ class GroupedQueryAttentionVarlenScaledWorkload(GroupedQueryAttentionVarlenFwdWo
         )
 
 
-class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(GroupedQueryAttentionVarlenFwdWorkload):
+class GQASlidingWindowVarlenFwdWorkload(GQAVarlenFwdWorkload):
     """Compatibility name for the superseded sliding-window public Op."""
 
 
-class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenFwdWorkload):
-    """A manifest call of GroupedQueryAttentionVarlenFwdOp, over the request lengths its offsets carry."""
+class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
+    """A manifest call of GQAVarlenFwdOp, over the request lengths its offsets carry."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
         q_lens = _segments(call.values("cu_seqlens_q"))
-        GroupedQueryAttentionVarlenFwdWorkload.__init__(
+        GQAVarlenFwdWorkload.__init__(
             self,
             len(q_lens),
             q_lens,
@@ -417,13 +417,11 @@ class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenF
             rope_layout=params.get("rope_layout", "neox"),
         )
 
-    gen_inputs = GroupedQueryAttentionVarlenFwdWorkload.gen_inputs
+    gen_inputs = GQAVarlenFwdWorkload.gen_inputs
 
 
-class GroupedQueryAttentionVarlenScaledCall(
-    CallWorkload, GroupedQueryAttentionVarlenScaledWorkload
-):
-    """A manifest call of GroupedQueryAttentionVarlenFwdOp passing FP8 scales or RoPE tables.
+class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
+    """A manifest call of GQAVarlenFwdOp passing FP8 scales or RoPE tables.
 
     FP8 values stay inside the format's range and the scales near one; the tables are
     rotations.
@@ -435,7 +433,7 @@ class GroupedQueryAttentionVarlenScaledCall(
         q_lens = _segments(call.values("cu_seqlens_q"))
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
-        GroupedQueryAttentionVarlenScaledWorkload.__init__(
+        GQAVarlenScaledWorkload.__init__(
             self,
             len(q_lens),
             q_lens,
@@ -454,4 +452,4 @@ class GroupedQueryAttentionVarlenScaledCall(
             rope_layout=params["rope_layout"],
         )
 
-    gen_inputs = GroupedQueryAttentionVarlenScaledWorkload.gen_inputs
+    gen_inputs = GQAVarlenScaledWorkload.gen_inputs

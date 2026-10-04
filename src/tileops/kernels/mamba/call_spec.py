@@ -11,10 +11,10 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
-    "CBProducerCall",
-    "CBProducerFwdInterface",
-    "DaCumsumCall",
-    "DaCumsumFwdInterface",
+    "SSDChunkCouplingCall",
+    "SSDChunkCouplingFwdInterface",
+    "SSDChunkCumsumCall",
+    "SSDChunkCumsumFwdInterface",
     "SSDChunkScanCall",
     "SSDChunkScanFwdInterface",
     "SSDChunkStateCall",
@@ -27,7 +27,7 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class CBProducerCall(CallSpec):
+class SSDChunkCouplingCall(CallSpec):
     """One CB producer call, as the op knows it after reading its inputs."""
 
     batch: int = 0
@@ -39,7 +39,7 @@ class CBProducerCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class DaCumsumCall(CallSpec):
+class SSDChunkCumsumCall(CallSpec):
     """One dA_cumsum call, with the dt transform the op fixed at construction."""
 
     batch: int = 0
@@ -107,10 +107,10 @@ class SSDStatePassingCall(CallSpec):
     dtype: Optional[torch.dtype] = None
 
 
-class CBProducerFwdInterface(KernelInterface):
+class SSDChunkCouplingFwdInterface(KernelInterface):
     """The causally masked per-chunk ``C @ B^T`` matrix of one Mamba-2 layer."""
 
-    request = CBProducerCall
+    request = SSDChunkCouplingCall
 
     @abstractmethod
     def forward(self, C_mat: torch.Tensor, B_mat: torch.Tensor) -> torch.Tensor:
@@ -128,10 +128,10 @@ class CBProducerFwdInterface(KernelInterface):
         """
 
 
-class DaCumsumFwdInterface(KernelInterface):
+class SSDChunkCumsumFwdInterface(KernelInterface):
     """The chunk-local inclusive prefix sum of ``dA = dt * A``, with the dt transform applied."""
 
-    request = DaCumsumCall
+    request = SSDChunkCumsumCall
 
     @abstractmethod
     def forward(

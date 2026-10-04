@@ -12,14 +12,14 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.gemm import (
     BmmCall,
-    BmmFp8Call,
-    BmmFp8FwdInterface,
-    BmmFp8Kernel,
-    BmmFp8PersistentKernel,
-    BmmFp8TransposeCall,
-    BmmFp8TransposeFwdInterface,
-    BmmFp8TransposeKernel,
-    BmmFp8WsKernel,
+    BmmFP8Call,
+    BmmFP8FwdInterface,
+    BmmFP8Kernel,
+    BmmFP8PersistentKernel,
+    BmmFP8TransposeCall,
+    BmmFP8TransposeFwdInterface,
+    BmmFP8TransposeKernel,
+    BmmFP8WSKernel,
     BmmFwdInterface,
     BmmKernel,
     BmmPersistentKernel,
@@ -120,14 +120,14 @@ class BmmFP8FwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "bmm_fp8_ws": BmmFp8WsKernel,
-        "bmm_fp8_persistent": BmmFp8PersistentKernel,
-        "bmm_fp8": BmmFp8Kernel,
-        "bmm_fp8_transpose": BmmFp8TransposeKernel,
+        "bmm_fp8_ws": BmmFP8WSKernel,
+        "bmm_fp8_persistent": BmmFP8PersistentKernel,
+        "bmm_fp8": BmmFP8Kernel,
+        "bmm_fp8_transpose": BmmFP8TransposeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "bmm_fp8": BmmFp8FwdInterface,
-        "bmm_fp8_transpose": BmmFp8TransposeFwdInterface,
+        "bmm_fp8": BmmFP8FwdInterface,
+        "bmm_fp8_transpose": BmmFP8TransposeFwdInterface,
     }
 
     def __init__(
@@ -202,7 +202,7 @@ class BmmFP8FwdOp(Op):
         b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
         batch, m, k = a.shape
-        call = BmmFp8Call(
+        call = BmmFP8Call(
             batch=batch,
             m=m,
             n=b.shape[1],
@@ -247,7 +247,7 @@ class BmmFP8FwdOp(Op):
                     f"b K-innermost skips the copy and is the faster call.",
                     stacklevel=2,
                 )
-            transpose = BmmFp8TransposeCall(batch=batch, rows=k, cols=n, dtype=dtype, device=device)
+            transpose = BmmFP8TransposeCall(batch=batch, rows=k, cols=n, dtype=dtype, device=device)
             kernel = self.kernel_for("bmm_fp8_transpose", transpose)
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()

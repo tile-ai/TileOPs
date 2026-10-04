@@ -1,11 +1,11 @@
-"""GroupedQueryAttentionPagedFwdOp tests against the workload's reference."""
+"""GQAPagedFwdOp tests against the workload's reference."""
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GroupedQueryAttentionPagedFwdOp
-from workloads.attention.gqa.paged import GroupedQueryAttentionPagedFwdWorkload
+from tileops.ops import GQAPagedFwdOp
+from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 
 
 def _decode(
@@ -20,10 +20,10 @@ def _decode(
     pool_pages: int | None = None,
     q_len: int = 1,
     **semantics,
-) -> GroupedQueryAttentionPagedFwdWorkload:
+) -> GQAPagedFwdWorkload:
     """A decode call: ``q_len`` query tokens per request, tables as wide as the longest cache."""
     width = -(-max(cache_lens) // page_size)
-    return GroupedQueryAttentionPagedFwdWorkload(
+    return GQAPagedFwdWorkload(
         heads,
         heads_kv,
         dim,
@@ -48,7 +48,7 @@ def _built_kernel(op, inputs):
     return op.kernel_for("gqa_paged", call)
 
 
-class GroupedQueryAttentionPagedDecodeFixture(FixtureBase):
+class GQAPagedDecodeFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, heads_kv, cache_lens, dim, page_size, dtype",
@@ -76,7 +76,7 @@ class GroupedQueryAttentionPagedDecodeFixture(FixtureBase):
     ]
 
 
-@GroupedQueryAttentionPagedDecodeFixture
+@GQAPagedDecodeFixture
 def test_gqa_paged_decode_op(
     batch: int,
     heads: int,
@@ -87,7 +87,7 @@ def test_gqa_paged_decode_op(
     dtype: torch.dtype,
 ) -> None:
     workload = _decode(batch, heads, heads_kv, cache_lens, dim, page_size, dtype)
-    _check(GroupedQueryAttentionPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -108,7 +108,7 @@ def test_gqa_paged_decode_score_controls(
     workload = _decode(
         2, 16, 8, cache_lens, 128, 128, q_len=q_len, sm_scale=sm_scale, softcap=softcap
     )
-    op = GroupedQueryAttentionPagedFwdOp(sm_scale=sm_scale, softcap=softcap)
+    op = GQAPagedFwdOp(sm_scale=sm_scale, softcap=softcap)
     _check(op, workload, workload.gen_inputs())
 
 
@@ -117,7 +117,7 @@ def test_gqa_paged_decode_score_controls(
 def test_gqa_paged_decode_pool_is_independent_of_table_width(batch: int) -> None:
     """A pool holding more pages than the tables name reads only the named ones."""
     workload = _decode(batch, 32, 4, [2048] * batch, 128, 256, pool_pages=4 * batch * 8)
-    _check(GroupedQueryAttentionPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -128,7 +128,7 @@ def test_gqa_paged_reversed_page_table(page_size: int) -> None:
     workload = _decode(1, 16, 4, [page_size * 16], 128, page_size)
     inputs = list(workload.gen_inputs())
     inputs[3] = inputs[3].flip(-1).contiguous()
-    _check(GroupedQueryAttentionPagedFwdOp(), workload, inputs)
+    _check(GQAPagedFwdOp(), workload, inputs)
 
 
 @pytest.mark.smoke
@@ -139,7 +139,7 @@ def test_gqa_paged_reversed_page_table(page_size: int) -> None:
 def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
     """Several query tokens per request, with a head group's rows spanning two row blocks."""
     workload = _decode(2, 32, 2, cache_lens, 64, 64, q_len=5)
-    _check(GroupedQueryAttentionPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -159,7 +159,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
     inputs = list(workload.gen_inputs())
     if reverse_pages:
         inputs[3] = inputs[3].flip(-1).contiguous()
-    op = GroupedQueryAttentionPagedFwdOp()
+    op = GQAPagedFwdOp()
     kernel = _built_kernel(op, inputs)
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(cache_len) == ("ctx" if cache_len >= 1024 else "no_split")
@@ -172,7 +172,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
 def test_gqa_paged_decode_bs1_dispatch() -> None:
     """An eligible batch-1 call selects the batch-1 kernel and its tiers."""
     workload = _decode(1, 32, 4, [8192], 128, 256)
-    kernel = _built_kernel(GroupedQueryAttentionPagedFwdOp(), workload.gen_inputs())
+    kernel = _built_kernel(GQAPagedFwdOp(), workload.gen_inputs())
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
     assert kernel._select_tier(1024) == "ctx"
     assert kernel._select_tier(512) == "no_split"
@@ -251,7 +251,7 @@ def test_gqa_paged_packed_query_lengths(
 ) -> None:
     """Calls the decode region does not serve: ragged lengths, windows, and odd pages."""
     width = -(-max(cache_lens) // page_size)
-    workload = GroupedQueryAttentionPagedFwdWorkload(
+    workload = GQAPagedFwdWorkload(
         32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
     )
-    _check(GroupedQueryAttentionPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())

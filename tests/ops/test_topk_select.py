@@ -4,16 +4,16 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopKSelectFwdOp
 from tileops.utils import STR_TO_DTYPE
-from workloads.attention.topk_select import TopkSelectorWorkload
+from workloads.attention.topk_select import TopKSelectWorkload
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
 
-class TopkSelectorTest(TopkSelectorWorkload, TestBase):
+class TopKSelectTest(TopKSelectWorkload, TestBase):
     pass
 
 
-class TopkSelectorFixture(FixtureBase):
+class TopKSelectFixture(FixtureBase):
     PARAMS = [
         (
             "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype_str, out_dtype_str, tune",
@@ -51,7 +51,7 @@ class TopkSelectorFixture(FixtureBase):
     ]
 
 
-@TopkSelectorFixture
+@TopKSelectFixture
 def test_topk_select_op(
     batch: int,
     seq_len: int,
@@ -64,7 +64,7 @@ def test_topk_select_op(
 ) -> None:
     in_dtype = STR_TO_DTYPE[in_dtype_str]
     out_dtype = STR_TO_DTYPE[out_dtype_str]
-    test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
+    test = TopKSelectTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     op = TopKSelectFwdOp(topk=topk, tune=tune)
     inputs = test.gen_inputs()
 
@@ -82,7 +82,7 @@ def test_topk_select_returns_a_short_window_whole(width: int) -> None:
     out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
     expected = list(range(7, 7 + width)) + [seq_len_kv] * (topk - width)
     assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()
-    workload = TopkSelectorWorkload(batch, seq_len, seq_len_kv, 1, topk, torch.float32, torch.int32)
+    workload = TopKSelectWorkload(batch, seq_len, seq_len_kv, 1, topk, torch.float32, torch.int32)
     reference = workload.ref_program(scores, starts, ends)
     compare_outputs(out, reference, workload.verification(scores, starts, ends))
 
@@ -97,7 +97,7 @@ def test_topk_select_threshold_bucket_past_staging() -> None:
     starts = torch.zeros(1, 1, dtype=torch.int32, device=run_device())
     ends = torch.full((1, 1), seq_len_kv, dtype=torch.int32, device=run_device())
     out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
-    workload = TopkSelectorWorkload(1, 1, seq_len_kv, 1, topk, torch.float32, torch.int32)
+    workload = TopKSelectWorkload(1, 1, seq_len_kv, 1, topk, torch.float32, torch.int32)
     compare_outputs(
         out, workload.ref_program(scores, starts, ends), workload.verification(scores, starts, ends)
     )

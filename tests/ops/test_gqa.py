@@ -6,15 +6,15 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
-    FlashAttnBwdPreprocessKernel,
-    GQABwdMmaKernel,
+    GQABwdMMAKernel,
+    GQABwdPreprocessKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
     GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
-    GQADenseWsKernel,
+    GQADenseWSKernel,
     GQAVarlenFP8FwdKernel,
 )
 from tileops.kernels.attention.gqa import bwd as gqa_bwd
@@ -25,21 +25,21 @@ from tileops.kernels.attention.gqa.decode import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
+    GQABwdOp,
+    GQADenseFwdOp,
+    GQAVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
+from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
 from workloads.attention.gqa.rope import apply_dense_rope
-from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenScaledWorkload
+from workloads.attention.gqa.varlen import GQAVarlenScaledWorkload
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import reduction_verification
 
 
-class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
+class GQABwdTest(GQABwdWorkload, TestBase):
     pass
 
 
@@ -69,14 +69,14 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     v = torch.randn_like(k)
 
     if rope_layout is None:
-        op = GroupedQueryAttentionDenseFwdOp(is_causal=is_causal, target=BUILTIN)
+        op = GQADenseFwdOp(is_causal=is_causal, target=BUILTIN)
         output = op(q, k, v)
         q_ref, k_ref = q, k
     else:
         resolved_rotary_dim = dim if rotary_dim is None else rotary_dim
         angles = torch.randn(seq_len_kv, resolved_rotary_dim // 2, device="cuda") * 0.1
         rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
-        op = GroupedQueryAttentionDenseFwdOp(
+        op = GQADenseFwdOp(
             is_causal=is_causal,
             pos_encoding_mode="rope",
             rotary_dim=rotary_dim,
@@ -108,7 +108,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=is_causal),
         dense_gqa_verification(q.dtype),
     )
-    assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
+    assert isinstance(next(iter(op.iter_kernels())), GQADenseWSKernel)
 
 
 @pytest.mark.sm90
@@ -154,7 +154,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
         rope_cos, rope_sin = angles.cos().to(out_dtype), angles.sin().to(out_dtype)
 
-    op = GroupedQueryAttentionDenseFwdOp(
+    op = GQADenseFwdOp(
         is_causal=True,
         out_dtype=out_dtype,
         sm_scale=sm_scale,
@@ -217,7 +217,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
     heads, heads_kv, dim = 8, 2, 128
-    op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
+    op = GQADenseFwdOp(target=BUILTIN)
 
     for seq_len_q, seq_len_kv in (
         (2, 270),
@@ -338,7 +338,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 ) -> None:
     heads, heads_kv = head_shape
     dim = 128
-    op = GroupedQueryAttentionDenseFwdOp(
+    op = GQADenseFwdOp(
         pos_encoding_mode="rope" if rope_layout is not None else "none",
         rotary_dim=rotary_dim,
         rope_layout="neox" if rope_layout is None else rope_layout,
@@ -404,7 +404,7 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
     k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
     v = torch.randn_like(k)
 
-    output = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)(q, k, v)
+    output = GQADenseFwdOp(target=BUILTIN)(q, k, v)
 
     compare_outputs(
         output,
@@ -499,7 +499,7 @@ def test_gqa_dense_decode_effective_num_split(
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
-    op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
+    op = GQADenseFwdOp(target=BUILTIN)
     q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
     for seq_len in (131072, 131073, 262145, 131071):
         k = torch.randn(1, seq_len, 4, 128, device="cuda", dtype=q.dtype)
@@ -608,7 +608,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
         rope_cos, rope_sin = angles.cos().to(q.dtype), angles.sin().to(q.dtype)
     else:
         rope_cos = rope_sin = None
-    op = GroupedQueryAttentionDenseFwdOp(
+    op = GQADenseFwdOp(
         is_causal=is_causal,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -650,7 +650,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), GQADenseSlidingWindowKernel)
 
 
-class GroupedQueryAttentionBwdFixture(FixtureBase):
+class GQABwdFixture(FixtureBase):
     # heads_kv == heads cases reach the pipelined kernel's one-group path and, at head
     # dim 128, the warp-specialized kernel.
     PARAMS = [
@@ -689,7 +689,7 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
     ]
 
 
-@GroupedQueryAttentionBwdFixture
+@GQABwdFixture
 def test_gqa_bwd(
     batch: int,
     seq_len: int,
@@ -700,8 +700,8 @@ def test_gqa_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionBwdOp(causal, tune=tune)
+    test = GQABwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    op = GQABwdOp(causal, tune=tune)
     test.check(op, *test.gen_inputs())
 
 
@@ -731,7 +731,7 @@ def test_gqa_bwd_regions(heads_kv: int, dim: int, seq_len: int, expected: str) -
         seqlen_kv=seq_len,
         is_causal=True,
     )
-    assert GroupedQueryAttentionBwdOp().select_implementation("gqa_bwd", call) == expected
+    assert GQABwdOp().select_implementation("gqa_bwd", call) == expected
 
 
 @pytest.mark.in_tree_kernels
@@ -744,7 +744,7 @@ def test_gqa_bwd_mma_rejects_before_preprocess(
     """The public op reports an unsupported MMA contraction before compiling preprocess."""
     import tileops.utils
 
-    test = GroupedQueryAttentionBwdTest(1, 8, 2, 128, dim, True, dtype)
+    test = GQABwdTest(1, 8, 2, 128, dim, True, dtype)
     inputs = test.gen_inputs()
     # Only selection runs: emulate SM89 so this regression also runs on SM90 CI.
     monkeypatch.setattr(tileops.utils, "device_facts", lambda index=None: (89, None, 1, 101376))
@@ -754,7 +754,7 @@ def test_gqa_bwd_mma_rejects_before_preprocess(
 
     monkeypatch.setattr(gqa_bwd, "_flashattn_bwd_preprocess_kernel", unexpected_preprocess)
     with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
-        GroupedQueryAttentionBwdOp(target=BUILTIN)(*inputs)
+        GQABwdOp(target=BUILTIN)(*inputs)
 
 
 @pytest.mark.in_tree_kernels
@@ -764,16 +764,14 @@ def test_gqa_bwd_mma_rejects_before_preprocess(
 def test_gqa_bwd_wgmma_head_dim_16_override() -> None:
     """A valid 128-thread configuration must not inherit the default's dim-32 restriction."""
 
-    class ConfiguredWgmmaKernel(gqa_bwd.GQABwdWgmmaPipelinedKernel):
+    class ConfiguredWGMMAKernel(gqa_bwd.GQABwdWGMMAPipelinedKernel):
         @property
         def default_config(self) -> dict:
             return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128}
 
     torch.manual_seed(123)
-    test = GroupedQueryAttentionBwdTest(1, 8, 2, 128, 16, True, torch.float16)
-    op = GroupedQueryAttentionBwdOp(
-        target=BUILTIN, kernel_map={"gqa_bwd_kernel": ConfiguredWgmmaKernel}
-    )
+    test = GQABwdTest(1, 8, 2, 128, 16, True, torch.float16)
+    op = GQABwdOp(target=BUILTIN, kernel_map={"gqa_bwd_kernel": ConfiguredWGMMAKernel})
     test.check(op, *test.gen_inputs())
 
 
@@ -832,7 +830,7 @@ def test_gqa_varlen_fp8_matches_reference(
 ) -> None:
     """Every branch the FP8 packed-varlen kernel serves agrees with the float32 reference."""
     heads, heads_kv, dim = 16, 4, 128
-    workload = GroupedQueryAttentionVarlenScaledWorkload(
+    workload = GQAVarlenScaledWorkload(
         len(q_lens),
         q_lens,
         kv_lens,
@@ -852,7 +850,7 @@ def test_gqa_varlen_fp8_matches_reference(
         rope_layout=params.get("rope_layout", "neox"),
     )
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionVarlenFwdOp(out_dtype=out_dtype, target=BUILTIN, **params)
+    op = GQAVarlenFwdOp(out_dtype=out_dtype, target=BUILTIN, **params)
 
     # One e4m3 rounding of the softmax weights, and one more of Q and K under fused
     # rotation; the dense FP8 cases are held to the same bound.
@@ -888,7 +886,7 @@ def test_gqa_varlen_regions(
         is_fp8=is_fp8,
         is_uniform=False,
     )
-    op = GroupedQueryAttentionVarlenFwdOp()
+    op = GQAVarlenFwdOp()
     if expected is None:
         with pytest.raises(ValueError, match="requires head dimension 128"):
             op.select_implementation("gqa_varlen", call)
@@ -927,10 +925,10 @@ def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
         is_causal=True,
     )
     if block_n is None:
-        assert "needs at least" in GQABwdMmaKernel.refusal(call)
+        assert "needs at least" in GQABwdMMAKernel.refusal(call)
         return
-    assert GQABwdMmaKernel.refusal(call) is None
-    config = GQABwdMmaKernel._default_config_for(budget, dim, torch.float16.itemsize, True)
+    assert GQABwdMMAKernel.refusal(call) is None
+    config = GQABwdMMAKernel._default_config_for(budget, dim, torch.float16.itemsize, True)
     assert config["block_n"] == block_n
 
 
@@ -942,8 +940,8 @@ def test_gqa_bwd_mma_builds_per_device() -> None:
 
     shape = {"dtype": torch.float16, "batch": 1, "heads": 8, "heads_kv": 8, "dim": 288}
     shape |= {"max_seqlen_q": 1024, "seqlen_kv": 1024, "is_causal": True}
-    first, _ = GQABwdMmaKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 0)))
-    second, _ = GQABwdMmaKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 1)))
+    first, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 0)))
+    second, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 1)))
     assert first != second
 
 
@@ -956,7 +954,7 @@ def test_gqa_bwd_preprocess_sums_rows_of_any_head_dim(dim: int) -> None:
     o, do = (
         torch.randn(2, 100, 4, dim, device=run_device(), dtype=torch.float16) for _ in range(2)
     )
-    delta, dq_accum = FlashAttnBwdPreprocessKernel(2, 4, 100, dim, torch.float16)(o, do)
+    delta, dq_accum = GQABwdPreprocessKernel(2, 4, 100, dim, torch.float16)(o, do)
     expected = (o.float() * do.float()).sum(-1).transpose(1, 2)
     compare_outputs(delta, expected, reduction_verification(delta.dtype))
     assert not dq_accum.any()

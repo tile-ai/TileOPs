@@ -5,10 +5,10 @@ forward time (on the same device as the input tensor) and delegates the
 actual rotation to the corresponding kernel.
 
 Variants and frequency computation:
-- **RopeFwdOp**: standard theta = 10000^(-2k/d) frequencies, either rotation convention
-- **RopeLlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
-- **RopeYarnFwdOp**: YaRN linear-ramp interpolated frequencies
-- **RopeLongRopeFwdOp**: per-dimension rescaled frequencies
+- **RoPEFwdOp**: standard theta = 10000^(-2k/d) frequencies, either rotation convention
+- **RoPELlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
+- **YaRNFwdOp**: YaRN linear-ramp interpolated frequencies
+- **LongRoPEFwdOp**: per-dimension rescaled frequencies
 
 Input layouts:
 - ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
@@ -26,23 +26,23 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.rope import (
-    RopeCall,
-    RopeNeoxFwdInterface,
-    RopeNeoxKernel,
-    RopeNeoxPositionIdsCall,
-    RopeNeoxPositionIdsFwdInterface,
-    RopeNeoxPositionIdsKernel,
-    RopeNonNeoxFwdInterface,
-    RopeNonNeoxKernel,
+    RoPECall,
+    RoPENeoxFwdInterface,
+    RoPENeoxKernel,
+    RoPENeoxPositionIdsCall,
+    RoPENeoxPositionIdsFwdInterface,
+    RoPENeoxPositionIdsKernel,
+    RoPENonNeoxFwdInterface,
+    RoPENonNeoxKernel,
 )
 from tileops.ops.op_base import Op
 
 __all__ = [
-    "RopeFwdOp",
-    "RopeLlama31FwdOp",
-    "RopeLongRopeFwdOp",
-    "RopeNeoxPositionIdsFwdOp",
-    "RopeYarnFwdOp",
+    "LongRoPEFwdOp",
+    "RoPEFwdOp",
+    "RoPELlama31FwdOp",
+    "RoPENeoxPositionIdsFwdOp",
+    "YaRNFwdOp",
     "base_freqs",
 ]
 
@@ -99,7 +99,7 @@ def _yarn_find_correction_range(
     return max(low, 0), min(high, dim - 1)
 
 
-class _RopeOpBase(Op):
+class _RoPEOpBase(Op):
     """Base class for the four frequency-scheme RoPE ops.
 
     Subclass sets ``kernel_types`` and ``interfaces`` and implements ``_compute_cos_sin``
@@ -175,7 +175,7 @@ class _RopeOpBase(Op):
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
             batch, seq_len, num_heads, head_dim = x.shape
-        call = RopeCall(
+        call = RoPECall(
             seq_len=seq_len,
             head_dim=head_dim,
             input_layout=self.input_layout,
@@ -193,7 +193,7 @@ class _RopeOpBase(Op):
 # Concrete Op classes (4 frequency schemes)
 
 
-class RopeFwdOp(_RopeOpBase):
+class RoPEFwdOp(_RoPEOpBase):
     """RoPE with standard theta frequencies, in either rotation convention.
 
     ``rope_layout="neox"`` splits a head at its midpoint and rotates the halves against
@@ -205,12 +205,12 @@ class RopeFwdOp(_RopeOpBase):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "rope_neox": RopeNeoxKernel,
-        "rope_non_neox": RopeNonNeoxKernel,
+        "rope_neox": RoPENeoxKernel,
+        "rope_non_neox": RoPENonNeoxKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "neox": RopeNeoxFwdInterface,
-        "interleaved": RopeNonNeoxFwdInterface,
+        "neox": RoPENeoxFwdInterface,
+        "interleaved": RoPENonNeoxFwdInterface,
     }
 
     def __init__(
@@ -247,7 +247,7 @@ class RopeFwdOp(_RopeOpBase):
         return base_freqs(head_dim, seq_len, base=self.base, dtype=dtype, device=device)
 
 
-class RopeNeoxPositionIdsFwdOp(Op):
+class RoPENeoxPositionIdsFwdOp(Op):
     """GPT-NeoX style RoPE for packed THD tensors with explicit positions.
 
     The first ``rotary_dim`` columns of each head rotate (all of them when
@@ -256,10 +256,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "rope_neox_position_ids": RopeNeoxPositionIdsKernel
+        "rope_neox_position_ids": RoPENeoxPositionIdsKernel
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "rope_neox_position_ids": RopeNeoxPositionIdsFwdInterface
+        "rope_neox_position_ids": RoPENeoxPositionIdsFwdInterface
     }
 
     def __init__(
@@ -319,7 +319,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
         """Resolve the kernel and launch, inside the operator."""
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
-        call = RopeNeoxPositionIdsCall(
+        call = RoPENeoxPositionIdsCall(
             num_tokens=num_tokens,
             num_heads=num_heads,
             head_dim=head_dim,
@@ -341,7 +341,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
         return output
 
 
-class RopeLlama31FwdOp(_RopeOpBase):
+class RoPELlama31FwdOp(_RoPEOpBase):
     """Llama 3.1 RoPE op with piecewise frequency scaling.
 
     Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
@@ -351,8 +351,8 @@ class RopeLlama31FwdOp(_RopeOpBase):
 
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RoPENeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
 
     @staticmethod
     def _llama31_freqs(
@@ -442,7 +442,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return RopeLlama31FwdOp._llama31_freqs(
+        return RoPELlama31FwdOp._llama31_freqs(
             head_dim,
             seq_len,
             base=self.base,
@@ -455,7 +455,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
         )
 
 
-class RopeYarnFwdOp(_RopeOpBase):
+class YaRNFwdOp(_RoPEOpBase):
     """YaRN RoPE op with linear-ramp frequency interpolation.
 
     Computes cos/sin tables at construction using YaRN linear-ramp
@@ -465,8 +465,8 @@ class RopeYarnFwdOp(_RopeOpBase):
 
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_yarn": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"yarn": RoPENeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
 
     @staticmethod
     def _yarn_freqs(
@@ -585,7 +585,7 @@ class RopeYarnFwdOp(_RopeOpBase):
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return RopeYarnFwdOp._yarn_freqs(
+        return YaRNFwdOp._yarn_freqs(
             head_dim,
             seq_len,
             base=self.base,
@@ -599,7 +599,7 @@ class RopeYarnFwdOp(_RopeOpBase):
         )
 
 
-class RopeLongRopeFwdOp(_RopeOpBase):
+class LongRoPEFwdOp(_RoPEOpBase):
     """LongRoPE op with per-dimension frequency rescaling.
 
     Computes cos/sin tables at construction using per-dimension rescale
@@ -612,8 +612,8 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RoPENeoxKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
 
     @staticmethod
     def _longrope_freqs(
@@ -723,7 +723,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return RopeLongRopeFwdOp._longrope_freqs(
+        return LongRoPEFwdOp._longrope_freqs(
             head_dim,
             seq_len,
             base=self.base,

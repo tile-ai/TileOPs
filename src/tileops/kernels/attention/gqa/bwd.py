@@ -16,7 +16,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin
 
-__all__ = ["FlashAttnBwdPreprocessKernel", "GQABwdMmaKernel", "GQABwdWgmmaPipelinedKernel"]
+__all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
 
 _ROWS_PER_BLOCK = 64
 
@@ -64,7 +64,7 @@ def _flashattn_bwd_preprocess_kernel(
     return flash_bwd_prep
 
 
-class FlashAttnBwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
+class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
     """Row-wise ``delta = rowsum(o * do)`` for the GQA/MHA backward pass; also zeroes
     the f32 ``dq`` accumulator the backward kernel adds into.
 
@@ -421,7 +421,7 @@ def _gqa_bwd_mma_kernel(
     return _gqa_bwd_mma_func
 
 
-class GQABwdWgmmaPipelinedKernel(Kernel, GQABwdInterface):
+class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     """GQA/MHA backward, one CTA per key block; dQ is added into an f32 buffer in the
     layout of ``q`` and landed in the input dtype by a second launch."""
 
@@ -526,7 +526,7 @@ class GQABwdWgmmaPipelinedKernel(Kernel, GQABwdInterface):
         return dq, dk, dv
 
 
-class GQABwdMmaKernel(GQABwdWgmmaPipelinedKernel):
+class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     """The same backward on MMA, for GPUs without WGMMA; dQ is added element by element."""
 
     supported_archs: list[int] = [80, 86, 89]

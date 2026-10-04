@@ -8,7 +8,7 @@ from workloads.attention.gqa.call_metadata import _dtype
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GroupedQueryAttentionBwdCall", "GroupedQueryAttentionBwdWorkload"]
+__all__ = ["GQABwdCall", "GQABwdWorkload"]
 
 
 def _compute_gqa_square_lse(
@@ -32,7 +32,7 @@ def _compute_gqa_square_lse(
     return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
 
 
-class GroupedQueryAttentionBwdWorkload(WorkloadBase):
+class GQABwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -129,14 +129,14 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=5e-3, rtol=1e-5)
 
 
-class GroupedQueryAttentionBwdCall(CallWorkload, GroupedQueryAttentionBwdWorkload):
-    """A manifest call of GroupedQueryAttentionBwdOp; ``o`` and ``lse`` are the forward's."""
+class GQABwdCall(CallWorkload, GQABwdWorkload):
+    """A manifest call of GQABwdOp; ``o`` and ``lse`` are the forward's."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix = call.ix
-        GroupedQueryAttentionBwdWorkload.__init__(
+        GQABwdWorkload.__init__(
             self, ix["B"], ix["H"], ix["H_kv"], ix["S"], ix["D"], ix["is_causal"], _dtype(call, "q")
         )
 
-    gen_inputs = GroupedQueryAttentionBwdWorkload.gen_inputs
+    gen_inputs = GQABwdWorkload.gen_inputs

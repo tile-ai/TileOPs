@@ -4,10 +4,10 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
-    FlashAttnBwdPreprocessKernel,
-    GQABwdMmaKernel,
-    GQABwdWgmmaPipelinedKernel,
-    MHABwdWsKernel,
+    GQABwdMMAKernel,
+    GQABwdPreprocessKernel,
+    GQABwdWGMMAPipelinedKernel,
+    MHABwdWSKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -18,18 +18,18 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GroupedQueryAttentionBwdOp"]
+__all__ = ["GQABwdOp"]
 
 
-class GroupedQueryAttentionBwdOp(Op):
+class GQABwdOp(Op):
     """Layout: BSHD"""
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
-        "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
-        "gqa_bwd_ws_kernel": MHABwdWsKernel,
-        "gqa_bwd_mma_kernel": GQABwdMmaKernel,
+        "gqa_bwd_preprocess_kernel": GQABwdPreprocessKernel,
+        "gqa_bwd_kernel": GQABwdWGMMAPipelinedKernel,
+        "gqa_bwd_ws_kernel": MHABwdWSKernel,
+        "gqa_bwd_mma_kernel": GQABwdMMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gqa_bwd_preprocess": GQAPreprocessBwdInterface,

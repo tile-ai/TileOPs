@@ -48,7 +48,7 @@ __all__ = [
     "moe_layout_rows",
     "moe_post_permute_roofline",
     "nsa_closed_chunk_pairs",
-    "nsa_cmp_fwd_varlen_roofline",
+    "nsa_compressed_fwd_varlen_roofline",
     "nsa_fwd_varlen_roofline",
     "nsa_selected_rows",
     "nsa_topk_scored_pairs",
@@ -61,8 +61,8 @@ __all__ = [
     "pool_roofline",
     "top_k_mask_roofline",
     "top_k_top_p_mask_roofline",
-    "topk_selector_roofline",
-    "topk_selector_window_scores",
+    "topk_select_roofline",
+    "topk_select_window_scores",
     "visible_score_rows",
     "visible_scores",
 ]
@@ -628,7 +628,7 @@ def nsa_closed_chunk_pairs(call: "CallView") -> int:
     return sum(_closed_chunks(n + 1, call.ix["bs"]) for n in _segments(call, "offsets"))
 
 
-def nsa_cmp_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
+def nsa_compressed_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA compression forward: the attention arithmetic of each scored (token, chunk) pair,
     over the tokens that close at least one chunk; every tensor is moved once."""
     ix = call.ix
@@ -764,7 +764,7 @@ def fp8_lightning_indexer_roofline(call: "CallView") -> tuple[int, int]:
     return ix["B"] * ix["H"] * per_score * lightning_indexer_scored_keys(call), _derived_bytes(call)
 
 
-def topk_selector_window_scores(call: "CallView") -> int:
+def topk_select_window_scores(call: "CallView") -> int:
     """Scores in the windows ``[starts, ends)`` of every row ``(b, s)``, per group."""
     return sum(
         max(0, e - s)
@@ -773,11 +773,11 @@ def topk_selector_window_scores(call: "CallView") -> int:
     )
 
 
-def topk_selector_roofline(call: "CallView") -> tuple[int, int]:
+def topk_select_roofline(call: "CallView") -> tuple[int, int]:
     """Top-k selection: one comparison per score in a row's window, per group; only those
     scores are read."""
     ix = call.ix
-    widths = topk_selector_window_scores(call)
+    widths = topk_select_window_scores(call)
     shape = call.tensors["index_score"][0]
     read = widths * ix["G"] * call.bytes("index_score") // max(1, prod(shape))
     return ix["G"] * widths, _derived_bytes(call) - call.bytes("index_score") + read

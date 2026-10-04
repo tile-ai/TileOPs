@@ -1,6 +1,6 @@
 """FusedMoESharedExpertFwdOp — FusedMoE with shared expert support.
 
-Combines routed experts (via FusedMoe) with the shared expert (SharedExpertMLPFwdOp).
+Combines routed experts (via FusedMoE) with the shared expert (SharedExpertMLPFwdOp).
 
 Usage (single GPU, tp_size=1):
     op = FusedMoESharedExpertFwdOp(top_k=K)
@@ -30,17 +30,17 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
-from tileops.ops.moe.fused_moe import FusedMoe
+from tileops.ops.moe.fused_moe import FusedMoE
 from tileops.ops.moe.shared_expert_mlp import SharedExpertMLPFwdOp
 from tileops.ops.op_base import Op
 
 __all__ = ["FusedMoESharedExpertFwdOp"]
 
 
-class FusedMoESharedExpertFwdOp(FusedMoe):
+class FusedMoESharedExpertFwdOp(FusedMoE):
     """FusedMoE with shared expert support, optionally TP-aware.
 
-    Extends FusedMoe to compute both shared and routed expert outputs. Passing the
+    Extends FusedMoE to compute both shared and routed expert outputs. Passing the
     shared expert's weights enables it; the shared expert is the SharedExpertMLPFwdOp
     sub-op, which applies ``silu_and_mul``.
 
@@ -58,7 +58,7 @@ class FusedMoESharedExpertFwdOp(FusedMoe):
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        **FusedMoe.delegate_types,
+        **FusedMoE.delegate_types,
         "shared_expert": SharedExpertMLPFwdOp,
     }
 

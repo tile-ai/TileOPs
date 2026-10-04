@@ -6,12 +6,12 @@ from workloads.sequence_metadata import prepare_chunk_offsets, prepare_token_ind
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "NsaCmpFwdCall",
-    "NsaCmpFwdWorkload",
-    "NsaFwdCall",
-    "NsaFwdWorkload",
-    "NsaTopkCall",
-    "NsaTopkWorkload",
+    "NSACompressedFwdCall",
+    "NSACompressedFwdWorkload",
+    "NSAFwdCall",
+    "NSAFwdWorkload",
+    "NSATopKCall",
+    "NSATopKWorkload",
 ]
 
 
@@ -46,7 +46,7 @@ def _packed_offsets(
     )
 
 
-class NsaFwdWorkload(WorkloadBase):
+class NSAFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -207,7 +207,7 @@ class NsaFwdWorkload(WorkloadBase):
         return Exact()
 
 
-class NsaCmpFwdWorkload(WorkloadBase):
+class NSACompressedFwdWorkload(WorkloadBase):
     def __init__(
         self,
         seq_num: int,
@@ -291,7 +291,7 @@ class NsaCmpFwdWorkload(WorkloadBase):
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), **tol)
 
 
-class NsaTopkWorkload(WorkloadBase):
+class NSATopKWorkload(WorkloadBase):
     def __init__(
         self,
         seq_num: int,
@@ -494,13 +494,13 @@ def _nsa_topk_scores(q, k_cmp, block_size, scale):
     return importance.masked_fill(block > current.squeeze(-1), -float("inf"))
 
 
-class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):
+class NSACompressedFwdCall(CallWorkload, NSACompressedFwdWorkload):
     """A manifest call of NSACompressedVarlenFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        NsaCmpFwdWorkload.__init__(
+        NSACompressedFwdWorkload.__init__(
             self,
             ix["N"],
             ix["T_q"],
@@ -517,13 +517,13 @@ class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):
     gen_inputs = CallWorkload.gen_inputs
 
 
-class NsaTopkCall(CallWorkload, NsaTopkWorkload):
+class NSATopKCall(CallWorkload, NSATopKWorkload):
     """A manifest call of NSATopKVarlenFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        NsaTopkWorkload.__init__(
+        NSATopKWorkload.__init__(
             self,
             ix["N"],
             ix["T_q"],
@@ -540,13 +540,13 @@ class NsaTopkCall(CallWorkload, NsaTopkWorkload):
     gen_inputs = CallWorkload.gen_inputs
 
 
-class NsaFwdCall(CallWorkload, NsaFwdWorkload):
+class NSAFwdCall(CallWorkload, NSAFwdWorkload):
     """A manifest call of NSAVarlenFwdOp; the row's generators make the selection."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        NsaFwdWorkload.__init__(
+        NSAFwdWorkload.__init__(
             self,
             ix["N"],
             ix["H"],

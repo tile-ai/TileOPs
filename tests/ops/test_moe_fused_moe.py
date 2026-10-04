@@ -1,4 +1,4 @@
-"""Tests for FusedMoe — unified routed MoE FFN operator.
+"""Tests for FusedMoE — unified routed MoE FFN operator.
 
 Covers:
   - Qwen3 config: softmax, renormalize=False/True
@@ -190,9 +190,9 @@ def test_fused_moe_qwen3(
         compare_outputs(out_nopad.float(), out_vllm.float(), moe_verification(2))
 
 
-# Cases for the FusedMoe non-determinism regression. The cooperative 3WG
+# Cases for the FusedMoE non-determinism regression. The cooperative 3WG
 # grouped-GEMM TMA-store epilogue race is intermittent (~3% of calls at the
-# qwen3-medium scale) and only manifests inside the full FusedMoe pipeline
+# qwen3-medium scale) and only manifests inside the full FusedMoE pipeline
 # (adjacent activation/permute kernels keep the timing window open) — an
 # isolated grouped-GEMM loop never trips it, so this must run the op. The
 # nightly case repeats many times: at 3% per call, 200 repeats give >99%
@@ -219,7 +219,7 @@ def test_fused_moe_deterministic(case):
     SMEM buffer without ordering the register→SMEM write before the async TMA
     read, so the store could read a half-written ``C_shared`` on a small
     fraction of calls, corrupting a sub-tile of the output non-deterministically.
-    The race only manifests inside the full FusedMoe pipeline; qwen3-medium
+    The race only manifests inside the full FusedMoE pipeline; qwen3-medium
     (E=128, ~128 rows/expert) drives the cooperative full-tile fast path heavily.
     Run the op many times on fixed seed-42 inputs and assert every call matches
     the PyTorch reference and is bitwise-identical to the first. Pre-fix the
@@ -249,7 +249,7 @@ def test_fused_moe_deterministic(case):
     for i in range(reps):
         out = op(hidden, gating, w_gate_up, w_down)
         assert torch.equal(out, first), (
-            f"non-deterministic FusedMoe output on call {i + 1}/{reps}: "
+            f"non-deterministic FusedMoE output on call {i + 1}/{reps}: "
             "3WG grouped-GEMM TMA-store epilogue write→read race regressed"
         )
 

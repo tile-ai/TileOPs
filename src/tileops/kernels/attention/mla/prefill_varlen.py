@@ -26,7 +26,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import MlaVarlenCall, MlaVarlenFwdInterface
+from tileops.kernels.attention.call_spec import MLAVarlenCall, MLAVarlenFwdInterface
 from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -290,18 +290,18 @@ def _mla_varlen_fwd_kernel(
     return _mla_varlen_fwd_func
 
 
-class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
+class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
     """Packed-varlen MLA prefill: one query block of one head per CTA."""
 
     supported_archs: list[int] = [80, 89, 90]
     general: bool = True
 
     @classmethod
-    def applies(cls, call: MlaVarlenCall) -> bool:
+    def applies(cls, call: MLAVarlenCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: MlaVarlenCall) -> Optional[str]:
+    def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dim_nope % 16 != 0 or call.dim_pe % 16 != 0 or call.dim_v % 16 != 0:
             return (
@@ -319,7 +319,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MlaVarlenFwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: MlaVarlenCall) -> Entry:
+    def entry_for(cls, call: MLAVarlenCall) -> Entry:
         args = dict(
             batch=call.batch,
             heads=call.heads,

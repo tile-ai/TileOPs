@@ -4,17 +4,17 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall
-from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.dsa import DsaDecodeWorkload
+from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeCall
+from tileops.ops import DSADecodeWithKVCacheFwdOp
+from workloads.attention.dsa import DSADecodeWorkload
 from workloads.device import run_device
 
 
-class DsaDecodeTest(DsaDecodeWorkload, TestBase):
+class DSADecodeTest(DSADecodeWorkload, TestBase):
     pass
 
 
-class DsaDecodeFixture(FixtureBase):
+class DSADecodeFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, "
@@ -58,8 +58,8 @@ class DsaDecodeFixture(FixtureBase):
     ]
 
 
-@DsaDecodeFixture
-def test_sparse_mla_decode(
+@DSADecodeFixture
+def test_dsa_decode_decode(
     batch: int,
     heads: int,
     seq_len_q: int,
@@ -74,7 +74,7 @@ def test_sparse_mla_decode(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = DsaDecodeTest(
+    test = DSADecodeTest(
         batch,
         heads,
         seq_len_q,
@@ -88,7 +88,7 @@ def test_sparse_mla_decode(
         sm_scale=sm_scale,
         dtype=dtype,
     )
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
+    op = DSADecodeWithKVCacheFwdOp(
         dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
     test.check(op, *test.gen_inputs())
@@ -103,10 +103,10 @@ def test_sparse_mla_decode(
         pytest.param(0, torch.float16, id="fp16-no-tail"),
     ],
 )
-def test_sparse_mla_decode_tail_and_dtype(dim_tail, dtype) -> None:
+def test_dsa_decode_decode_tail_and_dtype(dim_tail, dtype) -> None:
     """BF16 preserves the output dtype; a zero tail omits the extra QK contraction."""
-    test = DsaDecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, 1, 256)
+    test = DSADecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
+    op = DSADecodeWithKVCacheFwdOp(dim_tail, 1, 256)
     test.check(op, *test.gen_inputs())
 
 
@@ -132,7 +132,7 @@ def _padded_topk_indices(
 
 
 @pytest.mark.smoke
-def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
+def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
     """A slot no row fills must not reach kv, whatever value pads it.
 
     The cache here is shorter than the causal window, so the causal limit alone
@@ -142,10 +142,10 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
     dim, dim_tail, topk, stride_kv, heads_kv, q_start = 512, 64, 128, 1, 1, 1024
     generator = torch.Generator().manual_seed(0)
 
-    test = DsaDecodeTest(
+    test = DSADecodeTest(
         batch, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start
     )
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
+    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
     q, kv, _ = test.gen_inputs()
 
     # seq_len_kv is the padding the workloads write and the reference reads.
@@ -169,11 +169,11 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
 
 
 @pytest.mark.smoke
-def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
+def test_dsa_decode_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
     """On SM89 the heads per block and the refusal follow the default config's shared memory:
     16 heads at d=1024 with a 16-wide tail take 99,840 bytes over one KV tile (topk 32),
     served, and 101,888 over two (topk 64), refused."""
-    call = SparseMlaCall(
+    call = DSADecodeCall(
         arch=89,
         sm_count=1,
         batch=1,
@@ -188,8 +188,8 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
     )
     for tail_dim, block_h in ((64, 32), (512, 16)):
         shaped = dataclasses.replace(call, tail_dim=tail_dim)
-        assert SparseMlaBasicKernel.refusal(shaped) is None
-        config = SparseMlaBasicKernel._default_config_for(
+        assert DSADecodeBasicKernel.refusal(shaped) is None
+        config = DSADecodeBasicKernel._default_config_for(
             shaped.arch,
             shaped.heads // shaped.kv_group,
             shaped.dim,
@@ -199,26 +199,26 @@ def test_sparse_mla_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
         )
         assert config["block_h"] == block_h
     tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
-    assert SparseMlaBasicKernel.refusal(tight) is None
-    assert "101888" in SparseMlaBasicKernel.refusal(dataclasses.replace(tight, topk=64))
-    assert SparseMlaBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
+    assert DSADecodeBasicKernel.refusal(tight) is None
+    assert "101888" in DSADecodeBasicKernel.refusal(dataclasses.replace(tight, topk=64))
+    assert DSADecodeBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
     for wide in (dataclasses.replace(call, dim=2048), dataclasses.replace(call, tail_dim=1024)):
-        assert "shared memory" in SparseMlaBasicKernel.refusal(wide)
+        assert "shared memory" in DSADecodeBasicKernel.refusal(wide)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dim", "topk", "expected"),
     [
-        pytest.param(512, 2048, "sparse_mla_kernel", id="ws"),
-        pytest.param(512, 96, "sparse_mla_basic_kernel", id="topk-off-128"),
-        pytest.param(64, 2048, "sparse_mla_basic_kernel", id="dim-off-128"),
+        pytest.param(512, 2048, "dsa_decode_kernel", id="ws"),
+        pytest.param(512, 96, "dsa_decode_basic_kernel", id="topk-off-128"),
+        pytest.param(64, 2048, "dsa_decode_basic_kernel", id="dim-off-128"),
     ],
 )
-def test_sparse_mla_regions(dim: int, topk: int, expected: str) -> None:
+def test_dsa_decode_regions(dim: int, topk: int, expected: str) -> None:
     """The warp-specialized kernel serves SM90 where its gather and topk tiling apply."""
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(64, 1, 0)
-    call = SparseMlaCall(
+    op = DSADecodeWithKVCacheFwdOp(64, 1, 0)
+    call = DSADecodeCall(
         arch=90,
         sm_count=132,
         batch=1,
@@ -231,4 +231,4 @@ def test_sparse_mla_regions(dim: int, topk: int, expected: str) -> None:
         topk=topk,
         kv_stride=1,
     )
-    assert op.select_implementation("sparse_mla", call) == expected
+    assert op.select_implementation("dsa_decode", call) == expected

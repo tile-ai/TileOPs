@@ -66,7 +66,7 @@ class FusedTopKWorkload(CallWorkload):
         return Custom(validate, "expert selection and weights independent of tie order")
 
 
-class MoePermuteAlignWorkload(CallWorkload):
+class MoEPermuteAlignWorkload(CallWorkload):
     """The routing ids of one ``MoEPermuteAlignFwdOp`` call."""
 
     def ref_program(self, topk_ids):
@@ -116,7 +116,7 @@ class MoePermuteAlignWorkload(CallWorkload):
         return Custom(validate, "all valid routes and expert ownership; unused capacity ignored")
 
 
-class MoePrePermuteWorkload(CallWorkload):
+class MoEPrePermuteWorkload(CallWorkload):
     """Hidden states and local expert ids of one ``MoEPrePermuteFwdOp`` call."""
 
     def ref_program(
@@ -220,7 +220,7 @@ def ref_moe_grouped_gemm(
     return out.to(out_dtype)
 
 
-class MoeGroupedGemmWorkload(CallWorkload):
+class MoEGroupedGemmWorkload(CallWorkload):
     """Expert-materialized ``a``, per-expert ``b`` and the layout's generated metadata."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -257,7 +257,7 @@ class MoeGroupedGemmWorkload(CallWorkload):
         return Custom(validate, "defined rows of grouped expert layout")
 
 
-class MoeExpertMLPWorkload(CallWorkload):
+class MoEExpertMLPWorkload(CallWorkload):
     """Expert-materialized input, stacked gate/up and down weights, generated metadata."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -297,7 +297,7 @@ class MoeExpertMLPWorkload(CallWorkload):
         return Custom(validate, "defined rows of grouped expert layout")
 
 
-class MoePostPermuteWorkload(CallWorkload):
+class MoEPostPermuteWorkload(CallWorkload):
     """Expert outputs, routing weights and inverse indices of one ``MoEPostPermuteFwdOp`` call."""
 
     def ref_program(
@@ -364,7 +364,7 @@ def ref_routed_experts(
     return (output * scale).to(hidden.dtype)
 
 
-class MoeExpertsWorkload(CallWorkload):
+class MoEExpertsWorkload(CallWorkload):
     """Tokens, expert weights and their routing for one ``FusedMoEExpertsFwdOp`` call."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -403,7 +403,7 @@ class MoeExpertsWorkload(CallWorkload):
         return moe_verification(2)
 
 
-class IndexedExpertMLPWorkload(MoeExpertsWorkload):
+class IndexedExpertMLPWorkload(MoEExpertsWorkload):
     """One ``IndexedExpertMLPFwdOp`` call: the same inputs and reference as the expert MLP."""
 
 
@@ -425,7 +425,7 @@ def ref_fused_topk(
     return topk_weights, topk_ids.int()
 
 
-class FusedMoeWorkload(CallWorkload):
+class FusedMoEWorkload(CallWorkload):
     """Tokens, gating logits and expert weights for one ``FusedMoEFwdOp`` call.
 
     The logits come from the workload's own generator: they decide the experts the call
@@ -454,8 +454,8 @@ class FusedMoeWorkload(CallWorkload):
         return moe_verification(2)
 
 
-class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
-    """One ``FusedMoESharedExpertFwdOp`` call: FusedMoe's inputs plus the shared weights."""
+class FusedMoESharedExpertWorkload(FusedMoEWorkload):
+    """One ``FusedMoESharedExpertFwdOp`` call: FusedMoE's inputs plus the shared weights."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         *routed, shared_w_gate_up, shared_w_down = super().gen_inputs()

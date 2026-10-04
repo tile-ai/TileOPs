@@ -29,13 +29,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba.call_spec import CBProducerCall, CBProducerFwdInterface
+from tileops.kernels.mamba.call_spec import SSDChunkCouplingCall, SSDChunkCouplingFwdInterface
 
-__all__ = ["CBProducerKernel"]
+__all__ = ["SSDChunkCouplingKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _cb_producer_kernel(
+def _ssd_chunk_coupling_kernel(
     batch: int,
     num_chunks: int,
     n_groups: int,
@@ -167,7 +167,7 @@ def _cb_producer_kernel(
     return kernel_func
 
 
-class CBProducerKernel(Kernel, CBProducerFwdInterface):
+class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
     """CB (C@B) matrix producer kernel.
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
@@ -187,7 +187,7 @@ class CBProducerKernel(Kernel, CBProducerFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def entry_for(cls, call: CBProducerCall) -> Entry:
+    def entry_for(cls, call: SSDChunkCouplingCall) -> Entry:
         return call, lambda: cls(
             call.batch,
             call.seq_len // call.chunk_len,
@@ -216,7 +216,7 @@ class CBProducerKernel(Kernel, CBProducerFwdInterface):
         self.d_state = d_state
         self.dtype = dtype
 
-        self.kernel = _cb_producer_kernel(
+        self.kernel = _ssd_chunk_coupling_kernel(
             batch, num_chunks, n_groups, chunk_len, d_state, self.dtype_str
         )
         self.init_config(config, tune)

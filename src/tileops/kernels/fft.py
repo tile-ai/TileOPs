@@ -24,7 +24,7 @@ from tileops.utils import get_sm_version
 
 __all__ = [
     "FFTC2CCall",
-    "FFTC2CDecomposedKernel",
+    "FFTC2CFourStepKernel",
     "FFTC2CFwdInterface",
     "FFTC2COneCTAKernel",
 ]
@@ -1694,7 +1694,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         return y_pair
 
 
-class FFTC2CDecomposedKernel(Kernel, FFTC2CFwdInterface):
+class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
     """Four-step C2C FFT for the plans of two or three factors, one launch per factor.
 
     Args:

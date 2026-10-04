@@ -10,7 +10,7 @@ from tileops.kernels.attention import (
     GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
-    GQADenseWsKernel,
+    GQADenseWSKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -21,10 +21,10 @@ from tileops.ops.attention.gqa.parameters import _rope_rotary_dim, _score_softca
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GroupedQueryAttentionDenseFwdOp"]
+__all__ = ["GQADenseFwdOp"]
 
 
-class GroupedQueryAttentionDenseFwdOp(Op):
+class GQADenseFwdOp(Op):
     r"""Grouped-query attention over dense $Q$/$K$/$V$ tensors.
 
     By default the op computes causal attention,
@@ -151,7 +151,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gqa_dense": GQADenseWsKernel,
+        "gqa_dense": GQADenseWSKernel,
         "gqa_dense_decode": GQADecodeKernel,
         "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
         "gqa_dense_fp8": GQADenseFP8Kernel,

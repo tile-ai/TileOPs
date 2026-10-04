@@ -7,7 +7,7 @@ from benchmarks.baselines import QUACK_TAG, VLLM_TAG, quack_op, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.moe_baselines import flashinfer_experts
 from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
-from workloads.moe import FusedMoeSharedExpertWorkload, FusedMoeWorkload, SharedExpertMLPWorkload
+from workloads.moe import FusedMoESharedExpertWorkload, FusedMoEWorkload, SharedExpertMLPWorkload
 
 
 def _routed_moe(op, experts):
@@ -50,7 +50,7 @@ def _expert_backends(hidden, w1, w2, top_k):
 
 @pytest.mark.parametrize("call", manifest_calls(FusedMoEFwdOp))
 def test_fused_moe_fwd_bench(call) -> None:
-    workload = FusedMoeWorkload(call)
+    workload = FusedMoEWorkload(call)
     inputs = workload.gen_inputs()
     op = FusedMoEFwdOp(**call.arguments({}))
     hidden, _, w1, w2, _ = inputs
@@ -78,7 +78,7 @@ def _with_shared_expert(routed):
 
 @pytest.mark.parametrize("call", manifest_calls(FusedMoESharedExpertFwdOp))
 def test_fused_moe_shared_expert_bench(call) -> None:
-    workload = FusedMoeSharedExpertWorkload(call)
+    workload = FusedMoESharedExpertWorkload(call)
     inputs = workload.gen_inputs()
     op = FusedMoESharedExpertFwdOp(**call.arguments({}))
     hidden, _, w1, w2, *_ = inputs

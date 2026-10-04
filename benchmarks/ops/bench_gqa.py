@@ -18,31 +18,31 @@ from benchmarks.benchmark_base import (
     manifest_calls,
 )
 from tileops.ops import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionPagedFwdOp,
-    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
+    GQABwdOp,
+    GQADenseFwdOp,
+    GQAPagedFwdOp,
+    GQAPrefillPagedWithKVCacheFwdOp,
+    GQAVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdCall
+from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import (
-    GroupedQueryAttentionDenseDecodeCall,
-    GroupedQueryAttentionDensePrefillCall,
+    GQADenseDecodeCall,
+    GQADensePrefillCall,
 )
-from workloads.attention.gqa.paged import GroupedQueryAttentionPagedCall
+from workloads.attention.gqa.paged import GQAPagedCall
 from workloads.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithKVCacheFwdCall,
     paged_prefill_result,
 )
 from workloads.attention.gqa.varlen import (
-    GroupedQueryAttentionVarlenCall,
-    GroupedQueryAttentionVarlenScaledCall,
+    GQAVarlenCall,
+    GQAVarlenScaledCall,
 )
 from workloads.device import run_device
 
 
-def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall, inputs: tuple):
+def _fa3_gqa_bwd(workload: GQABwdCall, inputs: tuple):
     """Time FA3's backward with its own forward state prepared outside timing."""
     try:
         from flash_attn_interface import _flash_attn_backward, flash_attn_func
@@ -93,13 +93,13 @@ def _torch_gqa_bwd(workload, q, k, v):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionBwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GQABwdOp))
 def test_gqa_bwd_bench(call) -> None:
     """Backward is timed in training, so the kernels tune."""
-    workload = GroupedQueryAttentionBwdCall(call)
+    workload = GQABwdCall(call)
     inputs = workload.gen_inputs()
 
-    op = GroupedQueryAttentionBwdOp(**workload.arguments(), tune=True)
+    op = GQABwdOp(**workload.arguments(), tune=True)
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
@@ -116,7 +116,7 @@ def test_gqa_bwd_bench(call) -> None:
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
-def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):
+def _fa3_gqa_dense_decode(workload: GQADenseDecodeCall):
     """FA3 decode with the same score scale and soft cap."""
     try:
         from flash_attn_interface import flash_attn_with_kvcache
@@ -142,7 +142,7 @@ def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):
 
 
 def _flashinfer_gqa_dense_decode(
-    workload: GroupedQueryAttentionDenseDecodeCall,
+    workload: GQADenseDecodeCall,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -211,7 +211,7 @@ def _dense_calls(*, optional_inputs: bool) -> list:
     """The Dense calls that pass FP8 scales or RoPE tables, or those that pass neither."""
     return [
         param
-        for param in manifest_calls(GroupedQueryAttentionDenseFwdOp)
+        for param in manifest_calls(GQADenseFwdOp)
         if (param.values[0].present("q_scale") or param.values[0].present("rope_cos"))
         is optional_inputs
     ]
@@ -219,9 +219,9 @@ def _dense_calls(*, optional_inputs: bool) -> list:
 
 @pytest.mark.parametrize("call", _dense_calls(optional_inputs=False))
 def test_gqa_dense_decode_bench(call) -> None:
-    workload = GroupedQueryAttentionDenseDecodeCall(call)
+    workload = GQADenseDecodeCall(call)
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionDenseFwdOp(**workload.arguments())
+    op = GQADenseFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
@@ -242,11 +242,11 @@ def test_gqa_dense_decode_bench(call) -> None:
 @pytest.mark.parametrize("call", _dense_calls(optional_inputs=True))
 def test_gqa_dense_prefill_bench(call) -> None:
     """Dense prefill with scaled inputs and caller-provided rotary tables."""
-    workload = GroupedQueryAttentionDensePrefillCall(call)
+    workload = GQADensePrefillCall(call)
     if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
         pytest.skip("native FP8 Dense GQA requires SM90")
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionDenseFwdOp(**workload.arguments())
+    op = GQADenseFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     from flash_attn_interface import flash_attn_func
 
@@ -310,7 +310,7 @@ def test_gqa_dense_prefill_bench(call) -> None:
     bm.compare(functors, *inputs, count_copies=True)
 
 
-def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tensor):
+def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):
     """Rotate packed Q and K as a caller must before a kernel that does not fuse RoPE.
 
     Returns ``None`` when the row carries no tables. FlashInfer rotates a query and a key
@@ -365,7 +365,7 @@ def _varlen_rope(workload: GroupedQueryAttentionVarlenCall, *inputs: torch.Tenso
 
 
 def _fa3_gqa_varlen(
-    workload: GroupedQueryAttentionVarlenCall,
+    workload: GQAVarlenCall,
     window_size_left: int,
     window_size_right: int,
     rotate=None,
@@ -408,7 +408,7 @@ def _fa3_gqa_varlen(
 
 
 def _flashinfer_gqa_varlen(
-    workload: GroupedQueryAttentionVarlenCall,
+    workload: GQAVarlenCall,
     window_size_left: int,
     window_size_right: int,
     *inputs: torch.Tensor,
@@ -449,17 +449,17 @@ def _varlen_calls(*, scaled: bool) -> list:
     """
     return [
         param
-        for param in manifest_calls(GroupedQueryAttentionVarlenFwdOp)
+        for param in manifest_calls(GQAVarlenFwdOp)
         if param.values[0].present("q_scale") is scaled
     ]
 
 
 @pytest.mark.parametrize("call", _varlen_calls(scaled=False))
 def test_gqa_varlen_fwd_bench(call) -> None:
-    workload = GroupedQueryAttentionVarlenCall(call)
+    workload = GQAVarlenCall(call)
     inputs = workload.gen_inputs()
 
-    op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
+    op = GQAVarlenFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
     functors = {
@@ -487,11 +487,11 @@ def test_gqa_varlen_scaled_bench(call) -> None:
     prefill takes no FP8 query, and the per-request reference reads its offsets on the
     host, so neither a FlashInfer nor a torch-compile tag can express the row.
     """
-    workload = GroupedQueryAttentionVarlenScaledCall(call)
+    workload = GQAVarlenScaledCall(call)
     if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionVarlenFwdOp(**workload.arguments())
+    op = GQAVarlenFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
@@ -569,11 +569,11 @@ def _fa3_gqa_prefill_paged(workload, inputs):
     return run
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GQAPrefillPagedWithKVCacheFwdOp))
 def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     workload = GQAPrefillPagedWithKVCacheFwdCall(call)
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**workload.arguments())
+    op = GQAPrefillPagedWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
     # depends on what those slots held, so every tag shares the pages.
@@ -702,11 +702,11 @@ def _flashinfer_gqa_paged(workload, inputs):
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPagedFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(GQAPagedFwdOp))
 def test_gqa_paged_fwd_bench(call) -> None:
-    workload = GroupedQueryAttentionPagedCall(call)
+    workload = GQAPagedCall(call)
     inputs = workload.gen_inputs()
-    op = GroupedQueryAttentionPagedFwdOp(**workload.arguments())
+    op = GQAPagedFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     fa3_fn = _fa3_gqa_paged(workload)

@@ -17,10 +17,10 @@ from tileops.ops.attention.gqa.parameters import _attention_scale, _score_softca
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GroupedQueryAttentionPagedFwdOp"]
+__all__ = ["GQAPagedFwdOp"]
 
 
-class GroupedQueryAttentionPagedFwdOp(Op):
+class GQAPagedFwdOp(Op):
     """Grouped-query attention over a caller-owned paged KV cache.
 
     Packed Q and its cumulative sequence lengths cover both prefill and decode.

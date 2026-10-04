@@ -5,7 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.fft import (
     FFTC2CCall,
-    FFTC2CDecomposedKernel,
+    FFTC2CFourStepKernel,
     FFTC2CFwdInterface,
     FFTC2COneCTAKernel,
 )
@@ -38,7 +38,7 @@ class FFTC2CFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
-        "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
+        "fft_c2c_decomposed_kernel": FFTC2CFourStepKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fft_c2c": FFTC2CFwdInterface}
 

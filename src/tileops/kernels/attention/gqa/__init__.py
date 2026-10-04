@@ -1,9 +1,9 @@
 """GQA attention kernel implementations."""
 
 from tileops.kernels.attention.gqa.bwd import (
-    FlashAttnBwdPreprocessKernel,
-    GQABwdMmaKernel,
-    GQABwdWgmmaPipelinedKernel,
+    GQABwdMMAKernel,
+    GQABwdPreprocessKernel,
+    GQABwdWGMMAPipelinedKernel,
 )
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
@@ -23,7 +23,7 @@ from tileops.kernels.attention.gqa.decode_paged import (
 )
 from tileops.kernels.attention.gqa.dense import (
     GQADenseSlidingWindowKernel,
-    GQADenseWsKernel,
+    GQADenseWSKernel,
 )
 from tileops.kernels.attention.gqa.dense_fp8 import (
     GQADenseFP8Kernel,
@@ -34,7 +34,7 @@ from tileops.kernels.attention.gqa.paged_varlen import (
 from tileops.kernels.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
-    GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    GQAPrefillPagedWithKVCacheRoPEFwdKernel,
 )
 from tileops.kernels.attention.gqa.prefill_varlen import (
     GQAPrefillVarlenFwdKernel,
@@ -43,7 +43,7 @@ from tileops.kernels.attention.gqa.prefill_varlen_ws import (
     GQAPrefillVarlenWSFwdKernel,
 )
 from tileops.kernels.attention.gqa.sliding_window_varlen import (
-    GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
 )
 from tileops.kernels.attention.gqa.varlen_fp8 import (
     GQAVarlenFP8FwdKernel,
@@ -51,9 +51,9 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
 )
 
 __all__ = [
-    "FlashAttnBwdPreprocessKernel",
-    "GQABwdMmaKernel",
-    "GQABwdWgmmaPipelinedKernel",
+    "GQABwdMMAKernel",
+    "GQABwdPreprocessKernel",
+    "GQABwdWGMMAPipelinedKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
     "GQADecodeLongContextKernel",
@@ -62,14 +62,14 @@ __all__ = [
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
     "GQADenseSlidingWindowKernel",
-    "GQADenseWsKernel",
+    "GQADenseWSKernel",
     "GQAPagedVarlenFwdKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheRopeFwdKernel",
+    "GQAPrefillPagedWithKVCacheRoPEFwdKernel",
     "GQAPrefillVarlenFwdKernel",
     "GQAPrefillVarlenWSFwdKernel",
-    "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",
+    "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
     "GQAVarlenFP8FwdKernel",
     "GQAVarlenFP8WSFwdKernel",
 ]

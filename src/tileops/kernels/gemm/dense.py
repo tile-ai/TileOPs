@@ -7,8 +7,8 @@ import torch
 
 from tileops.kernels.gemm.call_spec import (
     GemmCall,
-    GemmFp8Call,
-    GemmFp8FwdInterface,
+    GemmFP8Call,
+    GemmFP8FwdInterface,
     GemmFwdInterface,
 )
 from tileops.kernels.gemm.heuristics import (
@@ -25,9 +25,9 @@ from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
 __all__ = [
     "GemmCpAsyncKernel",
-    "GemmFp8BlockScaleKernel",
-    "GemmFp8TensorScaleKernel",
-    "GemmTmaKernel",
+    "GemmFP8BlockScaleKernel",
+    "GemmFP8TensorScaleKernel",
+    "GemmTMAKernel",
     "GemvKernel",
 ]
 
@@ -55,7 +55,7 @@ def _tma_misalignment(
 ) -> Optional[str]:
     """Why TMA cannot address these operands, or ``None`` when it can.
 
-    Every structure ``GemmTmaKernel`` builds loads its tiles through TMA, whose
+    Every structure ``GemmTMAKernel`` builds loads its tiles through TMA, whose
     descriptors address the innermost (contiguous) dimension in 16-byte units —
     so that extent must be a multiple of ``16 / itemsize`` elements, 8 for
     fp16 / bf16. Which logical dim is innermost follows the layout: ``K`` for a
@@ -110,7 +110,7 @@ def _dense_entry(cls: type, call: GemmCall) -> Entry:
     )
 
 
-class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
+class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
     """Shared body of the two FP8 GEMM kernels; ``BLOCK_SCALED`` picks the scale grid.
 
     Takes :func:`_gemm_fp8_ws_kernel`, or :func:`_gemm_fp8_kernel` on a call
@@ -138,7 +138,7 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
 
     @classmethod
-    def entry_for(cls, call: GemmFp8Call) -> Entry:
+    def entry_for(cls, call: GemmFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.m,
@@ -314,17 +314,17 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         return compiled(a, b, scale_a, scale_b)
 
 
-class GemmFp8TensorScaleKernel(_GemmFp8Kernel):
+class GemmFP8TensorScaleKernel(_GemmFP8Kernel):
     """FP8 NT GEMM for per-tensor scales; the two scalars land in the epilogue."""
 
     BLOCK_SCALED = False
 
     @classmethod
-    def applies(cls, call: GemmFp8Call) -> bool:
+    def applies(cls, call: GemmFP8Call) -> bool:
         return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
 
 
-class GemmFp8BlockScaleKernel(_GemmFp8Kernel):
+class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
     """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in.
 
     Serves ``scale_b`` per row and per 128x128 block alike, on every shape, bias and
@@ -335,7 +335,7 @@ class GemmFp8BlockScaleKernel(_GemmFp8Kernel):
     general = True
 
     @classmethod
-    def applies(cls, call: GemmFp8Call) -> bool:
+    def applies(cls, call: GemmFP8Call) -> bool:
         return cls.block_scale_grid(call) is not None
 
 
@@ -1397,7 +1397,7 @@ def _gemm_kernel(
     fire on top of this manual layout.
 
     Operands must satisfy TMA's innermost-dimension alignment, which
-    ``_tma_misalignment`` states and ``GemmTmaKernel`` refuses on.
+    ``_tma_misalignment`` states and ``GemmTMAKernel`` refuses on.
 
     Args:
         m: Rows of ``op(A)`` / ``C``.
@@ -1603,7 +1603,7 @@ def _gemm_splitk_kernel(
     K slice and writes an fp32 partial tile to the workspace
     ``w[split_k, m, n]``; ``splitk_reduce_kernel`` then sums the slices and
     casts to the storage dtype. Splitting only pays off when the natural
-    (M, N) grid underfills the GPU — see ``GemmTmaKernel.forward`` for the
+    (M, N) grid underfills the GPU — see ``GemmTMAKernel.forward`` for the
     dispatch. ``split_k`` must divide the K-tile count evenly.
 
     Args:
@@ -2591,7 +2591,7 @@ def _gemm_coop2s_kernel(
     return _gemm_coop2s_func
 
 
-class GemmTmaKernel(Kernel, GemmFwdInterface):
+class GemmTMAKernel(Kernel, GemmFwdInterface):
     """Dense GEMM kernel family: hand-written SM90 implementations.
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
@@ -3206,7 +3206,7 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
     """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout —
-    the same contract as ``GemmTmaKernel`` — via ``T.Pipelined`` + plain
+    the same contract as ``GemmTMAKernel`` — via ``T.Pipelined`` + plain
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). It loads through ``cp.async``, which addresses any extent, so it is the
     general implementation: it serves every shape no other one claims, SM90 shapes

@@ -41,9 +41,9 @@ import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.mamba.call_spec import DaCumsumCall, DaCumsumFwdInterface
+from tileops.kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumFwdInterface
 
-__all__ = ["DaCumsumFwdKernel"]
+__all__ = ["SSDChunkCumsumFwdKernel"]
 
 _ROW_PAD = 4
 _MAX_SHARED_BYTES = STATIC_SHARED_BYTES
@@ -56,7 +56,7 @@ def _shared_bytes(block_h: int, chunk_len: int) -> int:
 
 
 @functools.lru_cache(maxsize=32)
-def _da_cumsum_fwd_kernel(
+def _ssd_chunk_cumsum_fwd_kernel(
     batch: int,
     num_chunks: int,
     chunk_len: int,
@@ -111,7 +111,7 @@ def _da_cumsum_fwd_kernel(
         store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
 
         @T.prim_func
-        def da_cumsum_fwd_main(
+        def ssd_chunk_cumsum_fwd_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
             A: T.Tensor((H,), accum_dtype),  # type: ignore
             dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
@@ -170,12 +170,12 @@ def _da_cumsum_fwd_kernel(
                         )
                         dA_cumsum[b, bh, c, pos] = row_shared[head, pos] + carry
 
-        return da_cumsum_fwd_main
+        return ssd_chunk_cumsum_fwd_main
 
     return kernel_func
 
 
-class DaCumsumFwdKernel(Kernel, DaCumsumFwdInterface):
+class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
     """Mamba-2 dA_cumsum forward kernel.
 
     Applies optional per-head bias, optional softplus activation, and clamping to
@@ -220,7 +220,7 @@ class DaCumsumFwdKernel(Kernel, DaCumsumFwdInterface):
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     @classmethod
-    def entry_for(cls, call: DaCumsumCall) -> Entry:
+    def entry_for(cls, call: SSDChunkCumsumCall) -> Entry:
         return call, lambda: cls(
             call.batch,
             call.seq_len // call.chunk_len,
@@ -265,7 +265,7 @@ class DaCumsumFwdKernel(Kernel, DaCumsumFwdInterface):
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.dtype = dtype
-        self.kernel = _da_cumsum_fwd_kernel(
+        self.kernel = _ssd_chunk_cumsum_fwd_kernel(
             batch,
             num_chunks,
             chunk_len,

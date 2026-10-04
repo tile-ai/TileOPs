@@ -26,8 +26,8 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
-    MlaVarlenCall,
-    MlaVarlenFwdInterface,
+    MLAVarlenCall,
+    MLAVarlenFwdInterface,
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
@@ -433,7 +433,7 @@ def _mla_varlen_ws_kernel(
     return main
 
 
-class MLAVarlenPrefillWSFwdKernel(Kernel, MlaVarlenFwdInterface):
+class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
     """SM90 warp-specialized packed-varlen MLA prefill.
 
     One persistent CTA per SM, a TMA producer warp, and two consumer warpgroups of
@@ -453,11 +453,11 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MlaVarlenFwdInterface):
     _MAX_BATCH: int = 256
 
     @classmethod
-    def applies(cls, call: MlaVarlenCall) -> bool:
+    def applies(cls, call: MLAVarlenCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: MlaVarlenCall) -> Optional[str]:
+    def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dtype not in ATTENTION_DTYPES:
             return f"serves float16 and bfloat16, got {call.dtype}"
@@ -471,7 +471,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MlaVarlenFwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: MlaVarlenCall) -> Entry:
+    def entry_for(cls, call: MLAVarlenCall) -> Entry:
         args = dict(
             batch=call.batch,
             heads=call.heads,

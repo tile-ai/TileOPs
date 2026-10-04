@@ -7,7 +7,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels import fft as fft_kernels
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
-from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CDecomposedKernel
+from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CFourStepKernel
 from tileops.ops import FFTC2CFwdOp
 from workloads.device import run_device
 from workloads.fft import FFTWorkload
@@ -140,7 +140,7 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
         tuned.append(won)
         return SimpleNamespace(config=won)
 
-    monkeypatch.setattr(FFTC2CDecomposedKernel, "tune_jit_kernel", fake_tune)
+    monkeypatch.setattr(FFTC2CFourStepKernel, "tune_jit_kernel", fake_tune)
     # The shortest decomposed length: two kernels.
     x = torch.randn(2, 1 << 14, device=run_device(), dtype=torch.complex128)
     op = FFTC2CFwdOp(tune=True)
@@ -189,6 +189,6 @@ def test_decomposed_kernel_selects_its_devices_record(
     monkeypatch: pytest.MonkeyPatch, arch: int, table: dict
 ) -> None:
     monkeypatch.setattr(fft_kernels, "get_sm_version", lambda index=None: arch)
-    kernel = FFTC2CDecomposedKernel(1 << 22, torch.complex64)
+    kernel = FFTC2CFourStepKernel(1 << 22, torch.complex64)
     assert kernel.plan is table[1 << 22, "complex64"]
     assert kernel.config["tile"] == kernel.plan.tile

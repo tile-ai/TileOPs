@@ -1,17 +1,17 @@
 from workloads.attention.gqa.bwd import (
-    GroupedQueryAttentionBwdCall,
-    GroupedQueryAttentionBwdWorkload,
+    GQABwdCall,
+    GQABwdWorkload,
 )
 from workloads.attention.gqa.dense import (
-    GroupedQueryAttentionDenseDecodeCall,
-    GroupedQueryAttentionDenseDecodeWorkload,
-    GroupedQueryAttentionDensePrefillCall,
-    GroupedQueryAttentionDensePrefillWorkload,
+    GQADenseDecodeCall,
+    GQADenseDecodeWorkload,
+    GQADensePrefillCall,
+    GQADensePrefillWorkload,
     dense_gqa_ref,
 )
 from workloads.attention.gqa.paged import (
-    GroupedQueryAttentionPagedCall,
-    GroupedQueryAttentionPagedFwdWorkload,
+    GQAPagedCall,
+    GQAPagedFwdWorkload,
 )
 from workloads.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithKVCacheFwdCall,
@@ -20,31 +20,31 @@ from workloads.attention.gqa.prefill_paged_kv_append import (
 from workloads.attention.gqa.rope import apply_dense_rope, apply_packed_rope
 from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
-    GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
-    GroupedQueryAttentionVarlenCall,
-    GroupedQueryAttentionVarlenFwdWorkload,
-    GroupedQueryAttentionVarlenScaledCall,
-    GroupedQueryAttentionVarlenScaledWorkload,
+    GQASlidingWindowVarlenFwdWorkload,
+    GQAVarlenCall,
+    GQAVarlenFwdWorkload,
+    GQAVarlenScaledCall,
+    GQAVarlenScaledWorkload,
 )
 from workloads.sequence_metadata import make_cu_seqlens
 
 __all__ = [
+    "GQABwdCall",
+    "GQABwdWorkload",
+    "GQADenseDecodeCall",
+    "GQADenseDecodeWorkload",
+    "GQADensePrefillCall",
+    "GQADensePrefillWorkload",
+    "GQAPagedCall",
+    "GQAPagedFwdWorkload",
     "GQAPrefillPagedWithKVCacheFwdCall",
     "GQAPrefillPagedWithKVCacheFwdWorkload",
     "GQAPrefillVarlenFwdWorkload",
-    "GroupedQueryAttentionBwdCall",
-    "GroupedQueryAttentionBwdWorkload",
-    "GroupedQueryAttentionDenseDecodeCall",
-    "GroupedQueryAttentionDenseDecodeWorkload",
-    "GroupedQueryAttentionDensePrefillCall",
-    "GroupedQueryAttentionDensePrefillWorkload",
-    "GroupedQueryAttentionPagedCall",
-    "GroupedQueryAttentionPagedFwdWorkload",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenCall",
-    "GroupedQueryAttentionVarlenFwdWorkload",
-    "GroupedQueryAttentionVarlenScaledCall",
-    "GroupedQueryAttentionVarlenScaledWorkload",
+    "GQASlidingWindowVarlenFwdWorkload",
+    "GQAVarlenCall",
+    "GQAVarlenFwdWorkload",
+    "GQAVarlenScaledCall",
+    "GQAVarlenScaledWorkload",
     "apply_dense_rope",
     "apply_packed_rope",
     "dense_gqa_ref",

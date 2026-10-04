@@ -5,7 +5,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
-from tileops.kernels.attention.call_spec import NSACall, NSATopkFwdInterface
+from tileops.kernels.attention.call_spec import NSACall, NSATopKFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -227,7 +227,7 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func
 
 
-class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
+class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod

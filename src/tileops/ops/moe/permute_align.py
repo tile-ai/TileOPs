@@ -7,7 +7,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.moe import (
-    MoePermuteAlignKernel,
+    MoEPermuteAlignKernel,
     PermuteAlignCall,
     PermuteAlignFwdInterface,
 )
@@ -31,7 +31,7 @@ class MoEPermuteAlignFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"permute_align": MoePermuteAlignKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"permute_align": MoEPermuteAlignKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "permute_align": PermuteAlignFwdInterface
     }

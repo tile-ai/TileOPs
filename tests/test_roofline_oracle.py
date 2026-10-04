@@ -263,7 +263,7 @@ class TestBytesOracle:
         travel with every call and the kernel reads them only for fp8 pages."""
         from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 
-        name = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
+        name = "GQAPrefillPagedWithKVCacheFwdOp"
         base = next(r for r in _manifest_rows(name) if "cache_dtype" not in r)
         # One token against an empty or single-page cache names one or two entries of
         # its block-table row; a length that does not divide by the page size is
@@ -315,7 +315,7 @@ class TestBytesOracle:
         as each request's cached length; the pages it never names move nothing."""
         from tileops.perf.formulas import gqa_paged_fwd_roofline
 
-        name = "GroupedQueryAttentionPagedFwdOp"
+        name = "GQAPagedFwdOp"
         call = _manifest_call(name)
         ix = call.ix
         heads, heads_kv, dim, page = ix["H"], ix["H_kv"], ix["D"], ix["PS"]
@@ -339,7 +339,7 @@ class TestBytesOracle:
         )
         assert gqa_paged_fwd_roofline(call)[1] == oracle
 
-    def test_topk_selector_reads_only_its_windows(self):
+    def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
         from tileops.ops import TopKSelectFwdOp
@@ -388,7 +388,7 @@ class TestBytesOracle:
         read at the rows the row's generated indices reach."""
         from tileops.perf.formulas import dsa_decode_roofline
 
-        op_name = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
+        op_name = "DSADecodeWithKVCacheFwdOp"
         for row in _manifest_rows(op_name):
             call = _manifest_call(op_name, row)
             ix = call.ix
@@ -532,7 +532,7 @@ class TestSpecOnlyRecounts:
         ],
     )
     def test_mla_paged_reads_the_rows_its_block_table_reaches(self, row, case):
-        name = "MultiHeadLatentAttentionPagedFwdOp"
+        name = "MLAPagedFwdOp"
         row = {"H": 3, "DK": 12, "PS": 4, "kv_lora_rank": 8, **row}
         (flops, moved), call = _evaluated(name, row, case)
         heads, dk, rank, page, s_q = row["H"], row["DK"], row["kv_lora_rank"], row["PS"], row["S_q"]
@@ -563,7 +563,7 @@ class TestSpecOnlyRecounts:
         )
 
     def test_dsa_paged_scores_each_valid_slot_and_reads_the_rows_they_name(self):
-        name = "DeepSeekSparseAttentionPagedFwdOp"
+        name = "DSAPagedFwdOp"
         row = {"S_q": 2, "H": 2, "K": 4, "NP": 6, "PS": 4, "W": 3, "cache_lens": [5, 10]}
         # Request 0: query 0 selects nothing, query 1 three positions on two pages.
         # Request 1: a repeated slot, then nothing.
@@ -620,7 +620,7 @@ class TestSpecOnlyRecounts:
         assert flops == 2 * 2 * 3 * 2 * 4
 
     def test_mla_kv_cache_write_rotates_and_moves_only_the_tokens_with_a_slot(self):
-        name = "MultiHeadLatentAttentionKVCacheWriteFwdOp"
+        name = "MLAKVCacheWriteFwdOp"
         row = {
             "DC": 6,
             "PE": 4,
@@ -680,7 +680,7 @@ class TestSpecOnlyRecounts:
         assert flops == (7 * 2 * 3 if fp8 else 0)
 
     def test_fused_qk_norm_rope_touches_the_q_and_k_columns_and_the_named_rows(self):
-        name = "FusedQKNormRopeFwdOp"
+        name = "FusedQKNormRoPEFwdOp"
         row = {"D": 8, "P": 16, "R": 4, "num_heads": 3, "num_kv_heads": 1, "seq_lens": [3, 2]}
         (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16", "C": "float32"})
         qk = ((5, 4 * 8), _BF16)  # 5 tokens, 3 q heads and 1 k head of width 8
@@ -725,9 +725,7 @@ class TestSpecOnlyRecounts:
 
     def test_mla_varlen_scores_each_request_under_its_causal_mask(self):
         row = {"T_q": 7, "H": 2, "DN": 4, "PE": 2, "DV": 3, "seq_lens": [3, 4]}
-        (flops, _moved), _call = _evaluated(
-            "MultiHeadLatentAttentionVarlenFwdOp", row, {"T": "bfloat16"}
-        )
+        (flops, _moved), _call = _evaluated("MLAVarlenFwdOp", row, {"T": "bfloat16"})
         scores = sum(i + 1 for n in row["seq_lens"] for i in range(n))
         assert flops == _attention_flops(2, 6, 3, scores, 7)
 
@@ -751,23 +749,23 @@ class TestSpecOnlyRecounts:
 # generated case cannot, which is what the hand-written one supplies.
 HAND_WRITTEN = {
     "AvgPool1dFwdOp": "a stride past the kernel leaves input positions no window reads",
-    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
+    "DSADecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
     "DeltaNetChunkBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
     "MaxPool1dFwdOp": "a dilated or strided window leaves input positions no window reads",
     "MaxPool1dIndicesFwdOp": "a dilated or strided window leaves input positions no window reads",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoEFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoESharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
+    "GQAPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
-    "GroupedQueryAttentionPagedFwdOp": "it reads the rows its page table names, not the pool",
-    "MultiHeadLatentAttentionPagedFwdOp": "it reads the cache rows its block table reaches, not the pool",
-    "DeepSeekSparseAttentionPagedFwdOp": "it reads the cache rows its valid index slots name",
+    "GQAPagedFwdOp": "it reads the rows its page table names, not the pool",
+    "MLAPagedFwdOp": "it reads the cache rows its block table reaches, not the pool",
+    "DSAPagedFwdOp": "it reads the cache rows its valid index slots name",
     "PagedKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
-    "MultiHeadLatentAttentionKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
+    "MLAKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
     "PagedKVCacheGatherFwdOp": "it reads the cache rows each request's range reaches, not the pool",
-    "FusedQKNormRopeFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
+    "FusedQKNormRoPEFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 

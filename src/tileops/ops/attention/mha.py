@@ -5,7 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.attention import (
     GQADecodePagedKernel,
-    MHADecodePagedWsKernel,
+    MHADecodePagedWSKernel,
 )
 from tileops.kernels.attention.call_spec import AttentionCall, MHAPagedDecodeFwdInterface
 from tileops.kernels.kernel_base import Kernel, KernelInterface
@@ -13,11 +13,11 @@ from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
+    "MHADecodePagedWithKVCacheFwdOp",
 ]
 
 
-class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
+class MHADecodePagedWithKVCacheFwdOp(Op):
     """Paged MHA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
 
@@ -29,7 +29,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mha_decode_paged_kernel": GQADecodePagedKernel,
-        "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
+        "mha_decode_paged_ws_kernel": MHADecodePagedWSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "mha_decode_paged": MHAPagedDecodeFwdInterface

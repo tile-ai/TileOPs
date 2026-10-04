@@ -33,19 +33,19 @@ from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
-    "RopeCall",
-    "RopeNeoxFwdInterface",
-    "RopeNeoxKernel",
-    "RopeNeoxPositionIdsCall",
-    "RopeNeoxPositionIdsFwdInterface",
-    "RopeNeoxPositionIdsKernel",
-    "RopeNonNeoxFwdInterface",
-    "RopeNonNeoxKernel",
+    "RoPECall",
+    "RoPENeoxFwdInterface",
+    "RoPENeoxKernel",
+    "RoPENeoxPositionIdsCall",
+    "RoPENeoxPositionIdsFwdInterface",
+    "RoPENeoxPositionIdsKernel",
+    "RoPENonNeoxFwdInterface",
+    "RoPENonNeoxKernel",
 ]
 
 
 @dataclasses.dataclass(frozen=True)
-class RopeCall(CallSpec):
+class RoPECall(CallSpec):
     """One rotation over a tensor the caller also supplies the frequency tables for."""
 
     seq_len: int = 0
@@ -57,7 +57,7 @@ class RopeCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class RopeNeoxPositionIdsCall(CallSpec):
+class RoPENeoxPositionIdsCall(CallSpec):
     """One rotation over packed tokens, each reading the table row its position names."""
 
     num_tokens: int = 0
@@ -68,7 +68,7 @@ class RopeNeoxPositionIdsCall(CallSpec):
     dtype: Optional[torch.dtype] = None
 
 
-class RopeNeoxFwdInterface(KernelInterface):
+class RoPENeoxFwdInterface(KernelInterface):
     """The GPT-NeoX rotation of a tensor by caller-supplied cos/sin tables.
 
     The variants that differ only in how those tables are computed -- standard theta,
@@ -76,7 +76,7 @@ class RopeNeoxFwdInterface(KernelInterface):
     kernel computes from it is the same rotation.
     """
 
-    request = RopeCall
+    request = RoPECall
 
     @abstractmethod
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -101,10 +101,10 @@ class RopeNeoxFwdInterface(KernelInterface):
         """
 
 
-class RopeNonNeoxFwdInterface(KernelInterface):
+class RoPENonNeoxFwdInterface(KernelInterface):
     """The RoFormer adjacent-pair rotation of a tensor by caller-supplied cos/sin tables."""
 
-    request = RopeCall
+    request = RoPECall
 
     @abstractmethod
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -129,10 +129,10 @@ class RopeNonNeoxFwdInterface(KernelInterface):
         """
 
 
-class RopeNeoxPositionIdsFwdInterface(KernelInterface):
+class RoPENeoxPositionIdsFwdInterface(KernelInterface):
     """The GPT-NeoX rotation of packed tokens, each at the position it names."""
 
-    request = RopeNeoxPositionIdsCall
+    request = RoPENeoxPositionIdsCall
 
     @abstractmethod
     def forward(
@@ -496,7 +496,7 @@ def _make_rope_non_neox_2d(
     return kernel
 
 
-class _RopeKernelBase(Kernel):
+class _RoPEKernelBase(Kernel):
     """Base class for all RoPE kernel variants.
 
     The core rotation is performed in the TileLang kernel.
@@ -519,7 +519,7 @@ class _RopeKernelBase(Kernel):
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
     @classmethod
-    def entry_for(cls, call: RopeCall) -> Entry:
+    def entry_for(cls, call: RoPECall) -> Entry:
         return call, lambda: cls(
             call.seq_len,
             call.head_dim,
@@ -648,7 +648,7 @@ class _RopeKernelBase(Kernel):
 # Concrete kernel classes (5 variants)
 
 
-class RopeNeoxKernel(_RopeKernelBase, RopeNeoxFwdInterface):
+class RoPENeoxKernel(_RoPEKernelBase, RoPENeoxFwdInterface):
     """GPT-NeoX style RoPE kernel, for every variant whose tables the op computes.
 
     Rotation: split dimension at midpoint, rotate_half = concat(-x2, x1). The standard,
@@ -660,14 +660,14 @@ class RopeNeoxKernel(_RopeKernelBase, RopeNeoxFwdInterface):
     ROTATION_STYLE = "neox"
 
 
-class RopeNeoxPositionIdsKernel(Kernel, RopeNeoxPositionIdsFwdInterface):
+class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
     """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @classmethod
-    def entry_for(cls, call: RopeNeoxPositionIdsCall) -> Entry:
+    def entry_for(cls, call: RoPENeoxPositionIdsCall) -> Entry:
         return call, lambda: cls(
             num_tokens=call.num_tokens,
             num_heads=call.num_heads,
@@ -763,7 +763,7 @@ class RopeNeoxPositionIdsKernel(Kernel, RopeNeoxPositionIdsFwdInterface):
         return result.reshape(orig_shape)
 
 
-class RopeNonNeoxKernel(_RopeKernelBase, RopeNonNeoxFwdInterface):
+class RoPENonNeoxKernel(_RoPEKernelBase, RoPENonNeoxFwdInterface):
     """Original RoFormer RoPE kernel with adjacent-pair rotation.
 
     Rotation: pairs (x_even, x_odd) -> (-x_odd, x_even).

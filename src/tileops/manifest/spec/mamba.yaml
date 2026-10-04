@@ -201,12 +201,12 @@ SSDRecurrentFwdOp:
     flops: "8 * B * H * P * N"
 
 Mamba2FwdOp:
-  # End-to-end Mamba-2 SSD forward: DaCumsum -> CBProducer -> SSDChunkState ->
+  # End-to-end Mamba-2 SSD forward: SSDChunkCumsum -> SSDChunkCoupling -> SSDChunkState ->
   # SSDStatePassing -> SSDChunkScan. Follows
   # mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined with one
   # deviation: final_states is always returned (chunked prefill consumes the
   # carried state), so the upstream return_final_states switch does not exist.
-  # dt_bias is added to dt in the DaCumsum stage; initial_states seeds the
+  # dt_bias is added to dt in the SSDChunkCumsum stage; initial_states seeds the
   # inter-chunk scan. The batch index is Bsz because B names a tensor.
   family: mamba
   status: implemented
@@ -242,7 +242,7 @@ Mamba2FwdOp:
   - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-dt-bias-init}
   - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: float16}], label: mamba2-1p3b-dt-bias-init}
   roofline:
-    # The sum of the five stages' counts: DaCumsum, CBProducer, SSDChunkState,
+    # The sum of the five stages' counts: SSDChunkCumsum, SSDChunkCoupling, SSDChunkState,
     # SSDStatePassing over the flattened P * N state, SSDChunkScan.
     flops: >-
       (3 + (1 if present(dt_bias) else 0) + (4 if dt_softplus else 0)) * Bsz * S * H
@@ -253,9 +253,9 @@ Mamba2FwdOp:
   composition:
     kind: composite
     stages:
-    - {name: da_cumsum_float16, op: SSDChunkCumsumFwdOp}
-    - {name: da_cumsum_bfloat16, op: SSDChunkCumsumFwdOp}
-    - {name: cb_producer, op: SSDChunkCouplingFwdOp}
+    - {name: ssd_chunk_cumsum_float16, op: SSDChunkCumsumFwdOp}
+    - {name: ssd_chunk_cumsum_bfloat16, op: SSDChunkCumsumFwdOp}
+    - {name: ssd_chunk_coupling, op: SSDChunkCouplingFwdOp}
     - {name: chunk_state, op: SSDChunkStateFwdOp}
     - {name: state_passing, op: SSDStatePassingFwdOp}
     - {name: chunk_scan, op: SSDChunkScanFwdOp}

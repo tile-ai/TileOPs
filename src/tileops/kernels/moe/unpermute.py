@@ -21,7 +21,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
 from tileops.utils import get_sm_count
 
-__all__ = ["MoeUnpermuteKernel"]
+__all__ = ["MoEUnpermuteKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -76,7 +76,7 @@ def _make_unpermute_kernel(
     return _unpermute
 
 
-class MoeUnpermuteKernel(Kernel, PostPermuteFwdInterface):
+class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     """Weighted inverse-permute kernel for staged PostPermute.
 
     Restores token order from staged inverse indices and applies weighted
@@ -95,7 +95,7 @@ class MoeUnpermuteKernel(Kernel, PostPermuteFwdInterface):
 
     Example:
         ```python linenums="1"
-        kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, materialized_rows=8)
+        kernel = MoEUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, materialized_rows=8)
         output = kernel(expert_output, inverse_indices, topk_weights)
         ```
     """

@@ -105,12 +105,12 @@ repos:
         files: ^src/tileops/.*\.py$
 
       - id: op-naming-lint
-        name: manifest op name lint
+        name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
         language: python
         additional_dependencies: [pyyaml]
         pass_filenames: false
-        files: ^src/tileops/manifest/spec/.*\.yaml$
+        files: ^(src/tileops/manifest/spec/.*\.yaml|src/tileops/.*\.py|workloads/.*\.py)$
 
       - id: manifest-spec-layout
         name: manifest spec layout

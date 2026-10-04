@@ -1,13 +1,13 @@
 """MHA attention kernel implementations."""
 
 from tileops.kernels.attention.mha.bwd_ws import (
-    MHABwdWsKernel,
+    MHABwdWSKernel,
 )
 from tileops.kernels.attention.mha.decode_paged_ws import (
-    MHADecodePagedWsKernel,
+    MHADecodePagedWSKernel,
 )
 
 __all__ = [
-    "MHABwdWsKernel",
-    "MHADecodePagedWsKernel",
+    "MHABwdWSKernel",
+    "MHADecodePagedWSKernel",
 ]

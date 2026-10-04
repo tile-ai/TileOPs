@@ -1272,7 +1272,7 @@ def test_sub_rejects_bool_dtype() -> None:
         op(x, x)
 
 
-class FullUnionFp8RejectFixture(FixtureBase):
+class FullUnionFP8RejectFixture(FixtureBase):
     PARAMS = [
         (
             "op_cls, dtype",
@@ -1287,7 +1287,7 @@ class FullUnionFp8RejectFixture(FixtureBase):
     ]
 
 
-@FullUnionFp8RejectFixture
+@FullUnionFP8RejectFixture
 def test_full_union_binary_ops_reject_fp8_dtype(
     op_cls,
     dtype: torch.dtype,

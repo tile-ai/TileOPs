@@ -32,7 +32,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
 
-__all__ = ["MoePermuteAlignKernel"]
+__all__ = ["MoEPermuteAlignKernel"]
 
 _THREADS = 1024
 _SCATTER_THREADS = 256
@@ -304,7 +304,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     return _small
 
 
-class MoePermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
+class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     """MoE token permutation and alignment kernel.
 
     Converts ``topk_ids`` into the three index arrays required by MoE grouped GEMM.
@@ -325,7 +325,7 @@ class MoePermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
 
     Example:
         ```python linenums="1"
-        kernel = MoePermuteAlignKernel(numel=32, num_experts=8, block_size=16)
+        kernel = MoEPermuteAlignKernel(numel=32, num_experts=8, block_size=16)
         sorted_ids, expert_ids, num_post_pad = kernel(topk_ids)
         ```
     """

@@ -6,10 +6,10 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
-    "GroupedQueryAttentionDenseDecodeCall",
-    "GroupedQueryAttentionDenseDecodeWorkload",
-    "GroupedQueryAttentionDensePrefillCall",
-    "GroupedQueryAttentionDensePrefillWorkload",
+    "GQADenseDecodeCall",
+    "GQADenseDecodeWorkload",
+    "GQADensePrefillCall",
+    "GQADensePrefillWorkload",
     "dense_gqa_ref",
 ]
 
@@ -60,7 +60,7 @@ def dense_gqa_ref(
     return output.transpose(1, 2).to(q.dtype).contiguous()
 
 
-class GroupedQueryAttentionDenseDecodeWorkload(WorkloadBase):
+class GQADenseDecodeWorkload(WorkloadBase):
     """Single-token decode over a contiguous BSHD KV cache."""
 
     def __init__(
@@ -111,7 +111,7 @@ class GroupedQueryAttentionDenseDecodeWorkload(WorkloadBase):
         return dense_gqa_verification(inputs[0].dtype)
 
 
-class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
+class GQADensePrefillWorkload(WorkloadBase):
     """Dense prefill over contiguous BSHD tensors, with the op's optional inputs.
 
     An FP8 ``dtype`` adds the per-KV-head scales and needs a 16-bit
@@ -240,13 +240,13 @@ class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
         return dense_gqa_verification(inputs[0].dtype)
 
 
-class GroupedQueryAttentionDenseDecodeCall(CallWorkload, GroupedQueryAttentionDenseDecodeWorkload):
-    """A manifest call of GroupedQueryAttentionDenseFwdOp with one query token."""
+class GQADenseDecodeCall(CallWorkload, GQADenseDecodeWorkload):
+    """A manifest call of GQADenseFwdOp with one query token."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix = call.ix
-        GroupedQueryAttentionDenseDecodeWorkload.__init__(
+        GQADenseDecodeWorkload.__init__(
             self,
             ix["B"],
             ix["H"],
@@ -258,13 +258,11 @@ class GroupedQueryAttentionDenseDecodeCall(CallWorkload, GroupedQueryAttentionDe
             softcap=call.params["softcap"],
         )
 
-    gen_inputs = GroupedQueryAttentionDenseDecodeWorkload.gen_inputs
+    gen_inputs = GQADenseDecodeWorkload.gen_inputs
 
 
-class GroupedQueryAttentionDensePrefillCall(
-    CallWorkload, GroupedQueryAttentionDensePrefillWorkload
-):
-    """A manifest call of GroupedQueryAttentionDenseFwdOp passing FP8 scales or RoPE tables.
+class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
+    """A manifest call of GQADenseFwdOp passing FP8 scales or RoPE tables.
 
     FP8 values stay inside the format's range and the scales near one; the tables are
     rotations.
@@ -275,7 +273,7 @@ class GroupedQueryAttentionDensePrefillCall(
         ix, params = call.ix, call.params
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
-        GroupedQueryAttentionDensePrefillWorkload.__init__(
+        GQADensePrefillWorkload.__init__(
             self,
             ix["B"],
             ix["S_q"],
@@ -292,7 +290,7 @@ class GroupedQueryAttentionDensePrefillCall(
             rope_layout=params["rope_layout"],
         )
 
-    gen_inputs = GroupedQueryAttentionDensePrefillWorkload.gen_inputs
+    gen_inputs = GQADensePrefillWorkload.gen_inputs
 
 
 def dense_gqa_verification(dtype):

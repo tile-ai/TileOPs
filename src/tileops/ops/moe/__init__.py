@@ -9,7 +9,7 @@ from tileops.ops.moe.abc import (
     WeightedReduceNoOp,
 )
 from tileops.ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, RoutingEpilogueSpec
-from tileops.ops.moe.fused_moe import FusedMoe, FusedMoEFwdOp
+from tileops.ops.moe.fused_moe import FusedMoE, FusedMoEFwdOp
 from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKFwdOp
 from tileops.ops.moe.permute_align import MoEPermuteAlignFwdOp
@@ -25,13 +25,13 @@ from tileops.ops.moe.staged import (
 
 __all__ = [
     "ContiguousLayoutSpec",
+    "FusedMoE",
     "FusedMoEExperts",
     "FusedMoEExpertsFwdOp",
     "FusedMoEExpertsModular",
     "FusedMoEFwdOp",
     "FusedMoEPrepareAndFinalize",
     "FusedMoESharedExpertFwdOp",
-    "FusedMoe",
     "FusedTopKFwdOp",
     "IndexedExpertMLPFwdOp",
     "MaskedLayoutSpec",

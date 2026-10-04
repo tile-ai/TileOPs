@@ -1,6 +1,6 @@
 # Rotary position embedding (RoPE) operators, exported by the `rope` module.
 
-RopeFwdOp:
+RoPEFwdOp:
   # `neox` rotates the two halves of a head against each other, `interleaved` rotates each
   # adjacent pair. The frequency table is the same, so only the pairing differs.
   family: rope
@@ -9,7 +9,7 @@ RopeFwdOp:
 
   signature:
     types:
-      RopeX:
+      RoPEX:
         params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
         match: input_layout
         cases:
@@ -21,9 +21,9 @@ RopeFwdOp:
       input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
     inputs:
-      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
@@ -40,14 +40,14 @@ RopeFwdOp:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
     flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
-RopeLlama31FwdOp:
+RoPELlama31FwdOp:
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.llama3_rope.Llama3RotaryEmbedding
 
   signature:
     types:
-      RopeX:
+      RoPEX:
         params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
         match: input_layout
         cases:
@@ -62,9 +62,9 @@ RopeLlama31FwdOp:
       high_freq_factor: {type: float, default: 4.0}
       original_max_position: {type: int, default: 8192}
     inputs:
-      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
@@ -81,14 +81,14 @@ RopeLlama31FwdOp:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
     flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
-RopeYarnFwdOp:
+YaRNFwdOp:
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope.YaRNScalingRotaryEmbedding
 
   signature:
     types:
-      RopeX:
+      RoPEX:
         params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
         match: input_layout
         cases:
@@ -104,9 +104,9 @@ RopeYarnFwdOp:
       beta_slow: {type: float, default: 1.0}
       attn_factor: {type: float, default: 1.0}
     inputs:
-      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     # The correction range divides by log(base) and takes log(original_max_position / beta).
@@ -122,14 +122,14 @@ RopeYarnFwdOp:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
     flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
-RopeLongRopeFwdOp:
+LongRoPEFwdOp:
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.phi3_long_rope_scaled_rope.Phi3LongRoPEScaledRotaryEmbedding
 
   signature:
     types:
-      RopeX:
+      RoPEX:
         params: {input_layout: "'1d' | '2d'", B: Dim, S: Dim, H: Dim, D: Dim}
         match: input_layout
         cases:
@@ -143,9 +143,9 @@ RopeLongRopeFwdOp:
       max_position_embeddings: {type: int, default: 4096}
       original_max_position_embeddings: {type: int, default: 4096}
     inputs:
-      x: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      x: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     outputs:
-      output: {dtype: T, shape: "RopeX[input_layout, B, S, H, D]"}
+      output: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
@@ -163,7 +163,7 @@ RopeLongRopeFwdOp:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
     flops: "3 * (B * S * H * D if input_layout == '2d' else S * D)"
 
-RopeNeoxPositionIdsFwdOp:
+RoPENeoxPositionIdsFwdOp:
   # Packed [tokens, heads, head_dim] input with one position per token; the first
   # `rotary_dim` columns rotate and the rest are copied.
   family: rope

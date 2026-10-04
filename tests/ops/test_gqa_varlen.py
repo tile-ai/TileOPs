@@ -5,16 +5,16 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
-from tileops.ops import GroupedQueryAttentionVarlenFwdOp
+from tileops.ops import GQAVarlenFwdOp
 from tileops.perf.formulas import visible_scores
-from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdWorkload
+from workloads.attention.gqa.varlen import GQAVarlenFwdWorkload
 
 
-class GroupedQueryAttentionVarlenFwdTest(GroupedQueryAttentionVarlenFwdWorkload, TestBase):
+class GQAVarlenFwdTest(GQAVarlenFwdWorkload, TestBase):
     pass
 
 
-class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
+class GQAVarlenFwdFixture(FixtureBase):
     # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
     #              is_causal, wl, wr, dtype, tune)
     PARAMS = [
@@ -287,7 +287,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
     ]
 
 
-@GroupedQueryAttentionVarlenFwdFixture
+@GQAVarlenFwdFixture
 def test_gqa_varlen_fwd_op(
     batch: int,
     seqlens_q: list[int],
@@ -301,10 +301,10 @@ def test_gqa_varlen_fwd_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
-    op = GroupedQueryAttentionVarlenFwdOp(
+    op = GQAVarlenFwdOp(
         is_causal=is_causal,
         window_size_left=wl,
         window_size_right=wr,
@@ -314,17 +314,15 @@ def test_gqa_varlen_fwd_op(
 
 @pytest.mark.smoke
 def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
-    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    op = GQAVarlenFwdOp(is_causal=True)
     for q_lens, kv_lens in (([31, 65], [63, 129]), ([127, 3], [255, 7])):
-        test = GroupedQueryAttentionVarlenFwdTest(
-            2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
-        )
+        test = GQAVarlenFwdTest(2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16)
         test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_varlen_regular_forwards_scale_and_softcap() -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         2,
         [65, 127],
         [129, 255],
@@ -338,7 +336,7 @@ def test_varlen_regular_forwards_scale_and_softcap() -> None:
         sm_scale=0.125,
         softcap=5.0,
     )
-    op = GroupedQueryAttentionVarlenFwdOp(
+    op = GQAVarlenFwdOp(
         is_causal=True,
         sm_scale=0.125,
         softcap=5.0,
@@ -354,10 +352,8 @@ def test_varlen_regular_forwards_scale_and_softcap() -> None:
 def test_varlen_handles_empty_requests_and_per_request_kv(
     q_lens: list[int], kv_lens: list[int]
 ) -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
-        2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
-    )
-    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    test = GQAVarlenFwdTest(2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16)
+    op = GQAVarlenFwdOp(is_causal=True)
     test.check(op, *test.gen_inputs())
 
 
@@ -376,7 +372,7 @@ def test_general_kernel_serves_sliding_windows(
 ) -> None:
     """The general kernel's window bounds, built directly: on SM90 the op hands windowed
     calls to the sliding-window kernel instead."""
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         len(q_lens), q_lens, kv_lens, 8, 2, 64, is_causal, wl, wr, torch.float16
     )
     kernel = GQAPrefillVarlenFwdKernel(
@@ -389,7 +385,7 @@ def test_general_kernel_serves_sliding_windows(
         window_size_left=wl,
         window_size_right=wr,
     )
-    test.check(GroupedQueryAttentionVarlenFwdOp(), *test.gen_inputs(), runs=kernel)
+    test.check(GQAVarlenFwdOp(), *test.gen_inputs(), runs=kernel)
 
 
 @pytest.mark.smoke
@@ -424,10 +420,10 @@ def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
     q_lens: list[int], kv_lens: list[int], is_causal: bool, scores: dict, kernel: str, dim: int
 ) -> None:
     """Partial tiles, q_len > kv_len, and empty requests on the warp-specialized kernel."""
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         len(q_lens), q_lens, kv_lens, 8, 2, dim, is_causal, -1, -1, torch.float16, **scores
     )
-    op = GroupedQueryAttentionVarlenFwdOp(is_causal=is_causal, **scores)
+    op = GQAVarlenFwdOp(is_causal=is_causal, **scores)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     if served_in_tree(op):
@@ -438,10 +434,8 @@ def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
 @pytest.mark.sm90
 def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     """More work items than SMs; a later call must see the counter the first one reset."""
-    test = GroupedQueryAttentionVarlenFwdTest(
-        1, [1152], [1152], 16, 8, 128, True, -1, -1, torch.bfloat16
-    )
-    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    test = GQAVarlenFwdTest(1, [1152], [1152], 16, 8, 128, True, -1, -1, torch.bfloat16)
+    op = GQAVarlenFwdOp(is_causal=True)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     first = op(*inputs)
@@ -469,11 +463,11 @@ def test_varlen_rope_rotates_at_per_request_positions(
     window_size_left: int,
 ) -> None:
     """Query token i of a request sits at kv_len - q_len + i, key token j at j."""
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         len(q_lens), q_lens, kv_lens, 8, 2, dim, True, window_size_left, -1, torch.float16,
         pos_encoding_mode="rope", rotary_dim=rotary_dim, rope_layout=rope_layout,
     )  # fmt: skip
-    op = GroupedQueryAttentionVarlenFwdOp(
+    op = GQAVarlenFwdOp(
         is_causal=True,
         window_size_left=window_size_left,
         pos_encoding_mode="rope",
@@ -498,13 +492,11 @@ def test_varlen_rope_selects_the_kernel_of_its_region(
     dim: int, window_size_left: int, kernel: str
 ) -> None:
     """A fused-RoPE call is served, and by the implementation whose region holds it."""
-    test = GroupedQueryAttentionVarlenFwdTest(
+    test = GQAVarlenFwdTest(
         2, [128, 64], [128, 64], 8, 2, dim, True, window_size_left, -1, torch.float16,
         pos_encoding_mode="rope",
     )  # fmt: skip
-    op = GroupedQueryAttentionVarlenFwdOp(
-        is_causal=True, window_size_left=window_size_left, pos_encoding_mode="rope"
-    )
+    op = GQAVarlenFwdOp(is_causal=True, window_size_left=window_size_left, pos_encoding_mode="rope")
     inputs = test.gen_inputs()
     if served_in_tree(op):
         assert type(op._get_kernel(inputs)).__name__ == kernel
@@ -512,11 +504,9 @@ def test_varlen_rope_selects_the_kernel_of_its_region(
 
 @pytest.mark.smoke
 def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
-        2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
-    )
+    test = GQAVarlenFwdTest(2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16)
     q, k, v, cu_q, cu_kv = test.gen_inputs()
-    checked = GroupedQueryAttentionVarlenFwdOp(is_causal=True, validate_inputs=True)
+    checked = GQAVarlenFwdOp(is_causal=True, validate_inputs=True)
     with pytest.raises(ValueError, match=r"cu_seqlens_q\[-1\] must equal"):
         checked(q[:-1], k, v, cu_q, cu_kv)
     with pytest.raises(ValueError, match=r"cu_seqlens_kv\[-1\] must equal"):

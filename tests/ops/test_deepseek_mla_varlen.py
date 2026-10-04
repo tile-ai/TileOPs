@@ -8,8 +8,8 @@ from tileops.kernels.attention import (
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
-from tileops.ops import MultiHeadLatentAttentionVarlenFwdOp
-from workloads.attention.mla import MlaVarlenWorkload, mla_varlen_inputs
+from tileops.ops import MLAVarlenFwdOp
+from workloads.attention.mla import MLAVarlenWorkload, mla_varlen_inputs
 from workloads.numerics import compare_outputs
 
 
@@ -27,7 +27,7 @@ def test_mla_varlen_default_config_is_owned_by_each_kernel() -> None:
     assert MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape) == expected
 
 
-class MlaVarlenFwdFixture(FixtureBase):
+class MLAVarlenFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -120,14 +120,14 @@ class MlaVarlenFwdFixture(FixtureBase):
         ]
 
 
-@MlaVarlenFwdFixture
+@MLAVarlenFwdFixture
 def test_mla_varlen_fwd_op(
     seq_lens, heads, dim_nope, dim_pe, dim_v, is_causal, sm_scale, dtype
 ) -> None:
-    workload = MlaVarlenWorkload(
+    workload = MLAVarlenWorkload(
         seq_lens, heads, dim_nope, dim_pe, dim_v, dtype, is_causal, sm_scale
     )
-    op = MultiHeadLatentAttentionVarlenFwdOp(is_causal=is_causal, sm_scale=sm_scale)
+    op = MLAVarlenFwdOp(is_causal=is_causal, sm_scale=sm_scale)
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
@@ -142,10 +142,10 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
     """
     torch.manual_seed(0)
     q, k_nope, k_pe, v, cu_seqlens = mla_varlen_inputs([512], 4, 128, 64, 128, torch.float16)
-    op = MultiHeadLatentAttentionVarlenFwdOp(is_causal=True)
+    op = MLAVarlenFwdOp(is_causal=True)
     out, lse = op(q, k_nope, k_pe, v, cu_seqlens)
 
-    workload = MlaVarlenWorkload([512], 4, 128, 64, 128, torch.float16)
+    workload = MLAVarlenWorkload([512], 4, 128, 64, 128, torch.float16)
     inputs = (q, k_nope, k_pe, v, cu_seqlens)
     compare_outputs((out, lse), workload.ref_program(*inputs), workload.verification(*inputs))
     assert out.dtype == q.dtype
@@ -182,7 +182,5 @@ def test_each_implementation_matches_the_reference(kernel_cls, seq_lens) -> None
         is_causal=True,
         dtype=torch.bfloat16,
     )
-    workload = MlaVarlenWorkload(seq_lens, 4, 128, 64, 128, torch.bfloat16)
-    TestBase.check(
-        workload, MultiHeadLatentAttentionVarlenFwdOp(is_causal=True), *inputs, runs=kernel.forward
-    )
+    workload = MLAVarlenWorkload(seq_lens, 4, 128, 64, 128, torch.bfloat16)
+    TestBase.check(workload, MLAVarlenFwdOp(is_causal=True), *inputs, runs=kernel.forward)

@@ -338,7 +338,7 @@ InstanceNormFwdOp:
     # running statistics: normalize (2). One more per present affine tensor.
     flops: "((5 if use_input_stats else 2) + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
 
-FusedQKNormRopeFwdOp:
+FusedQKNormRoPEFwdOp:
   # In place on a packed projection qkv = [q heads | k heads | v heads] of width D each:
   # RMSNorm over each q head (q_weight) and each k head (k_weight), then RoPE at
   # positions[n] on the first R columns of each q and k head, from cos_sin_cache (cos ‖ sin

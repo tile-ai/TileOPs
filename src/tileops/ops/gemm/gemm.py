@@ -7,17 +7,17 @@ from tileops.backend import Target
 from tileops.kernels.gemm import (
     GemmCall,
     GemmCpAsyncKernel,
-    GemmFp8BlockScaleKernel,
-    GemmFp8Call,
-    GemmFp8FwdInterface,
-    GemmFp8TensorScaleKernel,
-    GemmFp81D2DFwdKernel,
+    GemmFP8BlockScaleKernel,
+    GemmFP8Call,
+    GemmFP8FwdInterface,
+    GemmFP8TensorScaleKernel,
+    GemmFP81D2DFwdKernel,
     GemmFwdInterface,
-    GemmTmaKernel,
+    GemmTMAKernel,
     GemmW4A16Call,
     GemmW4A16FwdInterface,
     GemmW4A16Kernel,
-    GemmW4A16MmaKernel,
+    GemmW4A16MMAKernel,
     GemvKernel,
     W4A16RepackCall,
     W4A16RepackFwdInterface,
@@ -48,7 +48,7 @@ class GemmFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_tma": GemmTmaKernel,
+        "gemm_tma": GemmTMAKernel,
         "gemm_cp_async": GemmCpAsyncKernel,
         "gemv": GemvKernel,
     }
@@ -134,11 +134,11 @@ class GemmFP8FwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_fp8_tensor_scale": GemmFp8TensorScaleKernel,
-        "gemm_fp8_block_scale": GemmFp8BlockScaleKernel,
-        "gemm_fp8_1d2d": GemmFp81D2DFwdKernel,
+        "gemm_fp8_tensor_scale": GemmFP8TensorScaleKernel,
+        "gemm_fp8_block_scale": GemmFP8BlockScaleKernel,
+        "gemm_fp8_1d2d": GemmFP81D2DFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GemmFp8FwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GemmFP8FwdInterface}
 
     def __init__(
         self,
@@ -209,7 +209,7 @@ class GemmFP8FwdOp(Op):
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
-        call = GemmFp8Call(
+        call = GemmFP8Call(
             m=m,
             n=n,
             k=k,
@@ -243,7 +243,7 @@ class GemmW4A16FwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_w4a16": GemmW4A16Kernel,
-        "gemm_w4a16_mma": GemmW4A16MmaKernel,
+        "gemm_w4a16_mma": GemmW4A16MMAKernel,
         "w4a16_repack": W4A16RepackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
