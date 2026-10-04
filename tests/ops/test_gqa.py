@@ -8,6 +8,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
+    FlashAttnBwdPreprocessKernel,
     GQABwdMmaKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
@@ -994,3 +995,18 @@ def test_gqa_bwd_mma_head_dim_256(heads_kv: int) -> None:
     test = GroupedQueryAttentionBwdTest(1, 8, heads_kv, 512, 256, True, torch.float16)
     op = GroupedQueryAttentionBwdOp(True)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-3)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("dim", [80, 96])
+def test_gqa_bwd_preprocess_sums_rows_of_any_head_dim(dim: int) -> None:
+    """At head dims that are not powers of two, delta is each row's sum of o * do and the dQ
+    accumulator starts at zero; 100 rows end part way through a block."""
+    o, do = (
+        torch.randn(2, 100, 4, dim, device=run_device(), dtype=torch.float16) for _ in range(2)
+    )
+    delta, dq_accum = FlashAttnBwdPreprocessKernel(2, 4, 100, dim, torch.float16)(o, do)
+    expected = (o.float() * do.float()).sum(-1).transpose(1, 2)
+    torch.testing.assert_close(delta, expected, atol=1e-4, rtol=1e-4)
+    assert not dq_accum.any()
