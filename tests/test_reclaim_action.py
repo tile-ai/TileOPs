@@ -362,16 +362,14 @@ def test_every_native_source_forces_gpu_smoke() -> None:
     arms = re.findall(r"^\s*(src/tileops/csrc[^)\n]*)\)\s*$", _policy_script(), re.M)
     assert len(arms) == 1, f"expected one src/tileops/csrc case arm, found {arms}"
 
-    tracked = subprocess.run(
-        ["git", "ls-files", "src/tileops/csrc"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert tracked, "expected tracked files under src/tileops/csrc"
+    # Read off the tree, not `git ls-files`: a test that needs a repository
+    # cannot run from an installed package or an exported source archive, and
+    # the question is which files exist, which the directory answers.
+    root = REPO_ROOT / "src" / "tileops" / "csrc"
+    sources = sorted(str(p.relative_to(REPO_ROOT)) for p in root.rglob("*") if p.is_file())
+    assert sources, "expected native sources under src/tileops/csrc"
 
-    ungated = [f for f in tracked if not _case_matches(arms[0], f)]
+    ungated = [f for f in sources if not _case_matches(arms[0], f)]
     assert not ungated, f"case arm '{arms[0]}' misses these native sources: {ungated}"
 
 

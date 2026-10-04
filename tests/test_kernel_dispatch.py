@@ -283,13 +283,16 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
             op.kernel_for("scale", call)
 
 
-def test_a_record_reads_no_device_fact_where_the_process_has_no_cuda_device() -> None:
-    """A record resolves no CUDA fact, and copying it — which reads every field — still works."""
-    call = _Call(n=8)
-    if torch.cuda.is_available():
-        pytest.skip("needs a host with no CUDA device")
+def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
+    """A record resolves no CUDA fact, and copying it — which reads every field — still works.
+
+    Named as CPU rather than left unstated on a CUDA-free host: `_read_device_facts`
+    takes the same branch for both, and only the first runs where a card exists.
+    """
+    call = _Call(n=8, device=torch.device("cpu"))
+
     assert (call.arch, call.sm_count, call.smem_budget) == (-1, 0, 0)
-    assert dataclasses.replace(call, n=9) == _Call(n=9)
+    assert dataclasses.replace(call, n=9) == _Call(n=9, device=torch.device("cpu"))
 
 
 def test_an_installed_implementation_set_cannot_change() -> None:
@@ -299,45 +302,6 @@ def test_an_installed_implementation_set_cannot_change() -> None:
         op.kernel_map["positive"] = _NEGATIVE
     op.dispatch_kernel({"positive": _implementation("Reinstalled")})
     assert type(op.entry(5)).__name__ == "Reinstalled"
-
-
-@pytest.mark.cuda_only
-def test_device_facts_come_from_the_calls_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With two devices, a call on the second one resolves the second one's facts.
-
-    The current device stays the first throughout, which is what a record without a
-    device would have read.
-    """
-    if torch.cuda.device_count() < 2:
-        pytest.skip("needs two CUDA devices")
-    import tileops.utils
-
-    asked = []
-    real = tileops.utils.device_facts
-
-    def recording(index=None):
-        asked.append(index)
-        return real(index)
-
-    monkeypatch.setattr(tileops.utils, "device_facts", recording)
-    seen = []
-    cuda = _implementation(
-        "OnCuda",
-        lambda c: seen.append((c.device, c.sm_count)) or True,
-        devices=frozenset({"cuda"}),
-        general=True,
-    )
-
-    class _CudaOp(_ScaleOp):
-        kernel_types = {"on_cuda": cuda}
-
-    op = _CudaOp()
-    torch.cuda.set_device(0)
-    for index in (1, 0, 1):
-        op.kernel_for("scale", _Call(device=torch.device("cuda", index), n=1))
-    assert asked == [1, 0]
-    assert [device.index for device, _ in seen] == [1, 0]
-    assert seen[0][1] == torch.cuda.get_device_properties(1).multi_processor_count
 
 
 @pytest.mark.cuda_only

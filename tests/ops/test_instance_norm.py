@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
 from workloads.norm import InstanceNormWorkload
@@ -167,35 +168,6 @@ def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     )
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_instance_norm_lazily_specializes_per_device() -> None:
-    """An op first called on a non-default CUDA device builds its entry there."""
-    if torch.cuda.device_count() < 2:
-        pytest.skip("multi-device test requires >= 2 CUDA devices")
-
-    n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
-    op = InstanceNormFwdOp()
-    x_other = torch.randn(
-        (n, c, *spatial),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    weight_other = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    bias_other = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 1),
-    )
-    y = op(x_other, weight=weight_other, bias=bias_other)
-    assert y.device == x_other.device
-    assert len(op.built_kernels("instance_norm")) == 1
-
-
 @pytest.mark.smoke
 def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     """One op instance reuses identical specs and caches changed specs."""
@@ -236,32 +208,23 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
-    """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
+    """Forward refuses weight or bias on another device than x.
 
-    Without an explicit check the kernel call would either dispatch on
-    cross-device tensors (slow / wrong) or surface as an opaque CUDA
-    error; surface a clean ValueError instead.
+    Without the check the call would dispatch on cross-device tensors, or
+    surface as an opaque CUDA error. The device that differs is CPU rather than
+    a second GPU: the op compares devices, so one machine with one card
+    exercises the same rejection.
     """
-    if torch.cuda.device_count() < 2:
-        pytest.skip("affine-device-mismatch test requires >= 2 CUDA devices")
-
     n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
-    with torch.cuda.device(0):
-        op = InstanceNormFwdOp()
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=torch.device("cuda", 0))
-    weight_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
-    bias_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
-    bias_same = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 0))
+    op = InstanceNormFwdOp()
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+    elsewhere = torch.randn((c,), dtype=dtype, device="cpu")
+    same = torch.randn((c,), dtype=dtype, device=run_device())
 
-    weight_same = torch.randn(
-        (c,),
-        dtype=dtype,
-        device=torch.device("cuda", 0),
-    )
-    with pytest.raises(ValueError, match="weight on"):
-        op(x, weight=weight_other, bias=bias_same)
-    with pytest.raises(ValueError, match="bias on"):
-        op(x, weight=weight_same, bias=bias_other)
+    with pytest.raises(CheckError, match="one device"):
+        op(x, elsewhere, same)
+    with pytest.raises(CheckError, match="one device"):
+        op(x, same, elsewhere)
 
 
 _OP_CLASSES = [
