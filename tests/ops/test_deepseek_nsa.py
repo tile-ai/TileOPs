@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
@@ -145,6 +145,10 @@ class NsaCmpFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.smoke,
                 ),
+                # BF16 MMA requires FP32 accumulation.
+                pytest.param(
+                    1, 65, 16, 64, 64, 16, 0.125, 32, torch.bfloat16, False, marks=pytest.mark.smoke
+                ),
             ],
         ),
     ]
@@ -169,7 +173,10 @@ def test_nsa_cmp_fwd_varlen_op(
     inputs = test.gen_inputs()
 
     op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
-    test.check(op, *inputs, atol=4e-3, rtol=1e-5)
+    tolerance = (
+        standard_tolerance(dtype) if dtype == torch.bfloat16 else {"atol": 4e-3, "rtol": 1e-5}
+    )
+    test.check(op, *inputs, **tolerance)
 
 
 class NsaTopkTest(NsaTopkWorkload, TestBase):
