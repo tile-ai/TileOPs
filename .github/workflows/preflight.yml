@@ -238,10 +238,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install TileOPs and validator dependencies
-        run: pip install -e . flash-linear-attention -c constraints.txt
+        run: pip install -e . -c constraints.txt
 
       - name: Validate ops manifest
-        run: python scripts/validate_manifest.py
+        run: python scripts/validate_manifest.py --levels schema,signature,bench
 
   actionlint:
     needs: [validate-pr-title, ci-gate]

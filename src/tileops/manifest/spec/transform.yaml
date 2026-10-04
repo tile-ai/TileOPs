@@ -8,6 +8,7 @@ HadamardTransformFwdOp:
   # `base_order` times a power of two.
   family: transform
   status: spec-only
+  ref_api: fast_hadamard_transform.hadamard_transform
   signature:
     forall: {B: Shape, n: Dim, T: "DType[float16 | bfloat16]"}
     params:

@@ -3,6 +3,7 @@
 FP8LightningIndexerFwdOp:
   family: attention
   status: implemented
+  ref_api: deep_gemm.fp8_mqa_logits  # gitleaks:allow (public API path)
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, H: Dim, G: Dim, D: Dim, first: Dim, T: "DType[bfloat16 | float8_e4m3fn]", seq_lens: "Seq[Int]"}
     params:
@@ -49,6 +50,7 @@ TopKSelectFwdOp:
   # rest with S_kv, which selects nothing.
   family: attention
   status: implemented
+  ref_api: flashinfer.top_k
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:

@@ -7,6 +7,7 @@
 FP8QuantFwdOp:
   family: quantization
   status: implemented
+  ref_api: vllm.model_executor.layers.quantization.utils.fp8_utils.per_token_group_quant_fp8
 
   signature:
     forall: {batch: Dim, seq_len_kv: Dim, kv_group: Dim, index_dim: Dim, T: "DType[float16 | bfloat16 | float32]"}
@@ -31,6 +32,7 @@ FP8QuantFwdOp:
 INT8QuantPerTensorFwdOp:
   family: quantization
   status: implemented
+  ref_api: vllm._custom_ops.scaled_int8_quant
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -55,6 +57,7 @@ INT8QuantPerTensorFwdOp:
 INT8QuantPerChannelFwdOp:
   family: quantization
   status: implemented
+  ref_api: vllm.model_executor.layers.quantization.utils.int8_utils.per_token_quant_int8
   signature:
     forall: {N: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -79,6 +82,7 @@ INT8QuantPerChannelFwdOp:
 INT8QuantPerBlockFwdOp:
   family: quantization
   status: implemented
+  ref_api: vllm.model_executor.layers.quantization.utils.int8_utils.per_token_group_quant_int8
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -104,6 +108,7 @@ INT4QuantPerGroupFwdOp:
   # Constant groups use multiplier 1; params stores [1/multiplier, (hi+lo)/2].
   family: quantization
   status: implemented
+  ref_api: deepspeed.ops.quantizer.quantizer_op.quantize
   signature:
     forall: {N: Dim, K: Dim, T: "DType[float16]"}
     params:
@@ -230,6 +235,7 @@ FP8QuantPerBlockFwdOp:
   # dequantization multiplier stored as weight_scale_inv. Edge tiles may be partial.
   family: quantization
   status: implemented
+  ref_api: vllm.utils.deep_gemm.per_block_cast_to_fp8
   signature:
     forall: {N: Dim, K: Dim, T: "DType[bfloat16 | float16 | float32]"}
     inputs:

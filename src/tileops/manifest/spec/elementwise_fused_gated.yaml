@@ -13,6 +13,7 @@ SiluAndMulFwdOp:
   # the last dim, x.shape == (M, 2*N). No single torch.* symbol.
   family: elementwise
   status: implemented
+  ref_api: flashinfer.activation.silu_and_mul
 
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
@@ -38,6 +39,7 @@ GeluAndMulFwdOp:
   # (erf-based). No single torch.* symbol.
   family: elementwise
   status: implemented
+  ref_api: flashinfer.activation.gelu_and_mul
 
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
@@ -62,6 +64,7 @@ GeluTanhAndMulFwdOp:
   # GELU approximation. No single torch.* symbol.
   family: elementwise
   status: implemented
+  ref_api: flashinfer.activation.gelu_tanh_and_mul
 
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}

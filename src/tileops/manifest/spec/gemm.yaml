@@ -126,6 +126,7 @@ GemmFP8FwdOp:
 GemmW4A16FwdOp:
   family: gemm
   status: implemented
+  ref_api: vllm.model_executor.layers.quantization.utils.marlin_utils.apply_gptq_marlin_linear
 
   signature:
     forall: {M: Dim, N: Dim, K: Dim, T: "DType[float16]"}
@@ -178,6 +179,7 @@ GemmW4A16FwdOp:
 GroupedGemmFwdOp:
   family: gemm
   status: implemented
+  ref_api: flashinfer.gemm.SegmentGEMMWrapper.run
 
   signature:
     # G groups packed along M rows. Without transpose_a each group multiplies its rows of a by
@@ -233,6 +235,7 @@ GroupedGemmFwdOp:
 GemmINT8W8A8FwdOp:
   family: gemm
   status: spec-only
+  ref_api: vllm._custom_ops.cutlass_scaled_mm
   signature:
     forall:
       M: Dim
@@ -274,6 +277,7 @@ GemmW4A8FwdOp:
   # signature.
   family: gemm
   status: spec-only
+  ref_api: vllm._custom_ops.cutlass_w4a8_mm
 
   signature:
     forall: {M: Dim, N: Dim, K: Dim}

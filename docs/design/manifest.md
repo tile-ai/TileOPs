@@ -74,7 +74,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
 - **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
 - `status` decides which code-dependent checks run, never which methods the signature generates: a class with an entry gets them all.
-- **`ref_api`.** Optional qualified name of the API the op follows semantically. The validator checks its form, and that it resolves when its module imports.
+- **`ref_api`.** Optional qualified name of the API the op follows semantically. Preflight checks the path's syntax without importing the reference package. Nightly resolves every registered path in the runner image; missing packages or attributes fail the check. This field does not select a benchmark baseline or assert identical signatures.
 
 ## Signature
 
@@ -301,7 +301,7 @@ The checks:
 
 - All checks are decidable; every evaluation either succeeds or names the failing declaration.
 - Code-dependent checks are skipped for `spec-only` entries ([Layer Boundaries](#layer-boundaries)).
-- CI runs the validator over the whole manifest.
+- Preflight runs `python scripts/validate_manifest.py --levels schema,signature,bench` over the whole manifest (also the default levels). The independent nightly `validate-refs` job runs `--levels refs` with the image's installed community packages. It checks imports and attributes without executing reference kernels, and fails on unresolved references while benchmark jobs continue independently.
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
 - Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change.
 - Diagnostic output does not depend on hash order: every set entering a diagnostic is sorted, unknown keys by `repr`.

@@ -84,6 +84,48 @@ class TestSchema:
         assert any("direction suffix" in e and "SoftmaxFwdOp" in e for e in errors), errors
 
 
+def test_schema_does_not_import_reference_packages(validator, monkeypatch, tmp_path):
+    ref = "uninstalled_baseline.ops.forward"
+    path = _write_manifest(tmp_path, {"ProbeFwdOp": _entry(ref_api=ref)})
+    original = validator.importlib.import_module
+
+    def import_module(name):
+        assert not name.startswith("uninstalled_baseline"), name
+        return original(name)
+
+    monkeypatch.setattr(validator.importlib, "import_module", import_module)
+    errors, _ = validator.validate_manifest(manifest_path=path, repo_root=tmp_path)
+    assert errors == [], errors
+    assert validator._ref_api_errors("ProbeFwdOp", "not a.path")
+
+
+@pytest.mark.parametrize(
+    "ref, diagnostic",
+    [
+        ("torch.Tensor.add", None),
+        ("torch.nn.functional.missing_reference", "does not resolve"),
+        ("uninstalled_baseline.ops.forward", "no prefix"),
+        ("broken_baseline.forward", "missing_transitive_dependency"),
+    ],
+)
+def test_refs_resolve_and_report_failures(validator, monkeypatch, tmp_path, ref, diagnostic):
+    original = validator.importlib.import_module
+
+    def import_module(name):
+        if name == "broken_baseline":
+            raise ModuleNotFoundError("missing_transitive_dependency", name="dependency")
+        return original(name)
+
+    monkeypatch.setattr(validator.importlib, "import_module", import_module)
+    path = _write_manifest(tmp_path, {"ProbeFwdOp": {"ref_api": ref}})
+    errors, _ = validator.validate_manifest(manifest_path=path, levels=frozenset({"refs"}))
+    if diagnostic is None:
+        assert errors == [], errors
+    else:
+        assert len(errors) == 1 and errors[0].startswith("[refs] ProbeFwdOp:"), errors
+        assert diagnostic in errors[0], errors
+
+
 class TestComposition:
     """`composition`: uniquely named stages, each naming an entry or a `kernel_types` key."""
 

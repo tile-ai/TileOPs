@@ -9,6 +9,7 @@ DeltaNetInferenceFwdOp:
   # A packed call (cu_seqlens) carries one state per sequence.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.delta_rule.chunk_delta_rule
   signature:
     types:
       State:
@@ -67,6 +68,7 @@ GatedDeltaNetFwdOp:
   # exactly when the gate is computed in the kernel.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.gated_delta_rule.chunk_gated_delta_rule
   signature:
     types:
       State:
@@ -273,6 +275,7 @@ KimiDeltaAttentionFwdOp:
   # when lower_bound is passed (FLA fused_recurrent_kda).
   family: linear_attention
   status: spec-only
+  ref_api: fla.ops.kda.fused_recurrent_kda
   signature:
     types:
       State:
@@ -338,6 +341,7 @@ DeltaNetRecurrentFwdOp:
   # is read and new_state is returned.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.delta_rule.fused_recurrent_delta_rule
   signature:
     forall: {B: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -369,6 +373,7 @@ GLARecurrentFwdOp:
   # functionally as new_state.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.gla.fused_recurrent_gla
   signature:
     forall: {B: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -404,6 +409,7 @@ DeltaNetChunkFwdOp:
   # input dtype. The sequence index is L because S names an output.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.delta_rule.chunk_delta_rule
   signature:
     forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -443,6 +449,7 @@ DeltaNetChunkBwdOp:
   # Chunked ungated DeltaNet backward over the forward's inputs and saved buffers.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.delta_rule.chunk.chunk_delta_rule_bwd
   signature:
     forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -494,6 +501,7 @@ GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.gla.chunk_gla
   signature:
     types:
       State:
@@ -540,6 +548,7 @@ GLAChunkFwdOp:
   # zeros) and has final_state's dtype, so one call's state feeds the next.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.gla.chunk_gla
   signature:
     forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -577,6 +586,7 @@ GLAChunkBwdOp:
   # backward pairs with was seeded.
   family: linear_attention
   status: implemented
+  ref_api: fla.ops.gla.chunk.chunk_gla_bwd
   signature:
     forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:

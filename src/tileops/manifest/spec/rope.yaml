@@ -5,6 +5,7 @@ RopeFwdOp:
   # adjacent pair. The frequency table is the same, so only the pairing differs.
   family: rope
   status: implemented
+  ref_api: vllm.model_executor.layers.rotary_embedding.base.RotaryEmbedding
 
   signature:
     types:
@@ -42,6 +43,7 @@ RopeFwdOp:
 RopeLlama31FwdOp:
   family: rope
   status: implemented
+  ref_api: vllm.model_executor.layers.rotary_embedding.llama3_rope.Llama3RotaryEmbedding
 
   signature:
     types:
@@ -82,6 +84,7 @@ RopeLlama31FwdOp:
 RopeYarnFwdOp:
   family: rope
   status: implemented
+  ref_api: vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope.YaRNScalingRotaryEmbedding
 
   signature:
     types:
@@ -122,6 +125,7 @@ RopeYarnFwdOp:
 RopeLongRopeFwdOp:
   family: rope
   status: implemented
+  ref_api: vllm.model_executor.layers.rotary_embedding.phi3_long_rope_scaled_rope.Phi3LongRoPEScaledRotaryEmbedding
 
   signature:
     types:
@@ -164,6 +168,7 @@ RopeNeoxPositionIdsFwdOp:
   # `rotary_dim` columns rotate and the rest are copied.
   family: rope
   status: implemented
+  ref_api: vllm._custom_ops.rotary_embedding
 
   signature:
     forall: {N: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]", P: "DType[int32 | int64]", seq_lens: "Seq[Int]"}

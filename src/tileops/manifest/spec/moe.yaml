@@ -1,6 +1,7 @@
 MoEPermuteAlignFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm._custom_ops.moe_align_block_size
   signature:
     forall: {T: Dim, K: Dim}
     params:
@@ -42,6 +43,7 @@ MoEPermuteAlignFwdOp:
 FusedMoEExpertsFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.fused_moe.fused_experts
   signature:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
@@ -84,6 +86,7 @@ FusedMoEExpertsFwdOp:
 IndexedExpertMLPFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.fused_moe.fused_experts
   signature:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
@@ -116,6 +119,7 @@ IndexedExpertMLPFwdOp:
 FusedTopKFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.router.fused_topk_router.fused_topk
   signature:
     forall: {T: Dim, E: Dim, G: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -197,6 +201,7 @@ FusedMoEFwdOp:
 MoEPrePermuteFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.moe_permute_unpermute.moe_permute
   signature:
     types:
       LayoutMetadata:
@@ -236,6 +241,7 @@ MoEPrePermuteFwdOp:
 MoEGroupedGemmFwdOp:
   family: moe
   status: implemented
+  ref_api: flashinfer.gemm.SegmentGEMMWrapper.run
   signature:
     types:
       Rows:
@@ -341,6 +347,7 @@ MoEExpertMLPFwdOp:
 MoEPostPermuteFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.moe_permute_unpermute.moe_unpermute
   signature:
     types:
       Rows:
@@ -484,6 +491,7 @@ FusedMoESharedExpertFwdOp:
 MoEGroupedGemmFP8FwdOp:
   family: moe
   status: spec-only
+  ref_api: deep_gemm.m_grouped_fp8_gemm_nt_contiguous
   signature:
     types:
       Rows:

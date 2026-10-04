@@ -117,6 +117,7 @@ AdaLayerNormZeroFwdOp:
 FusedAddLayerNormFwdOp:
   family: norm
   status: implemented
+  ref_api: flash_attn.ops.triton.layer_norm.layer_norm_fn
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
     params:
@@ -142,6 +143,7 @@ FusedAddLayerNormFwdOp:
 FusedAddRMSNormFwdOp:
   family: norm
   status: implemented
+  ref_api: flashinfer.norm.fused_add_rmsnorm
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -169,6 +171,7 @@ FusedAddRMSNormPerTokenQuantFwdOp:
   # is the sum before normalization, in the input dtype.
   family: norm
   status: spec-only
+  ref_api: vllm._custom_ops.rms_norm_dynamic_per_token_quant
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -244,6 +247,7 @@ BatchNormFwdOp:
 BatchNormBwdOp:
   family: norm
   status: implemented
+  ref_api: torch.ops.aten.native_batch_norm_backward.default
   signature:
     forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
     inputs:
@@ -338,6 +342,7 @@ FusedQKNormRopeFwdOp:
   # halves). The v columns are untouched.
   family: norm
   status: spec-only
+  ref_api: vllm._custom_ops.fused_qk_norm_rope
   signature:
     forall: {N: Dim, D: Dim, P: Dim, R: Dim, T: "DType[float16 | bfloat16]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
     params:

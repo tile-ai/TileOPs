@@ -10,6 +10,7 @@
 GroupedQueryAttentionDenseFwdOp:
   family: attention
   status: implemented
+  ref_api: flash_attn_interface.flash_attn_func
   signature:
     forall: {B: Dim, S_q: Dim, S_kv: Dim, H: Dim, H_kv: Dim, D: Dim, P_pad: Dim, T: "DType[float16 | bfloat16 | float8_e4m3fn]"}
     params:
@@ -74,6 +75,7 @@ GroupedQueryAttentionDenseFwdOp:
 GroupedQueryAttentionVarlenFwdOp:
   family: attention
   status: spec-only
+  ref_api: flash_attn_interface.flash_attn_varlen_func
   signature:
     forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, T: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
     params:
@@ -140,6 +142,7 @@ GroupedQueryAttentionVarlenFwdOp:
 GroupedQueryAttentionPagedFwdOp:
   family: attention
   status: spec-only
+  ref_api: flash_attn_interface.flash_attn_with_kvcache
   signature:
     forall: {B: Dim, T_q: Dim, NP: Dim, PS: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, SK: Shape, T: "DType[float16 | bfloat16 | float8_e4m3fn]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
     params:
@@ -211,6 +214,7 @@ GroupedQueryAttentionPagedFwdOp:
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   family: attention
   status: implemented
+  ref_api: flash_attn_interface.flash_attn_with_kvcache
   signature:
     forall: {B: Dim, T_q: Dim, PT: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
     params:
@@ -272,6 +276,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
 GroupedQueryAttentionBwdOp:
   family: attention
   status: implemented
+  ref_api: flash_attn_interface._flash_attn_backward
   signature:
     forall: {B: Dim, S: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -309,6 +314,7 @@ GroupedQueryAttentionBwdOp:
 MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
   family: attention
   status: implemented
+  ref_api: flash_attn_interface.flash_attn_with_kvcache
   signature:
     forall: {B: Dim, S_q: Dim, H: Dim, D: Dim, N_kv: Dim, W: Dim, T: "DType[float16 | bfloat16]", kv_lens: "Seq[Int]"}
     params:
@@ -345,6 +351,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
 MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
   family: attention
   status: implemented
+  ref_api: flashinfer.mla.BatchMLAPagedAttentionWrapper.run
   signature:
     forall: {B: Dim, H: Dim, H_kv: Dim, N_kv: Dim, D: Dim, PE: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -377,6 +384,7 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
 DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
   family: attention
   status: implemented
+  ref_api: vllm.v1.attention.ops.flashmla.flash_mla_sparse_fwd
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, H: Dim, H_kv: Dim, D: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -428,6 +436,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
 NSACompressedVarlenFwdOp:
   family: attention
   status: implemented
+  ref_api: fla.ops.nsa.compression.parallel_nsa_compression_fwd
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
@@ -489,6 +498,7 @@ NSATopKVarlenFwdOp:
 NSAVarlenFwdOp:
   family: attention
   status: implemented
+  ref_api: fla.ops.nsa.parallel.parallel_nsa_fwd
   signature:
     forall: {N: Dim, T_q: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
@@ -531,6 +541,7 @@ MultiHeadLatentAttentionPagedFwdOp:
   # last S_q positions of each request's cache_seqlens. sm_scale defaults to DK ** -0.5.
   family: attention
   status: spec-only
+  ref_api: flashinfer.mla.BatchMLAPagedAttentionWrapper.run
   signature:
     forall: {B: Dim, S_q: Dim, H: Dim, DK: Dim, NP: Dim, PS: Dim, W: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", cache_lens: "Seq[Int]"}
     params:
@@ -572,6 +583,7 @@ MultiHeadLatentAttentionVarlenFwdOp:
   # tokens. sm_scale defaults to (DN + PE) ** -0.5.
   family: attention
   status: spec-only
+  ref_api: flash_attn_interface.flash_attn_varlen_func
   signature:
     forall: {B: Dim, T_q: Dim, H: Dim, DN: Dim, PE: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
@@ -603,6 +615,7 @@ PagedKVCacheWriteFwdOp:
   # cache stores (k / k_scale) and (v / v_scale) with a saturating cast.
   family: attention
   status: spec-only
+  ref_api: vllm._custom_ops.reshape_and_cache_flash
   signature:
     forall: {N: Dim, H_kv: Dim, D: Dim, NP: Dim, PS: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]"}
     inputs:
@@ -639,6 +652,7 @@ MultiHeadLatentAttentionKVCacheWriteFwdOp:
   # with a saturating cast.
   family: attention
   status: spec-only
+  ref_api: vllm._custom_ops.concat_and_cache_mla
   signature:
     forall: {N: Dim, DC: Dim, PE: Dim, NP: Dim, PS: Dim, P: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
     params:
@@ -679,6 +693,7 @@ MergeAttentionStatesFwdOp:
   # merge to s = -inf and v = 0.
   family: attention
   status: spec-only
+  ref_api: flashinfer.cascade.merge_state
   signature:
     forall: {T_q: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -706,6 +721,7 @@ DeepSeekSparseAttentionPagedFwdOp:
   # below cache_seqlens[b] is the caller's obligation. sm_scale defaults to 576 ** -0.5.
   family: attention
   status: spec-only
+  ref_api: vllm.v1.attention.ops.flashmla.flash_mla_with_kvcache
   signature:
     forall: {B: Dim, S_q: Dim, H: Dim, K: Dim, NP: Dim, PS: Dim, W: Dim, cache_lens: "Seq[Int]"}
     params:
@@ -736,6 +752,7 @@ PagedKVCacheGatherFwdOp:
   # which no input shape states.
   family: attention
   status: spec-only
+  ref_api: vllm._custom_ops.gather_and_maybe_dequant_cache
   signature:
     forall: {B: Dim, T_q: Dim, NP: Dim, PS: Dim, W: Dim, E: Shape, KV: "DType[float16 | bfloat16 | float8_e4m3fn]", seq_lens: "Seq[Int]", starts: "Seq[Int]"}
     params:

@@ -35,6 +35,7 @@ BmmFwdOp:
 BmmFP8FwdOp:
   family: gemm
   status: implemented
+  ref_api: flashinfer.gemm.bmm_fp8
 
   signature:
     types:
