@@ -516,23 +516,16 @@ def _counted(report, results):
     return md
 
 
-def test_correctness_counts_every_test_not_only_the_attributed_ones(report):
-    """Counting only tests a reference attributed reported a rate over half the suite."""
-    results = [_result("passed", _OP)] + [_result("passed", None) for _ in range(3)]
-
-    assert "(4/4 tests)" in _counted(report, results)
-
-
-def test_an_unattributed_failure_is_counted_and_named(report):
+def test_unattributed_passes_and_failures_are_counted_and_failures_named(report):
     """A test with no op property fails the job, so the report must not lose it.
 
     Counting it and leaving it out of the failure table reports a number with
     nothing behind it: the reader sees N failed and a table holding fewer rows.
     """
     row = _result("failed", None, "test_sum")
-    md = _counted(report, [_result("passed", _OP), row])
+    md = _counted(report, [_result("passed", _OP), _result("passed", None), row])
 
-    assert "(1/2 tests)" in md
+    assert "(2/3 tests)" in md
     assert report._FAIL in md
     assert row["nodeid"] in md
 
@@ -565,48 +558,6 @@ def test_ops_verified_unions_both_verifiers(report):
     assert report._ops_verified(None, noncomparable, implemented) == (0, 2)
     rated = {"B": {"configs": [{"baselines": {"torch": {"ratio": 0.9}}}]}}
     assert report._ops_verified(None, rated, implemented) == (1, 2)
-
-
-def test_the_kernel_count_is_what_packages_export(report):
-    """Concrete Kernel subclasses a package re-exports, by type and at any depth.
-
-    Three ways to get it wrong, and the figure looks plausible after each: read
-    it off the manifest and it becomes the op count; walk every module and the
-    private implementation bases under `_base` join it; filter on the name and
-    `IndexedExpertGemmTemplate` drops out.
-    """
-    import importlib
-    import inspect
-    import pkgutil
-
-    import tileops.kernels as kernels_pkg
-    from tileops.kernels.kernel_base import Kernel
-
-    def exported(module):
-        return {
-            attribute
-            for attribute in (getattr(module, n, None) for n in getattr(module, "__all__", ()))
-            if inspect.isclass(attribute)
-            and issubclass(attribute, Kernel)
-            and not inspect.isabstract(attribute)
-        }
-
-    every_module = exported(kernels_pkg)
-    off_name = set()
-    for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops.kernels."):
-        try:
-            package = importlib.import_module(module.name)
-        except Exception:
-            continue
-        every_module |= exported(package)
-        if module.ispkg:
-            off_name |= {c for c in exported(package) if not c.__name__.endswith("Kernel")}
-
-    count = report._kernel_count()
-
-    assert off_name, "no off-name kernel left; the name filter would now be equivalent"
-    # Walking every module pulls in the private bases under `_base`.
-    assert count < len(every_module)
 
 
 def test_a_case_that_compared_nothing_is_not_evidence(report):

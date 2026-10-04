@@ -443,7 +443,11 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
         sampling_call("ChainSpeculativeSamplingFwdOp", B=batch, N=num_draft, V=vocab)
     )
     op = ChainSpeculativeSamplingFwdOp()
-    TestBase.check(workload, op, *inputs, runs=lambda *args: _run(op, *args))
+    # The dedicated chain test exercises the shared distribution probe once.
+    # These cases cover launch boundaries, exact acceptance and residual-token support.
+    compare_outputs(
+        _run(op, *inputs), workload.ref_program(*inputs), workload.verification(*inputs)
+    )
 
 
 _SMALL_CALLS = {
