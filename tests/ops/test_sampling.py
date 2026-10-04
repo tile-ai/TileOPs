@@ -302,15 +302,20 @@ def test_top_k_top_p_mask_selects_its_one_implementation():
     [(TopKMaskFwdOp, "top_k_mask_fwd"), (TopKTopPMaskFwdOp, "top_k_top_p_mask_fwd")],
 )
 def test_top_k_masks_keep_a_row_in_one_cta_below_sm90(op, name):
-    """A 128256-wide bfloat16 row fits one CTA of 16 slots; a 262144-wide one needs a cluster."""
-    row = {"sm_count": 128, "batch": 1, "dtype": torch.bfloat16}
+    """Below SM90 one CTA holds a row in up to 32 slots a thread: qwen3's bfloat16 vocabulary
+    and llama 3's in float32 fit, up to 262144 bfloat16 values."""
+    row = {"sm_count": 128, "batch": 1, "arch": 89}
     kernel = op.kernel_types[name]
-    llama = SamplingCall(arch=89, vocab=128256, **row)
-    assert op().select_implementation(name, llama) == name
-    assert cluster_plan(llama, kernel._THREADS, kernel._MAX_SLOTS)["cluster"] == 1
-    assert op().select_implementation(name, SamplingCall(arch=90, vocab=262144, **row)) == name
-    with pytest.raises(ValueError, match="holds a row"):
-        op().select_implementation(name, SamplingCall(arch=89, vocab=262144, **row))
+    for vocab, dtype in (
+        (151936, torch.bfloat16),
+        (128256, torch.float32),
+        (262144, torch.bfloat16),
+    ):
+        call = SamplingCall(vocab=vocab, dtype=dtype, **row)
+        assert op().select_implementation(name, call) == name
+        assert cluster_plan(call, kernel._THREADS, kernel._MAX_SLOTS)["cluster"] == 1
+    with pytest.raises(ValueError, match="at most 262144"):
+        op().select_implementation(name, SamplingCall(vocab=262145, dtype=torch.bfloat16, **row))
 
 
 @pytest.mark.in_tree_kernels

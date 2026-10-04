@@ -417,7 +417,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         widest = widest_row(call.dtype, cls._THREADS, cls._MAX_SLOTS, call.arch)
         if call.vocab > widest:
-            return f"holds a row of at most {widest} values in registers, and V = {call.vocab}"
+            return f"supports rows of at most {widest} values, and V = {call.vocab}"
         return None
 
     def __init__(self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False):
