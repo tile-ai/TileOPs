@@ -897,18 +897,24 @@ def test_gqa_varlen_regions(
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("budget", "dim", "block_n"),
+    ("budget", "sms", "dim", "heads_kv", "block"),
     [
-        pytest.param(101376, 128, 32, id="sm89-d128"),
-        pytest.param(101376, 256, 16, id="sm89-d256"),
-        pytest.param(101376, 272, None, id="sm89-d272-refused"),
-        pytest.param(166912, 192, 32, id="sm80-d192"),
+        pytest.param(101376, 64, 128, 8, (128, 32), id="sm89-d128-mha"),
+        pytest.param(101376, 142, 128, 8, (64, 32), id="sm89-d128-mha-under-a-wave"),
+        pytest.param(101376, 64, 128, 2, (64, 32), id="sm89-d128-gqa"),
+        pytest.param(101376, 64, 160, 8, (64, 32), id="sm89-d160-mha"),
+        pytest.param(101376, 64, 80, 8, (64, 32), id="sm89-d80-mha"),
+        pytest.param(101376, 64, 256, 2, (64, 16), id="sm89-d256-gqa"),
+        pytest.param(101376, 64, 272, 2, None, id="sm89-d272-gqa-refused"),
+        pytest.param(166912, 64, 192, 8, (128, 32), id="sm80-d192-mha"),
     ],
 )
 def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
-    budget: int, dim: int, block_n: Optional[int]
+    budget: int, sms: int, dim: int, heads_kv: int, block: Optional[tuple[int, int]]
 ) -> None:
-    """The query block and the refusal each follow their bound at a budget."""
+    """The key and query blocks and the refusal each follow their bound at a budget. Grouped
+    heads count an fp32 staging tile, eight warps cannot split head dim 80, and 128 key rows
+    give this call 64 blocks, fewer than the device's 142 SMs."""
     from tileops.kernels.attention.call_spec import AttentionCall
 
     call = AttentionCall(
@@ -918,18 +924,19 @@ def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
         dtype=torch.float16,
         batch=1,
         heads=8,
-        heads_kv=2,
+        heads_kv=heads_kv,
         dim=dim,
         max_seqlen_q=1024,
         seqlen_kv=1024,
         is_causal=True,
     )
-    if block_n is None:
+    if block is None:
         assert "needs at least" in GQABwdMMAKernel.refusal(call)
         return
     assert GQABwdMMAKernel.refusal(call) is None
-    config = GQABwdMMAKernel._default_config_for(budget, dim, torch.float16.itemsize, True)
-    assert config["block_n"] == block_n
+    itemsize, grouped = torch.float16.itemsize, heads_kv != 8
+    config = GQABwdMMAKernel._default_config_for(budget, dim, itemsize, grouped, 8, 1024, sms)
+    assert (config["block_m"], config["block_n"]) == block
 
 
 @pytest.mark.cuda_only
