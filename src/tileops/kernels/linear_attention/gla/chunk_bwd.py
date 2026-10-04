@@ -789,10 +789,11 @@ class GLABwdKernel(Kernel, GLABwdInterface):
     @staticmethod
     def _fused_live_bytes(c: int, k: int, v: int, elem: int) -> int:
         """Lower bound on the lean fused pass's shared memory: the largest set of its buffers
-        live at one GEMM (dA, dv_intra, a sub-chunk product, dq_inter), the fp32 gate in all."""
-        a, b, h, causal = c * k * elem, c * v * elem, k * v * elem, c * c * elem
+        live at once, the fp32 gate in all."""
+        a, b, h, causal, f = c * k * elem, c * v * elem, k * v * elem, c * c * elem, c * k * 4
         sub = 16 * 16 * elem + 16 * k * elem
-        return max(2 * a + 2 * b, 2 * a + b + causal, 2 * a + causal + sub, b + 2 * h) + c * k * 4
+        dg = 2 * a + 2 * f + k * 4
+        return max(2 * a + 2 * b, 2 * a + b + causal, 2 * a + causal + sub, b + 2 * h, dg) + f
 
     @property
     def default_config(self) -> dict:

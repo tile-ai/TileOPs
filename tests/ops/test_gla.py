@@ -266,6 +266,7 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     [
         pytest.param(89, 101376, 64, 64, torch.float32, None, id="sm89-fp32-64"),
         pytest.param(89, 101376, 128, 128, torch.float32, 196608, id="sm89-fp32-128-refused"),
+        pytest.param(89, 101376, 128, 64, torch.float16, 131584, id="sm89-fp16-128x64-refused"),
         pytest.param(80, 166912, 128, 160, torch.float16, 167936, id="sm80-dh-refused"),
         pytest.param(90, 232448, 128, 128, torch.float32, None, id="sm90-fp32-128"),
     ],
@@ -273,8 +274,8 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
 def test_gla_bwd_refuses_what_no_placement_fits(
     arch: int, budget: int, dim_k: int, dim_v: int, dtype: torch.dtype, need: int | None
 ) -> None:
-    """At chunk 64 the refusal reads the lean fused pass's buffers live at one GEMM and the
-    dh pass at its finest partitioning; 160 columns of dh do not partition."""
+    """At chunk 64 the refusal reads the lean fused pass's largest set of buffers live at once
+    and the dh pass at its finest partitioning; 160 columns of dh do not partition."""
     call = GLAChunkCall(
         arch=arch,
         sm_count=1,
