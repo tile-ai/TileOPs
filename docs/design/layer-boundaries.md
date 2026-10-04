@@ -31,7 +31,10 @@ implementation conform to an accident.
 
 ## Test
 
-Tolerances and assertions live with the test, which does not import from
+Tests own fixtures, pytest outcomes and assertions about behavior, such as aliasing,
+cache reuse and rejection. Numerical op-vs-reference checks consume the workload's
+`ref_program` and `verification` through `check()` or `compare_outputs()`; tests do
+not define a second tolerance or comparator. Tests do not import from
 [`benchmarks/`](../../benchmarks/).
 
 Input construction does not, and neither does the reference computation of an

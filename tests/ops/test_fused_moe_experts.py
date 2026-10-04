@@ -10,7 +10,8 @@ from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPE
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import MoeExpertsWorkload, moe_call, ref_routed_experts
+from workloads.moe import MoeExpertsWorkload, moe_call, moe_verification, ref_routed_experts
+from workloads.numerics import compare_outputs
 
 
 def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", **dims):
@@ -36,10 +37,6 @@ def _small_route_case(ids, dtype=torch.bfloat16):
     topk_ids = torch.tensor(ids, dtype=torch.int32, device=run_device())
     output = torch.empty(T, 128, dtype=dtype, device=run_device())
     return FusedMoEExpertsFwdOp(), (output, hidden, w1, w2, weights, topk_ids)
-
-
-def _reference(args) -> torch.Tensor:
-    return ref_routed_experts(*args[1:])
 
 
 @pytest.mark.smoke
@@ -115,17 +112,13 @@ class TestFusedMoEExpertsFwdOp:
     def test_the_staged_pipeline_matches_the_reference(self, dtype, activation):
         experts, workload, inputs = _experts_case(dtype, activation, T=128, E=4, K=2, H=256, F=128)
         experts(*inputs)
-        torch.testing.assert_close(
-            inputs[0].float(), workload.ref_program(*inputs).float(), rtol=2e-2, atol=2e-2
-        )
+        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.smoke
     def test_dims_off_the_tile_grid(self):
         experts, workload, inputs = _experts_case(T=64, E=4, K=2, H=128, F=96)
         experts(*inputs)
-        torch.testing.assert_close(
-            inputs[0].float(), workload.ref_program(*inputs).float(), rtol=2e-2, atol=2e-2
-        )
+        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
@@ -137,8 +130,8 @@ class TestFusedMoEExpertsFwdOp:
                 activation="gelu_and_mul", T=32, E=e, K=2, H=128, F=128
             )
             experts(*inputs)
-            torch.testing.assert_close(
-                inputs[0].float(), workload.ref_program(*inputs).float(), rtol=2e-2, atol=2e-2
+            compare_outputs(
+                inputs[0], workload.ref_program(*inputs), workload.verification(*inputs)
             )
         assert [op.num_local_experts for op in experts.kernel_delegates()[:2]] == [4, 6]
 
@@ -187,7 +180,7 @@ class TestFusedMoEExpertsFwdOp:
     def test_small_route_branch_matches_reference(self, ids, dtype):
         experts, args = _small_route_case(ids, dtype)
         experts(*args)
-        torch.testing.assert_close(args[0].float(), _reference(args).float(), rtol=2e-2, atol=1e-1)
+        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
         if get_sm_version() == 90:
             indexed = experts._indexed_mlp
             built = {r for r in indexed.kernel_types if indexed.built_kernels(r)}
@@ -209,14 +202,14 @@ class TestFusedMoEExpertsFwdOp:
         )
         graph.replay()
         torch.cuda.synchronize()
-        torch.testing.assert_close(args[0].float(), _reference(args).float(), rtol=2e-2, atol=1e-1)
+        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
 
     @pytest.mark.smoke
     def test_the_indexed_op_scales_its_output(self):
         _, args = _small_route_case([[0, 1], [2, 3]])
         IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)
         expected = ref_routed_experts(*args[1:], scale=2.5)
-        torch.testing.assert_close(args[0].float(), expected.float(), rtol=2e-2, atol=1e-1)
+        compare_outputs(args[0], expected, moe_verification(2))
 
     @pytest.mark.smoke
     def test_output_shape_and_weighted_reduce(self):

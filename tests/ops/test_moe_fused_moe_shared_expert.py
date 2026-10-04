@@ -11,6 +11,7 @@ Verifies:
 import pytest
 import torch
 
+from tests.test_base import TestBase
 from tileops.kernels.gemm.dense import GemmTmaKernel
 from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
@@ -18,7 +19,8 @@ from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import SharedExpertMLPWorkload, moe_call
+from workloads.moe import SharedExpertMLPWorkload, moe_call, moe_verification, ref_shared_expert
+from workloads.numerics import compare_outputs
 
 
 @pytest.mark.smoke
@@ -28,9 +30,7 @@ def test_the_shared_expert_matches_its_reference(dtype):
         moe_call("SharedExpertMLPFwdOp", {"D": dtype}, T=32, H=256, S=128)
     )
     inputs = workload.gen_inputs()
-    torch.testing.assert_close(
-        SharedExpertMLPFwdOp()(*inputs), workload.ref_program(*inputs), rtol=1e-2, atol=1e-2
-    )
+    TestBase.check(workload, SharedExpertMLPFwdOp(), *inputs)
 
 
 @pytest.mark.in_tree_kernels
@@ -71,12 +71,8 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     assert shared_out.dtype == dtype
     assert routed_out.dtype == dtype
 
-    # shared_out reference: manual MLP in float32
-    gate_up_ref = hidden.float() @ shared_w_gate_up.float().T  # [T, 2*F_s]
-    gate_ref, up_ref = gate_up_ref.chunk(2, dim=1)
-    gate_up_act = torch.nn.functional.silu(gate_ref) * up_ref
-    shared_ref = (gate_up_act @ shared_w_down.float().T).to(dtype)
-    torch.testing.assert_close(shared_out, shared_ref, rtol=1e-2, atol=1e-2)
+    shared_ref = ref_shared_expert(hidden, shared_w_gate_up, shared_w_down)
+    compare_outputs(shared_out, shared_ref, moe_verification(1))
 
     if get_sm_version() == 90:
         shared_kernel = next(iter(op._shared_expert.built_kernels("shared_expert_mlp").values()))
@@ -157,10 +153,7 @@ def test_fused_moe_shared_expert_tp():
         down_shard = shared_w_down[
             :, tp_rank * shard_size : (tp_rank + 1) * shard_size
         ]  # [H, shard]
-        gate_up_out = hidden.float() @ gate_up_shard.float().T  # [T, 2*shard]
-        gate, up = gate_up_out.chunk(2, dim=1)
-        act = gate * torch.sigmoid(gate) * up  # [T, shard]
-        partial_sum_ref += act @ down_shard.float().T  # [T, H]
+        partial_sum_ref += ref_shared_expert(hidden.float(), gate_up_shard, down_shard)
 
     # routed reference (not affected by TP)
     op_routed = FusedMoEFwdOp(
@@ -195,7 +188,7 @@ def test_fused_moe_shared_expert_tp():
         torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
 
     # partial_sum vs per-shard float32 math reference (same computation path)
-    torch.testing.assert_close(partial_sum, partial_sum_ref, rtol=1e-2, atol=1e-2)
+    compare_outputs(partial_sum, partial_sum_ref, moe_verification(1))
 
 
 @pytest.mark.smoke

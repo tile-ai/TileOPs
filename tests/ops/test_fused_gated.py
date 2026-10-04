@@ -42,15 +42,6 @@ class SiluAndMulTest(SiluAndMulCase, TestBase):
     pass
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-2, 1e-2
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @SiluAndMulFixture
 def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = SiluAndMulTest(m, n, dtype)

@@ -11,9 +11,11 @@ from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddLayerNormWorkload,
+    LayerNormLargeOffsetWorkload,
     LayerNormWorkload,
+    layer_norm_verification,
 )
-from workloads.numerics import reference_tolerance
+from workloads.numerics import compare_outputs, reference_tolerance
 
 
 class LayerNormTest(LayerNormWorkload, TestBase):
@@ -52,15 +54,6 @@ class LayerNormFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1e-2, 1e-2
-
-
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
@@ -82,8 +75,7 @@ def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     y_ref = test.ref_program(x, weight, bias)
 
     assert y.shape == (m, n)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+    compare_outputs(y, y_ref, layer_norm_verification(dtype))
 
 
 class LayerNormNonContigFixture(FixtureBase):
@@ -120,10 +112,7 @@ def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     ).to(dtype)
 
     y = op(x, weight, bias)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, layer_norm_verification(dtype))
 
 
 class LayerNorm3DFixture(FixtureBase):
@@ -158,10 +147,7 @@ def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) ->
     ).to(dtype)
 
     y = op(x, weight, bias)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"3D test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, layer_norm_verification(dtype))
 
 
 class LayerNormLargeOffsetFixture(FixtureBase):
@@ -192,37 +178,13 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     catastrophic cancellation bug (which produced >100x error) while allowing
     the inherent fp32 parallel reduction precision limits.
     """
-    x = (10000.0 + 0.01 * torch.randn(m, n, device=run_device())).to(dtype)
-    weight = torch.ones(n, dtype=dtype, device=run_device())
-    bias = torch.zeros(n, dtype=dtype, device=run_device())
-
+    workload = LayerNormLargeOffsetWorkload(m, n, dtype)
+    inputs = workload.gen_inputs()
     op = LayerNormFwdOp(normalized_shape=(n,))
-
-    y_ref = F.layer_norm(
-        x.float(),
-        (n,),
-        weight=weight.float(),
-        bias=bias.float(),
-        eps=1e-5,
-    ).to(dtype)
-
-    y = op(x, weight, bias)
-
-    # For large-offset inputs, use a relative tolerance that catches
-    # catastrophic cancellation (>100x error) but allows inherent
-    # fp32 reduction precision differences (~1-2% relative error).
-    if dtype == torch.float32:
-        atol, rtol = 1e-1, 5e-2
-    else:
-        atol, rtol = _get_tolerances(dtype)
-
-    max_err = (y - y_ref).abs().max().item()
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"Large-offset test failed, max err: {max_err}"
+    result = compare_outputs(
+        op(*inputs), workload.ref_program(*inputs), workload.verification(*inputs)
     )
-    # Verify that catastrophic cancellation is NOT happening:
-    # with the unstable formula, errors would be > 1.0
-    assert max_err < 1.0, f"Catastrophic cancellation detected, max err: {max_err}"
+    assert result.max_abs_err < 1.0, "Catastrophic cancellation detected"
 
 
 @pytest.mark.smoke
@@ -254,8 +216,7 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
         bias=bias.float(),
         eps=1e-5,
     ).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y2, y_ref, atol=atol, rtol=rtol)
+    compare_outputs(y2, y_ref, layer_norm_verification(dtype))
 
 
 @pytest.mark.smoke

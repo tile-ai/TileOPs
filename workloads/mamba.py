@@ -418,7 +418,13 @@ class SSDDecodeWorkload(WorkloadBase):
         return A, dt, x, B_in, C_in, state
 
     def ref_program(self, A, dt, x, B_in, C_in, state):
-        return ssd_decode_ref(A, dt, x, B_in, C_in, state)
+        output = ssd_decode_ref(A, dt, x, B_in, C_in, state)
+        return output, state
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=1e-3, rtol=1e-3)
 
 
 class SSDStatePassingFwdFixture(FixtureBase):
@@ -754,6 +760,9 @@ class CBProducerFwdCall(CallWorkload):
         ix = self.call.ix
         return cb_producer_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
 
+    def verification(self, *inputs):
+        return coupling_verification()
+
 
 class SSDChunkStateFwdCall(CallWorkload, SSDChunkStateFwdWorkload):
     """A manifest call of SSDChunkStateFwdOp; a passed ``seq_idx`` packs two sequences."""
@@ -802,7 +811,7 @@ class SSDChunkScanFwdCall(CallWorkload, SSDChunkScanFwdWorkload):
         return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.call.ix["G"])
 
 
-class SSDDecodeFwdCall(CallWorkload):
+class SSDDecodeFwdCall(CallWorkload, SSDDecodeWorkload):
     """Mamba-2 decode: each head shares its decay rate and time step across channels.
 
     Dense copies retain the op's input layout; the generic SSDDecodeWorkload also
@@ -816,7 +825,8 @@ class SSDDecodeFwdCall(CallWorkload):
         return A, dt, x * 0.1, B_in * 0.1, C_in * 0.1, state * 0.1
 
     def ref_program(self, A, dt, x, B_in, C_in, state):
-        return ssd_decode_ref(A, dt, x, B_in, C_in, state)
+        output = ssd_decode_ref(A, dt, x, B_in, C_in, state)
+        return output, state
 
 
 # The end-to-end Mamba-2 SSD forward pass: its reference and its manifest calls.
@@ -942,7 +952,23 @@ class Mamba2FwdCall(CallWorkload):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
+        return mamba2_verification(inputs[0].dtype)
 
-        atol = 1e-2 if inputs[0].dtype == torch.float16 else 2e-2
-        return Exact(atol=atol, rtol=1e-3)
+
+def coupling_verification():
+    from workloads.numerics import Exact
+
+    return Exact(atol=1e-3, rtol=1e-3)
+
+
+def mamba2_verification(dtype):
+    from workloads.numerics import Exact
+
+    atol = 1e-2 if dtype == torch.float16 else 2e-2
+    return Exact(atol=atol, rtol=1e-3)
+
+
+def ssd_decode_result(subject, *inputs):
+    """Observe both the returned projection and the updated recurrent state."""
+    output = subject(*inputs)
+    return output, inputs[-1]

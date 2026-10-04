@@ -225,3 +225,64 @@ def test_broadcast_input_views_restore_shared_storage(mutate):
     assert result.checked_outputs == 1
     assert expanded.stride(0) == 0
     torch.testing.assert_close(base, torch.ones(3))
+
+
+@pytest.mark.parametrize("family", ["gla", "deltanet"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("wrong_output", [0, 1])
+def test_inference_decode_keeps_its_strict_output_and_state_bound(family, dtype, wrong_output):
+    from types import SimpleNamespace
+
+    from workloads.linear_attention.deltanet import DeltaNetInferenceCall, DeltaNetInferenceWorkload
+    from workloads.linear_attention.gla import GLAInferenceCall, GLAInferenceWorkload
+
+    workload_type, call_type = {
+        "gla": (GLAInferenceWorkload, GLAInferenceCall),
+        "deltanet": (DeltaNetInferenceWorkload, DeltaNetInferenceCall),
+    }[family]
+    dimensions = {"dim_k": 64, "dim_v": 64} if family == "gla" else {"dim": 64}
+    workload = workload_type(batch=1, seq_len=1, heads=1, dtype=dtype, **dimensions)
+    q = torch.zeros(1, 1, 1, 64, dtype=dtype)
+    expected = (torch.zeros(1, dtype=dtype), torch.zeros(1))
+    got = list(expected)
+    got[wrong_output] = got[wrong_output] + 1e-4
+    # Both unit and manifest consumers must reject a drift accepted by prefill's bound.
+    manifest_consumer = SimpleNamespace(call=SimpleNamespace(ix={"use_qk_l2norm_in_kernel": False}))
+    for evidence in (workload.verification(q), call_type.verification(manifest_consumer, q)):
+        with pytest.raises(AssertionError):
+            compare_outputs(tuple(got), expected, evidence)
+
+
+@pytest.mark.parametrize("family", ["gla", "deltanet"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_decode_rounding_allowance_stops_at_one_adjacent_value(family, dtype):
+    from workloads.linear_attention.deltanet import inference_verification as delta_policy
+    from workloads.linear_attention.gla import inference_verification as gla_policy
+
+    evidence = {"gla": gla_policy, "deltanet": delta_policy}[family](dtype, decode=True)
+    output, state = torch.ones(1, dtype=dtype), torch.zeros(1)
+    adjacent = torch.nextafter(output, torch.full_like(output, float("inf")))
+    compare_outputs((adjacent, state), (output, state), evidence)
+    second = torch.nextafter(adjacent, torch.full_like(adjacent, float("inf")))
+    with pytest.raises(AssertionError):
+        compare_outputs((second, state), (output, state), evidence)
+    with pytest.raises(AssertionError):
+        compare_outputs((output, state + 1e-6), (output, state), evidence)
+
+
+def test_batch_norm_rejects_correct_output_without_running_stat_updates():
+    from workloads.norm import BatchNormFwdWorkload, batch_norm_forward_result
+
+    workload = BatchNormFwdWorkload(2, 2, (2,), torch.float32, True)
+    inputs = (torch.ones(2, 2, 2), torch.zeros(2), torch.ones(2), torch.ones(2), torch.zeros(2))
+
+    def missing_update(*args):
+        return workload.ref_program(*args)[0]
+
+    with pytest.raises(AssertionError):
+        verify(
+            lambda *args: batch_norm_forward_result(missing_update, *args),
+            inputs,
+            reference=workload.ref_program,
+            evidence=workload.verification(*inputs),
+        )

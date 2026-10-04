@@ -475,9 +475,7 @@ class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
         shard = ffn // p["tp_size"]
         lo, hi = p["tp_rank"] * shard, (p["tp_rank"] + 1) * shard
         gate_up = torch.cat([shared_w_gate_up[lo:hi], shared_w_gate_up[ffn + lo : ffn + hi]])
-        act = gated_activation(hidden_states.float() @ gate_up.float().T, "silu_and_mul")
-        shared = act @ shared_w_down[:, lo:hi].float().T
-        return shared.to(hidden_states.dtype), routed
+        return ref_shared_expert(hidden_states, gate_up, shared_w_down[:, lo:hi]), routed
 
 
 class SharedExpertMLPWorkload(CallWorkload):
@@ -492,11 +490,16 @@ class SharedExpertMLPWorkload(CallWorkload):
         self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:
         """``down(silu(gate) * up)`` in fp32, cast to the hidden dtype."""
-        act = gated_activation(hidden_states.float() @ w_gate_up.float().T, "silu_and_mul")
-        return (act @ w_down.float().T).to(hidden_states.dtype)
+        return ref_shared_expert(hidden_states, w_gate_up, w_down)
 
     def verification(self, *inputs):
         return moe_verification(1)
+
+
+def ref_shared_expert(hidden, gate_up, down):
+    """Shared expert MLP in FP32, narrowed once to the token dtype."""
+    act = gated_activation(hidden.float() @ gate_up.float().T, "silu_and_mul")
+    return (act @ down.float().T).to(hidden.dtype)
 
 
 def ref_permute_align(
@@ -560,7 +563,7 @@ def moe_verification(gate_up_index):
         elif expected is None:
             assert got is None
         else:
-            torch.testing.assert_close(got, expected, rtol=3e-2, atol=3e-2)
+            torch.testing.assert_close(got, expected, rtol=1e-2, atol=1e-2)
             assert_normalized_error(got, expected, bound=1e-4)
 
     def swapped(reference, inputs):
@@ -571,6 +574,6 @@ def moe_verification(gate_up_index):
 
     return Custom(
         validate,
-        "elementwise atol/rtol 3e-2 and normalized squared error <= 1e-4",
+        "elementwise atol/rtol 1e-2 and normalized squared error <= 1e-4",
         controls=(NegativeControl("gate-up-swapped", swapped),),
     )

@@ -101,10 +101,7 @@ class VectorNormWorkload(RandnWorkload):
     """Workload definition for VectorNormFwdOp."""
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        tol = 1e-5 if inputs[0].dtype == torch.float32 else 1e-2
-        return Exact(atol=tol, rtol=tol)
+        return vector_norm_verification(inputs[0].dtype)
 
 
 class _LogicalWorkload(WorkloadBase):
@@ -483,3 +480,10 @@ class VectorNormCase(VectorNormWorkload):
 def reduction_tolerance(dtype: torch.dtype) -> dict[str, float]:
     """The reduction policy, exposed for algebraic property assertions."""
     return reduction_verification(dtype).tolerance({})
+
+
+def vector_norm_verification(dtype):
+    from workloads.numerics import Exact
+
+    tol = 1e-5 if dtype == torch.float32 else 1e-2
+    return Exact(atol=tol, rtol=tol)

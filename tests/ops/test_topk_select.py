@@ -67,14 +67,6 @@ def test_topk_select_op(
     op = TopKSelectFwdOp(topk=topk, tune=tune)
     inputs = test.gen_inputs()
 
-    def compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-        def selected(indices: torch.Tensor) -> torch.Tensor:
-            gather_index = indices.permute(0, 1, 3, 2).long()
-            values = torch.gather(inputs[0], 2, gather_index).permute(0, 1, 3, 2)
-            return torch.sort(values, dim=-1).values
-
-        torch.testing.assert_close(selected(output), selected(output_ref))
-
     test.check(op, *inputs)
 
 

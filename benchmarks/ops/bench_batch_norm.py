@@ -12,21 +12,16 @@ import torch
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.norm import BatchNormBwdCall, RunningStatsCall
+from workloads.norm import BatchNormBwdCall, RunningStatsCall, batch_norm_forward_result
 
 
-def _flaggems_bn_fwd(running_mean, running_var, training: bool, momentum: float, eps: float):
-    """flag_gems' batch_norm on its own running statistics, output only.
-
-    Training mode updates them in place, and the cuDNN reference clones before it
-    does, so this gets copies rather than the tensors the other tags read.
-    """
+def _flaggems_bn_fwd(training: bool, momentum: float, eps: float):
+    """Expose the output and running statistics; the verifier restores input state."""
     fn = flaggems_op("batch_norm")
-    private_mean, private_var = running_mean.clone(), running_var.clone()
 
-    def baseline_fn(x, _running_mean, _running_var, weight, bias):
-        out = fn(x.float(), weight, bias, private_mean, private_var, training, momentum, eps)
-        return out[0].to(x.dtype)
+    def baseline_fn(x, running_mean, running_var, weight, bias):
+        out = fn(x.float(), weight, bias, running_mean, running_var, training, momentum, eps)
+        return out[0].to(x.dtype), running_mean, running_var
 
     return baseline_fn
 
@@ -73,9 +68,9 @@ def test_batch_norm_fwd_bench(call):
     op = BatchNormFwdOp(**workload.arguments())
     training, momentum, eps = (call.params[k] for k in ("training", "momentum", "eps"))
     torch_fn = workload.ref_program
-    functors = {"tileops": op}
+    functors = {"tileops": lambda *args: batch_norm_forward_result(op, *args)}
     if all((t is not None for t in inputs)):
-        flaggems_fn = _flaggems_bn_fwd(inputs[1], inputs[2], training, momentum, eps)
+        flaggems_fn = _flaggems_bn_fwd(training, momentum, eps)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch-cudnn"] = torch_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)

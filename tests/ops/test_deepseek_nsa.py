@@ -175,24 +175,7 @@ def test_nsa_cmp_fwd_varlen_op(
 
 
 class NsaTopkTest(NsaTopkWorkload, TestBase):
-    def check_topk(self, op, *inputs) -> torch.Tensor:
-        """Check selection scores, allowing ties, with exact index invariants."""
-        got, expected = op(*inputs), self.ref_program(*inputs)
-        assert got.shape == expected.shape and got.dtype == expected.dtype
-        assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
-        current = inputs[-1][:, 1, None, None] // self.bs
-        assert ((got >= -1) & (got <= current)).all(), "non-causal or invalid block id"
-        ordered = got.sort(-1).values
-        assert not ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(), (
-            "duplicate selected block"
-        )
-        torch.testing.assert_close(
-            self.selection_scores(got, *inputs),
-            self.selection_scores(expected, *inputs),
-            rtol=1e-5,
-            atol=1e-6,
-        )
-        return got
+    pass
 
 
 class NsaTopkFixture(FixtureBase):
@@ -241,7 +224,7 @@ def test_nsa_topk_varlen_op(
         bs=bs,
         tune=tune,
     )
-    test.check_topk(op, *inputs)
+    test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -268,7 +251,8 @@ def test_nsa_topk_ranks_unquantized_scores() -> None:
     k = torch.empty_like(k)
     k.copy_(torch.arange(k.shape[0] - 1, -1, -1, device=k.device)[:, None, None] * 2**-24)
     op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=4, bs=32)
-    result = workload.check_topk(op, q, k, *metadata)
+    workload.check(op, q, k, *metadata)
+    result = op(q, k, *metadata)
     # Sub-1e-5 gaps must still select block 1, alongside priority blocks 0, 6, 7.
     torch.testing.assert_close(
         result[-1, 0].sort().values,

@@ -11,6 +11,7 @@ from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CD
 from tileops.ops import FFTC2CFwdOp
 from workloads.device import run_device
 from workloads.fft import FFTWorkload
+from workloads.numerics import compare_outputs
 
 
 class FFTTest(FFTWorkload, TestBase):
@@ -82,7 +83,8 @@ def test_fft_batch_above_grid_y_limit() -> None:
 
     got = FFTC2CFwdOp()(x)
 
-    torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-4, rtol=1e-4)
+    workload = FFTWorkload(x.shape[-1], x.dtype)
+    compare_outputs(got, workload.ref_program(x), workload.verification(x))
 
 
 @pytest.mark.smoke
@@ -92,7 +94,8 @@ def test_fft_lazy_conjugate_input() -> None:
 
     got = FFTC2CFwdOp()(x)
 
-    torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-4, rtol=1e-4)
+    workload = FFTWorkload(x.shape[-1], x.dtype)
+    compare_outputs(got, workload.ref_program(x), workload.verification(x))
 
 
 @pytest.mark.parametrize(
@@ -148,7 +151,8 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
         "tile": tuple(c["tw"] for c in tuned),
         "pad": tuple(tuple(c[k] for k in ("row", "grp") if k in c) for c in tuned),
     }
-    torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-8, rtol=1e-8)
+    workload = FFTWorkload(x.shape[-1], x.dtype)
+    compare_outputs(got, workload.ref_program(x), workload.verification(x))
 
 
 @pytest.mark.smoke

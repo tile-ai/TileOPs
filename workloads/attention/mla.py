@@ -5,7 +5,13 @@ from einops import einsum, rearrange
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["MlaDecodeCall", "MlaDecodeWorkload"]
+__all__ = [
+    "MlaDecodeCall",
+    "MlaDecodeWorkload",
+    "MlaVarlenWorkload",
+    "mla_varlen_inputs",
+    "mla_varlen_reference",
+]
 
 
 class MlaDecodeWorkload(WorkloadBase):
@@ -125,3 +131,96 @@ class MlaDecodeCall(CallWorkload, MlaDecodeWorkload):
         )
 
     gen_inputs = CallWorkload.gen_inputs
+
+
+def mla_varlen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):
+    """The packed tensors one call takes, for ``seq_lens`` requests."""
+    total = sum(seq_lens)
+    device = run_device()
+    return (
+        torch.randn(total, heads, dim_nope + dim_pe, dtype=dtype, device=device),
+        torch.randn(total, heads, dim_nope, dtype=dtype, device=device),
+        torch.randn(total, dim_pe, dtype=dtype, device=device),
+        torch.randn(total, heads, dim_v, dtype=dtype, device=device),
+        torch.tensor(
+            [0, *torch.tensor(seq_lens).cumsum(0).tolist()],
+            dtype=torch.int32,
+            device=device,
+        ),
+    )
+
+
+def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm_scale=None):
+    """Expand the shared rope half to every head, then attend per request in float32.
+
+    The score block of a whole request is quadratic in its length, so query rows
+    and heads are taken a slab at a time; each row still sees its whole key
+    axis, so the numbers are those of the unsplit form.
+    """
+    # Bound the temporary score tensor's memory without changing the reference result.
+    heads_per_chunk = 8
+    rows_per_chunk = 1024
+    heads = q.shape[1]
+    scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
+    bounds = cu_seqlens.tolist()
+    out = torch.empty_like(q[..., :dim_v])
+    lse = torch.empty(q.shape[0], heads, dtype=torch.float32, device=q.device)
+    for start, end in zip(bounds, bounds[1:], strict=False):
+        span = end - start
+        key = torch.cat(
+            [k_nope[start:end], k_pe[start:end, None].expand(-1, heads, -1)], dim=-1
+        ).float()
+        value = v[start:end].float()
+        rows = torch.arange(span, device=q.device)
+        for h0 in range(0, heads, heads_per_chunk):
+            h1 = min(h0 + heads_per_chunk, heads)
+            for r0 in range(0, span, rows_per_chunk):
+                r1 = min(r0 + rows_per_chunk, span)
+                scores = (
+                    torch.einsum(
+                        "shd,nhd->hsn",
+                        q[start + r0 : start + r1, h0:h1].float(),
+                        key[:, h0:h1],
+                    )
+                    * scale
+                )
+                if is_causal:
+                    visible = rows[None, :] <= rows[r0:r1, None]
+                    scores = scores.masked_fill(~visible[None], float("-inf"))
+                out[start + r0 : start + r1, h0:h1] = torch.einsum(
+                    "hsn,nhd->shd", scores.softmax(-1), value[:, h0:h1]
+                ).to(q.dtype)
+                lse[start + r0 : start + r1, h0:h1] = scores.logsumexp(-1).T
+    return out, lse
+
+
+class MlaVarlenWorkload(WorkloadBase):
+    """Packed MLA prefill, including its FP32 log-sum-exp output."""
+
+    def __init__(
+        self, seq_lens, heads, dim_nope, dim_pe, dim_v, dtype, is_causal=True, sm_scale=None
+    ):
+        self.seq_lens, self.heads = seq_lens, heads
+        self.dim_nope, self.dim_pe, self.dim_v = dim_nope, dim_pe, dim_v
+        self.dtype, self.is_causal, self.sm_scale = dtype, is_causal, sm_scale
+
+    def gen_inputs(self):
+        return mla_varlen_inputs(
+            self.seq_lens, self.heads, self.dim_nope, self.dim_pe, self.dim_v, self.dtype
+        )
+
+    def ref_program(self, *inputs):
+        return mla_varlen_reference(
+            *inputs, is_causal=self.is_causal, dim_v=self.dim_v, sm_scale=self.sm_scale
+        )
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, assert_close
+
+        tolerance = 2e-2 if inputs[0].dtype == torch.bfloat16 else 4e-3
+
+        def validate(got, expected):
+            assert_close(got[0], expected[0], atol=tolerance, rtol=tolerance)
+            assert_close(got[1], expected[1], atol=2e-3, rtol=2e-3)
+
+        return Custom(validate, "storage-dtype attention output and FP32 log-sum-exp")

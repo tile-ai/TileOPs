@@ -357,8 +357,7 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetInferenceFwdOp()
-    # One token over a 128-wide state puts the output at 5e-2, which the prefill tolerance
-    # covers whole; the measured agreement is 4e-9, and exact from a zero state.
+    # The workload preserves the single-step 4e-8 bound (measured error 4e-9).
     test.check(op, *inputs)
     test.check(op, *inputs[:4])
 
@@ -421,7 +420,6 @@ def test_deltanet_decode_multi_step(
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
     op = DeltaNetRecurrentFwdOp(tune=tune)
-    tols = decode_verification(dtype).tolerance({})
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -439,8 +437,8 @@ def test_deltanet_decode_multi_step(
         with torch.no_grad():
             o_op, state_op = op(q, k, v, beta, state_op)
 
-        torch.testing.assert_close(o_op, o_ref, **tols)
-        torch.testing.assert_close(state_op, state_ref, **tols)
+        compare_outputs(o_op, o_ref, decode_verification(dtype))
+        compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
 @pytest.mark.sm90
@@ -473,7 +471,6 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
     op = DeltaNetRecurrentFwdOp(tune=False, target=BUILTIN)
-    tols = decode_verification(dtype).tolerance({})
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -494,8 +491,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
         (kernel,) = op.built_kernels("deltanet_decode").values()
         assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
 
-        torch.testing.assert_close(o_op, o_ref, **tols)
-        torch.testing.assert_close(state_op, state_ref, **tols)
+        compare_outputs(o_op, o_ref, decode_verification(dtype))
+        compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
 @pytest.mark.cuda_only

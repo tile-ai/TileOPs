@@ -11,7 +11,8 @@ from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
-from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload
+from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload, norm_verification
+from workloads.numerics import compare_outputs
 
 register_compile_contract(RMSNormFwdOp)
 
@@ -89,10 +90,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
-        f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
 
 
 class RMSNorm3DFixture(FixtureBase):
@@ -122,10 +120,7 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
 
     y = op(x, weight)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), (
-        f"3D test failed, max err: {(y - y_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
 
 
 @pytest.mark.cuda_only
@@ -280,13 +275,6 @@ class FusedAddRMSNormFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float16:
-        return 1e-2, 1e-2
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @FusedAddRMSNormFixture
 def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormTest(m, n, dtype)
@@ -322,13 +310,8 @@ def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight)
 
     y, residual_out = op(x, residual, weight)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
-        f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
+    compare_outputs(residual_out, add_ref, norm_verification(dtype))
 
 
 class FusedAddRMSNorm3DFixture(FixtureBase):
@@ -357,13 +340,8 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     y_ref, add_ref = test.ref_program(x, residual, weight)
 
     y, residual_out = op(x, residual, weight)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
-        f"3D y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, atol=atol, rtol=rtol), (
-        f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
-    )
+    compare_outputs(y, y_ref, norm_verification(dtype))
+    compare_outputs(residual_out, add_ref, norm_verification(dtype))
 
 
 @pytest.mark.cuda_only

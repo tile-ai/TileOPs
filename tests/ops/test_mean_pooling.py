@@ -4,7 +4,6 @@ from typing import List, Optional
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
@@ -14,13 +13,6 @@ from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index
 
 class MeanPoolingTest(MeanPoolingWorkload, TestBase):
     pass
-
-
-def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Compare by cosine similarity: a long chunk sum accumulates in fp32 and stores in the
-    input dtype, so an elementwise tolerance is the wrong instrument."""
-    cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
-    assert cos_sim.min() > 0.99, f"cosine similarity too low: {cos_sim.min().item()}"
 
 
 class MeanPoolingFixture(FixtureBase):

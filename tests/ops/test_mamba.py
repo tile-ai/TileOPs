@@ -23,11 +23,13 @@ from workloads.mamba import (
     SSDStatePassingFwdFixture,
     SSDStatePassingFwdWorkload,
     cb_producer_fwd_ref,
-    da_cumsum_fwd_ref,
+    coupling_verification,
     mamba2_fwd_ref,
+    mamba2_verification,
     ssd_chunk_state_fwd_ref,
+    ssd_decode_result,
 )
-from workloads.numerics import assert_close
+from workloads.numerics import assert_close, compare_outputs
 
 
 @pytest.mark.parametrize(
@@ -59,7 +61,7 @@ def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype,
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
     out = op(C_mat, B_mat)
-    assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    compare_outputs(out, ref, coupling_verification())
 
 
 @pytest.mark.smoke
@@ -76,7 +78,7 @@ def test_cb_producer_fwd_noncontiguous():
     assert not B_mat.is_contiguous()
     ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
     out = SSDChunkCouplingFwdOp(chunk_len)(C_mat, B_mat)
-    assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    compare_outputs(out, ref, coupling_verification())
 
 
 class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
@@ -135,16 +137,8 @@ def test_da_cumsum_fwd_padded_head_tile():
     dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device=run_device())
     A = -torch.rand(n_heads, dtype=torch.float32, device=run_device())
 
-    dt_out, dA_cumsum = op(dt, A)
-    ref_dt, ref_cumsum = da_cumsum_fwd_ref(
-        dt,
-        A,
-        num_chunks,
-        chunk_len,
-        dtype=torch.float32,
-    )
-    torch.testing.assert_close(dt_out, ref_dt, atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(dA_cumsum, ref_cumsum, atol=1e-5, rtol=1e-5)
+    test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
+    test.check(op, dt, A, None)
 
 
 class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
@@ -203,11 +197,8 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     out = op(x, Bmat, dt, dA_cumsum, seq_idx)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
 
-    from workloads.numerics import assert_close
-
-    atol = 1e-3
-    rtol = 1e-3
-    assert_close(out, ref, atol=atol, rtol=rtol)
+    workload = SSDChunkStateFwdWorkload(b, c, Q, h, p, n, g, dtype, True)
+    compare_outputs(out, ref, workload.verification(x))
 
     # Pin the semantic: chunk 0 (seq_idx == -1 throughout) must be exactly zero;
     # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
@@ -219,7 +210,7 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     del poison
     out = op(x, Bmat, dt, dA_cumsum)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g)
-    assert_close(out, ref, atol=atol, rtol=rtol)
+    compare_outputs(out, ref, workload.verification(x))
 
 
 class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
@@ -265,19 +256,7 @@ class SSDDecodeTest(SSDDecodeWorkload, TestBase):
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
     op = SSDRecurrentFwdOp(tune=tune)
-    A, dt, x, B_in, C_in, state = test.gen_inputs()
-
-    # Run reference on a clone of state so the two runs start from the same point.
-    state_ref = state.clone()
-    y_ref = test.ref_program(A, dt, x, B_in, C_in, state_ref)
-
-    # Run kernel; state is updated in-place.
-    y_op = op(A, dt, x, B_in, C_in, state)
-
-    atol = 1e-3
-    rtol = 1e-3
-    assert_close(y_op, y_ref, atol=atol, rtol=rtol)
-    assert_close(state, state_ref, atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), runs=lambda *args: ssd_decode_result(op, *args))
 
 
 @pytest.mark.smoke
@@ -302,8 +281,7 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     dt_bias = torch.randn(n_heads, dtype=torch.float32, device=dev) * 0.1
 
     op = Mamba2FwdOp(chunk_size=chunk_size, dt_softplus=True)
-    y_op, _ = op(x, dt_raw, A, B, C, dt_bias=dt_bias)
-    y_ref, _ = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
+    got = op(x, dt_raw, A, B, C, dt_bias=dt_bias)
+    expected = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
 
-    atol = 1e-2 if dtype == torch.float16 else 2e-2
-    assert_close(y_op.float(), y_ref.float(), atol=atol, rtol=1e-3)
+    compare_outputs(got, expected, mamba2_verification(dtype))

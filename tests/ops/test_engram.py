@@ -43,13 +43,6 @@ class EngramGateConvBwdTest(EngramGateConvBwdWorkload, TestBase):
     pass
 
 
-def _ref_rmsnorm(x, w, eps=1e-6):
-    x_f = x.float()
-    rrms = (x_f**2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
-    normed = x_f * rrms * w.float()
-    return normed, rrms.squeeze(-1)
-
-
 class EngramGateConvBwdFixture(FixtureBase):
     PARAMS = [
         (

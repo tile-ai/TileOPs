@@ -14,14 +14,6 @@ from workloads.device import run_device
 from workloads.elementwise import LogicalCase, LogicalNotWorkload
 
 
-def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for boolean outputs."""
-    assert output.dtype == torch.bool, f"Expected bool dtype, got {output.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Bool mismatch: {(output != output_ref).sum().item()} elements differ"
-    )
-
-
 class LogicalTest(LogicalCase, TestBase):
     pass
 
@@ -114,10 +106,8 @@ def test_logical_broadcast(
     a = (torch.randn(*a_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
     b = (torch.randn(*b_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
     op = op_cls()
-    ref = ref_fn(a.bool(), b.bool())
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = LogicalTest(a.numel(), a.dtype, ref_fn)
+    test.check(op, a, b)
 
 
 @pytest.mark.smoke
@@ -128,10 +118,8 @@ def test_logical_and_bool_broadcast() -> None:
     a = torch.randint(0, 2, a_shape, device=run_device()).to(torch.bool)
     b = torch.randint(0, 2, b_shape, device=run_device()).to(torch.bool)
     op = LogicalAndFwdOp()
-    ref = torch.logical_and(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = LogicalTest(a.numel(), a.dtype, torch.logical_and)
+    test.check(op, a, b)
 
 
 class LogicalFixture(FixtureBase):
@@ -230,7 +218,5 @@ def test_logical_int_bool_matrix(
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = LogicalTest(a.numel(), a.dtype, ref_fn)
+    test.check(op, a, b)

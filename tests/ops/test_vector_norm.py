@@ -12,8 +12,8 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.device import run_device
-from workloads.numerics import assert_close
-from workloads.reduction import VectorNormCase
+from workloads.numerics import compare_outputs
+from workloads.reduction import VectorNormCase, vector_norm_verification
 
 
 class VectorNormBasicFixture(FixtureBase):
@@ -110,19 +110,6 @@ class _TailBlockVectorNormKernel(VectorNormKernel):
         }
 
 
-def _get_tolerances(dtype: torch.dtype):
-    """Return (atol, rtol) for the given dtype."""
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    # fp16/bf16 have larger rounding errors
-    return 1e-2, 1e-2
-
-
-def _norm_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float, rtol: float):
-    """Comparison with configurable tolerance."""
-    assert_close(output, output_ref, atol=atol, rtol=rtol)
-
-
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
     return torch.randn(m, n * 2, dtype=dtype, device=run_device())
@@ -166,8 +153,7 @@ def test_l1_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=1, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm3DFixture
@@ -176,8 +162,7 @@ def test_l1_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm4DFixture
@@ -186,8 +171,7 @@ def test_l1_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm1DFixture
@@ -196,8 +180,7 @@ def test_l1_1d(n: int, dtype: torch.dtype) -> None:
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y.view_as(ref), ref, atol=atol, rtol=rtol)
+    compare_outputs(y.view_as(ref), ref, vector_norm_verification(dtype))
 
 
 @VectorNormBasicFixture
@@ -214,8 +197,7 @@ def test_l2_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=2, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm3DFixture
@@ -224,8 +206,7 @@ def test_l2_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm4DFixture
@@ -234,8 +215,7 @@ def test_l2_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm1DFixture
@@ -244,8 +224,7 @@ def test_l2_1d(n: int, dtype: torch.dtype) -> None:
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y.view_as(ref), ref, atol=atol, rtol=rtol)
+    compare_outputs(y.view_as(ref), ref, vector_norm_verification(dtype))
 
 
 @VectorNormBasicFixture
@@ -262,8 +241,7 @@ def test_inf_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm3DFixture
@@ -272,8 +250,7 @@ def test_inf_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm4DFixture
@@ -282,8 +259,7 @@ def test_inf_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNorm1DFixture
@@ -292,8 +268,7 @@ def test_inf_1d(n: int, dtype: torch.dtype) -> None:
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y.view_as(ref), ref, atol=atol, rtol=rtol)
+    compare_outputs(y.view_as(ref), ref, vector_norm_verification(dtype))
 
 
 # NaN propagation regression tests (inf norm)
@@ -331,8 +306,7 @@ def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
     assert y[0].isnan().item(), f"Row 0 should be NaN, got {y[0]}"
     assert y[1].isnan().item(), f"Row 1 should be NaN, got {y[1]}"
     # Finite rows should match reference
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y[2:], ref[2:], atol=atol, rtol=rtol)
+    compare_outputs(y[2:], ref[2:], vector_norm_verification(dtype))
 
 
 # Spec tests: dim=0, dim=1, keepdim=True
@@ -362,8 +336,7 @@ def test_spec_dim0(op_kind: str, dtype: torch.dtype) -> None:
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNormSpecFixture
@@ -374,8 +347,7 @@ def test_spec_dim1_3d(op_kind: str, dtype: torch.dtype) -> None:
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=1).to(dtype)
     y = op(x)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNormSpecFixture
@@ -387,8 +359,7 @@ def test_spec_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=-1, keepdim=True).to(dtype)
     y = op(x)
     assert y.shape == ref.shape, f"Expected shape {ref.shape}, got {y.shape}"
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @VectorNormSpecFixture
@@ -400,8 +371,7 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0, keepdim=True).to(dtype)
     y = op(x)
     assert y.shape == ref.shape, f"Expected shape {ref.shape}, got {y.shape}"
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
@@ -509,8 +479,7 @@ def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
     ).to(dtype)
     y = op(x)
     assert y.shape == ref.shape
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @pytest.mark.smoke
@@ -533,8 +502,7 @@ def test_empty_dim_full_reduction_3d_dtypes(
     ).to(dtype)
     y = op(x)
     assert y.shape == ref.shape
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(y, ref, atol=atol, rtol=rtol)
+    compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
 @pytest.mark.cuda_only
@@ -611,8 +579,7 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
     op = _make_op(op_kind, dim=[0, 2])
     ords = {"l1": 1, "l2": 2, "inf": torch.inf}
     ref = torch.linalg.vector_norm(x.float(), ords[op_kind], (0, 2)).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert_close(op(x), ref, atol=atol, rtol=rtol)
+    compare_outputs(op(x), ref, vector_norm_verification(dtype))
 
 
 @pytest.mark.smoke

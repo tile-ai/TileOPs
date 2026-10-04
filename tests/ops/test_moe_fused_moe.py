@@ -9,7 +9,6 @@ Covers:
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import (
@@ -18,6 +17,8 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
+from workloads.moe import moe_verification, ref_fused_topk, ref_routed_experts
+from workloads.numerics import compare_outputs
 
 # vLLM optional import
 
@@ -32,47 +33,6 @@ except ImportError:
 
 
 # Reference implementations
-
-
-def _ref_moe_ffn(
-    hidden_states: torch.Tensor,  # [T, H]
-    w_gate_up: torch.Tensor,  # [E, 2*F, H]
-    w_down: torch.Tensor,  # [E, H, F]
-    topk_weights: torch.Tensor,  # [T, K] float32
-    topk_ids: torch.Tensor,  # [T, K] int64
-) -> torch.Tensor:
-    """PyTorch reference: per-expert GEMM (memory-efficient, no O(T*K*2F*H) alloc)."""
-    T, H = hidden_states.shape
-    E = w_gate_up.shape[0]
-    ffn_size = w_gate_up.shape[1] // 2
-
-    output = torch.zeros(T, H, dtype=torch.float32, device=hidden_states.device)
-    for e in range(E):
-        mask = topk_ids == e
-        if not mask.any():
-            continue
-        t_idx, k_idx = mask.nonzero(as_tuple=True)
-        h = hidden_states[t_idx].float()
-        gate_up = h @ w_gate_up[e].float().t()
-        act = F.silu(gate_up[:, :ffn_size]) * gate_up[:, ffn_size:]
-        down = act @ w_down[e].float().t()
-        weights = topk_weights[t_idx, k_idx].float().unsqueeze(-1)
-        output.index_add_(0, t_idx, down * weights)
-    return output.to(hidden_states.dtype)
-
-
-def _ref_kimi_routing(
-    gating_output: torch.Tensor,
-    correction_bias: torch.Tensor | None,
-    top_k: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch Kimi K2 routing: sigmoid → biased topk → gather original weights."""
-    scores = gating_output.float().sigmoid()
-    tmp = (scores + correction_bias.float().unsqueeze(0)) if correction_bias is not None else scores
-    topk_ids = tmp.topk(top_k, dim=-1, sorted=False).indices
-    topk_weights = scores.gather(1, topk_ids)
-    topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    return topk_weights, topk_ids
 
 
 # Test fixture — Qwen3 config
@@ -205,9 +165,9 @@ def test_fused_moe_qwen3(
     # Reference using the same FusedTopKFwdOp routing
     fk = FusedTopKFwdOp(top_k, scoring_func, renormalize)
     topk_weights, topk_ids = fk(gating)
-    ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
+    ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
-    torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    compare_outputs(out_nopad, ref, moe_verification(2))
 
     # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
     if (
@@ -277,10 +237,10 @@ def test_fused_moe_deterministic(case):
     )
     fk = FusedTopKFwdOp(tk, "softmax", False)
     topk_weights, topk_ids = fk(gating)
-    ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
+    ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
     first = op(hidden, gating, w_gate_up, w_down)
-    torch.testing.assert_close(first.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    compare_outputs(first, ref, moe_verification(2))
     for i in range(reps):
         out = op(hidden, gating, w_gate_up, w_down)
         assert torch.equal(out, first), (
@@ -425,11 +385,11 @@ def test_fused_moe_kimi(
     # Reference using FusedTopKFwdOp for consistent routing
     fk = FusedTopKFwdOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
-    ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
+    ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
     if routed_scaling_factor != 1.0:
         ref = ref * routed_scaling_factor
 
-    torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    compare_outputs(out_nopad, ref, moe_verification(2))
 
 
 # correction_bias routing precision
@@ -450,7 +410,7 @@ def test_correction_bias_routing_precision() -> None:
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
 
-    ref_weights, ref_ids = _ref_kimi_routing(logits, bias, K)
+    ref_weights, ref_ids = ref_fused_topk(logits, bias, K, "sigmoid", True)
 
     op = FusedTopKFwdOp(top_k=K, scoring_func="sigmoid", renormalize=True)
     tw, ti = op(logits, bias)

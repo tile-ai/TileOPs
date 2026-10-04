@@ -99,7 +99,10 @@ def test_consumers_do_not_override_workload_contract():
             == {}
         )
     offenders = []
-    for path in (REPO_ROOT / "benchmarks/ops").glob("*.py"):
+    for path in [
+        *(REPO_ROOT / "benchmarks/ops").glob("*.py"),
+        *(REPO_ROOT / "tests/ops").glob("*.py"),
+    ]:
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Call)
@@ -107,4 +110,19 @@ def test_consumers_do_not_override_workload_contract():
                 and node.func.id in {"Exact", "Partial", "Custom"}
             ):
                 offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, offenders
+
+
+@pytest.mark.smoke
+def test_consumers_do_not_define_private_numerical_comparators():
+    offenders = []
+    for directory in ("tests/ops", "benchmarks/ops"):
+        for path in (REPO_ROOT / directory).glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (
+                    isinstance(node, ast.FunctionDef)
+                    and not node.name.startswith("test_")
+                    and ("compare" in node.name or "tolerance" in node.name)
+                ):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.name}")
     assert not offenders, offenders

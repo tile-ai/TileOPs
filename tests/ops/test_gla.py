@@ -27,8 +27,9 @@ from workloads.linear_attention.gla import (
     gla_autograd_bwd_torch,
     gla_decode_torch,
     gla_fwd_chunked_torch,
+    inference_verification,
 )
-from workloads.numerics import compare_outputs, reference_tolerance
+from workloads.numerics import compare_outputs
 
 try:
     from fla.ops.gla import chunk_gla
@@ -464,7 +465,6 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
     cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
     seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
     op = GLAInferenceFwdOp(scale)
-    tolerance = reference_tolerance(dtype)
     for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
         o, final_state = op(q, k, v, g, state, cu_seqlens, host)
         ref_o, ref_state = chunk_gla(
@@ -477,8 +477,7 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
             output_final_state=True,
             cu_seqlens=cu_seqlens,
         )
-        torch.testing.assert_close(o, ref_o, **tolerance)
-        torch.testing.assert_close(final_state, ref_state, **tolerance)
+        compare_outputs((o, final_state), (ref_o, ref_state), inference_verification(dtype))
 
 
 @pytest.mark.smoke
@@ -508,9 +507,7 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
         q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
     )
     assert torch.isfinite(o).all()
-    tolerance = reference_tolerance(dtype)
-    torch.testing.assert_close(o, ref_o, **tolerance)
-    torch.testing.assert_close(final_state, ref_state, **tolerance)
+    compare_outputs((o, final_state), (ref_o, ref_state), inference_verification(dtype))
 
 
 @pytest.mark.smoke
@@ -540,13 +537,6 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAInferenceFwdOp()
-    tolerance = reference_tolerance(dtype)
-    state_tolerance = tolerance.copy()
-    if dtype == torch.float16:
-        # FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:
-        # max absolute error is 1.908e-4 for output and 2.300e-3 for FP32 state.
-        # Only final-state atol needs an exception; output and rtol stay standard.
-        state_tolerance["atol"] = 2.5e-3
     test.check(
         op,
         *inputs,
@@ -576,8 +566,7 @@ def test_gla_dense_decode_matches_fla(
     _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp(scale)
-    # One token puts the output at 4e-1 against a measured 3e-8, which the dtype's standard
-    # tolerance covers whole.
+    # The workload checks FP32 state at 3e-7 and permits one output rounding unit.
     test.check(op, *inputs)
 
 
@@ -615,9 +604,7 @@ def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     for t in range(steps):
         o, state = op(*(x[:, t : t + 1] for x in (q, k, v, g)), state)
         outputs.append(o)
-    tolerance = reference_tolerance(torch.bfloat16)
-    torch.testing.assert_close(torch.cat(outputs, dim=1), ref_o, **tolerance)
-    torch.testing.assert_close(state, ref_state, **tolerance)
+    compare_outputs((torch.cat(outputs, dim=1), state), (ref_o, ref_state), test.verification(q))
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):
@@ -666,7 +653,6 @@ def test_gla_decode_multi_step(
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
     op = GLARecurrentFwdOp(tune=tune)
-    tols = decode_verification(dtype).tolerance({})
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -684,8 +670,8 @@ def test_gla_decode_multi_step(
         with torch.no_grad():
             o_op, state_op = op(q, k, v, gk, state_op)
 
-        torch.testing.assert_close(o_op, o_ref, **tols)
-        torch.testing.assert_close(state_op, state_ref, **tols)
+        compare_outputs(o_op, o_ref, decode_verification(dtype))
+        compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
 @pytest.mark.cuda_only
@@ -734,6 +720,4 @@ def test_gla_decode_vs_fla(
     )
     o_fla = o_fla.squeeze(1).to(dtype)
 
-    tols = decode_verification(dtype).tolerance({})
-    torch.testing.assert_close(o_tile, o_fla, **tols)
-    torch.testing.assert_close(s_tile, s_fla.to(dtype), **tols)
+    compare_outputs((o_tile, s_tile), (o_fla, s_fla.to(dtype)), decode_verification(dtype))

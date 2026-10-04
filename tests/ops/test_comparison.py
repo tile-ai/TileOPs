@@ -13,14 +13,6 @@ from workloads.device import run_device
 from workloads.elementwise import ComparisonCase
 
 
-def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for boolean outputs."""
-    assert output.dtype == torch.bool, f"Expected bool dtype, got {output.dtype}"
-    assert torch.equal(output, output_ref), (
-        f"Bool mismatch: {(output != output_ref).sum().item()} elements differ"
-    )
-
-
 class ComparisonTest(ComparisonCase, TestBase):
     pass
 
@@ -197,10 +189,8 @@ def test_comparison_broadcast(
     a = torch.randn(*a_shape, dtype=dtype, device=run_device())
     b = torch.randn(*b_shape, dtype=dtype, device=run_device())
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, ref_fn)
+    test.check(op, a, b)
 
 
 # L4 edge case: eq with some equal elements
@@ -274,10 +264,8 @@ def test_comparison_integer_dtype_eq(dtype: torch.dtype) -> None:
     n = 4_096
     a, b = _gen_int_inputs(n, dtype)
     op = EqFwdOp()
-    ref = torch.eq(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, torch.eq)
+    test.check(op, a, b)
 
 
 # Op-coverage axis: at a fixed integer dtype, every comparison op must
@@ -302,10 +290,8 @@ def test_comparison_op_int32(op_cls, ref_fn) -> None:
     n = 4_096
     a, b = _gen_int_inputs(n, torch.int32)
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, ref_fn)
+    test.check(op, a, b)
 
 
 class ComparisonBoolDtypeFixture(FixtureBase):
@@ -327,10 +313,8 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
     a = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     b = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     op = op_cls()
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
+    test = ComparisonTest(a.numel(), a.dtype, ref_fn)
+    test.check(op, a, b)
 
 
 # Dtype rejection tests (dtypes outside the manifest dtype union: fp8 and

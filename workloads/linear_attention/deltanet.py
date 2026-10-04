@@ -170,7 +170,9 @@ class DeltaNetInferenceWorkload(WorkloadBase):
         )
 
     def verification(self, *inputs):
-        return inference_verification(inputs[0].dtype)
+        return inference_verification(
+            inputs[0].dtype, decode=inputs[0].shape[1] == 1, l2norm=self.l2norm
+        )
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
@@ -388,7 +390,11 @@ class DeltaNetInferenceCall(CallWorkload):
         )
 
     def verification(self, *inputs):
-        return inference_verification(inputs[0].dtype)
+        return inference_verification(
+            inputs[0].dtype,
+            decode=inputs[0].shape[1] == 1,
+            l2norm=self.call.ix["use_qk_l2norm_in_kernel"],
+        )
 
 
 def decode_verification(dtype):
@@ -398,8 +404,25 @@ def decode_verification(dtype):
     return Exact(atol=tol, rtol=tol)
 
 
-def inference_verification(dtype):
+def inference_verification(dtype, *, decode=False, l2norm=False):
     from workloads.numerics import Custom, assert_close
+
+    # FLA materializes normalized Q/K in the input dtype; our fused decode
+    # keeps them in FP32. That path includes input rounding, even for one token.
+    if decode and not l2norm:
+
+        def validate_decode(got, expected):
+            # A single step keeps its state in FP32: prefill's accumulation bound
+            # does not apply. The stored output may straddle a half/bfloat rounding
+            # boundary after two FP32 reduction orders; allow one adjacent value,
+            # then apply the original absolute bound to the remaining error.
+            actual, target = got[0], expected[0]
+            adjacent = torch.nextafter(target, actual)
+            residual = (actual.float() - adjacent.float()).abs()
+            assert_close(residual, torch.zeros_like(residual), atol=4e-8, rtol=0)
+            assert_close(got[1], expected[1], atol=4e-8, rtol=4e-8)
+
+        return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
 
     tol = {torch.float32: 4e-08, torch.float16: 1e-3, torch.bfloat16: 1.6e-2}[dtype]
     state_tol = 0.003 if dtype == torch.float16 else tol

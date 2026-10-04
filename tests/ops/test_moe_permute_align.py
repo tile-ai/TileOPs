@@ -10,10 +10,10 @@ Reference: SGLang moe_align_block_size
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.device import run_device
-from workloads.moe import MoePermuteAlignWorkload, moe_call, ref_permute_align
+from workloads.moe import MoePermuteAlignWorkload, moe_call
 
 
 class MoePermuteAlignFixture(FixtureBase):
@@ -53,72 +53,8 @@ class MoePermuteAlignFixture(FixtureBase):
 # Custom comparator
 
 
-def _permute_align_compare(
-    outputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    outputs_ref: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    block_size: int,
-    num_experts: int,
-    numel: int,
-) -> None:
-    """Order-insensitive comparison for permute_align outputs.
-
-    sorted_token_ids comparison is per-expert token-set (parallel atomicAdd
-    makes intra-expert ordering non-deterministic).
-
-    Args:
-        outputs: (sorted_token_ids, expert_ids, num_tokens_post_pad) from kernel.
-        outputs_ref: same tuple from reference implementation.
-        block_size: GEMM tile size used to compute num_blocks.
-        num_experts: number of experts.
-        numel: total (token, expert) assignments; also the sentinel value.
-    """
-    sorted_ids, expert_ids, num_post_pad = outputs
-    ref_sorted, ref_expert, ref_num = outputs_ref
-
-    n = ref_num.item()
-    num_blocks = n // block_size
-
-    assert num_post_pad.item() == ref_num.item(), (
-        f"num_tokens_post_pad mismatch: got {num_post_pad.item()}, expected {ref_num.item()}"
-    )
-    assert torch.equal(expert_ids[:num_blocks].cpu(), ref_expert[:num_blocks].cpu()), (
-        f"expert_ids mismatch:\n  got: {expert_ids[:num_blocks].cpu()}"
-        f"\n  ref: {ref_expert[:num_blocks].cpu()}"
-    )
-
-    got_sorted = sorted_ids[:n].cpu().tolist()
-    # Use the reference expert_ids (verified equal above) for both slices so
-    # the per-expert token sets are computed consistently.
-    ref_eids = ref_expert[:num_blocks].cpu().tolist()
-    for e in range(num_experts):
-        got_tokens = sorted(
-            tok
-            for b, eid in enumerate(ref_eids)
-            if eid == e
-            for tok in got_sorted[b * block_size : (b + 1) * block_size]
-            if tok < numel
-        )
-        ref_tokens = sorted(
-            tok
-            for b, eid in enumerate(ref_eids)
-            if eid == e
-            for tok in ref_sorted[:n].cpu().tolist()[b * block_size : (b + 1) * block_size]
-            if tok < numel
-        )
-        assert got_tokens == ref_tokens, (
-            f"Expert {e} token set mismatch:\n  got: {got_tokens}\n  ref: {ref_tokens}"
-        )
-
-    # Padding slots must all equal sentinel
-    padding_mask = sorted_ids[:n].cpu() >= numel
-    assert (sorted_ids[:n].cpu()[padding_mask] == numel).all(), (
-        "Padding slots must equal sentinel (numel)"
-    )
-
-
 @MoePermuteAlignFixture
 def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
-    numel = total_tokens * top_k
     call = moe_call(
         "MoEPermuteAlignFwdOp",
         T=total_tokens,
@@ -130,10 +66,7 @@ def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
     inputs = test.gen_inputs()
 
-    outputs = tuple(op(*inputs))
-    outputs_ref = tuple(test.ref_program(*inputs))
-
-    _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
+    TestBase.check(test, op, *inputs)
 
 
 @pytest.mark.smoke
@@ -186,15 +119,20 @@ def test_permute_align_skewed_distribution() -> None:
     uninitialised. This test catches that regression.
     """
     total_tokens, top_k, num_experts, block_size = 32, 4, 8, 16
-    numel = total_tokens * top_k
     # All tokens go to expert 0
     topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device=run_device())
 
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
-    outputs = tuple(op(topk_ids))
-    outputs_ref = tuple(ref_permute_align(topk_ids, block_size, num_experts))
-
-    _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
+    workload = MoePermuteAlignWorkload(
+        moe_call(
+            "MoEPermuteAlignFwdOp",
+            T=total_tokens,
+            K=top_k,
+            num_experts=num_experts,
+            block_size=block_size,
+        )
+    )
+    TestBase.check(workload, op, topk_ids)
 
 
 @pytest.mark.smoke

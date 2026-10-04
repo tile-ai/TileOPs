@@ -2,7 +2,6 @@
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
@@ -32,19 +31,6 @@ class MHCPreFixture(FixtureBase):
             ],
         ),
     ]
-
-
-def _compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Compare bf16 outputs by cosine similarity and float32 ones elementwise.
-
-    The float32 ``h_post`` rows can saturate to near-zero vectors, whose cosine is
-    undefined, so they are compared by value instead.
-    """
-    if output.dtype == torch.float32:
-        torch.testing.assert_close(output, output_ref, atol=1e-2, rtol=1e-2)
-        return
-    cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
-    assert cos_sim.min() > 0.99, f"cosine similarity too low: {cos_sim.min().item()}"
 
 
 @MHCPreFixture

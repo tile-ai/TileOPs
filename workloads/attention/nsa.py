@@ -394,7 +394,7 @@ class NsaTopkWorkload(WorkloadBase):
         return selected
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, zeroed_input
+        from workloads.numerics import Custom, NegativeControl
 
         def validate(got, expected):
             assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
@@ -414,7 +414,14 @@ class NsaTopkWorkload(WorkloadBase):
         return Custom(
             validate,
             "valid top-k indices and selected scores",
-            controls=(zeroed_input(0, "query-zeroed"),),
+            # Selecting every visible block is independent of Q, and tied scores
+            # can keep their order after zeroing Q. An invalid index is a fault
+            # for every nonempty selection, including those valid corner cases.
+            controls=(
+                NegativeControl(
+                    "invalid-block-index", lambda ref, args: torch.full_like(ref(*args), -2)
+                ),
+            ),
         )
 
 

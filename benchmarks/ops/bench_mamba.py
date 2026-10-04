@@ -28,6 +28,7 @@ from workloads.mamba import (
     SSDChunkStateFwdCall,
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
+    ssd_decode_result,
 )
 
 # Optional mamba_ssm Triton baselines
@@ -206,9 +207,9 @@ def test_ssd_decode_bench(call) -> None:
         return run
 
     functors = {
-        "tileops": reset_state(op),
-        "mamba": reset_state(mamba_fn),
-        FLASHINFER_TAG: reset_state(flashinfer_fn),
+        "tileops": reset_state(lambda *args: ssd_decode_result(op, *args)),
+        "mamba": reset_state(lambda *args: ssd_decode_result(mamba_fn, *args)),
+        FLASHINFER_TAG: reset_state(lambda *args: ssd_decode_result(flashinfer_fn, *args)),
         "torch-ref": reset_state(workload.ref_program),
         TORCH_COMPILE_TAG: reset_state(compiled_reference(workload.ref_program)),
     }

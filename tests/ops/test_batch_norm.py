@@ -22,7 +22,7 @@ from workloads.norm import (
     BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,
-    batch_norm_fwd_ref,
+    batch_norm_forward_result,
 )
 
 
@@ -105,44 +105,17 @@ class BatchNormBwdFixture(FixtureBase):
 @BatchNormFwdFixture
 def test_batch_norm_fwd(N, C, spatial, dtype, training):
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
-    x, weight, bias, running_mean, running_var = test.gen_inputs()
-
-    # Clone before op call so reference sees the same initial state.
-    running_mean_ref = running_mean.clone()
-    running_var_ref = running_var.clone()
-
+    inputs = test.gen_inputs()
     op = BatchNormFwdOp(training=training)
-    # Manifest input order: (x, running_mean, running_var, weight, bias).
-    y = op(x, running_mean, running_var, weight, bias)
-
-    ref_y, ref_rm, ref_rv = batch_norm_fwd_ref(
-        x, weight, bias, running_mean_ref, running_var_ref, training=training
-    )
-
-    # Agreement at the storage dtype's precision; both sides accumulate in float32.
-    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
-    max_err = (y.float() - ref_y.float()).abs().max()
-    assert torch.allclose(y.float(), ref_y.float(), atol=atol, rtol=rtol), (
-        f"fwd mismatch (training={training}): max_err={max_err:.4e}"
-    )
+    test.check(op, *inputs, runs=lambda *args: batch_norm_forward_result(op, *args))
 
     if training:
-        # allclose is masked when running_mean starts near the batch mean; check determinism.
-        rm2, rv2 = running_mean_ref.clone(), running_var_ref.clone()
-        op(x, rm2, rv2, weight, bias)
-        det_err = (running_mean.float() - rm2.float()).abs().max()
-        assert torch.equal(running_mean, rm2) and torch.equal(running_var, rv2), (
-            f"running stats non-deterministic across runs: max_err={det_err:.4e}"
-        )
-
-        rm_err = (running_mean.float() - ref_rm.float()).abs().max()
-        assert torch.allclose(running_mean.float(), ref_rm.float(), atol=atol, rtol=rtol), (
-            f"running_mean mismatch: max_err={rm_err:.4e}"
-        )
-        rv_err = (running_var.float() - ref_rv.float()).abs().max()
-        assert torch.allclose(running_var.float(), ref_rv.float(), atol=atol, rtol=rtol), (
-            f"running_var mismatch: max_err={rv_err:.4e}"
-        )
+        # Repeat from the same initial statistics to detect update races separately.
+        x, mean, var, weight, bias = inputs
+        mean2, var2 = mean.clone(), var.clone()
+        op(x, mean, var, weight, bias)
+        op(x, mean2, var2, weight, bias)
+        assert torch.equal(mean, mean2) and torch.equal(var, var2)
 
 
 @BatchNormBwdFixture

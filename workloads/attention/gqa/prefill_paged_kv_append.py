@@ -49,6 +49,15 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         self.rope_base = rope_base
         self.sm_scale = sm_scale
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        # Quantized KV adds its dequantization error to the attention result.
+        if inputs[3].dtype == torch.float8_e4m3fn:
+            return Exact(atol=8e-2, rtol=2e-2)
+        atol, rtol = (5e-3, 1e-5) if inputs[0].dtype == torch.float16 else (8e-2, 1e-2)
+        return Exact(atol=atol, rtol=rtol)
+
     @property
     def total_q(self) -> int:
         return sum(self.q_lens)
