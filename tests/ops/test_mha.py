@@ -158,6 +158,18 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 
 
 @pytest.mark.smoke
+def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
+    test = MhaDecodePagedTest(2, 8, 1, 1024, 64, 256, False, torch.float16)
+    q, k, v, lengths, table = test.gen_inputs()
+    lengths.fill_(512)
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256)
+    for width in (2, 4):
+        block_table = table[:, :width].contiguous()
+        output = op(q, k, v, lengths, block_table)
+        test._maxdiff_cosine_compare(output, test.ref_program(q, k, v, lengths, block_table))
+
+
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels

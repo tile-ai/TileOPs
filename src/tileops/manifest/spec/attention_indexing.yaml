@@ -3,6 +3,7 @@
 FP8LightningIndexerFwdOp:
   family: attention
   status: implemented
+  ref_api: deep_gemm.fp8_mqa_logits  # gitleaks:allow (public API path)
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, H: Dim, G: Dim, D: Dim, first: Dim, T: "DType[bfloat16 | float8_e4m3fn]", seq_lens: "Seq[Int]"}
     params:
@@ -40,6 +41,7 @@ FP8LightningIndexerFwdOp:
   - {B: 1, S: 4096, H: 64, D: 128, S_kv: 32768, G: 1, seq_lens: [32768], first: 28672, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: ds-index-q4096-ctx32768}
   - {B: 1, S: 4096, H: 64, D: 128, S_kv: 65536, G: 1, seq_lens: [65536], first: 61440, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: ds-index-q4096-ctx65536}
   - {B: 1, S: 4096, H: 64, D: 128, S_kv: 131072, G: 1, seq_lens: [131072], first: 126976, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: ds-index-q4096-ctx131072}
+  - {B: 1, S: 1, H: 64, D: 128, S_kv: 16384, G: 1, seq_lens: [16384], first: 16383, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: ds-v32-indexer-decode-b1}
   roofline:
     func: tileops.perf.formulas.fp8_lightning_indexer_roofline
 
@@ -49,6 +51,7 @@ TopKSelectFwdOp:
   # rest with S_kv, which selects nothing.
   family: attention
   status: implemented
+  ref_api: flashinfer.top_k
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:
@@ -65,5 +68,6 @@ TopKSelectFwdOp:
   workloads:
   - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 1024, label: prefill-k1024}
   - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 2048, label: prefill-k2048}
+  - {B: 1, S: 1, S_kv: 16384, G: 1, topk: 2048, label: ds-v32-topk-decode-b1}
   roofline:
     func: tileops.perf.formulas.topk_selector_roofline

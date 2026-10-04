@@ -341,17 +341,39 @@ class NsaTopkWorkload(WorkloadBase):
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
     ) -> torch.Tensor:
-        return _nsa_topk_torch(
-            self,
-            q,
-            k_cmp,
-            self.selected_block_num,
-            self.bs,
-            self.scale,
-            offsets,
-            token_indices,
-            chunk_offsets,
+        inputs = q, k_cmp, offsets, chunk_offsets, token_indices
+        result = torch.full(
+            (q.shape[0], k_cmp.shape[1], self.selected_block_num),
+            -1,
+            dtype=torch.int32,
+            device=q.device,
         )
+        for tokens, scores in self._scores(*inputs):
+            top = scores.topk(min(self.selected_block_num, scores.shape[-1]), dim=-1)
+            result[tokens, :, : top.indices.shape[-1]] = torch.where(
+                top.values > -float("inf"), top.indices.to(torch.int32), -1
+            )
+        return result
+
+    def _scores(self, q, k_cmp, offsets, chunk_offsets, _token_indices):
+        for i in range(len(offsets) - 1):
+            bos, eos = offsets[i].item(), offsets[i + 1].item()
+            boc = chunk_offsets[i].item()
+            n_chunk = (eos - bos + self.bs - 1) // self.bs
+            yield (
+                slice(bos, eos),
+                _nsa_topk_scores(q[bos:eos], k_cmp[boc : boc + n_chunk], self.bs, self.scale),
+            )
+
+    def selection_scores(self, indices: torch.Tensor, *inputs) -> torch.Tensor:
+        """Reference importance at each selected block, with -inf for padding."""
+        selected = torch.empty_like(indices, dtype=torch.float32)
+        for tokens, scores in self._scores(*inputs):
+            picked = indices[tokens].long()
+            selected[tokens] = scores.gather(-1, picked.clamp_min(0)).masked_fill(
+                picked < 0, -float("inf")
+            )
+        return selected
 
 
 def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):
@@ -404,85 +426,23 @@ def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, sca
     return o.to(test.dtype), lse.to(test.dtype)
 
 
-def _nsa_topk_torch(
-    test, q, k_cmp, block_counts, block_size, scale, offsets, token_indices, chunk_offsets
-):
-    """PyTorch reference for NSA top-k block selection."""
-    _ = token_indices
-    q = q.squeeze(0) if q.dim() == 4 else q
-    k_cmp = k_cmp.squeeze(0) if k_cmp.dim() == 4 else k_cmp
-    c_seq_len, heads, dim = q.shape
-    head_kv = k_cmp.shape[1]
+def _nsa_topk_scores(q, k_cmp, block_size, scale):
+    """Independent FP32 importance scores for one sequence, with FLA's Q scaling."""
+    n_token, heads, dim = q.shape
+    n_chunk, head_kv, _ = k_cmp.shape
     group = heads // head_kv
-    selected_block_num = (
-        block_counts if isinstance(block_counts, int) else block_counts.max().item()
-    )
-    bs = block_size
-    LOG2_E = 1.44269504
-    scale_log2 = scale * LOG2_E
-
-    device = q.device
-    accum_dtype = torch.float32
-
-    # The kernel ranks bs candidates at a time against a pool that retains the best bs
-    # seen so far, so its first bs slots are the ranking over every candidate and the
-    # rest are whichever batch it read last. Only the first bs are a defined answer.
-    if selected_block_num > bs:
-        raise ValueError("selected_block_num must be no larger than block_size")
-
-    # A slot no candidate block reaches reads as -1.
-    block_indices = torch.full(
-        (c_seq_len, head_kv, selected_block_num), -1, dtype=torch.int32, device=device
-    )
-
-    for i_n in range(len(offsets) - 1):
-        bos, eos = offsets[i_n].item(), offsets[i_n + 1].item()
-        boc = chunk_offsets[i_n].item()
-        n_token = eos - bos
-        # Blocks the last token ranks; every earlier token ranks a prefix of them.
-        n_chunk = (n_token - 1) // bs + 1
-
-        i_t = torch.arange(n_token, device=device)
-        nc = ((i_t + 1) // bs)[:, None, None, None]  # blocks closed before the token
-        curr = (i_t // bs)[:, None, None, None]  # the block the token sits in
-        o_c = torch.arange(n_chunk, device=device)
-
-        # FP32 dot products preserve close scores before ranking.
-        q_seq = q[bos:eos].view(n_token, head_kv, group, dim).to(accum_dtype)
-        k_seq = k_cmp[boc : boc + n_chunk].to(accum_dtype)
-        acc_s = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n")
-
-        # The log-sum-exp over the closed blocks, which the kernel's running softmax
-        # arrives at the same way. A token with none of them attends to nothing, and
-        # taking exp2 only where a block is attended keeps that row out of NaN.
-        attended = acc_s.masked_fill(o_c >= nc, float("-inf"))
-        scores_max = attended.max(dim=-1, keepdim=True)[0]
-        reached = attended > float("-inf")
-        shifted = torch.where(reached, (attended - scores_max) * scale_log2, 0.0)
-        logsum = torch.where(reached, torch.exp2(shifted), 0.0).sum(dim=-1, keepdim=True)
-        b_lse = torch.where(nc > 0, (scores_max * scale_log2 + torch.log2(logsum)) / LOG2_E, 0.0)
-
-        # A closed block ranks by the share of the token's attention it holds. The block
-        # the token sits in scores group, which no closed block can reach.
-        importance = torch.where(
-            o_c == curr,
-            1.0,
-            torch.where(o_c < curr, torch.exp2((acc_s * scale - b_lse) * LOG2_E), 0.0),
-        ).sum(dim=2)
-
-        # Quantizing the score and adding the block ordinal makes the ranking total, so
-        # equal scores break the same way here and in the kernel.
-        eps, score_scale = 1e-5, 1e12
-        sort_key = (importance / eps).round().to(torch.float64) * eps * score_scale + o_c
-        sort_key = sort_key.masked_fill(o_c > curr.squeeze(-1), float("-inf"))
-
-        n_pick = min(selected_block_num, n_chunk)
-        top = sort_key.topk(n_pick, dim=-1)
-        block_indices[bos:eos, :, :n_pick] = torch.where(
-            top.values > float("-inf"), top.indices.to(torch.int32), -1
-        )
-
-    return block_indices
+    q_scaled = (q * scale).float().view(n_token, head_kv, group, dim)
+    scores = einsum(q_scaled, k_cmp.float(), "t h g d, n h d -> t h g n")
+    position = torch.arange(n_token, device=q.device)[:, None, None, None]
+    block = torch.arange(n_chunk, device=q.device)
+    closed = (position + 1) // block_size
+    current = position // block_size
+    lse = scores.masked_fill(block >= closed, -float("inf")).logsumexp(-1, keepdim=True)
+    lse = torch.where(closed > 0, lse, 0.0)
+    priority = (block == 0) | (block == current - 1) | (block == current)
+    probability = (scores.masked_fill(block >= current, -float("inf")) - lse).exp()
+    importance = torch.where(priority, 1.0, probability).sum(dim=2)
+    return importance.masked_fill(block > current.squeeze(-1), -float("inf"))
 
 
 class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):

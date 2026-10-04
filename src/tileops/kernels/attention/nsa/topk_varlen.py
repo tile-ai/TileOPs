@@ -25,7 +25,6 @@ def _nsa_topk_varlen_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
-    scale_log2 = scale * LOG2E
     head_kv = heads // group
     # The shared-memory tiles span the whole head dimension: a narrower tile
     # would silently truncate the QK contraction.
@@ -48,20 +47,25 @@ def _nsa_topk_varlen_kernel(
                     v2 = values[i * 2 + 1]
                     idx1 = indices[i * 2]
                     idx2 = indices[i * 2 + 1]
-                    is_equal = v1 == v2
-                    if v1 < v2 or (is_equal and idx1 < idx2):
-                        values[i * 2], values[i * 2 + 1] = v2, v1
-                        indices[i * 2], indices[i * 2 + 1] = idx2, idx1
+                    swap = v1 < v2 or ((v1 == v2) and idx1 < idx2)
+                    values[i * 2] = T.if_then_else(swap, v2, v1)
+                    values[i * 2 + 1] = T.if_then_else(swap, v1, v2)
+                    indices[i * 2] = T.if_then_else(swap, idx2, idx1)
+                    indices[i * 2 + 1] = T.if_then_else(swap, idx1, idx2)
                 T.sync_threads()
-                for i in T.Parallel((size - 1) // 2):
+                # Full lanes avoid divergent barriers for bs=64; the last pair
+                # compares an element with itself.
+                for i in T.Parallel(size // 2):
+                    right = T.min(i * 2 + 2, size - 1)
                     v1 = values[i * 2 + 1]
-                    v2 = values[i * 2 + 2]
+                    v2 = values[right]
                     idx1 = indices[i * 2 + 1]
-                    idx2 = indices[i * 2 + 2]
-                    is_equal = v1 == v2
-                    if v1 < v2 or (is_equal and idx1 < idx2):
-                        values[i * 2 + 1], values[i * 2 + 2] = v2, v1
-                        indices[i * 2 + 1], indices[i * 2 + 2] = idx2, idx1
+                    idx2 = indices[right]
+                    swap = v1 < v2 or ((v1 == v2) and idx1 < idx2)
+                    values[i * 2 + 1] = T.if_then_else(swap, v2, v1)
+                    values[right] = T.if_then_else(swap, v1, v2)
+                    indices[i * 2 + 1] = T.if_then_else(swap, idx2, idx1)
+                    indices[right] = T.if_then_else(swap, idx1, idx2)
                 T.sync_threads()
 
         @T.prim_func
@@ -88,6 +92,9 @@ def _nsa_topk_varlen_kernel(
                 nc = (i_t + 1) // bs
 
                 T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
+                # FLA scales Q in the input dtype before the FP32 dot product.
+                for g, d in T.Parallel(group, bk):
+                    q_shared[g, d] = q_shared[g, d] * scale
 
                 b_lse = T.alloc_fragment([group], accum_dtype)
                 acc_s = T.alloc_fragment([group, bc], accum_dtype)
@@ -126,16 +133,17 @@ def _nsa_topk_varlen_kernel(
                     T.reduce_max(acc_s, scores_max, dim=1, clear=True)
 
                     for i in T.Parallel(group):
+                        scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                         scores_scale[i] = T.if_then_else(
                             scores_max[i] > -T.infinity(accum_dtype),
-                            T.exp2(scores_max_prev[i] * scale_log2 - scores_max[i] * scale_log2),
+                            T.exp2((scores_max_prev[i] - scores_max[i]) * LOG2E),
                             0.0,
                         )
 
                     for i, j in T.Parallel(group, bc):
                         acc_s[i, j] = T.if_then_else(
                             acc_s[i, j] > -T.infinity(accum_dtype),
-                            T.exp2(acc_s[i, j] * scale_log2 - scores_max[i] * scale_log2),
+                            T.exp2((acc_s[i, j] - scores_max[i]) * LOG2E),
                             0.0,
                         )
 
@@ -147,7 +155,7 @@ def _nsa_topk_varlen_kernel(
                     if nc == 0 or logsum[i] <= 0:
                         b_lse[i] = 0.0
                     else:
-                        b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
+                        b_lse[i] = scores_max[i] + T.log2(logsum[i]) / LOG2E
 
                 # step2: Importance Scores alignment and streaming Top-K
                 T.sync_threads()
@@ -176,14 +184,18 @@ def _nsa_topk_varlen_kernel(
 
                     for g_idx, c_idx in T.Parallel(group, bc):
                         curr_blk = i_tk * bc + c_idx
-                        is_curr = curr_blk == i_t // bs
+                        is_priority = (
+                            (curr_blk == 0)
+                            or (curr_blk == i_t // bs - 1)
+                            or (curr_blk == i_t // bs)
+                        )
                         is_hist = curr_blk < i_t // bs
                         imp = T.if_then_else(
-                            is_curr,
+                            is_priority,
                             1.0,
                             T.if_then_else(
                                 is_hist,
-                                T.exp2((acc_s[g_idx, c_idx] * scale - b_lse[g_idx]) * LOG2E),
+                                T.exp2((acc_s[g_idx, c_idx] - b_lse[g_idx]) * LOG2E),
                                 0.0,
                             ),
                         )
@@ -192,11 +204,11 @@ def _nsa_topk_varlen_kernel(
                     b_i_current = T.alloc_fragment([bc], accum_dtype)
                     T.reduce_sum(acc_s, b_i_current, dim=0)
 
-                    # Quantized keys give a total order; pairwise epsilon ties do not.
+                    # Rank raw scores; equal scores prefer the larger block id.
                     for c_in in T.Parallel(bc):
                         pool_scores_s[bc + c_in] = T.if_then_else(
                             c_in < curr_bc_tk,
-                            T.round(b_i_current[c_in] / 1e-5),
+                            b_i_current[c_in],
                             -T.infinity(accum_dtype),
                         )
                         pool_indices_s[bc + c_in] = T.if_then_else(

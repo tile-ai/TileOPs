@@ -66,7 +66,7 @@ def _nsa_cmp_fwd_varlen_kernel(
 
                 T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
 
-                b_o = T.alloc_fragment([group, bv], dtype)
+                b_o = T.alloc_fragment([group, bv], accum_dtype)
                 b_lse = T.alloc_fragment([group], dtype)
                 acc_s = T.alloc_fragment([group, bc], accum_dtype)
                 acc_s_cast = T.alloc_fragment([group, bc], dtype)

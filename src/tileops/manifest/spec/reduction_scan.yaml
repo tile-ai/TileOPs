@@ -1,7 +1,7 @@
 # The cumulative scans, which the `reduction` module exports.
 
 CumsumFwdOp:
-  ref_api: torch.cumsum
+  ref_api: flag_gems.ops.cumsum
   family: reduction
   status: implemented
 

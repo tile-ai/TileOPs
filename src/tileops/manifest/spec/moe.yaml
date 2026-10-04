@@ -1,6 +1,7 @@
 MoEPermuteAlignFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm._custom_ops.moe_align_block_size
   signature:
     forall: {T: Dim, K: Dim}
     params:
@@ -42,6 +43,7 @@ MoEPermuteAlignFwdOp:
 FusedMoEExpertsFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.fused_moe.fused_experts
   signature:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
@@ -84,6 +86,7 @@ FusedMoEExpertsFwdOp:
 IndexedExpertMLPFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.fused_moe.fused_experts
   signature:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
@@ -116,6 +119,7 @@ IndexedExpertMLPFwdOp:
 FusedTopKFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.router.fused_topk_router.fused_topk
   signature:
     forall: {T: Dim, E: Dim, G: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -144,6 +148,8 @@ FusedTopKFwdOp:
   - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
   - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
   - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
+  - {T: 1, E: 256, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: ds-v3-router-decode-b1}
+  - {T: 32, E: 256, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: ds-v3-router-decode-b32}
   roofline:
     # Per token: scoring (sigmoid 4 per logit; softmax 3, plus the row sum and a divide per
     # kept weight unless renormalizing), top_k compare-and-selects per logit, the bias add,
@@ -185,6 +191,8 @@ FusedMoEFwdOp:
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-decode"}
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
+  - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-moe-decode-b1}
+  - {T: 32, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-moe-decode-b32}
   roofline:
     # The routed weights follow the routing the experts stage receives.
     func: "tileops.perf.formulas.fused_moe_fwd_roofline"
@@ -197,6 +205,7 @@ FusedMoEFwdOp:
 MoEPrePermuteFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.moe_permute_unpermute.moe_permute
   signature:
     types:
       LayoutMetadata:
@@ -229,6 +238,7 @@ MoEPrePermuteFwdOp:
   - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
   - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
+  - {T: 1, H: 2048, K: 8, num_local_experts: 16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-permute-b1}
   roofline:
     # A gather: no arithmetic.
     flops: "0"
@@ -236,6 +246,7 @@ MoEPrePermuteFwdOp:
 MoEGroupedGemmFwdOp:
   family: moe
   status: implemented
+  ref_api: torch._grouped_mm
   signature:
     types:
       Rows:
@@ -283,6 +294,8 @@ MoEGroupedGemmFwdOp:
   - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-swiglu"}
     # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
   - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-ep8-masked"}
+  - {P: 8, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-decode}
+  - {P: 256, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-routed256}
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_roofline
 
@@ -341,6 +354,7 @@ MoEExpertMLPFwdOp:
 MoEPostPermuteFwdOp:
   family: moe
   status: implemented
+  ref_api: vllm.model_executor.layers.fused_moe.moe_permute_unpermute.moe_unpermute
   signature:
     types:
       Rows:
@@ -375,6 +389,7 @@ MoEPostPermuteFwdOp:
   - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: H=7168, K=8.
   - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
+  - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-unpermute}
   roofline:
     # The epilogue's scale is a float field of an object the language does not read.
     func: "tileops.perf.formulas.moe_post_permute_roofline"
@@ -484,6 +499,7 @@ FusedMoESharedExpertFwdOp:
 MoEGroupedGemmFP8FwdOp:
   family: moe
   status: spec-only
+  ref_api: deep_gemm.m_grouped_fp8_gemm_nt_contiguous
   signature:
     types:
       Rows:

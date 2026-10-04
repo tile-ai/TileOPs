@@ -74,7 +74,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
 - **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
 - `status` decides which code-dependent checks run, never which methods the signature generates: a class with an entry gets them all.
-- **`ref_api`.** Optional qualified name of the API the op follows semantically. The validator checks its form, and that it resolves when its module imports.
+- **`ref_api`.** Optional qualified name of the API the op follows semantically; benchmark baseline selection remains independent.
 
 ## Signature
 
@@ -207,6 +207,8 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 
 ## Workloads
 
+Workloads prioritize representative LLM scenarios within the CI runtime budget.
+
 ### Rows
 
 A workload row determines one call. Its keys are construction parameter names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
@@ -301,7 +303,7 @@ The checks:
 
 - All checks are decidable; every evaluation either succeeds or names the failing declaration.
 - Code-dependent checks are skipped for `spec-only` entries ([Layer Boundaries](#layer-boundaries)).
-- CI runs the validator over the whole manifest.
+- CI checks the whole manifest: preflight validates static contracts, and nightly requires every registered reference API to resolve in the runner image.
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
 - Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change.
 - Diagnostic output does not depend on hash order: every set entering a diagnostic is sorted, unknown keys by `repr`.

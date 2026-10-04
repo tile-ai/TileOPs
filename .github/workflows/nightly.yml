@@ -24,6 +24,25 @@ env:
   MAX_JOBS: "64"
 
 jobs:
+  validate-refs:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    timeout-minutes: 15
+    runs-on: [self-hosted, tile-ops, shared]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify nightly runner environment
+        run: bash scripts/ci/verify_nightly_runner.sh
+
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
+
+      - name: Validate all registered reference APIs
+        run: python3 scripts/validate_manifest.py --levels refs --verbose
+
   # =========================================================================
   # Phase 1 — Benchmark (exclusive GPU access for accurate profiling)
   #

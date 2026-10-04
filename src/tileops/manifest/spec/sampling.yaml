@@ -10,6 +10,7 @@ TopKMaskFwdOp:
   # k[b] >= V is unchanged (FlashInfer top_k_mask_logits).
   family: sampling
   status: implemented
+  ref_api: flashinfer.sampling.top_k_mask_logits
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
@@ -36,6 +37,7 @@ MinPMaskFwdOp:
   # min_p = 1 keeps only the logits equal to the row max.
   family: sampling
   status: implemented
+  ref_api: vllm.v1.sample.logits_processor.builtin.MinPLogitsProcessor
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -65,6 +67,7 @@ TopPMaskFwdOp:
   # probability survives the row's float32 sum.
   family: sampling
   status: implemented
+  ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -92,6 +95,7 @@ TopKTopPMaskFwdOp:
   # over the tokens top-k keeps. 0 <= p <= 1 is the caller's obligation, as for TopPMaskFwdOp.
   family: sampling
   status: implemented
+  ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
@@ -119,6 +123,7 @@ SamplingFromProbsFwdOp:
   # caller's obligation.
   family: sampling
   status: implemented
+  ref_api: flashinfer.sampling.sampling_from_probs
   signature:
     forall: {B: Dim, V: Dim}
     inputs:
@@ -151,6 +156,7 @@ ChainSpeculativeSamplingFwdOp:
   # obligation.
   family: sampling
   status: implemented
+  ref_api: flashinfer.sampling.chain_speculative_sampling
   signature:
     forall: {B: Dim, N: Dim, V: Dim}
     inputs:

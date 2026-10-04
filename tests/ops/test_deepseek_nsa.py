@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
@@ -145,6 +145,10 @@ class NsaCmpFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.smoke,
                 ),
+                # BF16 MMA requires FP32 accumulation.
+                pytest.param(
+                    1, 65, 16, 64, 64, 16, 0.125, 32, torch.bfloat16, False, marks=pytest.mark.smoke
+                ),
             ],
         ),
     ]
@@ -169,38 +173,31 @@ def test_nsa_cmp_fwd_varlen_op(
     inputs = test.gen_inputs()
 
     op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
-    test.check(op, *inputs, atol=4e-3, rtol=1e-5)
+    tolerance = (
+        standard_tolerance(dtype) if dtype == torch.bfloat16 else {"atol": 4e-3, "rtol": 1e-5}
+    )
+    test.check(op, *inputs, **tolerance)
 
 
 class NsaTopkTest(NsaTopkWorkload, TestBase):
-    def check_topk(self, op, *inputs, threshold: float = 1e-3) -> None:
-        """Custom check for topk indices (not floating point closeness)."""
-        outputs_ref = self.ref_program(*inputs)
-        outputs = op(*inputs)
-
-        if isinstance(outputs_ref, torch.Tensor):
-            outputs_ref = (outputs_ref,)
-        if isinstance(outputs, torch.Tensor):
-            outputs = (outputs,)
-
-        for out, ref in zip(outputs, outputs_ref, strict=True):
-            print("[Top-K Indices Comparison - TileLang vs PyTorch]")
-
-            indices_match = torch.all(out == ref)
-            if indices_match:
-                print("Top-K Indices Matched!")
-            else:
-                mismatch_count = (out != ref).sum().item()
-                total_count = out.numel()
-                mismatch_ratio = mismatch_count / total_count
-
-                assert mismatch_ratio <= threshold, (
-                    f"Top-K mismatch ratio {mismatch_ratio:.3%} exceeds threshold {threshold:.3%}"
-                )
-                print(
-                    f"Top-K Indices Mismatched slightly within threshold: "
-                    f"{mismatch_ratio * 100:.3f}%"
-                )
+    def check_topk(self, op, *inputs) -> torch.Tensor:
+        """Check selection scores, allowing ties, with exact index invariants."""
+        got, expected = op(*inputs), self.ref_program(*inputs)
+        assert got.shape == expected.shape and got.dtype == expected.dtype
+        assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
+        current = inputs[-1][:, 1, None, None] // self.bs
+        assert ((got >= -1) & (got <= current)).all(), "non-causal or invalid block id"
+        ordered = got.sort(-1).values
+        assert not ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(), (
+            "duplicate selected block"
+        )
+        torch.testing.assert_close(
+            self.selection_scores(got, *inputs),
+            self.selection_scores(expected, *inputs),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        return got
 
 
 class NsaTopkFixture(FixtureBase):
@@ -209,30 +206,17 @@ class NsaTopkFixture(FixtureBase):
             "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype, tune",
             [
                 pytest.param(
-                    5,
-                    1024,
-                    32,
-                    128,
-                    16,
-                    1,
-                    16,
-                    32,
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.smoke,
-                ),
+                    5, 1024, 32, 128, 16, 1.0, 16, 32, dtype, False, marks=pytest.mark.smoke
+                )
+                for dtype in (torch.float16, torch.bfloat16)
+            ]
+            + [
                 pytest.param(
-                    3,
-                    512,
-                    32,
-                    128,
-                    16,
-                    1,
-                    16,
-                    32,
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.full,
+                    3, 512, 32, 128, 16, 1.0, 16, 32, torch.float16, False, marks=pytest.mark.full
+                ),
+                # Two sort pairs per lane must not put barriers under a partial-lane mask.
+                pytest.param(
+                    1, 65, 16, 64, 16, 0.125, 8, 64, torch.float16, False, marks=pytest.mark.full
                 ),
             ],
         ),
@@ -280,15 +264,20 @@ def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
 
 
 @pytest.mark.smoke
-def test_nsa_topk_close_scores_have_a_total_order() -> None:
-    """Nearby scores use quantized ties, not a non-transitive epsilon comparator."""
-    workload = NsaTopkWorkload(1, 256, 16, 16, 16, 1.0, 8, 32, torch.float16)
+def test_nsa_topk_ranks_unquantized_scores() -> None:
+    """Priority blocks survive; the remaining slot takes the highest raw score."""
+    workload = NsaTopkTest(1, 256, 16, 16, 16, 1.0, 4, 32, torch.float16)
     q, k, *metadata = workload.gen_inputs()
     q = torch.zeros_like(q)
     q[-1].fill_(1)
     k = torch.empty_like(k)
     k.copy_(torch.arange(k.shape[0] - 1, -1, -1, device=k.device)[:, None, None] * 2**-24)
-    op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=8, bs=32)
+    op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=4, bs=32)
+    result = workload.check_topk(op, q, k, *metadata)
+    # Sub-1e-5 gaps must still select block 1, alongside priority blocks 0, 6, 7.
     torch.testing.assert_close(
-        op(q, k, *metadata), workload.ref_program(q, k, *metadata), rtol=0, atol=0
+        result[-1, 0].sort().values,
+        torch.tensor([0, 1, 6, 7], dtype=torch.int32, device=q.device),
+        rtol=0,
+        atol=0,
     )

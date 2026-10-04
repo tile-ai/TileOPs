@@ -3,6 +3,7 @@
 EngramGateConvFwdOp:
   family: sequence_modeling
   status: implemented
+  ref_api: workloads.sequence_modeling.engram.EngramGateConvFwdWorkload.ref_program
 
   signature:
     forall: {T: "DType[float16 | bfloat16]"}
@@ -43,6 +44,7 @@ EngramGateConvFwdOp:
 EngramGateConvBwdOp:
   family: sequence_modeling
   status: implemented
+  ref_api: workloads.sequence_modeling.engram.EngramGateConvBwdWorkload.ref_program
 
   signature:
     forall: {T: "DType[float16 | bfloat16]"}
@@ -91,6 +93,7 @@ EngramDecodeFwdOp:
   # max_conv_len; `new_conv_state` is always max_conv_len long.
   family: sequence_modeling
   status: implemented
+  ref_api: workloads.sequence_modeling.engram.EngramDecodeWorkload.ref_program
 
   signature:
     forall: {L: Dim, T: "DType[float16 | bfloat16]"}
@@ -132,6 +135,7 @@ MHCPreFwdOp:
   # is C = n * c_x wide.
   family: sequence_modeling
   status: implemented
+  ref_api: workloads.sequence_modeling.mhc.MHCPreWorkload.ref_program
 
   signature:
     forall: {B: Dim, C: Dim, Q: Dim}
@@ -166,6 +170,7 @@ MHCPreFwdOp:
 MHCPostFwdOp:
   family: sequence_modeling
   status: implemented
+  ref_api: workloads.sequence_modeling.mhc.MHCPostWorkload.ref_program
 
   signature:
     forall: {B: Dim, n: Dim, c_x: Dim}

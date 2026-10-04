@@ -6,6 +6,7 @@ Levels:
   signature — the signature, its workload rows and effects; for an implemented entry, the
               class's `__init__`, `forward` and sub-op and kernel declarations
   bench     — every benchmark file takes its calls from the manifest and its roofline off the op
+  refs      — import every registered reference API in the nightly image (opt-in)
 
 Usage:
     python scripts/validate_manifest.py [--verbose] [--levels schema,signature,bench] [--check-op NAME]
@@ -32,6 +33,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = str(REPO_ROOT / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from tileops.manifest import types_document  # noqa: E402
 from tileops.manifest.plan import check_adts as _check_adts  # noqa: E402
@@ -49,7 +52,8 @@ from tileops.manifest.workload import check_workloads as _check_workloads  # noq
 
 MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest" / "spec"
 
-ALL_LEVELS = frozenset({"schema", "signature", "bench"})
+DEFAULT_LEVELS = frozenset({"schema", "signature", "bench"})
+ALL_LEVELS = DEFAULT_LEVELS | {"refs"}
 
 _VALID_COMPOSITION_KINDS = {"composite"}
 _COMPOSITION_KEYS = {"kind", "stages"}
@@ -301,22 +305,31 @@ def _family_errors(op_name: str, entry: dict) -> list[str]:
     return []
 
 
-def _ref_api_errors(op_name: str, ref: str) -> list[str]:
-    """`ref_api` is a qualified name that resolves once its module imports."""
+def _ref_api_errors(op_name: str, ref: str, *, resolve: bool = False) -> list[str]:
+    """Check the path's syntax; nightly additionally imports the reference."""
+    where = f"[{'refs' if resolve else 'schema'}] {op_name}: ref_api {ref!r}"
     parts = ref.split(".")
     if len(parts) < 2 or not all(p.isidentifier() for p in parts):
-        return [f"[schema] {op_name}: ref_api {ref!r} is not a qualified name"]
-    for i in range(len(parts) - 1, 0, -1):
-        try:
-            target = importlib.import_module(".".join(parts[:i]))
-        except ImportError:
-            continue
-        for attr in parts[i:]:
-            if not hasattr(target, attr):
-                return [f"[schema] {op_name}: ref_api {ref!r} does not resolve"]
-            target = getattr(target, attr)
+        return [f"{where} is not a qualified name"]
+    if not resolve:
         return []
-    return [f"[schema] {op_name}: ref_api {ref!r}: no prefix of it is an importable module"]
+    for i in range(len(parts) - 1, 0, -1):
+        module_name = ".".join(parts[:i])
+        try:
+            target = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            if exc.name == module_name or module_name.startswith(f"{exc.name}."):
+                continue
+            return [f"{where}: {type(exc).__name__}: {exc}"]
+        except Exception as exc:
+            return [f"{where}: {type(exc).__name__}: {exc}"]
+        try:
+            for attr in parts[i:]:
+                target = getattr(target, attr)
+        except Exception as exc:
+            return [f"{where} does not resolve: {type(exc).__name__}: {exc}"]
+        return []
+    return [f"{where}: no prefix of it is an importable module"]
 
 
 def _normal_default(value):
@@ -421,12 +434,16 @@ def validate_manifest(
     Returns ``(errors, warnings)``: errors are failures; warnings are advisory diagnostics.
     ``manifest_path=None`` loads the merged manifest from the ``tileops.manifest`` package
     (tests pass a temp file for synthetic single-file manifests). ``levels=None`` enables
-    every level. ``check_op`` scopes the entry checks to the named op.
+    the static levels; ``refs`` requires the nightly image's community packages.
+    ``check_op`` scopes the entry checks to the named op.
     """
     if repo_root is None:
         repo_root = REPO_ROOT
     if levels is None:
-        levels = ALL_LEVELS
+        levels = DEFAULT_LEVELS
+    if "refs" in levels:
+        # Reuse the benchmark guard: vLLM must register its ops before FlagGems.
+        import benchmarks.baselines  # noqa: F401
 
     if manifest_path is None:
         from tileops.manifest import load_manifest
@@ -462,6 +479,10 @@ def validate_manifest(
             print(f"  Checking {op_name}...")
         if not isinstance(entry, dict):
             all_errors.append(f"[schema] {op_name}: entry must be a mapping")
+            continue
+        if "refs" in levels and isinstance(entry.get("ref_api"), str):
+            all_errors.extend(_ref_api_errors(op_name, entry["ref_api"], resolve=True))
+        if not levels & {"schema", "signature"}:
             continue
         if "schema" in levels:
             all_errors.extend(_schema_errors(op_name, entry, ops))
@@ -539,7 +560,7 @@ def main() -> int:
     levels = _parse_levels(sys.argv)
     check_op = _parse_check_op(sys.argv)
 
-    level_label = ",".join(sorted(levels)) if levels else "all"
+    level_label = ",".join(sorted(levels if levels is not None else DEFAULT_LEVELS))
     check_op_label = f", check-op: {check_op}" if check_op else ""
     print(
         f"Validating {MANIFEST_DIR.relative_to(REPO_ROOT)}/*.yaml "

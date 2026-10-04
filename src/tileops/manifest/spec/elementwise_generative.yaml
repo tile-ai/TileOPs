@@ -5,6 +5,7 @@ AlibiFwdOp:
   # construction-time integer parameters.
   family: elementwise
   status: implemented
+  ref_api: workloads.elementwise.alibi_reference
 
   signature:
     params:
@@ -39,6 +40,7 @@ SinusoidalFwdOp:
   # from the construction-time integer parameters. d_model must be even.
   family: elementwise
   status: implemented
+  ref_api: workloads.elementwise.sinusoidal_reference
 
   signature:
     params:

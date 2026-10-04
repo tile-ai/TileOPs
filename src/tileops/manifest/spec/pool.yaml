@@ -514,6 +514,7 @@ MeanPoolingFwdOp:
   # not divide it.
   family: pool
   status: implemented
+  ref_api: fla.ops.utils.pooling.mean_pooling_fwd
 
   signature:
     types:

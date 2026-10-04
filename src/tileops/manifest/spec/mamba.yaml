@@ -18,6 +18,7 @@ SSDChunkCumsumFwdOp:
   # the float32 dt before dt_out is cast to out_dtype.
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_chunk_state._chunk_cumsum_fwd
   signature:
     forall: {B: Dim, S: Dim, H: Dim}
     params:
@@ -53,6 +54,7 @@ SSDChunkCouplingFwdOp:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n] for s <= l, else 0.
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_bmm._bmm_chunk_fwd
   signature:
     forall: {B: Dim, S: Dim, G: Dim, N: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -81,6 +83,7 @@ SSDChunkStateFwdOp:
   # mamba_ssm's _chunk_cumsum_fwd produces it).
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_chunk_state._chunk_state_fwd
   signature:
     forall: {B: Dim, NC: Dim, Q: Dim, H: Dim, P: Dim, G: Dim, N: Dim, T: "DType[float16 | bfloat16]", TD: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -116,6 +119,7 @@ SSDStatePassingFwdOp:
   # is the flattened d_head * d_state.
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_state_passing._state_passing_fwd
   signature:
     forall: {B: Dim, NC: Dim, H: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -142,6 +146,7 @@ SSDChunkScanFwdOp:
   # plus the causal intra-chunk term sum_{s <= l} cb[l, s] * exp(dA[l] - dA[s]) * dt[s] * x[s].
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_chunk_scan._chunk_scan_fwd
   signature:
     forall: {B: Dim, NC: Dim, Q: Dim, H: Dim, P: Dim, G: Dim, N: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -171,6 +176,7 @@ SSDRecurrentFwdOp:
   # fused here.
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.selective_state_update.selective_state_update
   signature:
     forall: {B: Dim, H: Dim, P: Dim, G: Dim, N: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -204,6 +210,7 @@ Mamba2FwdOp:
   # inter-chunk scan. The batch index is Bsz because B names a tensor.
   family: mamba
   status: implemented
+  ref_api: mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined
   signature:
     forall: {Bsz: Dim, S: Dim, H: Dim, P: Dim, G: Dim, N: Dim, T: "DType[float16 | bfloat16]"}
     params:
@@ -255,6 +262,7 @@ Mamba2FwdOp:
 CausalConv1dFwdOp:
   family: mamba
   status: spec-only
+  ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_fn
   signature:
     forall:
       B: Dim
@@ -292,6 +300,7 @@ CausalConv1dFwdOp:
 CausalConv1dUpdateFwdOp:
   family: mamba
   status: spec-only
+  ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_update
   signature:
     forall:
       B: Dim
@@ -328,6 +337,7 @@ SelectiveScanFwdOp:
   #   D d_inner   N d_state   G n_groups
   family: mamba
   status: spec-only
+  ref_api: mamba_ssm.ops.selective_scan_interface.selective_scan_fn
   signature:
     forall: {B: Dim, S: Dim, D: Dim, N: Dim, G: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
