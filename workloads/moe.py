@@ -318,9 +318,17 @@ class MoePostPermuteWorkload(CallWorkload):
         return out.to(dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
+        epilogue = self.call.params["epilogue"]
+        return post_permute_verification(
+            1.0 if epilogue is None else epilogue.routed_scaling_factor
+        )
 
-        return Exact(atol=2e-2, rtol=2e-2)
+
+def post_permute_verification(routed_scaling_factor=1.0):
+    """Routing reduction error scales with the public epilogue multiplier."""
+    from workloads.numerics import Exact
+
+    return Exact(atol=2e-2 * routed_scaling_factor, rtol=2e-2)
 
 
 def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:

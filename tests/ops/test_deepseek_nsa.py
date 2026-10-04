@@ -233,11 +233,9 @@ def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
     torch.manual_seed(1235)
     workload = NsaTopkWorkload(1, 512, 32, 64, 16, 1.0, 16, 32, torch.float16)
     q, k, *metadata = workload.gen_inputs()
-    torch.testing.assert_close(
+    assert torch.equal(
         workload.ref_program(q, k, *metadata),
         workload.ref_program(q.float(), k.float(), *metadata),
-        rtol=0,
-        atol=0,
     )
 
 
@@ -254,9 +252,7 @@ def test_nsa_topk_ranks_unquantized_scores() -> None:
     workload.check(op, q, k, *metadata)
     result = op(q, k, *metadata)
     # Sub-1e-5 gaps must still select block 1, alongside priority blocks 0, 6, 7.
-    torch.testing.assert_close(
+    assert torch.equal(
         result[-1, 0].sort().values,
         torch.tensor([0, 1, 6, 7], dtype=torch.int32, device=q.device),
-        rtol=0,
-        atol=0,
     )

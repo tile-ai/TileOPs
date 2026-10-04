@@ -28,7 +28,12 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
-from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call
+from workloads.moe import (
+    MoeExpertMLPWorkload,
+    MoeGroupedGemmWorkload,
+    moe_call,
+    post_permute_verification,
+)
 from workloads.numerics import compare_outputs
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
@@ -218,19 +223,23 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert inverse.shape == (tokens * top_k,)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
 
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
     assert pre.eval_roofline() == (0, 1616)
     assert post.eval_roofline() == (1024, 1600)
 
     # A routing scale other than one multiplies every output element once more.
     scaled = MoEPostPermuteFwdOp(layout, RoutingEpilogueSpec(routed_scaling_factor=2.0))
     output = scaled(expert_input, weights, inverse)
-    torch.testing.assert_close(output.float(), 2 * expected, rtol=2e-2, atol=4e-2)
+    compare_outputs(
+        output.float(),
+        2 * expected,
+        post_permute_verification(scaled.epilogue.routed_scaling_factor),
+    )
     assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
 
 
@@ -256,12 +265,12 @@ def test_staged_tight_optimized_shapes_round_trip(
     expert_input, physical_ends, inverse = pre(x, local_ids)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
-    torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
+    assert torch.equal(physical_ends, counts.cumsum(0).int())
     output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
 
 
 @pytest.mark.smoke
@@ -284,14 +293,14 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert inverse.shape == (tokens * top_k,)
 
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
-    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
+    assert torch.equal(expert_input[inverse.long()], x[token_rows])
     assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
-    torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
+    assert torch.count_nonzero(expert_input[8:]) == 0
 
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+    compare_outputs(output.float(), expected, post_permute_verification())
 
 
 @pytest.mark.cuda_only

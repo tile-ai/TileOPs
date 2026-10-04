@@ -29,7 +29,7 @@ from workloads.mamba import (
     ssd_chunk_state_fwd_ref,
     ssd_decode_result,
 )
-from workloads.numerics import assert_close, compare_outputs
+from workloads.numerics import compare_outputs
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,7 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
 
     # Pin the semantic: chunk 0 (seq_idx == -1 throughout) must be exactly zero;
     # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
-    assert_close(out[:, 0], torch.zeros_like(out[:, 0]), atol=0.0, rtol=0.0)
+    assert torch.count_nonzero(out[:, 0]) == 0
     assert out[:, 1].abs().max().item() > 0
 
     poison = torch.full((b, seq_len), -1, dtype=torch.int32, device="cuda")

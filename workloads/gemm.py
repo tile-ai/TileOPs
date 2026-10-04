@@ -612,3 +612,14 @@ class GemmW4A16BasisWorkload(GemmW4A16Workload):
         from workloads.numerics import Exact
 
         return Exact(atol=0, rtol=0)
+
+
+def w4a16_partition_verification():
+    """Compare K partitions of the same decoded weights, not a separate dequantizer.
+
+    Only FP32 partial-sum order changes. Keep the tighter partition consistency
+    bound separate from the GEMM reference's weight-narrowing error allowance.
+    """
+    from workloads.numerics import Exact
+
+    return Exact(atol=1e-5, rtol=2e-3)

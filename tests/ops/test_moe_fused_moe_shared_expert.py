@@ -90,7 +90,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
         renormalize=False,
     )
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
-    torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
+    assert torch.equal(routed_out, routed_ref)
 
 
 @pytest.mark.smoke
@@ -185,7 +185,7 @@ def test_fused_moe_shared_expert_tp():
         partial_sum += shared_partial.float()
 
         # routed_out is not affected by TP sharding of shared expert
-        torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
+        assert torch.equal(routed_out, routed_ref)
 
     # partial_sum vs per-shard float32 math reference (same computation path)
     compare_outputs(partial_sum, partial_sum_ref, moe_verification(1))

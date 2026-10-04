@@ -34,6 +34,7 @@ from workloads.gemm import (
     GemmWorkload,
     quantize_weight_int4,
     repack_w4a16_weight,
+    w4a16_partition_verification,
 )
 from workloads.numerics import compare_outputs
 
@@ -656,9 +657,11 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 
     assert torch.equal(zero, torch.tensor([[0], [15]], dtype=torch.uint8))
     assert torch.all(scale > 0)
-    fp16_scale_ulp = 2.0**-11
-    torch.testing.assert_close(dequantized[0].max(), weight[0].max(), rtol=fp16_scale_ulp, atol=0)
-    torch.testing.assert_close(dequantized[1].min(), weight[1].min(), rtol=fp16_scale_ulp, atol=0)
+    # Both groups span one unit including zero: their 15-step scale is known exactly.
+    expected_scale = torch.full_like(scale, 1 / 15)
+    assert torch.equal(scale, expected_scale)
+    assert dequantized[0].max() == 15 * expected_scale[0, 0].float()
+    assert dequantized[1].min() == -15 * expected_scale[1, 0].float()
 
 
 @pytest.mark.smoke
@@ -1261,7 +1264,7 @@ def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
 
     assert op.tune is False
     assert (kernel.config, kernel.m_pad, kernel.kernel, kernel._reduce) == state
-    torch.testing.assert_close(op(*inputs), expected, atol=0, rtol=0)
+    assert torch.equal(op(*inputs), expected)
 
     next_test = GemmW4A16Test(2, 1024, 8192, torch.float16)
     next_inputs = next_test.gen_inputs()
@@ -1324,8 +1327,8 @@ def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
     two_way = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 68})(*inputs)
     whole = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 0})(*inputs)
     # The FP32 partials of up to three CTAs are summed in a different order.
-    torch.testing.assert_close(streamed, whole, atol=1e-5, rtol=2e-3)
-    torch.testing.assert_close(two_way, whole, atol=1e-5, rtol=2e-3)
+    compare_outputs(streamed, whole, w4a16_partition_verification())
+    compare_outputs(two_way, whole, w4a16_partition_verification())
     compare_outputs(streamed, test.ref_program(*inputs), test.verification())
 
 
@@ -1343,7 +1346,7 @@ def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
 
     step = 64
     for start in range(0, packed.shape[1], step):
-        torch.testing.assert_close(
+        assert torch.equal(
             nibbles(repacked[:, start : start + step]),
             nibbles(packed[:, start : start + step]),
         )

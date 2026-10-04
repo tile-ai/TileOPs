@@ -484,7 +484,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
         y = op(x, running_mean, running_var, weight, bias)
         ref_y = _batch_norm_infer_ref(x, running_mean, running_var, weight, bias, op.eps)
-        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+        assert torch.equal(y.float(), ref_y.float())
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
@@ -529,7 +529,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
         y = op(x, running_mean, running_var, weight, bias)
         ref_y, _, _ = _batch_norm_train_ref(x, weight, bias, op.eps)
-        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+        assert torch.equal(y.float(), ref_y.float())
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1
@@ -582,9 +582,9 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         ref_grad_x, ref_grad_weight, ref_grad_bias = _batch_norm_bwd_ref(
             grad_out, x, weight, mean, rstd
         )
-        assert torch.allclose(grad_x.float(), ref_grad_x.float(), atol=0.0, rtol=0.0)
-        assert torch.allclose(grad_weight, ref_grad_weight, atol=0.0, rtol=0.0)
-        assert torch.allclose(grad_bias, ref_grad_bias, atol=0.0, rtol=0.0)
+        assert torch.equal(grad_x.float(), ref_grad_x.float())
+        assert torch.equal(grad_weight, ref_grad_weight)
+        assert torch.equal(grad_bias, ref_grad_bias)
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(list(op.iter_kernels())) == 1

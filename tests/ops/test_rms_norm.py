@@ -171,7 +171,7 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     graph.replay()
     torch.cuda.synchronize()
 
-    assert torch.allclose(static_out, expected, atol=1e-3, rtol=1e-3)
+    assert torch.equal(static_out, expected)
 
 
 @pytest.mark.smoke
@@ -182,7 +182,7 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
     x = torch.randn(64, 4096, dtype=torch.float16, device=run_device())
     weight = torch.randn(4096, dtype=torch.float16, device=run_device())
 
-    torch.testing.assert_close(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
+    assert torch.equal(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
 
 
 @pytest.mark.smoke
@@ -208,7 +208,7 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
     output = torch.compile(op, fullgraph=True)(x, weight)
 
     assert output.is_contiguous()
-    torch.testing.assert_close(output, op(x, weight))
+    assert torch.equal(output, op(x, weight))
 
 
 @pytest.mark.smoke
