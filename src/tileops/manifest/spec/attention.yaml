@@ -457,6 +457,7 @@ NSACompressedVarlenFwdOp:
 NSATopKVarlenFwdOp:
   family: attention
   status: implemented
+  ref_api: fla.ops.nsa.parallel.parallel_nsa_topk
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
@@ -476,8 +477,11 @@ NSATopKVarlenFwdOp:
     # The selection ranks at most one block's worth of chunks against its pool.
     - "0 < selected_block_num and selected_block_num <= bs"
   workloads:
-  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
-  - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
+  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-8x1k}
+  - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4x1k}
+  - {C: 163, H: 32, H_kv: 2, D: 128, scale: 0.08838834764831845, selected_block_num: 16, bs: 32, seq_lens: [31, 1025, 4097], dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-ragged}
+  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 0.08838834764831845, selected_block_num: 32, bs: 64, seq_lens: [16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-long-context}
+  - {C: 256, H: 64, H_kv: 2, D: 64, scale: 0.125, selected_block_num: 8, bs: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-wide-gqa}
   roofline:
     # Two score passes over the closed chunks.
     func: "tileops.perf.formulas.nsa_topk_varlen_roofline"

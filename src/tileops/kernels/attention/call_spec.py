@@ -537,7 +537,7 @@ class SparseMLADecodeFwdInterface(KernelInterface):
 
 
 class NSATopkFwdInterface(KernelInterface):
-    """Native Sparse Attention (NSA) block selection over a packed batch."""
+    """Native Sparse Attention (NSA) block selection with FLA's importance scores."""
 
     request = NSACall
 

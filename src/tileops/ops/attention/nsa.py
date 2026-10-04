@@ -30,6 +30,9 @@ class NSATopKVarlenFwdOp(Op):
 
     Scores each compressed chunk against the query and returns, per token and per KV
     head, the ``selected_block_num`` block ids the sparse forward will attend to.
+    Follows FLA: the first, previous and current blocks score one per query head;
+    other blocks use normalized attention summed across the GQA group. Rank raw
+    scores descending, with unspecified tie selection/order and trailing -1 padding.
 
     Sequence layout is packed: ``q`` holds every request's tokens back to back and
     ``offsets`` marks the boundaries, so the batch size and the chunk count come from
@@ -57,7 +60,7 @@ class NSATopKVarlenFwdOp(Op):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            scale: Softmax scale applied to the QK product.
+            scale: Multiplies Q in its input dtype before the QK product, as in FLA.
             selected_block_num: Blocks to keep per token and KV head.
             bs: Compression block size.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``

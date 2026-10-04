@@ -1,19 +1,7 @@
-"""Benchmarks for the three Native Sparse Attention (NSA) varlen passes.
+"""NSA varlen benchmarks against FLA forward kernels, using the same precompressed K/V.
 
-The compression and selected-block passes are timed against the triton kernels
-``flash-linear-attention`` ships for them, each checked against the torch reference before it is
-timed. The top-k pass keeps the torch reference: fla selects by different rules, so no ratio
-between them would compare two implementations of one function.
-
-Two asymmetries fla's API gives no way to remove, both charging fla for work these ops do not do,
-so each reading is a lower bound on how far fla is ahead: both forward entry points always write
-a float32 ``[B, TQ, HQ]`` lse, and ``parallel_nsa_compression_fwd`` takes no ``chunk_offsets``,
-so fla rederives what the workload holds. That derivation is ``@tensor_cache``d, so timed
-iterations see hits as they would in a serving loop.
-
-fla wants ``[B, T, H, D]`` with ``B == 1`` and ``cu_seqlens``, so the adapters unsqueeze and
-squeeze. They call the forward entry points, not the exported wrappers: ``parallel_nsa``
-mean-pools k and v on every call, work none of these ops does.
+Top-k uses ``lse=None`` to include LSE computation on both sides. FLA's other two
+passes also write LSE; its cached sequence metadata helpers run warm during timing.
 """
 
 import pytest
@@ -85,6 +73,25 @@ def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
     return fn
 
 
+def _fla_nsa_topk(workload: NsaTopkCall):
+    """Unmodified FLA selection, including LSE computation from the same Q/K."""
+    topk = fla_op("ops.nsa.parallel.parallel_nsa_topk")
+
+    def fn(q, k_cmp, offsets, _chunk_offsets, _token_indices):
+        return topk(
+            q=q.unsqueeze(0),
+            k=k_cmp.unsqueeze(0),
+            TK=workload.c_seq_len,
+            lse=None,
+            block_counts=workload.selected_block_num,
+            block_size=workload.bs,
+            scale=workload.scale,
+            cu_seqlens=offsets,
+        ).squeeze(0)
+
+    return fn
+
+
 @pytest.mark.parametrize("call", manifest_calls(NSACompressedVarlenFwdOp))
 def test_nsa_cmp_fwd_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
@@ -107,23 +114,33 @@ def test_nsa_cmp_fwd_varlen_bench(call) -> None:
 def test_nsa_topk_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NsaTopkCall, call)
 
-    # No fla comparator: its selection forces blocks 0, IC-1 and IC to importance 1.0 while this
-    # op forces only IC, and it ranks raw scores where this op treats a gap under 1e-5 as a tie
-    # and prefers the larger block id. The two select by different rules, so a ratio between them
-    # would not be a ratio between implementations of one function.
+    fla_fn = _fla_nsa_topk(workload)
+
     def validate(got, expected):
-        assert got.shape == expected.shape and got.dtype == expected.dtype
-        assert torch.equal(got < 0, expected < 0), "unfilled top-k slots differ"
-        # Match the NSA unit-test contract for ranks at floating-point score ties.
-        assert (got != expected).float().mean() <= 1e-3, "top-k mismatch exceeds 0.1%"
+        assert_output_spec(got, call.specs["block_indices"], "NSA top-k")
+        assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
+        current = inputs[-1][:, 1, None, None] // workload.bs
+        assert ((got >= -1) & (got <= current)).all(), "non-causal or invalid block id"
+        ordered = got.sort(-1).values
+        assert not ((ordered[..., 1:] == ordered[..., :-1]) & (ordered[..., 1:] >= 0)).any(), (
+            "duplicate selected block"
+        )
+        torch.testing.assert_close(
+            workload.selection_scores(got, *inputs),
+            workload.selection_scores(expected, *inputs),
+            rtol=1e-5,
+            atol=1e-6,
+        )
 
     checked = Custom(
         validate,
-        "top-k index mismatch <= 0.1%; padding matches exactly",
+        "every selected score checked at rtol=1e-5/atol=1e-6; valid unique indices and exact padding",
         controls=(zeroed_input(0, "query-zeroed"),),
     )
     bm.compare(
-        {"tileops": op, "torch-ref": workload.ref_program}, *inputs, evidence={"tileops": checked}
+        {"tileops": op, FLA_TAG: fla_fn},
+        *inputs,
+        evidence={"tileops": checked, FLA_TAG: checked},
     )
 
 
