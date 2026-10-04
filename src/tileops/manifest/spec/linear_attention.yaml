@@ -54,6 +54,8 @@ DeltaNetInferenceFwdOp:
   - {B: 4, S: 1, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-l2norm}
   - {B: 17, S: 1, H: 6, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-narrow-b17}
   - {B: 1, S: 257, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-continue}
+  - {B: 32, S: 1, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-decode-b32}
+  - {B: 4, S: 257, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-cont-b4}
   roofline:
     # Normalizing one head vector is its sum of squares, the epsilon, the reciprocal square
     # root and the scale: 3 * K + 2 for each of Q and K.
@@ -543,6 +545,7 @@ GLAInferenceFwdOp:
   - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b8-d128}
   - {B: 3, S: 1, H: 24, K: 128, V: 128, dtype_cases: [{T: float16}], label: decode-first-token}
   - {B: 1, S: 257, H: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: gla-short-continuation}
+  - {B: 4, S: 257, H: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: gla-continue-b4}
   roofline:
     # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
     flops: "B * H * S * (5 * K * V + K + V)"

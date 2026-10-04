@@ -67,11 +67,11 @@ def _mha_decode_paged_ws_kernel(
     page_size: int,
     is_causal: bool,
     dtype: str,
+    max_pages_per_req: int,
 ):
     """Build the JIT'd decode kernel for one shape specialization."""
     scale = dim**-0.5 * LOG2E
     accum = "float"
-    num_pages = (seqlen_kv + page_size - 1) // page_size
     # Output elements a lane accumulates: the warp spans the head dim once.
     vec = dim // WARP_LANES
     # Key elements a lane reads per shared-memory load, for 16-bit keys.
@@ -97,7 +97,7 @@ def _mha_decode_paged_ws_kernel(
             K: T.Tensor([seqlen_kv, heads, dim], dtype),
             V: T.Tensor([seqlen_kv, heads, dim], dtype),
             real_seqlen_kv: T.Tensor([batch], "int32"),
-            block_table: T.Tensor([batch, num_pages], "int32"),
+            block_table: T.Tensor([batch, max_pages_per_req], "int32"),
             glse: T.Tensor([batch, seqlen_q, heads, num_split], accum),
             O_partial: T.Tensor([batch, seqlen_q, heads, num_split, dim], accum),
             Arrived: T.Tensor([batch * seqlen_q * heads], "int32"),
@@ -416,7 +416,9 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
             call.is_causal,
             call.dtype,
         )
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return (*args, call.max_pages_per_req, index), lambda: cls(
+            *args, device_index=index, max_pages_per_req=call.max_pages_per_req
+        )
 
     def __init__(
         self,
@@ -431,6 +433,7 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: Optional[int] = None,
+        max_pages_per_req: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -439,6 +442,11 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
+        self.max_pages_per_req = (
+            max_pages_per_req
+            if max_pages_per_req is not None
+            else (seqlen_kv + page_size - 1) // page_size
+        )
         self.is_causal = is_causal
         self.dtype = dtype
 
@@ -451,6 +459,7 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
             self.page_size,
             self.is_causal,
             self.dtype_str,
+            self.max_pages_per_req,
         )
         self._arrived: dict[int, torch.Tensor] = {}
         self._supply_prog = self._make_supply_prog()
@@ -533,7 +542,7 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
         batch, seqlen_kv, page_size = self.batch, self.seqlen_kv, self.page_size
-        num_pages = (seqlen_kv + page_size - 1) // page_size
+        num_pages = self.max_pages_per_req
         counts = self.batch * self.seqlen_q * self.heads
         # Positions of real_seqlen_kv, block_table and Arrived in the kernel signature.
         lengths_arg, table_arg, arrived_arg = 3, 4, 7
@@ -541,7 +550,12 @@ class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
         def supply_prog(params):
             table = torch.arange(num_pages, dtype=torch.int32, device="cuda")
             given = {
-                lengths_arg: torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"),
+                lengths_arg: torch.full(
+                    (batch,),
+                    min(seqlen_kv, num_pages * page_size),
+                    dtype=torch.int32,
+                    device="cuda",
+                ),
                 table_arg: table.unsqueeze(0).expand(batch, -1).contiguous(),
                 arrived_arg: torch.zeros(counts, dtype=torch.int32, device="cuda"),
             }

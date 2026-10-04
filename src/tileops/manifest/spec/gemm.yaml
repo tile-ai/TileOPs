@@ -48,6 +48,7 @@ GemmFwdOp:
   - {M: 1, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m1-qkv-a}
   - {M: 2, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m2-qkv-a}
   - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
+  - {M: 32, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-b32}
   - {M: 128, N: 4096, K: 12288, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-down-prefill}
 
   roofline:
@@ -230,6 +231,7 @@ GroupedGemmFwdOp:
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
   - {M: 8, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
+  - {M: 1024, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
   - {M: 257, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
 
   roofline:

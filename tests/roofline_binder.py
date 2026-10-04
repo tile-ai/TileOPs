@@ -5,7 +5,7 @@ An implemented entry's op is its class; a spec-only entry's is a class carrying 
 signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds, one write per output, both for a written input -- and the caller requires the two to
-be equal. The `roofline` block is never read.
+be equal. Empty experts read no weights. The `roofline` block is never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
 signature the call is checked against.
@@ -52,6 +52,29 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
     return cls
 
 
+def _unused_expert_weights(op_name: str, call) -> int:
+    weights = {
+        "MoEGroupedGemmFwdOp": ("b",),
+        "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
+        "MoEExpertMLPFwdOp": ("w_gate_up", "w_down"),
+    }.get(op_name)
+    if weights is None:
+        return 0
+    layout, experts = call.ix["layout"], call.ix["E"]
+    metadata = call.values("layout_metadata")
+    if layout.kind == "masked":
+        unused = sum(count == 0 for count in metadata)
+    elif layout.metadata_kind == "per_row":
+        unused = len(set(range(experts)) - set(metadata))
+    else:
+        # Reconstruct each expert's physical start independently of the formula.
+        start, unused = 0, 0
+        for end in metadata:
+            unused += end == start
+            start = end + (-end % layout.alignment)
+    return sum(call.bytes(name) // experts * unused for name in weights)
+
+
 def manifest_cases(op_name: str):
     """Yield ``(label, dtype case, op, oracle bytes, oracle read bytes)`` per row and dtype case."""
     entry = load_manifest()[op_name]
@@ -72,5 +95,6 @@ def manifest_cases(op_name: str):
             # The formula prices the op's last completed call; this one is that call.
             op._signature_call = dataclasses.replace(checked, metadata=metadata)
             reads = sum(call.bytes(t) * r for t, r, _ in checked.traffic)
+            reads -= _unused_expert_weights(op_name, call)
             writes = sum(call.bytes(t) * w for t, _, w in checked.traffic)
             yield row["label"], "-".join(case.values()), op, reads + writes, reads
