@@ -1,5 +1,6 @@
 import functools
 import itertools
+import math
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -28,6 +29,9 @@ def _flashattn_bwd_preprocess_kernel(
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
     blk = _ROWS_PER_BLOCK
+    # TileLang finds no fragment layout for a row sum over a width that is not a power of
+    # two, head dim 96 for one, so the rows are summed over power-of-two column tiles.
+    cols = math.gcd(dim, 64)
 
     @T.prim_func
     def flash_bwd_prep(
@@ -38,18 +42,24 @@ def _flashattn_bwd_preprocess_kernel(
         dq_accum: T.Tensor([batch, heads, seq_len, dim], accum_dtype),  # type: ignore
     ) -> None:
         with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
-            o_frag = T.alloc_fragment([blk, dim], dtype)
-            do_frag = T.alloc_fragment([blk, dim], dtype)
-            acc = T.alloc_fragment([blk, dim], accum_dtype)
+            rows = slice(by * blk, (by + 1) * blk)
+            o_frag = T.alloc_fragment([blk, cols], dtype)
+            do_frag = T.alloc_fragment([blk, cols], dtype)
+            acc = T.alloc_fragment([blk, cols], accum_dtype)
             delta_frag = T.alloc_fragment([blk], accum_dtype)
-            T.copy(o[bz, by * blk : (by + 1) * blk, bx, :], o_frag)
-            T.copy(do[bz, by * blk : (by + 1) * blk, bx, :], do_frag)
-            for i, j in T.Parallel(blk, dim):
-                acc[i, j] = T.cast(o_frag[i, j], accum_dtype) * T.cast(do_frag[i, j], accum_dtype)
-            T.reduce_sum(acc, delta_frag, 1)
-            T.copy(delta_frag, delta[bz, bx, by * blk : (by + 1) * blk])
             T.clear(acc)
-            T.copy(acc, dq_accum[bz, bx, by * blk : (by + 1) * blk, :])
+            for c in T.serial(dim // cols):
+                T.copy(o[bz, rows, bx, c * cols : (c + 1) * cols], o_frag)
+                T.copy(do[bz, rows, bx, c * cols : (c + 1) * cols], do_frag)
+                for i, j in T.Parallel(blk, cols):
+                    acc[i, j] += T.cast(o_frag[i, j], accum_dtype) * T.cast(
+                        do_frag[i, j], accum_dtype
+                    )
+            T.reduce_sum(acc, delta_frag, 1)
+            T.copy(delta_frag, delta[bz, bx, rows])
+            T.clear(acc)
+            for c in T.serial(dim // cols):
+                T.copy(acc, dq_accum[bz, bx, rows, c * cols : (c + 1) * cols])
 
     return flash_bwd_prep
 
