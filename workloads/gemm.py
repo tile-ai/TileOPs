@@ -579,3 +579,36 @@ def fp8_matmul_verification(k):
         rtol=2e-2,
         controls=(zeroed_input(0, "left-operand-zeroed"),),
     )
+
+
+class GemmW4A16BasisWorkload(GemmW4A16Workload):
+    """A basis vector selects exactly one dequantized weight: no reduction error."""
+
+    def __init__(self, k_index):
+        super().__init__(1, 35, 384, torch.float16)
+        self.k_index = k_index
+
+    def gen_inputs(self):
+        n, k = 35, 384
+        rows = torch.arange(n)[:, None]
+        quantized = torch.randint(0, 16, (n, k), generator=self.rng("packed-weight"))
+        zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
+        scale = (
+            0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+        ).to(torch.float16)
+        packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
+        group = self.k_index // 128
+        centered = quantized[:, self.k_index].float() - zero[:, group].float()
+        self.expected = (centered * scale[:, group].float()).half()[None, :]
+        activation = torch.zeros((1, k), device=run_device(), dtype=torch.float16)
+        activation[0, self.k_index] = 1
+        prepacked = repack_w4a16_weight(packed)
+        return activation, prepacked.to(run_device()), scale.to(run_device()), zero.to(run_device())
+
+    def ref_program(self, activation, *weights):
+        return self.expected.to(activation.device)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)

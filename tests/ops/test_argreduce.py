@@ -12,7 +12,8 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
-from workloads.reduction import ArgreduceCase
+from workloads.numerics import compare_outputs
+from workloads.reduction import ArgreduceCase, reduction_verification
 
 
 def _call(op, x: torch.Tensor) -> torch.Tensor:
@@ -164,7 +165,7 @@ def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     ref = x.contiguous().argmax(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"non-contig argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DFixture
@@ -176,7 +177,7 @@ def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     ref = x.argmax(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DFixture
@@ -188,7 +189,7 @@ def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     ref = x.argmax(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce1DFixture
@@ -200,7 +201,7 @@ def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
     ref = x.argmax(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y.view_as(ref), ref), "1D argmax mismatch"
+    compare_outputs(y.view_as(ref), ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DDim0Fixture
@@ -214,7 +215,7 @@ def test_argmax_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D dim=0 argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DDim0Fixture
@@ -228,7 +229,7 @@ def test_argmax_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D dim=0 keepdim argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DDim0Fixture
@@ -242,7 +243,7 @@ def test_argmax_4d_dim0(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D dim=0 argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DDim0Fixture
@@ -256,7 +257,7 @@ def test_argmax_4d_dim0_keepdim(b0: int, b1: int, b2: int, n: int, dtype: torch.
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D dim=0 keepdim argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @SpecArgreduceFixture
@@ -270,7 +271,7 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"spec dim={dim} argmax mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @ArgreduceBasicFixture
@@ -292,7 +293,7 @@ def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     ref = x.contiguous().argmin(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"non-contig argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DFixture
@@ -304,7 +305,7 @@ def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     ref = x.argmin(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DFixture
@@ -316,7 +317,7 @@ def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     ref = x.argmin(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce1DFixture
@@ -328,7 +329,7 @@ def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
     ref = x.argmin(dim=-1)
     y = _call(op, x)
     assert y.dtype == torch.int64
-    assert torch.equal(y.view_as(ref), ref), "1D argmin mismatch"
+    compare_outputs(y.view_as(ref), ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DDim0Fixture
@@ -342,7 +343,7 @@ def test_argmin_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D dim=0 argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce3DDim0Fixture
@@ -356,7 +357,7 @@ def test_argmin_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"3D dim=0 keepdim argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DDim0Fixture
@@ -370,7 +371,7 @@ def test_argmin_4d_dim0(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D dim=0 argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @Argreduce4DDim0Fixture
@@ -384,7 +385,7 @@ def test_argmin_4d_dim0_keepdim(b0: int, b1: int, b2: int, n: int, dtype: torch.
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"4D dim=0 keepdim argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @SpecArgreduceFixture
@@ -398,7 +399,7 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     y = _call(op, x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
-    assert torch.equal(y, ref), f"spec dim={dim} argmin mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Regression: the two zeros compare equal, so the lower index wins
@@ -415,7 +416,7 @@ def test_argreduce_signed_zero_breaks_to_lower_index(op_name: str, dtype: torch.
     x[:, ::2] = -0.0
     op = ArgmaxFwdOp(dim=-1) if op_name == "argmax" else ArgminFwdOp(dim=-1)
     y = _call(op, x)
-    assert torch.equal(y, torch.zeros_like(y)), f"{op_name} did not break the tie low: {y}"
+    compare_outputs(y, torch.zeros_like(y), reduction_verification((torch.zeros_like(y)).dtype))
 
 
 # Regression: multidim dim must be rejected for argreduce ops
@@ -487,16 +488,14 @@ def test_argmax_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     y = _call(ArgmaxFwdOp(dim=None), x)
     assert y.dtype == torch.int64
     assert y.shape == ref_flat.shape, f"shape mismatch: {y.shape} vs {ref_flat.shape}"
-    assert torch.equal(y, ref_flat), f"dim=None argmax mismatch on shape={shape} dtype={dtype}"
+    compare_outputs(y, ref_flat, reduction_verification((ref_flat).dtype))
 
     y_keep = _call(ArgmaxFwdOp(dim=None, keepdim=True), x)
     expected_shape = tuple(1 for _ in shape)
     assert y_keep.shape == expected_shape, (
         f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
     )
-    assert torch.equal(y_keep.reshape(()), ref_flat), (
-        f"dim=None keepdim argmax value mismatch on shape={shape} dtype={dtype}"
-    )
+    compare_outputs(y_keep.reshape(()), ref_flat, reduction_verification((ref_flat).dtype))
 
 
 @ArgreduceDimNoneFixture
@@ -510,16 +509,14 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     y = _call(ArgminFwdOp(dim=None), x)
     assert y.dtype == torch.int64
     assert y.shape == ref_flat.shape, f"shape mismatch: {y.shape} vs {ref_flat.shape}"
-    assert torch.equal(y, ref_flat), f"dim=None argmin mismatch on shape={shape} dtype={dtype}"
+    compare_outputs(y, ref_flat, reduction_verification((ref_flat).dtype))
 
     y_keep = _call(ArgminFwdOp(dim=None, keepdim=True), x)
     expected_shape = tuple(1 for _ in shape)
     assert y_keep.shape == expected_shape, (
         f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
     )
-    assert torch.equal(y_keep.reshape(()), ref_flat), (
-        f"dim=None keepdim argmin value mismatch on shape={shape} dtype={dtype}"
-    )
+    compare_outputs(y_keep.reshape(()), ref_flat, reduction_verification((ref_flat).dtype))
 
 
 @pytest.mark.smoke
@@ -536,7 +533,7 @@ def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
     op = op_cls(dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
     y = _call(op, x)
-    assert torch.equal(y, ref), f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -557,7 +554,7 @@ def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
     op = op_cls(dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
     y = _call(op, x)
-    assert torch.equal(y, ref)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -611,7 +608,9 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
     final = kernels._argreduce_multicta_final_kernel(M, N, "argmax", ctas_per_row)
     values, indices = partial(256, ctas_per_row)(x)
     got = final()(values, indices)
-    torch.testing.assert_close(got, torch.argmax(x, dim=-1))
+    compare_outputs(
+        got, torch.argmax(x, dim=-1), reduction_verification((torch.argmax(x, dim=-1)).dtype)
+    )
 
 
 @pytest.mark.cuda_only

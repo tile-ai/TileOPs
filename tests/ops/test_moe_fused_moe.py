@@ -10,14 +10,19 @@ Covers:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import (
     FusedMoEFwdOp,
     FusedTopKFwdOp,
 )
 from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
-from workloads.moe import moe_verification, ref_fused_topk, ref_routed_experts
+from workloads.moe import (
+    FusedTopKWorkload,
+    moe_call,
+    moe_verification,
+    ref_routed_experts,
+)
 from workloads.numerics import compare_outputs
 
 # vLLM optional import
@@ -182,7 +187,7 @@ def test_fused_moe_qwen3(
             topk_weights,
             topk_ids,
         ).to(dtype)
-        torch.testing.assert_close(out_nopad.float(), out_vllm.float(), rtol=1e-2, atol=1e-2)
+        compare_outputs(out_nopad.float(), out_vllm.float(), moe_verification(2))
 
 
 # Cases for the FusedMoe non-determinism regression. The cooperative 3WG
@@ -410,17 +415,19 @@ def test_correction_bias_routing_precision() -> None:
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
 
-    ref_weights, ref_ids = ref_fused_topk(logits, bias, K, "sigmoid", True)
-
-    op = FusedTopKFwdOp(top_k=K, scoring_func="sigmoid", renormalize=True)
-    tw, ti = op(logits, bias)
-
-    ref_ids_sorted = ref_ids.sort(dim=-1).values
-    tile_ids_sorted = ti.long().sort(dim=-1).values
-    assert torch.equal(ref_ids_sorted, tile_ids_sorted), (
-        f"Expert selection mismatch:\n  ref={ref_ids_sorted}\n  got={tile_ids_sorted}"
+    call = moe_call(
+        "FusedTopKFwdOp",
+        {"G": "float32"},
+        T=T,
+        E=E,
+        top_k=K,
+        scoring_func="sigmoid",
+        renormalize=True,
     )
-    torch.testing.assert_close(tw, ref_weights, rtol=1e-4, atol=1e-4)
+    workload = FusedTopKWorkload(call)
+    TestBase.check(
+        workload, FusedTopKFwdOp(top_k=K, scoring_func="sigmoid", renormalize=True), logits, bias
+    )
 
 
 # vLLM alignment (optional)
@@ -516,12 +523,7 @@ def test_fused_moe_vs_vllm(
     if routed_scaling_factor != 1.0:
         out_vllm = out_vllm * routed_scaling_factor
 
-    torch.testing.assert_close(
-        out_tileops.float(),
-        out_vllm.float(),
-        rtol=1e-2,
-        atol=1e-2,
-    )
+    compare_outputs(out_tileops.float(), out_vllm.float(), moe_verification(2))
 
 
 # roofline

@@ -66,12 +66,20 @@ class LayerNormLargeOffsetWorkload(LayerNormWorkload):
         return x, weight, torch.zeros_like(weight)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
+        from workloads.numerics import Custom, Exact, compare_outputs
 
         # Cancellation amplifies FP32 reduction-order differences by about 1-2%.
-        if inputs[0].dtype == torch.float32:
-            return Exact(atol=1e-1, rtol=5e-2)
-        return super().verification(*inputs)
+        evidence = (
+            Exact(atol=1e-1, rtol=5e-2)
+            if inputs[0].dtype == torch.float32
+            else super().verification(*inputs)
+        )
+
+        def validate(got, expected):
+            result = compare_outputs(got, expected, evidence)
+            assert result.max_abs_err < 1.0, "catastrophic cancellation"
+
+        return Custom(validate, "large-offset normalization without catastrophic cancellation")
 
 
 class FusedAddRMSNormWorkload(WorkloadBase):
@@ -388,15 +396,7 @@ class NormCall(CallWorkload):
         return (out, x) if fused else out
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        if self.call.signature.name == "BatchNormFwdOp":
-            return batch_norm_forward_verification(inputs[0].dtype)
-        if self.call.signature.name == "LayerNormFwdOp":
-            return layer_norm_verification(inputs[0].dtype)
-        if self.call.signature.name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
-            return norm_verification(inputs[0].dtype)
-        return Exact()
+        return normalization_verification(self.call.signature.name, inputs[0].dtype)
 
 
 class RunningStatsCall(NormCall):
@@ -482,3 +482,18 @@ def layer_norm_verification(dtype):
 
     tol = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 1e-2}[dtype]
     return Exact(atol=tol, rtol=tol)
+
+
+def normalization_verification(name, dtype):
+    """Select the normalization contract by operation, independently of its consumer."""
+    from workloads.numerics import Exact
+
+    if name == "BatchNormFwdOp":
+        return batch_norm_forward_verification(dtype)
+    if name == "BatchNormBwdOp":
+        return batch_norm_backward_verification(dtype)
+    if name == "LayerNormFwdOp":
+        return layer_norm_verification(dtype)
+    if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
+        return norm_verification(dtype)
+    return Exact()

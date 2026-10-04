@@ -13,7 +13,13 @@ import torch
 
 from tests.test_base import FixtureBase
 from workloads.device import run_device
-from workloads.reduction import reduction_tolerance
+from workloads.numerics import compare_outputs
+from workloads.reduction import (
+    LogSumExpWorkload,
+    reduction_tolerance,
+    reduction_verification,
+    vector_norm_verification,
+)
 
 
 class MultiDimFixture(FixtureBase):
@@ -80,9 +86,9 @@ def test_sum_multidim(
     op = SumFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @MultiDimFixture
@@ -98,9 +104,9 @@ def test_mean_multidim(
     op = MeanFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -115,7 +121,9 @@ def test_mean_edge_axes_fp16_keeps_fp32_intermediates() -> None:
     x = torch.full((4, 8, 1024), 100.0, dtype=torch.float16, device=run_device())
     y = MeanFwdOp(dim=[0, 2])(x)
     assert torch.isfinite(y).all(), "edge-axes mean overflowed an intermediate"
-    assert torch.allclose(y, torch.full_like(y, 100.0))
+    compare_outputs(
+        y, torch.full_like(y, 100.0), reduction_verification((torch.full_like(y, 100.0)).dtype)
+    )
 
 
 @MultiDimFixture
@@ -131,9 +139,9 @@ def test_amax_multidim(
     op = AmaxFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -161,9 +169,9 @@ def test_amin_multidim(
     op = AminFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Welford ops: var, std, var_mean
@@ -182,9 +190,9 @@ def test_var_multidim(
     op = VarFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @MultiDimFixture
@@ -200,9 +208,9 @@ def test_std_multidim(
     op = StdFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @MultiDimFixture
@@ -224,13 +232,11 @@ def test_var_mean_multidim(
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
-    assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
-    assert torch.allclose(mean_out, ref_mean, **tol), (
-        f"mean err: {(mean_out - ref_mean).abs().max()}"
-    )
+    compare_outputs(var_out, ref_var, reduction_verification((ref_var).dtype))
+    compare_outputs(mean_out, ref_mean, reduction_verification((ref_mean).dtype))
 
 
 # LogSumExp
@@ -249,9 +255,9 @@ def test_logsumexp_multidim(
     op = LogSumExpFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.logsumexp(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, LogSumExpWorkload(tuple(x.shape), x.dtype).verification(x))
 
 
 @pytest.mark.smoke
@@ -262,12 +268,14 @@ def test_logsumexp_edge_axes_special_values() -> None:
     x = torch.randn(4, 32, 256, dtype=torch.float16, device=run_device())
     x[:, 0, :] = float("-inf")
     x[2, 1, 7] = float("nan")
-    y = LogSumExpFwdOp(dim=[0, 2])(x).float()
-    ref = torch.logsumexp(x.float(), dim=[0, 2])
+    y = LogSumExpFwdOp(dim=[0, 2])(x)
+    ref = torch.logsumexp(x.float(), dim=[0, 2]).to(x.dtype)
     assert y[0].item() == float("-inf")
     assert torch.isnan(y[1])
     finite = torch.isfinite(ref)
-    assert torch.allclose(y[finite], ref[finite], **reduction_tolerance(torch.float16))
+    compare_outputs(
+        y[finite], ref[finite], LogSumExpWorkload(tuple(x.shape), x.dtype).verification(x)
+    )
 
 
 # Logical reduce ops: all, any, count_nonzero
@@ -337,7 +345,7 @@ def test_all_multidim(
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "all multi-dim mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @MultiDimLogicalFixture
@@ -354,7 +362,7 @@ def test_any_multidim(
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "any multi-dim mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 class MultiDimCountFixture(FixtureBase):
@@ -405,7 +413,7 @@ def test_count_nonzero_multidim(
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "count_nonzero multi-dim mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Vector norm ops: l1, l2, inf
@@ -429,9 +437,9 @@ def test_l1_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))
 
 
 @MultiDimFixture
@@ -452,9 +460,9 @@ def test_l2_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))
 
 
 @MultiDimFixture
@@ -477,9 +485,9 @@ def test_inf_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))
 
 
 # Empty dim list / tuple is full-reduction (matches PyTorch semantics)
@@ -566,7 +574,7 @@ def test_all_empty_dim_is_noop() -> None:
     y = op(x)
     assert y.shape == x.shape
     assert y.dtype == torch.bool
-    assert torch.equal(y, x.bool())
+    compare_outputs(y, x.bool(), reduction_verification((x.bool()).dtype))
 
 
 @pytest.mark.smoke
@@ -579,7 +587,7 @@ def test_negative_dims_accepted() -> None:
     ref = torch.sum(x.float(), dim=[0, 2], keepdim=False).to(torch.float16)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **reduction_tolerance(torch.float16))
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -612,11 +620,15 @@ def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
     ):
         out = op_cls(dim=[0, 2])(x)
         assert out.dtype == dtype, f"{op_cls.__name__} returned {out.dtype}"
-        torch.testing.assert_close(out.float(), ref(x), rtol=1.6e-2, atol=1.6e-2)
+        compare_outputs(out, ref(x).to(dtype), reduction_verification(dtype))
 
     counted = CountNonzeroFwdOp(dim=[0, 2])(x)
     assert counted.dtype == torch.int64
-    assert torch.equal(counted, torch.count_nonzero(x, dim=[0, 2]))
+    compare_outputs(
+        counted,
+        torch.count_nonzero(x, dim=[0, 2]),
+        reduction_verification((torch.count_nonzero(x, dim=[0, 2])).dtype),
+    )
 
 
 @pytest.mark.smoke
@@ -626,4 +638,4 @@ def test_leading_axis_split_reduces_every_row(shape):
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(shape, dtype=torch.float32, device=run_device())
-    torch.testing.assert_close(SumFwdOp(dim=0)(x), x.sum(dim=0), rtol=1e-4, atol=1e-4)
+    compare_outputs(SumFwdOp(dim=0)(x), x.sum(dim=0), reduction_verification((x.sum(dim=0)).dtype))

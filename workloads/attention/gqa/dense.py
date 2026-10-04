@@ -107,6 +107,9 @@ class GroupedQueryAttentionDenseDecodeWorkload(WorkloadBase):
         probs = torch.softmax(scores, dim=-1)
         return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype).contiguous()
 
+    def verification(self, *inputs):
+        return dense_gqa_verification(inputs[0].dtype)
+
 
 class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
     """Dense prefill over contiguous BSHD tensors, with the op's optional inputs.
@@ -233,6 +236,9 @@ class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
             softcap=self.softcap,
         )
 
+    def verification(self, *inputs):
+        return dense_gqa_verification(inputs[0].dtype)
+
 
 class GroupedQueryAttentionDenseDecodeCall(CallWorkload, GroupedQueryAttentionDenseDecodeWorkload):
     """A manifest call of GroupedQueryAttentionDenseFwdOp with one query token."""
@@ -287,3 +293,12 @@ class GroupedQueryAttentionDensePrefillCall(
         )
 
     gen_inputs = GroupedQueryAttentionDensePrefillWorkload.gen_inputs
+
+
+def dense_gqa_verification(dtype):
+    """FP8 attention rounds probabilities as well as its quantized operands."""
+    from workloads.numerics import Exact
+
+    if dtype == torch.float8_e4m3fn:
+        return Exact(atol=8e-2, rtol=2e-2)
+    return Exact()

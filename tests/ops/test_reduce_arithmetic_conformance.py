@@ -26,6 +26,8 @@ from tileops.ops.reduction.reduce import (
     SumFwdOp,
 )
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 # (op_cls, torch_fn) pairs.
 _OP_CASES: list[tuple[type, Callable]] = [
@@ -34,15 +36,6 @@ _OP_CASES: list[tuple[type, Callable]] = [
     (AmaxFwdOp, torch.amax),
     (AminFwdOp, torch.amin),
 ]
-
-
-def _tol(dtype: torch.dtype) -> dict:
-    # Reduce kernels accumulate in fp32 and only narrow at the boundary, so
-    # half-precision tolerances can stay close to the unit in the last place
-    # of the storage dtype rather than the looser 1e-2 default.
-    if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-3, "rtol": 1e-3}
 
 
 def _ref(torch_fn: Callable, x: torch.Tensor, dim, keepdim: bool) -> torch.Tensor:
@@ -92,7 +85,7 @@ def test_arithmetic_reduce_conformance(
         f"{op_cls.__name__} dim={dim} keepdim={keepdim} dtype={dtype}: "
         f"shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, **_tol(dtype))
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -106,7 +99,7 @@ def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> 
     ref = _ref(torch_fn, x, None, False)
     assert y.ndim == 0, f"{op_cls.__name__}: expected 0-D, got shape {y.shape}"
     assert ref.ndim == 0
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -144,4 +137,4 @@ def test_arithmetic_reduce_unaligned_innermost(
     assert y.shape == ref.shape, (
         f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
-    torch.testing.assert_close(y, ref, **_tol(dtype))
+    compare_outputs(y, ref, reduction_verification((ref).dtype))

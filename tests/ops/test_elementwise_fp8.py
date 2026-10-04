@@ -6,6 +6,8 @@ import pytest
 import torch
 
 from workloads.device import run_device, run_device_available
+from workloads.elementwise import ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 
 @pytest.mark.cuda_only
@@ -292,4 +294,10 @@ def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
     op = WhereFwdOp()
     out = op(cond, inp, other)
     ref = torch.where(cond, inp, other)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (cond, inp, other)).verification(
+            *(cond, inp, other)
+        ),
+    )

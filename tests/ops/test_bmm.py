@@ -401,10 +401,5 @@ def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    out = op(a, b_kn, scale_a, scale_b)
 
-    # Reference computed in float32 with the same per-tensor scales.
-    a_f = a.float() * scale_a
-    b_f = b_kn.float() * scale_b
-    ref = torch.bmm(a_f, b_f).to(torch.bfloat16)
-    torch.testing.assert_close(out, ref, atol=0.05, rtol=0.05)
+    test.check(op, a, b_kn, scale_a, scale_b)

@@ -8,6 +8,7 @@ Philox stream need not match the reference's.
 import pytest
 import torch
 
+from tests.test_base import TestBase
 from tileops.backend import OpNotAvailableError
 from tileops.kernels.sampling import SamplingCall
 from tileops.kernels.sampling.radix_select import cluster_plan
@@ -20,7 +21,7 @@ from tileops.sampling import (
     TopPMaskFwdOp,
 )
 from workloads.device import run_device
-from workloads.numerics import logit_mask_validator
+from workloads.numerics import compare_outputs
 from workloads.sampling import (
     ChainSpeculativeSamplingWorkload,
     MinPMaskWorkload,
@@ -28,13 +29,14 @@ from workloads.sampling import (
     TopKMaskWorkload,
     TopKTopPMaskWorkload,
     TopPMaskWorkload,
-    chain_speculative_sampling,
     min_p_mask,
-    probability_above,
+    min_p_mask_verification,
     sampling_call,
     sampling_from_probs,
     top_k_mask,
+    top_k_mask_verification,
     top_p_mask,
+    top_p_mask_verification,
 )
 
 pytestmark = pytest.mark.smoke
@@ -73,16 +75,6 @@ def _assert_nucleus(masked, logits, p, *, margin):
     assert not (~kept & (probs == lowest)).any()
 
 
-def _assert_follows(samples, probs):
-    """Each index's count within ``6 sigma + 5`` of its expectation; a zero-probability index
-    never drawn. The ``+ 5`` covers indices expected fewer than a few times."""
-    n = samples.numel()
-    count = torch.bincount(samples.long(), minlength=probs.numel()).double()
-    p = probs.double()
-    bound = 6 * (n * p * (1 - p)).sqrt() + 5 * (p > 0)
-    assert ((count - n * p).abs() <= bound).all(), (count, n * p)
-
-
 def _tie_at_the_boundary(logits, p):
     """Row 1 becomes three equal top tokens and ``p[1] = 0.5``: all three survive top-p."""
     logits[1] = -100.0
@@ -104,7 +96,7 @@ def test_top_k_mask(dtype):
     assert (kept >= k.clamp(max=vocab)).all()
     assert torch.equal(kept[k >= vocab], torch.full_like(kept[k >= vocab], vocab))
     out = _run(TopKMaskFwdOp(), logits, k)
-    assert out.dtype == logits.dtype and torch.equal(out, ref)
+    compare_outputs(out, ref, workload.verification(logits, k))
 
 
 def _special_rows(vocab: int, dtype: torch.dtype) -> torch.Tensor:
@@ -137,9 +129,8 @@ def test_top_k_mask_matches_the_reference_bit_for_bit(dtype: torch.dtype, vocab:
     )
     ref = top_k_mask(logits, k)
     out = _run(TopKMaskFwdOp(), logits, k)
-    bits = torch.int16 if logits.element_size() == 2 else torch.int32
     # Bit patterns, so that -0.0 kept where the reference keeps 0.0 is a failure.
-    assert torch.equal(out.view(bits), ref.view(bits))
+    compare_outputs(out, ref, top_k_mask_verification(logits))
 
 
 @pytest.mark.packaging(family="sampling")
@@ -152,7 +143,7 @@ def test_top_k_mask_cuts_a_row_its_samples_misplace():
     logits = torch.where(columns % 4 == 0, 0.0, 1.0).to(torch.float32)[None]
     k = torch.tensor([vocab // 2], dtype=torch.int32, device=device)
     out = _run(TopKMaskFwdOp(), logits, k)
-    assert torch.equal(out, top_k_mask(logits, k))
+    compare_outputs(out, top_k_mask(logits, k), top_k_mask_verification(logits))
 
 
 @pytest.mark.in_tree_kernels
@@ -181,9 +172,7 @@ def test_min_p_mask(dtype):
     relative = probs / probs.amax(-1, keepdim=True) - min_p[:, None]
     assert (relative[ref == -_INF] < margin).all() and (relative[ref != -_INF] > -margin).all()
     out = _run(MinPMaskFwdOp(), logits, min_p)
-    values = logits.float()
-    threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
-    logit_mask_validator(logits, (values - threshold).abs() <= margin)(out, ref)
+    compare_outputs(out, ref, workload.verification(logits, min_p))
 
 
 def test_min_p_mask_rows_without_a_finite_threshold():
@@ -202,7 +191,7 @@ def test_min_p_mask_rows_without_a_finite_threshold():
         min_p = torch.tensor([0.0, 0.5, 0.5, 0.5, 1.0], device=device)
         out = _run(MinPMaskFwdOp(), logits, min_p)
         ref = min_p_mask(logits, min_p)
-        assert ((out == ref) | (out.isnan() & ref.isnan())).all(), vocab
+        compare_outputs(out, ref, min_p_mask_verification(logits, min_p))
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)
@@ -216,8 +205,7 @@ def test_top_p_mask(dtype):
     ref = workload.ref_program(logits, p)
     _assert_nucleus(ref, logits, p, margin=margin)
     out = _run(TopPMaskFwdOp(), logits, p)
-    above = probability_above(logits.float().softmax(-1))
-    logit_mask_validator(logits, (above - p[:, None]).abs() <= margin)(out, ref)
+    compare_outputs(out, ref, workload.verification(logits, p))
 
 
 @pytest.mark.in_tree_kernels
@@ -249,7 +237,7 @@ def test_top_p_mask_rows_at_the_contract_endpoints():
         logits[2] = -_INF
         out = _run(TopPMaskFwdOp(), logits, p)
         ref = top_p_mask(logits, p)
-        assert ((out == ref) | (out.isnan() & ref.isnan())).all(), vocab
+        compare_outputs(out, ref, top_p_mask_verification(logits, p))
 
 
 @pytest.mark.parametrize("dtype", _DTYPES)
@@ -268,8 +256,7 @@ def test_top_k_top_p_mask(dtype):
     assert ((ref != -_INF) <= (top_k != -_INF)).all()
     _assert_nucleus(ref, top_k, p, margin=margin)
     out = _run(TopKTopPMaskFwdOp(), logits, k, p)
-    above = probability_above(top_k.float().softmax(-1))
-    logit_mask_validator(logits, (above - p[:, None]).abs() <= margin)(out, ref)
+    compare_outputs(out, ref, workload.verification(logits, k, p))
 
 
 @pytest.mark.parametrize(
@@ -287,26 +274,16 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
     probabilities are NaN, top-p removes nothing and the kept sets have to agree exactly.
     The NaN row is cut both ways: at a ``k`` that drops its NaNs and at one that keeps them."""
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
-    margin = 1e-4
     logits = _special_rows(vocab, dtype)
     device = logits.device
     p = torch.tensor([0.9, 0.95, 0.8, 0.95, 0.6, 0.5], dtype=torch.float32, device=device)
-    bits = torch.int16 if logits.element_size() == 2 else torch.int32
     for nan_k in (2, vocab):
         k = torch.tensor(
             [1, vocab // 2, vocab, nan_k, vocab // 4, vocab // 3], dtype=torch.int32, device=device
         )
         ref = top_p_mask(top_k_mask(logits, k), p)
         out = _run(TopKTopPMaskFwdOp(), logits, k, p)
-        above = probability_above(top_k_mask(logits, k).float().softmax(-1))
-        kept = out != -_INF
-        # A row of NaN probabilities is near no boundary, so its kept set agrees exactly.
-        assert not (((ref != -_INF) ^ kept) & ~((above - p[:, None]).abs() <= margin)).any()
-        # Bit patterns, so that -0.0 kept where the reference keeps 0.0 is a failure. A NaN
-        # a row keeps comes back as a quiet NaN, not its own payload.
-        passed = kept & ~logits.isnan()
-        assert torch.equal(out[passed].view(bits), logits[passed].view(bits))
-        assert out[kept & logits.isnan()].isnan().all()
+        compare_outputs(out, ref, top_p_mask_verification(logits, p, k=k))
 
 
 @pytest.mark.in_tree_kernels
@@ -354,12 +331,11 @@ def test_sampling_from_probs():
     offset = torch.tensor([7], dtype=torch.int64, device=device)
     workload = SamplingFromProbsWorkload(sampling_call("SamplingFromProbsFwdOp", B=n, V=vocab))
     ref = workload.ref_program(probs, seed, offset)
-    _assert_follows(ref, weights / weights.sum())
     assert torch.equal(ref, workload.ref_program(probs, seed, offset))
     op = SamplingFromProbsFwdOp()
     out = _run(op, probs, seed, offset)
     assert out.dtype == torch.int32
-    _assert_follows(out, weights / weights.sum())
+    TestBase.check(workload, op, probs, seed, offset, runs=lambda *args: _run(op, *args))
     assert torch.equal(out, op(probs, seed, offset))
 
 
@@ -387,24 +363,6 @@ def test_sampling_from_probs_draws_the_same_token_at_every_launch_shape():
     assert int(drawn[1]) == int(sampling_from_probs(row[None], seed, offset)[0])
 
 
-def _assert_verifies_chains(tokens, num, draft_ids, draft, target, accepted):
-    """The accepted prefix is the drafts and ``-1`` follows the drawn token; the drawn token
-    follows the residual of its position, or target row ``N`` after a whole chain; the first
-    token follows target row 0; ``num`` follows the acceptance probabilities ``accepted``."""
-    assert tokens.dtype == num.dtype == torch.int32
-    num_draft = draft.shape[0]
-    position = torch.arange(num_draft + 1, device=tokens.device)[None]
-    prefix = position[:, :-1] < num[:, None]
-    assert torch.equal(tokens[:, :-1][prefix], draft_ids[prefix])
-    assert (tokens[position > num[:, None]] == -1).all()
-    for stop in range(num_draft + 1):
-        weights = target[stop] if stop == num_draft else (target[stop] - draft[stop]).clamp_min(0)
-        _assert_follows(tokens[num == stop, stop], weights / weights.sum())
-    _assert_follows(tokens[:, 0], target[0])
-    a0, a1 = accepted
-    _assert_follows(num, torch.stack([1 - a0, a0 * (1 - a1), a0 * a1]))
-
-
 def test_chain_speculative_sampling():
     """Two drafts per row over 16 tokens, each draft drawn from its draft row, in 65536 rows."""
     n, num_draft, vocab = 65536, 2, 16
@@ -415,7 +373,6 @@ def test_chain_speculative_sampling():
     target /= target.sum(-1, keepdim=True)
     draft_ids = torch.multinomial(draft, n, replacement=True).T.to(torch.int32).contiguous()
     # A draft drawn from its row is accepted with probability sum(min(draft, target)).
-    accepted = torch.minimum(draft, target[:num_draft]).sum(-1)
     inputs = (
         draft.expand(n, num_draft, vocab).contiguous(),
         draft_ids,
@@ -426,11 +383,10 @@ def test_chain_speculative_sampling():
     call = sampling_call("ChainSpeculativeSamplingFwdOp", B=n, N=num_draft, V=vocab)
     workload = ChainSpeculativeSamplingWorkload(call)
     ref = workload.ref_program(*inputs)
-    _assert_verifies_chains(*ref, draft_ids, draft, target, accepted)
     assert all(map(torch.equal, ref, workload.ref_program(*inputs)))
     op = ChainSpeculativeSamplingFwdOp()
     out = _run(op, *inputs)
-    _assert_verifies_chains(*out, draft_ids, draft, target, accepted)
+    TestBase.check(workload, op, *inputs, runs=lambda *args: _run(op, *args))
     assert all(map(torch.equal, out, op(*inputs)))
 
 
@@ -483,18 +439,11 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
         torch.tensor([1234], dtype=torch.int64, device=device),
         torch.tensor([7], dtype=torch.int64, device=device),
     )
-    ref_tokens, ref_num = chain_speculative_sampling(*inputs)
-    tokens, num = _run(ChainSpeculativeSamplingFwdOp(), *inputs)
-    assert torch.equal(num, ref_num)
-    position = torch.arange(num_draft + 1, device=device)[None]
-    prefix = position < num[:, None]
-    assert torch.equal(tokens[prefix], ref_tokens[prefix])
-    assert (tokens[position > num[:, None]] == -1).all()
-    # The drawn token carries residual weight at the position the chain stopped on.
-    rows = torch.arange(batch, device=device)
-    padded = torch.cat([draft, torch.zeros_like(draft[:, :1])], 1)
-    weights = (target[rows, num.long()] - padded[rows, num.long()]).clamp_min(0)
-    assert (weights[rows, tokens[rows, num.long()].long()] > 0).all()
+    workload = ChainSpeculativeSamplingWorkload(
+        sampling_call("ChainSpeculativeSamplingFwdOp", B=batch, N=num_draft, V=vocab)
+    )
+    op = ChainSpeculativeSamplingFwdOp()
+    TestBase.check(workload, op, *inputs, runs=lambda *args: _run(op, *args))
 
 
 _SMALL_CALLS = {

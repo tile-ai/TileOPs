@@ -28,7 +28,8 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
-from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
+from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call
+from workloads.numerics import compare_outputs
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
 
@@ -335,15 +336,7 @@ def _run(workload) -> tuple:
     cls = MoEGroupedGemmFwdOp if len(inputs) == 3 else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments({}))
     out = op(*inputs)
-    rows = inputs[0].numel() // inputs[0].shape[-1]
-    valid = valid_rows(op.layout, inputs[-1], rows, inputs[1].shape[0])
-    ref = workload.ref_program(*inputs)
-    torch.testing.assert_close(
-        out.reshape(-1, out.shape[-1])[valid].float(),
-        ref.reshape(-1, ref.shape[-1])[valid].float(),
-        rtol=2e-2,
-        atol=1e-1,
-    )
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
     return op, out
 
 
@@ -453,7 +446,9 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
-    torch.testing.assert_close(out, workload.ref_program(a, b, metadata), rtol=1e-3, atol=1e-2)
+    compare_outputs(
+        out, workload.ref_program(a, b, metadata), workload.verification(a, b, metadata)
+    )
 
 
 @pytest.mark.smoke

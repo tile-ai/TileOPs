@@ -11,8 +11,13 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
 from workloads.device import run_device
-from workloads.elementwise import ReluWorkload, UnaryActivationCase
-from workloads.numerics import reference_tolerance
+from workloads.elementwise import (
+    ElementwiseWorkload,
+    GeluTailWorkload,
+    ReluWorkload,
+    UnaryActivationCase,
+)
+from workloads.numerics import compare_outputs
 
 
 class ReluTest(ReluWorkload, TestBase):
@@ -110,9 +115,9 @@ def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(n, device=run_device(), dtype=dtype)
 
 
-def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
+def _make_activation_test(n_total, dtype, gen_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
-    test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
+    test = UnaryActivationTest(n_total, dtype, op_cls.__name__, gen_fn=gen_fn, **op_kwargs)
     op = op_cls(**op_kwargs)
     test.check(op, *test.gen_inputs())
 
@@ -122,14 +127,10 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
 def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
     from tileops.ops.elementwise import GeluFwdOp
 
-    def _ref(x: torch.Tensor) -> torch.Tensor:
-        return F.gelu(x, approximate=approximate)
-
     _make_activation_test(
         n_total,
         dtype,
         _randn,
-        _ref,
         GeluFwdOp,
         approximate=approximate,
     )
@@ -139,49 +140,49 @@ def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
 def test_silu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SiluFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.silu, SiluFwdOp)
+    _make_activation_test(n_total, dtype, _randn, SiluFwdOp)
 
 
 @ActivationFixture
 def test_sigmoid(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SigmoidFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, torch.sigmoid, SigmoidFwdOp)
+    _make_activation_test(n_total, dtype, _randn, SigmoidFwdOp)
 
 
 @ActivationFixture
 def test_tanh(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import TanhFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, torch.tanh, TanhFwdOp)
+    _make_activation_test(n_total, dtype, _randn, TanhFwdOp)
 
 
 @ActivationFixture
 def test_hardswish(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import HardswishFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.hardswish, HardswishFwdOp)
+    _make_activation_test(n_total, dtype, _randn, HardswishFwdOp)
 
 
 @ActivationFixture
 def test_hardsigmoid(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import HardsigmoidFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.hardsigmoid, HardsigmoidFwdOp)
+    _make_activation_test(n_total, dtype, _randn, HardsigmoidFwdOp)
 
 
 @ActivationFixture
 def test_mish(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import MishFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.mish, MishFwdOp)
+    _make_activation_test(n_total, dtype, _randn, MishFwdOp)
 
 
 @ActivationFixture
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
+    _make_activation_test(n_total, dtype, _randn, SeluFwdOp)
 
 
 @pytest.mark.cuda_only
@@ -207,7 +208,7 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
         x[n // 2 :] = 50.0
         return x
 
-    _make_activation_test(n_total, dtype, _extreme, torch.sigmoid, SigmoidFwdOp)
+    _make_activation_test(n_total, dtype, _extreme, SigmoidFwdOp)
 
 
 @ActivationEdgeFixture
@@ -221,7 +222,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
         x[n // 2 :] = 50.0
         return x
 
-    _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
+    _make_activation_test(n_total, dtype, _extreme, TanhFwdOp)
 
 
 @pytest.mark.smoke
@@ -235,16 +236,8 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     """
     from tileops.ops.elementwise import GeluFwdOp
 
-    largest = torch.finfo(dtype).max
-    inf, nan = float("inf"), float("nan")
-    x = torch.tensor(
-        [-largest, -1000.0, -8.0, 8.0, 1000.0, largest, -inf, inf, nan],
-        device=run_device(),
-        dtype=dtype,
-    )
-    torch.testing.assert_close(
-        GeluFwdOp()(x), F.gelu(x.float()).to(dtype), rtol=0, atol=0, equal_nan=True
-    )
+    workload = GeluTailWorkload(dtype)
+    TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
 
 
 # Independent activation ops
@@ -258,7 +251,6 @@ def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
         n_total,
         dtype,
         _randn,
-        lambda x: F.leaky_relu(x.float(), 0.01).to(x.dtype),
         LeakyReluFwdOp,
     )
 
@@ -271,7 +263,6 @@ def test_elu(n_total: int, dtype: torch.dtype) -> None:
         n_total,
         dtype,
         _randn,
-        lambda x: F.elu(x.float(), 1.0).to(x.dtype),
         EluFwdOp,
     )
 
@@ -284,7 +275,6 @@ def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
         n_total,
         dtype,
         _randn,
-        lambda x: F.hardtanh(x.float(), -1.0, 1.0).to(x.dtype),
         HardtanhFwdOp,
     )
 
@@ -297,7 +287,6 @@ def test_softplus(n_total: int, dtype: torch.dtype) -> None:
         n_total,
         dtype,
         _randn,
-        lambda x: F.softplus(x.float(), 1.0, 20.0).to(x.dtype),
         SoftplusFwdOp,
     )
 
@@ -329,7 +318,9 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 
     op = PreluFwdOp()
     out = op(x, weight)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
+    compare_outputs(
+        out, ref, ElementwiseWorkload(type(op).__name__, (x, weight)).verification(*(x, weight))
+    )
 
 
 @pytest.mark.smoke
@@ -344,7 +335,9 @@ def test_prelu_batch_dim() -> None:
     ref = F.prelu(x, weight)
     op = PreluFwdOp()
     out = op(x, weight)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out, ref, ElementwiseWorkload(type(op).__name__, (x, weight)).verification(*(x, weight))
+    )
 
 
 @pytest.mark.smoke

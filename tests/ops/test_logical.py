@@ -33,7 +33,7 @@ class LogicalAndFixture(FixtureBase):
 
 @LogicalAndFixture
 def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
-    test = LogicalTest(n_total, dtype, torch.logical_and)
+    test = LogicalTest(n_total, dtype, "LogicalAndFwdOp")
     op = LogicalAndFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -53,7 +53,7 @@ class LogicalOrFixture(FixtureBase):
 
 @LogicalOrFixture
 def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
-    test = LogicalTest(n_total, dtype, torch.logical_or)
+    test = LogicalTest(n_total, dtype, "LogicalOrFwdOp")
     op = LogicalOrFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -106,7 +106,7 @@ def test_logical_broadcast(
     a = (torch.randn(*a_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
     b = (torch.randn(*b_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
     op = op_cls()
-    test = LogicalTest(a.numel(), a.dtype, ref_fn)
+    test = LogicalTest(a.numel(), a.dtype, op_cls.__name__)
     test.check(op, a, b)
 
 
@@ -118,7 +118,7 @@ def test_logical_and_bool_broadcast() -> None:
     a = torch.randint(0, 2, a_shape, device=run_device()).to(torch.bool)
     b = torch.randint(0, 2, b_shape, device=run_device()).to(torch.bool)
     op = LogicalAndFwdOp()
-    test = LogicalTest(a.numel(), a.dtype, torch.logical_and)
+    test = LogicalTest(a.numel(), a.dtype, "LogicalAndFwdOp")
     test.check(op, a, b)
 
 
@@ -218,5 +218,5 @@ def test_logical_int_bool_matrix(
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
     op = op_cls()
-    test = LogicalTest(a.numel(), a.dtype, ref_fn)
+    test = LogicalTest(a.numel(), a.dtype, op_cls.__name__)
     test.check(op, a, b)

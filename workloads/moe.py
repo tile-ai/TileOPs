@@ -56,12 +56,12 @@ class FusedTopKWorkload(CallWorkload):
                 selection.gather(1, ids.long()).sort(-1).values,
                 selection.gather(1, ref_ids.long()).sort(-1).values,
                 rtol=1e-5,
-                atol=1e-5,
+                atol=0,
             )
             selected = scores.gather(1, ids.long())
             if renormalize:
                 selected = selected / selected.sum(-1, keepdim=True)
-            torch.testing.assert_close(weights, selected, rtol=1e-3, atol=1e-3)
+            torch.testing.assert_close(weights, selected, rtol=1e-4, atol=0)
 
         return Custom(validate, "expert selection and weights independent of tie order")
 
@@ -250,8 +250,8 @@ class MoeGroupedGemmWorkload(CallWorkload):
             torch.testing.assert_close(
                 got.reshape(-1, got.shape[-1])[mask].float(),
                 expected.reshape(-1, expected.shape[-1])[mask].float(),
-                rtol=2e-2,
-                atol=1e-1,
+                rtol=1e-3 if got.dtype == torch.float32 else 2e-2,
+                atol=1e-2 if got.dtype == torch.float32 else 1e-1,
             )
 
         return Custom(validate, "defined rows of grouped expert layout")

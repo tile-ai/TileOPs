@@ -14,8 +14,9 @@ from workloads.norm import (
     LayerNormLargeOffsetWorkload,
     LayerNormWorkload,
     layer_norm_verification,
+    normalization_verification,
 )
-from workloads.numerics import compare_outputs, reference_tolerance
+from workloads.numerics import compare_outputs
 
 
 class LayerNormTest(LayerNormWorkload, TestBase):
@@ -181,10 +182,7 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     workload = LayerNormLargeOffsetWorkload(m, n, dtype)
     inputs = workload.gen_inputs()
     op = LayerNormFwdOp(normalized_shape=(n,))
-    result = compare_outputs(
-        op(*inputs), workload.ref_program(*inputs), workload.verification(*inputs)
-    )
-    assert result.max_abs_err < 1.0, "Catastrophic cancellation detected"
+    TestBase.check(workload, op, *inputs)
 
 
 @pytest.mark.smoke
@@ -226,7 +224,9 @@ def test_either_affine_tensor_alone_matches_torch(give: str) -> None:
     x = torch.randn(8, n, dtype=dtype, device=run_device())
     kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device=run_device())}
     got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)
-    torch.testing.assert_close(got, F.layer_norm(x, (n,), **kwargs), atol=2e-3, rtol=2e-3)
+    compare_outputs(
+        got, F.layer_norm(x, (n,), **kwargs), normalization_verification("LayerNormFwdOp", x.dtype)
+    )
 
 
 class FusedAddLayerNormTest(FusedAddLayerNormWorkload, TestBase):
@@ -296,12 +296,10 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
-    tolerance = reference_tolerance(dtype)
-    assert torch.allclose(y, y_ref, **tolerance), (
-        f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, **tolerance), (
-        f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+
+    compare_outputs(y, y_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype))
+    compare_outputs(
+        residual_out, add_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype)
     )
 
 
@@ -333,10 +331,8 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     y_ref, add_ref = test.ref_program(x, residual, weight, bias)
 
     y, residual_out = op(x, residual, weight, bias)
-    tolerance = reference_tolerance(dtype)
-    assert torch.allclose(y, y_ref, **tolerance), (
-        f"3D y test failed, max err: {(y - y_ref).abs().max()}"
-    )
-    assert torch.allclose(residual_out, add_ref, **tolerance), (
-        f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+
+    compare_outputs(y, y_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype))
+    compare_outputs(
+        residual_out, add_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype)
     )

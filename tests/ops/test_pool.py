@@ -33,12 +33,14 @@ from tileops.ops import (
     MaxPool3dIndicesFwdOp,
 )
 from workloads.device import run_device, run_device_available
+from workloads.numerics import compare_outputs
 from workloads.pool import (
     AdaptiveAvgPool2dWorkload,
     AdaptiveMaxPool2dWorkload,
     AvgPoolWorkload,
     MaxPoolWorkload,
     max_pool_ref,
+    pool_verification,
 )
 
 _AVG_POOL_OPS: dict[int, type] = {
@@ -642,7 +644,7 @@ def test_avg_pool_negative_divisor_override_matches_torch(
     op = _AVG_POOL_OPS[ndim](**pool_kwargs)
     out = op(x)
     ref = getattr(F, f"avg_pool{ndim}d")(x, **pool_kwargs)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    compare_outputs(out, ref, pool_verification(maximum=False))
 
 
 @pytest.mark.smoke
@@ -1429,11 +1431,11 @@ def test_max_pool_special_values(
     op = _max_pool_op_cls(ndim, return_indices)(**pool_kwargs)
     if return_indices:
         out, idx = op(x)
-        torch.testing.assert_close(out, ref[0], rtol=0, atol=0, equal_nan=True)
-        torch.testing.assert_close(idx, ref[1], rtol=0, atol=0)
+        compare_outputs(out, ref[0], pool_verification(maximum=True))
+        compare_outputs(idx, ref[1], pool_verification(maximum=True))
     else:
         out = op(x)
-        torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
+        compare_outputs(out, ref, pool_verification(maximum=True))
 
 
 @pytest.mark.smoke
@@ -1515,10 +1517,10 @@ def test_max_pool_compile_fullgraph(
         return_indices=return_indices,
     )
     if return_indices:
-        torch.testing.assert_close(out[0], ref[0], atol=0, rtol=0, equal_nan=True)
-        torch.testing.assert_close(out[1], ref[1], atol=0, rtol=0)
+        compare_outputs(out[0], ref[0], pool_verification(maximum=True))
+        compare_outputs(out[1], ref[1], pool_verification(maximum=True))
     else:
-        torch.testing.assert_close(out, ref, atol=0, rtol=0)
+        compare_outputs(out, ref, pool_verification(maximum=True))
     assert_op_owns_graph_nodes(op, x)
 
 
@@ -1569,11 +1571,15 @@ def test_pool_compile_two_instances_one_frame() -> None:
     x = torch.randn(2, 8, 32, device=run_device(), dtype=torch.float16)
     a = MaxPool1dFwdOp(kernel_size=3, stride=2, padding=1)
     b = MaxPool1dFwdOp(kernel_size=3, stride=1, padding=1)
-    torch.testing.assert_close(
-        torch.compile(a, fullgraph=True)(x), F.max_pool1d(x, 3, 2, 1), atol=0, rtol=0
+    compare_outputs(
+        torch.compile(a, fullgraph=True)(x),
+        F.max_pool1d(x, 3, 2, 1),
+        pool_verification(maximum=True),
     )
-    torch.testing.assert_close(
-        torch.compile(b, fullgraph=True)(x), F.max_pool1d(x, 3, 1, 1), atol=0, rtol=0
+    compare_outputs(
+        torch.compile(b, fullgraph=True)(x),
+        F.max_pool1d(x, 3, 1, 1),
+        pool_verification(maximum=True),
     )
 
 
@@ -1597,7 +1603,7 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
     ref = getattr(F, f"avg_pool{dims}d")(x, 2, 2, 0)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    compare_outputs(out, ref, pool_verification(maximum=False))
     assert_op_owns_graph_nodes(op, x)
 
 
@@ -1855,14 +1861,14 @@ def test_adaptive_pool_compile_fullgraph(
     out = torch.compile(op, fullgraph=True)(x)  # cold start: no eager warmup
     if op_cls is AdaptiveAvgPool2dFwdOp:
         ref = F.adaptive_avg_pool2d(x, (4, 4))
-        torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+        compare_outputs(out, ref, pool_verification(maximum=False))
     elif return_indices:
         ref_out, ref_idx = F.adaptive_max_pool2d(x, (4, 4), return_indices=True)
-        torch.testing.assert_close(out[0], ref_out, atol=0, rtol=0)
-        assert torch.equal(out[1], ref_idx)
+        compare_outputs(out[0], ref_out, pool_verification(maximum=True))
+        compare_outputs(out[1], ref_idx, pool_verification(maximum=True))
     else:
         ref = F.adaptive_max_pool2d(x, (4, 4))
-        torch.testing.assert_close(out, ref, atol=0, rtol=0)
+        compare_outputs(out, ref, pool_verification(maximum=True))
     assert_op_owns_graph_nodes(op, x)
 
 
@@ -1872,15 +1878,15 @@ def test_adaptive_pool2d_accepts_chw() -> None:
     x = torch.randn(16, 11, 13, device=run_device(), dtype=torch.float16)
     avg = AdaptiveAvgPool2dFwdOp(output_size=(5, 4))(x)
     assert avg.shape == (16, 5, 4)
-    torch.testing.assert_close(
-        avg.float(), F.adaptive_avg_pool2d(x.float(), (5, 4)), atol=2e-3, rtol=2e-3
+    compare_outputs(
+        avg, F.adaptive_avg_pool2d(x.float(), (5, 4)).to(x.dtype), pool_verification(maximum=False)
     )
 
     val, idx = AdaptiveMaxPool2dIndicesFwdOp(output_size=(5, 4))(x)
     ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (5, 4), return_indices=True)
     assert val.shape == (16, 5, 4) and idx.shape == (16, 5, 4)
-    torch.testing.assert_close(val.float(), ref_val, atol=0, rtol=0)
-    torch.testing.assert_close(idx, ref_idx, atol=0, rtol=0)
+    compare_outputs(val.float(), ref_val, pool_verification(maximum=True))
+    compare_outputs(idx, ref_idx, pool_verification(maximum=True))
 
 
 @pytest.mark.smoke
@@ -1893,4 +1899,4 @@ def test_adaptive_max_pool2d_indices_nan_window() -> None:
     val, idx = AdaptiveMaxPool2dIndicesFwdOp(output_size=(1, 1))(x)
     ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (1, 1), return_indices=True)
     assert torch.isnan(val.float()).all()
-    torch.testing.assert_close(idx, ref_idx, atol=0, rtol=0)
+    compare_outputs(idx, ref_idx, pool_verification(maximum=True))

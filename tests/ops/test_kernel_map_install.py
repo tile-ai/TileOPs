@@ -14,6 +14,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.utils import forget_device_properties, get_sm_version
 from workloads.device import run_device_available
+from workloads.elementwise import ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 pytestmark = pytest.mark.skipif(
     not run_device_available(),
@@ -200,7 +202,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     op = cls(kernel_map={key: UnrestrictedKernel}, target=BUILTIN)
     x = torch.randn(8, device="cuda", dtype=torch.float16)
 
-    torch.testing.assert_close(op(x), torch.relu(x))
+    compare_outputs(op(x), torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
 
 
 # A slot holds one entry per specialization; an enumeration that misses one
@@ -247,7 +249,7 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     op = BitwiseAndFwdOp(kernel_map={"bitwise_and_bool": NativeBoolAnd}, target=BUILTIN)
     x = torch.tensor([True, False] * 32, device="cuda")
 
-    torch.testing.assert_close(op(x, ~x), x & ~x)
+    compare_outputs(op(x, ~x), x & ~x, ElementwiseWorkload(type(op).__name__, ()).verification())
     ((built,),) = [tuple(op.built_kernels(ELEMENTWISE).values())]
     assert isinstance(built, NativeBoolAnd)
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
@@ -264,8 +266,10 @@ def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
     ints = torch.arange(1, 65, device="cuda", dtype=torch.int32)
     floats = torch.randn(64, device="cuda", dtype=torch.float32)
 
-    torch.testing.assert_close(op(ints), ints)
-    torch.testing.assert_close(op(floats), torch.floor(floats))
+    compare_outputs(op(ints), ints, ElementwiseWorkload(type(op).__name__, ()).verification())
+    compare_outputs(
+        op(floats), torch.floor(floats), ElementwiseWorkload(type(op).__name__, ()).verification()
+    )
     assert {type(k) for k in op.built_kernels(ELEMENTWISE).values()} == {
         IntIdentityFwdKernel,
         FloorFwdKernel,

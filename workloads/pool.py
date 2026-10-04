@@ -57,6 +57,9 @@ class AvgPoolWorkload(WorkloadBase):
             return pool(input.float(), **kwargs).to(input.dtype)
         return pool(input, **kwargs)
 
+    def verification(self, *inputs):
+        return pool_verification(maximum=False)
+
 
 class MaxPoolWorkload(WorkloadBase):
     def __init__(
@@ -104,9 +107,7 @@ class MaxPoolWorkload(WorkloadBase):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
+        return pool_verification(maximum=True)
 
 
 class AdaptivePool2dWorkload(WorkloadBase):
@@ -146,6 +147,9 @@ class AdaptiveAvgPool2dWorkload(AdaptivePool2dWorkload):
         size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_avg_pool2d(input, size)
 
+    def verification(self, *inputs):
+        return pool_verification(maximum=False)
+
 
 class AdaptiveMaxPool2dWorkload(AdaptivePool2dWorkload):
     """AdaptiveMaxPool2dFwdOp's input and reference, or its ``Indices`` variant's."""
@@ -160,9 +164,7 @@ class AdaptiveMaxPool2dWorkload(AdaptivePool2dWorkload):
         return F.adaptive_max_pool2d(input, size, return_indices=self.return_indices)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
+        return pool_verification(maximum=True)
 
 
 def _input_spec(call: Any) -> tuple[tuple[int, ...], torch.dtype]:
@@ -352,3 +354,10 @@ class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
             if offsets is None
             else [b - a for a, b in zip(offsets, offsets[1:], strict=False)],
         )
+
+
+def pool_verification(*, maximum):
+    """Max pooling selects values and indices exactly; averages incur rounding."""
+    from workloads.numerics import Exact
+
+    return Exact(atol=0, rtol=0) if maximum else Exact()

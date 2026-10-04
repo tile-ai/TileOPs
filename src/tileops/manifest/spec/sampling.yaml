@@ -161,7 +161,7 @@ ChainSpeculativeSamplingFwdOp:
     forall: {B: Dim, N: Dim, V: Dim}
     inputs:
       draft_probs: {dtype: float32, shape: "[B, N, V]"}
-      draft_token_ids: {dtype: int32, shape: "[B, N]", values: "topk_ids(B, N, V)", requires: ["in_range(0, V)"]}
+      draft_token_ids: {dtype: int32, shape: "[B, N]", values: "random_ids(B, N, V)", requires: ["in_range(0, V)"]}
       target_probs: {dtype: float32, shape: "[B, N + 1, V]"}
       seed: {dtype: int64, shape: "[1]"}
       offset: {dtype: int64, shape: "[1]"}

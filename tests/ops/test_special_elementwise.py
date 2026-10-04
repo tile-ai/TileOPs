@@ -18,11 +18,12 @@ from tileops.ops.elementwise import (
 )
 from workloads.device import run_device
 from workloads.elementwise import (
+    ElementwiseWorkload,
     SpecialCase,
     alibi_reference,
     sinusoidal_reference,
 )
-from workloads.numerics import reference_tolerance
+from workloads.numerics import compare_outputs
 
 
 class SpecialFixture(FixtureBase):
@@ -57,25 +58,25 @@ class SpecialTest(SpecialCase, TestBase):
     pass
 
 
-def _make_special_test(n_total, dtype, op_cls, ref_fn, gen_fn=None) -> None:
-    test = SpecialTest(n_total, dtype, ref_fn=ref_fn, gen_fn=gen_fn)
+def _make_special_test(n_total, dtype, op_cls, gen_fn=None) -> None:
+    test = SpecialTest(n_total, dtype, op_cls.__name__, gen_fn=gen_fn)
     op = op_cls()
     test.check(op, *test.gen_inputs())
 
 
 @SpecialFixture
 def test_isnan(n_total: int, dtype: torch.dtype) -> None:
-    _make_special_test(n_total, dtype, IsnanFwdOp, torch.isnan)
+    _make_special_test(n_total, dtype, IsnanFwdOp)
 
 
 @SpecialFixture
 def test_isinf(n_total: int, dtype: torch.dtype) -> None:
-    _make_special_test(n_total, dtype, IsinfFwdOp, torch.isinf)
+    _make_special_test(n_total, dtype, IsinfFwdOp)
 
 
 @SpecialFixture
 def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
-    _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite)
+    _make_special_test(n_total, dtype, IsfiniteFwdOp)
 
 
 # L4 edge-case tests (fp32, 4K)
@@ -88,7 +89,7 @@ def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
     def _all_nan(n, dtype):
         return torch.full((n,), float("nan"), device=run_device(), dtype=dtype)
 
-    _make_special_test(n_total, dtype, IsnanFwdOp, torch.isnan, gen_fn=_all_nan)
+    _make_special_test(n_total, dtype, IsnanFwdOp, gen_fn=_all_nan)
 
 
 @SpecialEdgeFixture
@@ -100,7 +101,7 @@ def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
         x[: n // 2] = float("-inf")
         return x
 
-    _make_special_test(n_total, dtype, IsinfFwdOp, torch.isinf, gen_fn=_all_inf)
+    _make_special_test(n_total, dtype, IsinfFwdOp, gen_fn=_all_inf)
 
 
 @SpecialEdgeFixture
@@ -110,7 +111,7 @@ def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     def _all_finite(n, dtype):
         return torch.randn(n, device=run_device(), dtype=dtype)
 
-    _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite, gen_fn=_all_finite)
+    _make_special_test(n_total, dtype, IsfiniteFwdOp, gen_fn=_all_finite)
 
 
 @pytest.mark.cuda_only
@@ -167,7 +168,9 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.where(cond, x, y)
     op = WhereFwdOp()
     out = op(cond, x, y)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out, ref, ElementwiseWorkload(type(op).__name__, (cond, x, y)).verification(*(cond, x, y))
+    )
 
 
 # --- L1: clamp ---
@@ -181,7 +184,11 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5).verification(*(x,)),
+    )
 
 
 # --- L1: masked_fill ---
@@ -198,7 +205,13 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 # --- L1: nan_to_num ---
@@ -216,7 +229,13 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype), equal_nan=True)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(
+            type(op).__name__, (x,), nan=0.0, posinf=10000.0, neginf=-10000.0
+        ).verification(*(x,)),
+    )
 
 
 # --- L1: alibi ---
@@ -242,8 +261,18 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     out = op()
     ref = alibi_reference(seq_len, num_heads, dtype)
 
-    tol = {"atol": 1e-2, "rtol": 1e-2} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(
+            type(op).__name__,
+            (),
+            seq_len=seq_len,
+            num_heads=num_heads,
+            out_dtype=dtype,
+            device=run_device(),
+        ).verification(*()),
+    )
 
 
 # --- L1: sinusoidal ---
@@ -272,11 +301,18 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     out = op()
     ref = sinusoidal_reference(seq_len, d_model, dtype)
 
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(
+            type(op).__name__,
+            (),
+            seq_len=seq_len,
+            d_model=d_model,
+            out_dtype=dtype,
+            device=run_device(),
+        ).verification(*()),
+    )
 
 
 @pytest.mark.cuda_only
@@ -314,7 +350,11 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5).verification(*(x,)),
+    )
 
 
 # L4 — Edge Cases (8 cases, fp32, 4K)
@@ -330,7 +370,11 @@ def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, min=0.5, max=-0.5)
     op = ClampScalarFwdOp(min=0.5, max=-0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x,), min=0.5, max=-0.5).verification(*(x,)),
+    )
 
 
 @IndependentEdgeFixture
@@ -342,7 +386,11 @@ def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, min=None, max=0.5)
     op = ClampScalarFwdOp(min=None, max=0.5)
     out = op(x)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x,), min=None, max=0.5).verification(*(x,)),
+    )
 
 
 @IndependentEdgeFixture
@@ -354,7 +402,11 @@ def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, min=-0.5, max=None)
     op = ClampScalarFwdOp(min=-0.5, max=None)
     out = op(x)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=None).verification(*(x,)),
+    )
 
 
 @IndependentEdgeFixture
@@ -368,7 +420,13 @@ def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 @IndependentEdgeFixture
@@ -382,7 +440,13 @@ def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 @IndependentEdgeFixture
@@ -396,7 +460,9 @@ def test_where_all_true(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.where(cond, x, y)
     op = WhereFwdOp()
     out = op(cond, x, y)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out, ref, ElementwiseWorkload(type(op).__name__, (cond, x, y)).verification(*(cond, x, y))
+    )
 
 
 @IndependentEdgeFixture
@@ -410,7 +476,9 @@ def test_where_all_false(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.where(cond, x, y)
     op = WhereFwdOp()
     out = op(cond, x, y)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out, ref, ElementwiseWorkload(type(op).__name__, (cond, x, y)).verification(*(cond, x, y))
+    )
 
 
 @IndependentEdgeFixture
@@ -432,7 +500,13 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(
+            type(op).__name__, (x,), nan=0.0, posinf=10000.0, neginf=-10000.0
+        ).verification(*(x,)),
+    )
 
 
 def _nan_row(dtype: torch.dtype) -> torch.Tensor:
@@ -475,7 +549,7 @@ def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> N
     else:
         out, ref = ew.HardsigmoidFwdOp()(x), F.hardsigmoid(x)
     assert torch.isnan(ref).any()
-    torch.testing.assert_close(out, ref, equal_nan=True, **reference_tolerance(dtype))
+    compare_outputs(out, ref, ElementwiseWorkload(op_name, (x,), **kwargs).verification(x))
 
 
 @pytest.mark.smoke
@@ -487,7 +561,7 @@ def test_nan_to_num_stores_an_out_of_range_replacement_as_inf() -> None:
     x = x.to(torch.float16)
     ref = torch.nan_to_num(x, nan=1e6, posinf=1e6, neginf=-1e6)
     out = NanToNumFwdOp(nan=1e6, posinf=1e6, neginf=-1e6)(x)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(out, ref, ElementwiseWorkload("NanToNumFwdOp", (x,)).verification(x))
 
 
 @pytest.mark.cuda_only
@@ -636,7 +710,13 @@ def test_masked_fill_int_dtypes(dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 @pytest.mark.smoke
@@ -648,7 +728,11 @@ def test_masked_fill_uint8_wraps_negative_int() -> None:
     x, mask = _masked_fill_int_inputs(n_total, torch.uint8)
     ref = x.masked_fill(mask, -1)
     op = MaskedFillScalarFwdOp(value=-1)
-    torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
+    compare_outputs(
+        op(x, mask),
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=-1).verification(*(x, mask)),
+    )
 
 
 @pytest.mark.smoke
@@ -660,7 +744,11 @@ def test_masked_fill_int_truncates_fractional_float() -> None:
     x, mask = _masked_fill_int_inputs(n_total, torch.int32)
     ref = x.masked_fill(mask, 1.5)
     op = MaskedFillScalarFwdOp(value=1.5)
-    torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
+    compare_outputs(
+        op(x, mask),
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=1.5).verification(*(x, mask)),
+    )
 
 
 @pytest.mark.smoke
@@ -675,7 +763,13 @@ def test_masked_fill_bool(fill_value) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 @pytest.mark.smoke
@@ -697,7 +791,13 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0, equal_nan=True)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
+            *(x, mask)
+        ),
+    )
 
 
 _MASKED_FILL_REJECT_CASES = [

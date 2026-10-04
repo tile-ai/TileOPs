@@ -8,7 +8,16 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
+def rope_verification():
+    from workloads.numerics import Exact
+
+    return Exact()
+
+
 class RopeWorkload(WorkloadBase):
+    def verification(self, *inputs):
+        return rope_verification()
+
     def __init__(
         self,
         variant: str,
@@ -323,6 +332,9 @@ def _rotate_half_non_neox(x: torch.Tensor) -> torch.Tensor:
 
 class RopeCall(CallWorkload):
     """A manifest rotation checked against independently constructed frequencies."""
+
+    def verification(self, *inputs):
+        return rope_verification()
 
     def ref_program(self, x, position_ids=None):
         name = self.call.signature.name

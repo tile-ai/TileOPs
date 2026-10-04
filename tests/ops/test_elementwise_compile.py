@@ -84,6 +84,7 @@ from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AbsCompileCase,
     AddCompileWorkload,
+    ElementwiseWorkload,
     EqCompileWorkload,
     ReluCompileCase,
     SignCompileCase,
@@ -373,131 +374,105 @@ def _positive_input(n, dtype):
 
 
 _UNARY_FLOAT_OPS = [
-    pytest.param(ExpFwdOp, torch.exp, None, "exp", marks=pytest.mark.smoke),
+    pytest.param(ExpFwdOp, None, "exp", marks=pytest.mark.smoke),
     pytest.param(
         LogFwdOp,
-        lambda x: torch.log(x.float()).to(x.dtype),
         _positive_input,
         "log",
         marks=pytest.mark.full,
     ),
     pytest.param(
         SqrtFwdOp,
-        lambda x: torch.sqrt(x.float()).to(x.dtype),
         _positive_input,
         "sqrt",
         marks=pytest.mark.full,
     ),
     pytest.param(
         RsqrtFwdOp,
-        lambda x: torch.rsqrt(x.float()).to(x.dtype),
         _positive_input,
         "rsqrt",
         marks=pytest.mark.full,
     ),
-    pytest.param(NegFwdOp, torch.neg, None, "neg", marks=pytest.mark.full),
+    pytest.param(NegFwdOp, None, "neg", marks=pytest.mark.full),
     pytest.param(
         ReciprocalFwdOp,
-        lambda x: torch.reciprocal(x.float()).to(x.dtype),
         None,
         "reciprocal",
         marks=pytest.mark.full,
     ),
-    pytest.param(
-        SinFwdOp, lambda x: torch.sin(x.float()).to(x.dtype), None, "sin", marks=pytest.mark.full
-    ),
-    pytest.param(
-        CosFwdOp, lambda x: torch.cos(x.float()).to(x.dtype), None, "cos", marks=pytest.mark.full
-    ),
+    pytest.param(SinFwdOp, None, "sin", marks=pytest.mark.full),
+    pytest.param(CosFwdOp, None, "cos", marks=pytest.mark.full),
     pytest.param(
         FloorFwdOp,
-        lambda x: torch.floor(x.float()).to(x.dtype),
         None,
         "floor",
         marks=pytest.mark.full,
     ),
-    pytest.param(
-        CeilFwdOp, lambda x: torch.ceil(x.float()).to(x.dtype), None, "ceil", marks=pytest.mark.full
-    ),
+    pytest.param(CeilFwdOp, None, "ceil", marks=pytest.mark.full),
     pytest.param(
         RoundFwdOp,
-        lambda x: torch.round(x.float()).to(x.dtype),
         None,
         "round",
         marks=pytest.mark.full,
     ),
     pytest.param(
         TruncFwdOp,
-        lambda x: torch.trunc(x.float()).to(x.dtype),
         None,
         "trunc",
         marks=pytest.mark.full,
     ),
-    pytest.param(
-        ErfFwdOp, lambda x: torch.erf(x.float()).to(x.dtype), None, "erf", marks=pytest.mark.full
-    ),
+    pytest.param(ErfFwdOp, None, "erf", marks=pytest.mark.full),
     pytest.param(
         Log1pFwdOp,
-        lambda x: torch.log1p(x.float()).to(x.dtype),
         _positive_input,
         "log1p",
         marks=pytest.mark.full,
     ),
     pytest.param(
         Expm1FwdOp,
-        lambda x: torch.expm1(x.float()).to(x.dtype),
         None,
         "expm1",
         marks=pytest.mark.full,
     ),
     pytest.param(
         GeluFwdOp,
-        lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype),
         None,
         "gelu",
         marks=pytest.mark.full,
     ),
     pytest.param(
         SiluFwdOp,
-        lambda x: torch.nn.functional.silu(x.float()).to(x.dtype),
         None,
         "silu",
         marks=pytest.mark.full,
     ),
     pytest.param(
         SigmoidFwdOp,
-        lambda x: torch.sigmoid(x.float()).to(x.dtype),
         None,
         "sigmoid",
         marks=pytest.mark.full,
     ),
-    pytest.param(
-        TanhFwdOp, lambda x: torch.tanh(x.float()).to(x.dtype), None, "tanh", marks=pytest.mark.full
-    ),
+    pytest.param(TanhFwdOp, None, "tanh", marks=pytest.mark.full),
     pytest.param(
         HardswishFwdOp,
-        lambda x: torch.nn.functional.hardswish(x.float()).to(x.dtype),
         None,
         "hardswish",
         marks=pytest.mark.full,
     ),
     pytest.param(
         HardsigmoidFwdOp,
-        lambda x: torch.nn.functional.hardsigmoid(x.float()).to(x.dtype),
         None,
         "hardsigmoid",
         marks=pytest.mark.full,
     ),
     pytest.param(
         MishFwdOp,
-        lambda x: torch.nn.functional.mish(x.float()).to(x.dtype),
         None,
         "mish",
         marks=pytest.mark.full,
     ),
     pytest.param(
         SeluFwdOp,
-        lambda x: torch.nn.functional.selu(x.float()).to(x.dtype),
         None,
         "selu",
         marks=pytest.mark.full,
@@ -508,8 +483,8 @@ _UNARY_FLOAT_OPS = [
 _register_table(_UNARY_FLOAT_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, input_fn, name", _UNARY_FLOAT_OPS)
-def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
+@pytest.mark.parametrize("op_cls, input_fn, name", _UNARY_FLOAT_OPS)
+def test_unary_float_compile(op_cls, input_fn, name):
     """Compile-smoke for remaining float unary ops."""
     n = 1024 * 1024
     op = op_cls()
@@ -519,31 +494,27 @@ def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
         if input_fn is not None
         else torch.randn(n, dtype=_DTYPE, device=run_device())
     )
-    out = compiled_op(x)
-    ref = ref_fn(x)
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x,))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Unary bool-output ops ---
 
 _UNARY_BOOL_OPS = [
-    pytest.param(
-        LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.smoke
-    ),
-    pytest.param(
-        LogicalNotFwdOp, torch.logical_not, torch.bool, "logical_not_bool", marks=pytest.mark.smoke
-    ),
-    pytest.param(IsnanFwdOp, torch.isnan, torch.float16, "isnan", marks=pytest.mark.full),
-    pytest.param(IsinfFwdOp, torch.isinf, torch.float16, "isinf", marks=pytest.mark.full),
-    pytest.param(IsfiniteFwdOp, torch.isfinite, torch.float16, "isfinite", marks=pytest.mark.full),
+    pytest.param(LogicalNotFwdOp, torch.float16, "logical_not", marks=pytest.mark.smoke),
+    pytest.param(LogicalNotFwdOp, torch.bool, "logical_not_bool", marks=pytest.mark.smoke),
+    pytest.param(IsnanFwdOp, torch.float16, "isnan", marks=pytest.mark.full),
+    pytest.param(IsinfFwdOp, torch.float16, "isinf", marks=pytest.mark.full),
+    pytest.param(IsfiniteFwdOp, torch.float16, "isfinite", marks=pytest.mark.full),
 ]
 
 
 _register_table(_UNARY_BOOL_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, dtype, name", _UNARY_BOOL_OPS)
-def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
+@pytest.mark.parametrize("op_cls, dtype, name", _UNARY_BOOL_OPS)
+def test_unary_bool_compile(op_cls, dtype, name):
     """Compile-smoke for unary ops with bool output."""
     n = 1024 * 1024
     op = op_cls()
@@ -552,10 +523,9 @@ def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
         x = torch.rand(n, device=run_device()) > 0.5
     else:
         x = torch.randn(n, dtype=dtype, device=run_device())
-    out = compiled_op(x)
-    ref = ref_fn(x)
-    assert out.dtype == torch.bool
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x,))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Unary bitwise op ---
@@ -570,44 +540,34 @@ def test_bitwise_not_compile():
     x_int = torch.randint(0, 256, (n,), dtype=torch.uint8, device=run_device())
     op = BitwiseNotFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x_int)
-    ref = ~x_int
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x_int,))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Remaining binary same-dtype ops ---
 
 _BINARY_ARITH_OPS = [
-    pytest.param(
-        SubFwdOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.smoke
-    ),
-    pytest.param(
-        MulFwdOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.full
-    ),
-    pytest.param(
-        DivFwdOp, lambda a, b: (a.float() / b.float()).half(), "div", marks=pytest.mark.full
-    ),
+    pytest.param(SubFwdOp, "sub", marks=pytest.mark.smoke),
+    pytest.param(MulFwdOp, "mul", marks=pytest.mark.full),
+    pytest.param(DivFwdOp, "div", marks=pytest.mark.full),
     pytest.param(
         RemainderFwdOp,
-        lambda a, b: a - torch.floor(a.float() / b.float()).half() * b,
         "remainder",
         marks=pytest.mark.full,
     ),
     pytest.param(
         FloorDivideFwdOp,
-        lambda a, b: torch.floor(a.float() / b.float()).half(),
         "floor_divide",
         marks=pytest.mark.full,
     ),
     pytest.param(
         MaximumFwdOp,
-        lambda a, b: torch.maximum(a.float(), b.float()).half(),
         "maximum",
         marks=pytest.mark.full,
     ),
     pytest.param(
         MinimumFwdOp,
-        lambda a, b: torch.minimum(a.float(), b.float()).half(),
         "minimum",
         marks=pytest.mark.full,
     ),
@@ -617,17 +577,17 @@ _BINARY_ARITH_OPS = [
 _register_table(_BINARY_ARITH_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _BINARY_ARITH_OPS)
-def test_binary_arith_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, name", _BINARY_ARITH_OPS)
+def test_binary_arith_compile(op_cls, name):
     """Compile-smoke for remaining binary arithmetic ops."""
     shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device()).abs().clamp(min=0.1)
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = ref_fn(a, b)
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 register_compile_contract(PowFwdOp)
@@ -642,9 +602,9 @@ def test_pow_compile():
     b = torch.rand(shape, dtype=_DTYPE, device=run_device()) * 2.0
     op = PowFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = torch.pow(a.float(), b.float()).half()
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Lerp (special binary with weight) ---
@@ -660,9 +620,9 @@ def test_lerp_compile():
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = LerpScalarFwdOp(weight=0.3)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = torch.lerp(a.float(), b.float(), 0.3).half()
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b), weight=0.3)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 register_compile_contract(LerpTensorFwdOp)
@@ -677,105 +637,98 @@ def test_lerp_tensor_compile():
     w = torch.rand(shape, dtype=_DTYPE, device=run_device())
     op = LerpTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b, w)
-    ref = torch.lerp(a, b, w)
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b, w))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Remaining comparison ops ---
 
 _COMPARISON_OPS = [
-    pytest.param(NeFwdOp, lambda a, b: a != b, "ne", marks=pytest.mark.smoke),
-    pytest.param(GtFwdOp, lambda a, b: a > b, "gt", marks=pytest.mark.full),
-    pytest.param(LtFwdOp, lambda a, b: a < b, "lt", marks=pytest.mark.full),
-    pytest.param(GeFwdOp, lambda a, b: a >= b, "ge", marks=pytest.mark.full),
-    pytest.param(LeFwdOp, lambda a, b: a <= b, "le", marks=pytest.mark.full),
+    pytest.param(NeFwdOp, "ne", marks=pytest.mark.smoke),
+    pytest.param(GtFwdOp, "gt", marks=pytest.mark.full),
+    pytest.param(LtFwdOp, "lt", marks=pytest.mark.full),
+    pytest.param(GeFwdOp, "ge", marks=pytest.mark.full),
+    pytest.param(LeFwdOp, "le", marks=pytest.mark.full),
 ]
 
 
 _register_table(_COMPARISON_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _COMPARISON_OPS)
-def test_comparison_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, name", _COMPARISON_OPS)
+def test_comparison_compile(op_cls, name):
     """Compile-smoke for remaining comparison ops (bool output)."""
     shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = ref_fn(a, b)
-    assert out.dtype == torch.bool
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Logical binary ops ---
 
 _LOGICAL_OPS = [
-    pytest.param(
-        LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.smoke
-    ),
-    pytest.param(
-        LogicalOrFwdOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.full
-    ),
+    pytest.param(LogicalAndFwdOp, "logical_and", marks=pytest.mark.smoke),
+    pytest.param(LogicalOrFwdOp, "logical_or", marks=pytest.mark.full),
 ]
 
 
 _register_table(_LOGICAL_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _LOGICAL_OPS)
-def test_logical_binary_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, name", _LOGICAL_OPS)
+def test_logical_binary_compile(op_cls, name):
     """Compile-smoke for logical binary ops (bool output)."""
     shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = ref_fn(a, b)
-    assert out.dtype == torch.bool
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Bitwise binary ops ---
 
 _BITWISE_BINARY_OPS = [
-    pytest.param(BitwiseAndFwdOp, lambda a, b: a & b, "bitwise_and", marks=pytest.mark.smoke),
-    pytest.param(BitwiseOrFwdOp, lambda a, b: a | b, "bitwise_or", marks=pytest.mark.full),
-    pytest.param(BitwiseXorFwdOp, lambda a, b: a ^ b, "bitwise_xor", marks=pytest.mark.full),
+    pytest.param(BitwiseAndFwdOp, "bitwise_and", marks=pytest.mark.smoke),
+    pytest.param(BitwiseOrFwdOp, "bitwise_or", marks=pytest.mark.full),
+    pytest.param(BitwiseXorFwdOp, "bitwise_xor", marks=pytest.mark.full),
 ]
 
 
 _register_table(_BITWISE_BINARY_OPS)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
-def test_bitwise_binary_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, name", _BITWISE_BINARY_OPS)
+def test_bitwise_binary_compile(op_cls, name):
     """Compile-smoke for bitwise binary ops."""
     shape = (256, 256)
     a = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     b = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = ref_fn(a, b)
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-@pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
-def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
+@pytest.mark.parametrize("op_cls, name", _BITWISE_BINARY_OPS)
+def test_bool_bitwise_binary_compile(op_cls, name):
     """Compile-smoke for bool bitwise ops using the uint8 storage path."""
     shape = (256, 256)
     a = torch.randint(0, 2, shape, device=run_device()).bool()
     b = torch.randint(0, 2, shape, device=run_device()).bool()
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = ref_fn(a, b)
-    assert out.dtype == torch.bool
-    assert torch.equal(out, ref)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Remaining fused gated ops ---
@@ -796,9 +749,9 @@ def test_fused_gated_compile(op_cls, name):
     x = torch.randn(M, 2 * N, dtype=_DTYPE, device=run_device())
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x)
-    assert out.shape == (M, N)
-    assert out.dtype == _DTYPE
+
+    workload = ElementwiseWorkload(type(op).__name__, (x,))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Where op (cond, x, y -> out): same-shape and broadcasting ---
@@ -820,10 +773,9 @@ def test_where_compile_same_shape():
     y = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = WhereFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(cond, x, y)
-    ref = torch.where(cond, x, y)
-    assert out.shape == ref.shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (cond, x, y))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -837,10 +789,9 @@ def test_where_compile_broadcast():
     y = torch.randn(y_shape, dtype=_DTYPE, device=run_device())
     op = WhereFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(cond, x, y)
-    ref = torch.where(cond, x, y)
-    assert out.shape == ref.shape == (4, 8)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (cond, x, y))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- ClampScalarFwdOp (input -> out, scalar min/max baked) ---
@@ -855,9 +806,9 @@ def test_clamp_scalar_compile():
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x)
-    ref = torch.clamp(x.float(), min=-0.5, max=0.5).to(_DTYPE)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- Tensor-bound ClampTensorFwdOp (input, min?, max? -> out) ---
@@ -879,9 +830,9 @@ def test_clamp_tensor_compile_same_shape():
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, lo, hi)
-    ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, lo, hi))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -895,10 +846,9 @@ def test_clamp_tensor_compile_broadcast():
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, lo, hi)
-    ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
-    assert out.shape == ref.shape == input_shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, lo, hi))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- One bound withheld ---
@@ -912,9 +862,9 @@ def test_clamp_min_only_compile_same_shape():
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, lo)
-    ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, lo))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -926,10 +876,9 @@ def test_clamp_min_only_compile_broadcast():
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, lo)
-    ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
-    assert out.shape == ref.shape == input_shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, lo))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -940,9 +889,9 @@ def test_clamp_max_only_compile_same_shape():
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, None, hi)
-    ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, None, hi))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -954,10 +903,9 @@ def test_clamp_max_only_compile_broadcast():
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
     op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, None, hi)
-    ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
-    assert out.shape == ref.shape == input_shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, None, hi))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- MaskedFillTensorFwdOp (Tensor value) ---
@@ -979,9 +927,9 @@ def test_masked_fill_tensor_compile_same_shape():
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
     op = MaskedFillTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, mask, value)
-    ref = torch.where(mask, value.expand(shape), x)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask, value))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -994,14 +942,9 @@ def test_masked_fill_tensor_compile_broadcast():
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
     op = MaskedFillTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, mask, value)
-    ref = torch.where(
-        mask.expand(input_shape),
-        value.expand(input_shape),
-        x,
-    )
-    assert out.shape == ref.shape == input_shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask, value))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- MaskedFillScalarFwdOp (broadcast path now uses custom_op) ---
@@ -1017,9 +960,9 @@ def test_masked_fill_scalar_compile_same_shape():
     mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
     op = MaskedFillScalarFwdOp(value=-1.0)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, mask)
-    ref = x.masked_fill(mask, -1.0)
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask), value=-1.0)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -1035,10 +978,9 @@ def test_masked_fill_scalar_compile_broadcast():
     mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device=run_device())
     op = MaskedFillScalarFwdOp(value=-1.0)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x, mask)
-    ref = x.masked_fill(mask.expand(input_shape), -1.0)
-    assert out.shape == ref.shape == input_shape
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask), value=-1.0)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 # --- DivFwdOp rounding_mode trunc/floor compile coverage ---
@@ -1060,15 +1002,9 @@ def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> No
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
     op = DivFwdOp(rounding_mode=rounding_mode)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
-    # rounding-mode divergence in reduced precision can flip by 1 unit at
-    # quotient boundaries; loosen tolerance for fp16/bf16 accordingly.
-    if dtype == torch.float32:
-        atol, rtol = 1e-5, 1e-5
-    else:
-        atol, rtol = 1.0, 0.0
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+    workload = ElementwiseWorkload(type(op).__name__, (a, b), rounding_mode=rounding_mode)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
@@ -1093,7 +1029,8 @@ def test_reciprocal_int_promotion_compiles(dtype):
     assert eager.dtype == torch.float32
     assert compiled.dtype == eager.dtype
     torch.testing.assert_close(compiled, eager, atol=1e-6, rtol=1e-6)
-    torch.testing.assert_close(compiled, torch.reciprocal(x.float()), atol=1e-6, rtol=1e-6)
+    workload = ElementwiseWorkload(type(op).__name__, (x,))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 @pytest.mark.smoke
@@ -1151,46 +1088,42 @@ _PARAMETRIC_OPS = [
     pytest.param(
         "EluFwdOp",
         {"alpha": 1.5},
-        lambda x: torch.nn.functional.elu(x.float(), alpha=1.5).to(x.dtype),
         marks=pytest.mark.smoke,
     ),
     pytest.param(
         "LeakyReluFwdOp",
         {"negative_slope": 0.2},
-        lambda x: torch.nn.functional.leaky_relu(x.float(), negative_slope=0.2).to(x.dtype),
         marks=pytest.mark.full,
     ),
     pytest.param(
         "HardtanhFwdOp",
         {"min_val": -0.5, "max_val": 0.5},
-        lambda x: torch.nn.functional.hardtanh(x.float(), -0.5, 0.5).to(x.dtype),
         marks=pytest.mark.full,
     ),
     pytest.param(
         "SoftplusFwdOp",
         {"beta": 2.0, "threshold": 20.0},
-        lambda x: torch.nn.functional.softplus(x.float(), beta=2.0).to(x.dtype),
         marks=pytest.mark.full,
     ),
     pytest.param(
         "NanToNumFwdOp",
         {"nan": 0.0, "posinf": 1.0, "neginf": -1.0},
-        lambda x: torch.nan_to_num(x.float(), nan=0.0, posinf=1.0, neginf=-1.0).to(x.dtype),
         marks=pytest.mark.full,
     ),
 ]
 
 
-@pytest.mark.parametrize("op_name, kwargs, ref_fn", _PARAMETRIC_OPS)
-def test_parametric_unary_compile(op_name, kwargs, ref_fn):
+@pytest.mark.parametrize("op_name, kwargs", _PARAMETRIC_OPS)
+def test_parametric_unary_compile(op_name, kwargs):
     """A construction param is a compile-time constant, so the graph is one node."""
     import tileops.ops.elementwise as ew
 
     op = getattr(ew, op_name)(**kwargs)
     n = 1024 * 1024
     x = torch.randn(n, dtype=_DTYPE, device=run_device())
-    out = torch.compile(op, fullgraph=True)(x)
-    torch.testing.assert_close(out, ref_fn(x), atol=1e-2, rtol=1e-2)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x,), **kwargs)
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 for _case in _PARAMETRIC_OPS:
@@ -1206,9 +1139,10 @@ def test_prelu_compile():
     """PReLU's weight is a tensor input, so the boundary carries two."""
     x = torch.randn(2, 4, 8, dtype=_DTYPE, device=run_device())
     weight = torch.randn(4, dtype=_DTYPE, device=run_device())
-    out = torch.compile(PreluFwdOp(), fullgraph=True)(x, weight)
-    ref = torch.nn.functional.prelu(x.float(), weight.float()).to(_DTYPE)
-    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+    op = PreluFwdOp()
+    workload = ElementwiseWorkload(type(op).__name__, (x, weight))
+    TestBase.check(workload, op, *workload.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 register_compile_contract(DropoutFwdOp)

@@ -13,6 +13,8 @@ import torch
 from tileops.backend import BUILTIN
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device, run_device_available
+from workloads.elementwise import ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 _INPLACE_PARAM_FREE_OPS = (
     "ReluFwdOp",
@@ -134,9 +136,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
         f"{op_name}: inplace=True must return the input tensor (identity); "
         f"got id(y)={id(y)} id(x)={id(x)}"
     )
-    assert torch.allclose(x, expected, rtol=1e-2, atol=1e-2), (
-        f"{op_name}: inplace=True did not mutate input to the activation output"
-    )
+    compare_outputs(x, expected, ElementwiseWorkload(op_name, (x,)).verification(x))
 
 
 @pytest.mark.smoke
@@ -187,7 +187,9 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     y = op(x)
     expected = torch.nn.functional.gelu(x, approximate=approximate)
     assert y.shape == x.shape
-    assert torch.allclose(y, expected, rtol=1e-2, atol=1e-2)
+    compare_outputs(
+        y, expected, ElementwiseWorkload("GeluFwdOp", (x,), approximate=approximate).verification(x)
+    )
 
 
 # Frozen ``__init__`` signatures for every unary activation Op. Tests, benches

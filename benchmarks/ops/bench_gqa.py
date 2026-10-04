@@ -31,7 +31,10 @@ from workloads.attention.gqa.dense import (
     GroupedQueryAttentionDensePrefillCall,
 )
 from workloads.attention.gqa.paged import GroupedQueryAttentionPagedCall
-from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdCall
+from workloads.attention.gqa.prefill_paged_kv_append import (
+    GQAPrefillPagedWithKVCacheFwdCall,
+    paged_prefill_result,
+)
 from workloads.attention.gqa.varlen import (
     GroupedQueryAttentionVarlenCall,
     GroupedQueryAttentionVarlenScaledCall,
@@ -574,10 +577,13 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     bm = ManifestBenchmark(op, workload)
     # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
     # depends on what those slots held, so every tag shares the pages.
-    functors = {"tileops": op, "torch-ref": workload.ref_program}
+    functors = {
+        "tileops": lambda *args: paged_prefill_result(op, *args),
+        "torch-ref": workload.ref_program,
+    }
     fa3_fn = _fa3_gqa_prefill_paged(workload, inputs)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        functors["fa3"] = lambda *args: paged_prefill_result(fa3_fn, *args)
     bm.compare(functors, *inputs)
 
 

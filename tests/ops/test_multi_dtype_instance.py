@@ -15,6 +15,9 @@ from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.reduction.reduce import SumFwdOp
 from workloads.device import run_device
+from workloads.elementwise import ElementwiseWorkload
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 _DTYPES = (torch.float16, torch.bfloat16)
 
@@ -32,7 +35,7 @@ def test_reduction_serves_two_dtypes_from_one_instance():
         x = torch.randn(8, 128, dtype=dtype, device=run_device())
         y = op(x)
         assert y.dtype == dtype
-        torch.testing.assert_close(y, x.sum(-1), atol=2e-2, rtol=2e-2)
+        compare_outputs(y, x.sum(-1), reduction_verification(x.dtype))
     _assert_two_entries(op, "reduce")
 
 
@@ -127,9 +130,13 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     b = torch.tensor([True, False] * 32, device=run_device())
     i = torch.arange(64, device=run_device(), dtype=torch.int32)
 
-    torch.testing.assert_close(op(b, ~b), b & ~b)
-    torch.testing.assert_close(op(i, i + 1), i & (i + 1))
-    torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
+    compare_outputs(op(b, ~b), b & ~b, ElementwiseWorkload(type(op).__name__, ()).verification())
+    compare_outputs(
+        op(i, i + 1), i & i + 1, ElementwiseWorkload(type(op).__name__, ()).verification()
+    )
+    compare_outputs(
+        op(b, b), b & b, ElementwiseWorkload(type(op).__name__, ()).verification()
+    )  # back to bool after the int kernel
 
     built = tuple(op.built_kernels(ELEMENTWISE).values())
     assert len(built) == 2, "bool and int32 are two specializations"
@@ -146,9 +153,17 @@ def test_logical_and_output_stays_bool_across_input_storage():
     b = torch.tensor([True, False] * 32, device=run_device())
     f = torch.tensor([0.0, 1.0] * 32, device=run_device())
 
-    torch.testing.assert_close(op(b, ~b), torch.logical_and(b, ~b))
-    torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
-    torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
+    compare_outputs(
+        op(b, ~b),
+        torch.logical_and(b, ~b),
+        ElementwiseWorkload(type(op).__name__, ()).verification(),
+    )
+    compare_outputs(
+        op(f, f), torch.logical_and(f, f), ElementwiseWorkload(type(op).__name__, ()).verification()
+    )
+    compare_outputs(
+        op(b, b), torch.logical_and(b, b), ElementwiseWorkload(type(op).__name__, ()).verification()
+    )
 
     built = tuple(op.built_kernels(ELEMENTWISE).values())
     assert len(built) == 2, "bool and float32 are two specializations"
@@ -166,9 +181,21 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     b = torch.zeros(64, device=run_device(), dtype=torch.bool)
     f = torch.zeros(64, device=run_device(), dtype=torch.float32)
 
-    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
-    torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
-    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
+    compare_outputs(
+        op(b, mask),
+        b.masked_fill(mask, 1),
+        ElementwiseWorkload(type(op).__name__, ()).verification(),
+    )
+    compare_outputs(
+        op(f, mask),
+        f.masked_fill(mask, 1),
+        ElementwiseWorkload(type(op).__name__, ()).verification(),
+    )
+    compare_outputs(
+        op(b, mask),
+        b.masked_fill(mask, 1),
+        ElementwiseWorkload(type(op).__name__, ()).verification(),
+    )
 
     assert len(op.built_kernels(ELEMENTWISE)) == 2, "bool and float32 are two specializations"
 

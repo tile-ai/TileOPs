@@ -16,14 +16,8 @@ from tileops.ops.elementwise import (
     BitwiseXorFwdOp,
 )
 from workloads.device import run_device
-from workloads.elementwise import BitwiseCase, BitwiseNotWorkload
-
-
-def _assert_close(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Exact comparison for integer outputs."""
-    assert torch.equal(output, output_ref), (
-        f"Mismatch: {(output != output_ref).sum().item()} elements differ"
-    )
+from workloads.elementwise import BitwiseCase, BitwiseNotWorkload, ElementwiseWorkload
+from workloads.numerics import compare_outputs
 
 
 class BitwiseTest(BitwiseCase, TestBase):
@@ -44,7 +38,7 @@ class BitwiseAndFixture(FixtureBase):
 
 @BitwiseAndFixture
 def test_bitwise_and_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_and)
+    test = BitwiseTest(n_total, "BitwiseAndFwdOp")
     op = BitwiseAndFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -63,7 +57,7 @@ class BitwiseOrFixture(FixtureBase):
 
 @BitwiseOrFixture
 def test_bitwise_or_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_or)
+    test = BitwiseTest(n_total, "BitwiseOrFwdOp")
     op = BitwiseOrFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -82,7 +76,7 @@ class BitwiseXorFixture(FixtureBase):
 
 @BitwiseXorFixture
 def test_bitwise_xor_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, torch.bitwise_xor)
+    test = BitwiseTest(n_total, "BitwiseXorFwdOp")
     op = BitwiseXorFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -138,7 +132,7 @@ def test_bitwise_broadcast(
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    _assert_close(out, ref)
+    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
 class BoolBitwiseFixture(FixtureBase):
@@ -179,7 +173,7 @@ def test_bool_bitwise_fast_path(
     with torch.no_grad():
         out = op(a, b)
     assert out.dtype == torch.bool
-    _assert_close(out, ref)
+    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
 class BitwiseFixture(FixtureBase):

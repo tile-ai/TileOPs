@@ -11,9 +11,10 @@ Covers:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
+from tileops.ops.elementwise.dropout import DropoutFwdOp
 from workloads.device import run_device
-from workloads.numerics import reference_tolerance
+from workloads.elementwise import ElementwiseWorkload
 
 
 class DropoutStatFixture(FixtureBase):
@@ -82,24 +83,13 @@ class DropoutEdgeCaseFixture(FixtureBase):
 
 @DropoutStatFixture
 def test_dropout_statistical_rate(n_total: int, dtype: torch.dtype, p: float) -> None:
-    """Verify that the fraction of dropped elements is within 3 sigma of p."""
+    """Verify the shared dropout scaling and sampling-rate contract."""
     from tileops.ops.elementwise.dropout import DropoutFwdOp
 
     x = torch.ones(n_total, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=p, seed=42)
-    y = op(x)
-
-    # Count zeros (dropped elements)
-    n_dropped = (y == 0).sum().item()
-    drop_rate = n_dropped / n_total
-
-    # 3-sigma bound for Bernoulli(p) with n_total samples.
-    # At N=4M, sigma ~ 2.3e-4 for p=0.5, giving a 3-sigma window of ~6.9e-4.
-    sigma = (p * (1 - p) / n_total) ** 0.5
-    assert abs(drop_rate - p) < 3 * sigma, (
-        f"Drop rate {drop_rate:.6f} outside 3-sigma bound "
-        f"[{p - 3 * sigma:.6f}, {p + 3 * sigma:.6f}] for p={p}"
-    )
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
+    TestBase.check(workload, op, x)
 
 
 @DropoutScaleFixture
@@ -109,18 +99,8 @@ def test_dropout_scale_factor(n_total: int, dtype: torch.dtype, p: float) -> Non
 
     x = torch.ones(n_total, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=p, seed=123)
-    y = op(x)
-
-    # Non-zero elements should be scaled by 1/(1-p)
-    mask = y != 0
-    if mask.any():
-        expected_scale = 1.0 / (1.0 - p)
-        non_zero_vals = y[mask].float()
-        torch.testing.assert_close(
-            non_zero_vals,
-            torch.full_like(non_zero_vals, expected_scale),
-            **reference_tolerance(dtype),
-        )
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
+    TestBase.check(workload, op, x)
 
 
 @DropoutDeterminismFixture
@@ -156,8 +136,8 @@ def test_dropout_p0_identity(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=0.0, seed=42)
-    y = op(x)
-    torch.testing.assert_close(y, x)
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=0.0)
+    TestBase.check(workload, op, x)
 
 
 @DropoutEdgeCaseFixture
@@ -167,8 +147,8 @@ def test_dropout_p1_all_zeros(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=1.0, seed=42)
-    y = op(x)
-    assert torch.equal(y, torch.zeros_like(x)), "p=1 should produce all zeros"
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=1.0)
+    TestBase.check(workload, op, x)
 
 
 @DropoutEdgeCaseFixture
@@ -178,8 +158,8 @@ def test_dropout_training_false(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=0.5, seed=42, training=False)
-    y = op(x)
-    torch.testing.assert_close(y, x)
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=0.5, training=False)
+    TestBase.check(workload, op, x)
 
 
 @DropoutEdgeCaseFixture
@@ -235,8 +215,8 @@ def test_dropout_custom_config_p0_identity(
         seed=0,
         config={"threads": threads, "num_per_thread": num_per_thread},
     )
-    y = kernel(x)
-    torch.testing.assert_close(y, x)
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=0.0)
+    TestBase.check(workload, DropoutFwdOp(p=0.0), x, runs=kernel)
 
 
 @pytest.mark.cuda_only
@@ -254,7 +234,6 @@ def test_dropout_custom_config_correctness(
     from tileops.kernels.elementwise.dropout import DropoutKernel
 
     p = 0.5
-    scale = 1.0 / (1.0 - p)
     x = torch.ones(n_total, dtype=dtype, device="cuda")
     kernel = DropoutKernel(
         n_total,
@@ -263,14 +242,5 @@ def test_dropout_custom_config_correctness(
         seed=42,
         config={"threads": threads, "num_per_thread": num_per_thread},
     )
-    y = kernel(x)
-
-    # Every element must be either 0 or scale
-    is_zero = y == 0
-    is_scaled = torch.isclose(
-        y.float(),
-        torch.full_like(y, scale, dtype=torch.float32),
-        atol=1e-6,
-        rtol=0,
-    )
-    assert (is_zero | is_scaled).all(), "Found elements that are neither zero nor correctly scaled"
+    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
+    TestBase.check(workload, DropoutFwdOp(p=p), x, runs=kernel)

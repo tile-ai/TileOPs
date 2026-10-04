@@ -14,7 +14,7 @@ Test cases cover:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.device import run_device
 from workloads.moe import FusedTopKWorkload, moe_call
@@ -170,45 +170,7 @@ class FusedTopKFixture(FixtureBase):
 def _check(test: FusedTopKWorkload) -> None:
     gating, _ = test.gen_inputs()
     op = FusedTopKFwdOp(**test.call.arguments({}))
-    ref_w, ref_ids = test.ref_program(gating)
-    out_w, out_ids = op(gating)
-    num_tokens, num_experts = gating.shape
-    top_k = op.top_k
-
-    assert out_w.shape == (num_tokens, top_k), f"weights shape mismatch: {out_w.shape}"
-    assert out_ids.shape == (num_tokens, top_k), f"ids shape mismatch: {out_ids.shape}"
-    assert out_w.dtype == torch.float32, f"weights dtype must be float32, got {out_w.dtype}"
-    assert out_ids.dtype == torch.int32, f"ids dtype must be int32, got {out_ids.dtype}"
-
-    # weights must match (sorted, handles tie-breaking differences in expert ordering)
-    ref_w_sorted = ref_w.sort(dim=-1).values
-    out_w_sorted = out_w.sort(dim=-1).values
-    torch.testing.assert_close(out_w_sorted, ref_w_sorted, rtol=1e-3, atol=1e-3)
-
-    # topk_ids must select experts whose scores are valid top-k scores.
-    # When two experts have identical scores (fp32 ties), either is a valid
-    # selection, so the assertion is that each selected weight >= the
-    # (K+1)-th largest weight.
-    gating_f32 = gating.to(torch.float32)
-    if op.scoring_func == "softmax":
-        all_scores = torch.softmax(gating_f32, dim=-1)
-    else:
-        all_scores = torch.sigmoid(gating_f32)
-    # Use raw (non-renormalized) scores as threshold — renormalize only scales weights,
-    # it doesn't change which experts are valid top-k selections.
-    raw_ref_w = all_scores.gather(1, ref_ids.long())
-    raw_ref_w_sorted = raw_ref_w.sort(dim=-1).values
-    for i in range(num_tokens):
-        sel_ids = out_ids[i].tolist()
-        assert len(set(sel_ids)) == top_k, f"token {i}: duplicate expert ids: {sorted(sel_ids)}"
-        # Each selected score >= min selected score (basic sanity, not strict tie check)
-        if top_k < num_experts:
-            kth_val = raw_ref_w_sorted[i, 0].item()  # min raw score among ref top-k
-            for eid in sel_ids:
-                got_score = all_scores[i, eid].item()
-                assert got_score >= kth_val - 1e-4, (
-                    f"token {i}: expert {eid} score {got_score:.6f} < min ref score {kth_val:.6f}"
-                )
+    TestBase.check(test, op, gating)
 
 
 @FusedTopKFixture

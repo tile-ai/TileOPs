@@ -95,7 +95,7 @@ def test_gla_fwd(
         fla_o, _ = chunk_gla(q.float(), k.float(), v.float(), g.float(), scale=scale)
         cos = cosine_sim(ref_o, fla_o)
         print(f"  FLA vs ref o: cosine={cos:.6f}")
-        assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
+        compare_outputs(fla_o.to(dtype), ref_o.to(dtype), chunkwise_verification(dtype))
 
     fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
@@ -112,7 +112,7 @@ def test_gla_fwd(
     if fla:
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
-        assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
+        compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
 
 
 def _fla_autograd_bwd(
@@ -190,11 +190,11 @@ def test_gla_bwd(
         fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
-        # Validate FLA vs torch reference alignment
-        for name in ["dq", "dk", "dv", "dg"]:
-            cos = cosine_sim(ref_grads[name], fla_grads[name])
-            print(f"  FLA vs ref {name}: cosine={cos:.6f}")
-            assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
+        compare_outputs(
+            tuple(fla_grads.values()),
+            tuple(ref_grads.values()),
+            chunkwise_verification(dtype, backward=True),
+        )
 
     # --- TileOPs kernel backward ---
     fwd_op = GLAChunkFwdOp(
@@ -217,12 +217,12 @@ def test_gla_bwd(
         chunkwise_verification(dtype, backward=True),
     )
 
-    # Validate TileOPs vs FLA (if available)
     if chunk_gla is not None:
-        for name in ["dq", "dk", "dv", "dg"]:
-            cos = cosine_sim(fla_grads[name], op_grads[name])
-            print(f"  TileOPs vs FLA {name}: cosine={cos:.6f}")
-            assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
+        compare_outputs(
+            tuple(op_grads.values()),
+            tuple(fla_grads.values()),
+            chunkwise_verification(dtype, backward=True),
+        )
 
 
 @pytest.mark.cuda_only

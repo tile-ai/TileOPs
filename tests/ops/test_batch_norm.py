@@ -19,11 +19,15 @@ from tileops.kernels.norm.call_spec import (
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.norm import (
-    BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,
+    batch_norm_backward,
+    batch_norm_backward_verification,
     batch_norm_forward_result,
+    batch_norm_forward_verification,
+    batch_norm_fwd_ref,
 )
+from workloads.numerics import compare_outputs
 
 
 class BatchNormBwdTest(BatchNormBwdWorkload, TestBase):
@@ -161,11 +165,16 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
     rv = torch.ones(2 * C, device=run_device(), dtype=torch.float32)[::2]
     assert not rm.is_contiguous()
 
-    op(x, rm, rv, weight, bias)
-
-    expected_mean = op.momentum * x.float().transpose(0, 1).reshape(C, -1).mean(dim=1)
-    torch.testing.assert_close(rm, expected_mean, atol=1e-3, rtol=1e-3)
-    assert not torch.equal(rv, torch.ones_like(rv)), "running_var was not written either"
+    workload = BatchNormFwdTest(N, C, (H, W), x.dtype, training=True)
+    workload.check(
+        op,
+        x,
+        rm,
+        rv,
+        weight,
+        bias,
+        runs=lambda *args: batch_norm_forward_result(op, *args),
+    )
 
 
 @pytest.mark.cuda_only
@@ -194,11 +203,12 @@ def test_training_rejects_one_value_per_channel() -> None:
 
     # Inference applies no correction; torch normalizes the same shape.
     infer = BatchNormFwdOp(training=False)
-    y = infer(x, rm, rv, weight, bias)
-    expected = torch.nn.functional.batch_norm(
-        x, rm, rv, weight, bias, training=False, eps=infer.eps
+    expected = batch_norm_fwd_ref(x, weight, bias, rm, rv, training=False, eps=infer.eps)
+    compare_outputs(
+        batch_norm_forward_result(infer, x, rm, rv, weight, bias),
+        expected,
+        batch_norm_forward_verification(x.dtype),
     )
-    torch.testing.assert_close(y, expected, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
@@ -208,17 +218,21 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     length no tile divides."""
     x = torch.randn(shape, dtype=torch.float16, device=run_device())
     c = shape[1]
-    y = BatchNormFwdOp(training=True)(x)
-    torch.testing.assert_close(
-        y, torch.nn.functional.batch_norm(x, None, None, training=True), atol=4e-3, rtol=4e-3
+    op = BatchNormFwdOp(training=True)
+    compare_outputs(
+        batch_norm_forward_result(op, x, None, None, None, None),
+        batch_norm_fwd_ref(x, None, None, None, None, training=True),
+        batch_norm_forward_verification(x.dtype),
     )
     grad_out, weight = torch.randn_like(x), torch.randn(c, device=run_device())
-    workload = BatchNormBwdCall.__new__(BatchNormBwdCall)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     rstd = torch.rsqrt(var + 1e-5)
-    got = BatchNormBwdOp()(grad_out, x, weight, mean, rstd)
-    for a, b in zip(got, workload.ref_program(grad_out, x, weight, mean, rstd), strict=True):
-        torch.testing.assert_close(a, b, atol=5e-3, rtol=5e-3)
+    inputs = grad_out, x, weight, mean, rstd
+    compare_outputs(
+        BatchNormBwdOp()(*inputs),
+        batch_norm_backward(*inputs),
+        batch_norm_backward_verification(x.dtype),
+    )
 
 
 @pytest.mark.smoke

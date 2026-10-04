@@ -11,28 +11,28 @@ class SumWorkload(RandnWorkload):
     """Workload definition for SumFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class MeanWorkload(RandnWorkload):
     """Workload definition for MeanFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class AmaxWorkload(RandnWorkload):
     """Workload definition for AmaxFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class AminWorkload(RandnWorkload):
     """Workload definition for AminFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class ProdWorkload(WorkloadBase):
@@ -53,28 +53,28 @@ class ProdWorkload(WorkloadBase):
         return x.float().prod(dim=-1).to(x.dtype)
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, product=True)
+        return reduction_verification(inputs[0].dtype, product=True, scalar=inputs[0].ndim == 0)
 
 
 class StdWorkload(RandnWorkload):
     """Workload definition for StdFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class VarWorkload(RandnWorkload):
     """Workload definition for VarFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class VarMeanWorkload(RandnWorkload):
     """Workload definition for VarMeanFwdOp."""
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype)
+        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
 class ArgmaxWorkload(RandnWorkload):
@@ -88,9 +88,15 @@ class ArgminWorkload(RandnWorkload):
 class SoftmaxWorkload(RandnWorkload):
     """Workload definition for SoftmaxFwdOp (spec interface: shape + dtype)."""
 
+    def verification(self, *inputs):
+        return softmax_verification(inputs[0].dtype, logarithmic=False)
+
 
 class LogSoftmaxWorkload(RandnWorkload):
     """Workload definition for LogSoftmaxFwdOp (spec interface: shape + dtype)."""
+
+    def verification(self, *inputs):
+        return softmax_verification(inputs[0].dtype, logarithmic=True)
 
 
 class LogSumExpWorkload(RandnWorkload):
@@ -197,7 +203,15 @@ class ReductionCall(CallWorkload):
             "VarMeanFwdOp",
             "ProdFwdOp",
         ):
-            return reduction_verification(inputs[0].dtype, product=name == "ProdFwdOp")
+            return reduction_verification(
+                inputs[0].dtype, product=name == "ProdFwdOp", scalar=inputs[0].ndim == 0
+            )
+        if name in ("SoftmaxFwdOp", "LogSoftmaxFwdOp"):
+            dtype = self.call.params.get("dtype")
+            dtype = getattr(torch, dtype) if dtype else inputs[0].dtype
+            return softmax_verification(
+                dtype, input_dtype=inputs[0].dtype, logarithmic=name == "LogSoftmaxFwdOp"
+            )
         if name == "VectorNormFwdOp":
             return VectorNormWorkload.verification(self, *inputs)
         return Exact()
@@ -295,19 +309,7 @@ class CumulativeWorkload(WorkloadBase):
         return scan(x.float(), dim=self.dim).to(x.dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        if self.op_kind == "cumprod":
-            tol = 1e-3 if inputs[0].dtype == torch.float32 else 5e-2
-        else:
-            tol = (
-                1e-5
-                if inputs[0].dtype == torch.float32
-                else 1e-2
-                if inputs[0].dtype == torch.float16
-                else 1.6e-2
-            )
-        return Exact(atol=tol, rtol=tol)
+        return reduction_verification(inputs[0].dtype, product=self.op_kind == "cumprod")
 
 
 class CumulativeCall(CallWorkload, CumulativeWorkload):
@@ -323,10 +325,13 @@ class CumulativeCall(CallWorkload, CumulativeWorkload):
     gen_inputs = CumulativeWorkload.gen_inputs
 
 
-def reduction_verification(dtype, *, product=False):
+def reduction_verification(dtype, *, product=False, scalar=False):
     """Long reductions use the existing reduction bound, shared by both consumers."""
     from workloads.numerics import Exact
 
+    # Scalar closed forms and integer/boolean outputs have no rounding budget.
+    if scalar or not (dtype.is_floating_point or dtype.is_complex):
+        return Exact(atol=0, rtol=0)
     tol = (
         (1e-3 if dtype == torch.float32 else 5e-2)
         if product
@@ -487,3 +492,15 @@ def vector_norm_verification(dtype):
 
     tol = 1e-5 if dtype == torch.float32 else 1e-2
     return Exact(atol=tol, rtol=tol)
+
+
+def softmax_verification(dtype, *, input_dtype=None, logarithmic=False):
+    """FP32 probabilities need a relative bound: an absolute floor can accept all zeros.
+
+    Widening the result must also exclude an intermediate rounding to the input dtype.
+    """
+    from workloads.numerics import Exact, reference_tolerance
+
+    if dtype == torch.float32 and (not logarithmic or input_dtype not in (None, dtype)):
+        return Exact(atol=0, rtol=1e-4)
+    return Exact(**reference_tolerance(dtype))

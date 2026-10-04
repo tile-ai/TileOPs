@@ -16,7 +16,8 @@ import torch
 
 from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 from workloads.device import run_device
-from workloads.reduction import reduction_tolerance
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 _DIMS = [
     pytest.param(-1, id="dim=int"),
@@ -55,7 +56,7 @@ def _check(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
     for g, w in zip(got, want, strict=True):
         assert g.shape == w.shape, f"shape {g.shape} vs ref {w.shape}"
         assert g.dtype == w.dtype, f"dtype {g.dtype} vs ref {w.dtype}"
-        torch.testing.assert_close(g, w, **reduction_tolerance(x.dtype))
+        compare_outputs(g, w, reduction_verification((w).dtype))
 
 
 @pytest.mark.smoke
@@ -135,8 +136,8 @@ def test_var_mean_returns_the_pair_in_torch_s_order() -> None:
 
     assert isinstance(out, tuple) and len(out) == 2, out
     ref_var, ref_mean = _ref_var_mean(x, -1, False, 1)
-    torch.testing.assert_close(out[0], ref_var, **reduction_tolerance(x.dtype))
-    torch.testing.assert_close(out[1], ref_mean, **reduction_tolerance(x.dtype))
+    compare_outputs(out[0], ref_var, reduction_verification((ref_var).dtype))
+    compare_outputs(out[1], ref_mean, reduction_verification((ref_mean).dtype))
 
 
 @pytest.mark.smoke
@@ -148,4 +149,8 @@ def test_a_fractional_or_excess_correction_matches_torch(op_cls, ref_fn, correct
     ``inf``, including one too small for the storage dtype, and no spread is NaN."""
     x = torch.tensor([[0.0, 1e-4], [1.0, 1.0]], dtype=torch.float16, device=run_device())
     got = op_cls(dim=1, correction=correction)(x)
-    torch.testing.assert_close(got, ref_fn(x, dim=1, correction=correction), equal_nan=True)
+    compare_outputs(
+        got,
+        ref_fn(x, dim=1, correction=correction),
+        reduction_verification((ref_fn(x, dim=1, correction=correction)).dtype),
+    )

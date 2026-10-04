@@ -31,10 +31,12 @@ from tileops.ops import (
 )
 from tileops.utils import get_sm_version
 from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
-from workloads.attention.gqa.dense import dense_gqa_ref
+from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenScaledWorkload
 from workloads.device import run_device
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
@@ -101,18 +103,10 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
             layout=rope_layout,
         )
 
-    torch.testing.assert_close(
+    compare_outputs(
         output,
-        dense_gqa_ref(
-            q_ref,
-            k_ref,
-            v,
-            heads=heads,
-            heads_kv=heads_kv,
-            is_causal=is_causal,
-        ),
-        atol=2e-2 if dtype == torch.bfloat16 else 5e-3,
-        rtol=1e-5,
+        dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=is_causal),
+        dense_gqa_verification(q.dtype),
     )
     assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
 
@@ -212,7 +206,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         sm_scale=sm_scale,
         softcap=softcap,
     )
-    torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
+    compare_outputs(output, reference, dense_gqa_verification(q.dtype))
     expected_kernel = GQADenseFP8DecodeKernel if seq_len_q == 1 else GQADenseFP8Kernel
     assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
@@ -236,11 +230,10 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
         v = torch.randn_like(k)
         output = op(q, k, v)
-        torch.testing.assert_close(
+        compare_outputs(
             output,
             dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-            atol=5e-3,
-            rtol=1e-5,
+            dense_gqa_verification(q.dtype),
         )
 
     assert len(list(op.iter_kernels())) == 1
@@ -380,11 +373,10 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
                 layout=rope_layout,
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
-        torch.testing.assert_close(
+        compare_outputs(
             output,
             dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-            atol=1.6e-2 if dtype == torch.bfloat16 else 5e-3,
-            rtol=1.6e-2 if dtype == torch.bfloat16 else 1e-5,
+            dense_gqa_verification(q.dtype),
         )
 
     kernels = list(op.iter_kernels())
@@ -414,11 +406,10 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
 
     output = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)(q, k, v)
 
-    torch.testing.assert_close(
+    compare_outputs(
         output,
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-        atol=1.6e-2,
-        rtol=1.6e-2,
+        dense_gqa_verification(q.dtype),
     )
 
 
@@ -477,11 +468,10 @@ def test_gqa_rope_no_split_pipeline_matches_reference(
             layout=rope_layout,
         )
         output = kernel(q.squeeze(1), k, v, rope_cos, rope_sin).unsqueeze(1)
-        torch.testing.assert_close(
+        compare_outputs(
             output,
             dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-            atol=1.6e-2 if dtype == torch.bfloat16 else 5e-3,
-            rtol=1.6e-2 if dtype == torch.bfloat16 else 1e-5,
+            dense_gqa_verification(q.dtype),
         )
 
 
@@ -519,7 +509,7 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         q_grouped = q[0, 0].reshape(4, 8, 128).float()
         scores = q_grouped @ k[0].permute(1, 2, 0).float() * (128**-0.5)
         ref = (scores.softmax(-1) @ v[0].transpose(0, 1).float()).reshape_as(out)
-        torch.testing.assert_close(out, ref.to(out.dtype), atol=1e-3, rtol=1e-3)
+        compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
     kernels = list(op.iter_kernels())
     assert len(kernels) == 2
     assert {kernel.config["block_N"] for kernel in kernels} == {64, 128}
@@ -580,11 +570,10 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
         k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
         v = torch.randn_like(k)
         output = kernel(q, k, v)
-        torch.testing.assert_close(
+        compare_outputs(
             output,
             dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-            atol=5e-3,
-            rtol=1e-5,
+            dense_gqa_verification(q.dtype),
         )
         assert calls[-1] == expected
 
@@ -642,7 +631,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
         q = apply_dense_rope(q, positions, rope_cos, rope_sin, rotary_dim=rotary_dim, layout="neox")
         k = apply_dense_rope(k, positions, rope_cos, rope_sin, rotary_dim=rotary_dim, layout="neox")
 
-    torch.testing.assert_close(
+    compare_outputs(
         output,
         dense_gqa_ref(
             q,
@@ -656,8 +645,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
             window_size_left=window_size_left,
             window_size_right=window_size_right,
         ),
-        atol=5e-3,
-        rtol=1e-5,
+        dense_gqa_verification(q.dtype),
     )
     assert isinstance(next(iter(op.iter_kernels())), GQADenseSlidingWindowKernel)
 
@@ -865,14 +853,11 @@ def test_gqa_varlen_fp8_matches_reference(
     )
     inputs = workload.gen_inputs()
     op = GroupedQueryAttentionVarlenFwdOp(out_dtype=out_dtype, target=BUILTIN, **params)
-    output = op(*inputs)
-    reference = workload.ref_program(*inputs)
+
     # One e4m3 rounding of the softmax weights, and one more of Q and K under fused
     # rotation; the dense FP8 cases are held to the same bound.
-    tolerance = (
-        {"atol": 1.2e-1, "rtol": 4e-2} if workload.rotary_dim else {"atol": 8e-2, "rtol": 2e-2}
-    )
-    torch.testing.assert_close(output, reference, **tolerance)
+
+    TestBase.check(workload, op, *inputs)
     assert isinstance(next(iter(op.iter_kernels())), GQAVarlenFP8FwdKernel)
 
 
@@ -973,5 +958,5 @@ def test_gqa_bwd_preprocess_sums_rows_of_any_head_dim(dim: int) -> None:
     )
     delta, dq_accum = FlashAttnBwdPreprocessKernel(2, 4, 100, dim, torch.float16)(o, do)
     expected = (o.float() * do.float()).sum(-1).transpose(1, 2)
-    torch.testing.assert_close(delta, expected, atol=1e-4, rtol=1e-4)
+    compare_outputs(delta, expected, reduction_verification(delta.dtype))
     assert not dq_accum.any()

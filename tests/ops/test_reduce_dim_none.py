@@ -13,7 +13,11 @@ import torch
 
 from tests.test_base import FixtureBase
 from workloads.device import run_device
-from workloads.reduction import reduction_tolerance
+from workloads.numerics import compare_outputs
+from workloads.reduction import (
+    reduction_verification,
+    vector_norm_verification,
+)
 
 
 class DimNoneFixture(FixtureBase):
@@ -80,9 +84,9 @@ def test_sum_dim_none(
     dims = _all_dims(shape)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneFixture
@@ -98,9 +102,9 @@ def test_mean_dim_none(
     dims = _all_dims(shape)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneFixture
@@ -116,9 +120,9 @@ def test_amax_dim_none(
     dims = _all_dims(shape)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneFixture
@@ -134,9 +138,9 @@ def test_amin_dim_none(
     dims = _all_dims(shape)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Welford ops: var, std, var_mean
@@ -155,9 +159,9 @@ def test_var_dim_none(
     dims = _all_dims(shape)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneFixture
@@ -173,9 +177,9 @@ def test_std_dim_none(
     dims = _all_dims(shape)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneFixture
@@ -197,13 +201,11 @@ def test_var_mean_dim_none(
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
-    assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
-    assert torch.allclose(mean_out, ref_mean, **tol), (
-        f"mean err: {(mean_out - ref_mean).abs().max()}"
-    )
+    compare_outputs(var_out, ref_var, reduction_verification((ref_var).dtype))
+    compare_outputs(mean_out, ref_mean, reduction_verification((ref_mean).dtype))
 
 
 # Logical reduce ops: all, any, count_nonzero
@@ -270,7 +272,7 @@ def test_all_dim_none(
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "all dim=None mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @DimNoneLogicalFixture
@@ -287,7 +289,7 @@ def test_any_dim_none(
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "any dim=None mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.smoke
@@ -302,7 +304,7 @@ def test_count_nonzero_dim_none() -> None:
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), "count_nonzero dim=None mismatch"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 @pytest.mark.parametrize(
@@ -323,7 +325,7 @@ def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), f"count_nonzero dim=None mismatch for {dtype}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
 # Vector norm ops: l1, l2, inf
@@ -347,9 +349,9 @@ def test_l1_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))
 
 
 @DimNoneFixture
@@ -370,9 +372,9 @@ def test_l2_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))
 
 
 @DimNoneFixture
@@ -395,6 +397,6 @@ def test_inf_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = reduction_tolerance(dtype)
+
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    compare_outputs(y, ref, vector_norm_verification(x.dtype))

@@ -11,7 +11,12 @@ from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
-from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload, norm_verification
+from workloads.norm import (
+    FusedAddRMSNormWorkload,
+    RMSNormWorkload,
+    norm_verification,
+    normalization_verification,
+)
 from workloads.numerics import compare_outputs
 
 register_compile_contract(RMSNormFwdOp)
@@ -217,7 +222,11 @@ def test_an_unaligned_row_comes_back_contiguous() -> None:
 def test_no_weight_and_no_eps_match_torch() -> None:
     """An absent weight scales by one; ``eps=None`` is torch's float32 machine epsilon."""
     x = torch.full((2, 4), 1e-3, dtype=torch.float16, device=run_device())
-    torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))
+    compare_outputs(
+        RMSNormFwdOp(normalized_shape=(4,))(x),
+        F.rms_norm(x, [4]),
+        normalization_verification("RMSNormFwdOp", x.dtype),
+    )
 
 
 @pytest.mark.smoke
@@ -236,9 +245,7 @@ def test_rms_norm_rows_exceeding_shared_memory(n, dtype, has_weight) -> None:
         dtype
     )
     actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
-    torch.testing.assert_close(
-        actual, expected, rtol=1e-3 if dtype == torch.float16 else 1.6e-2, atol=1e-3
-    )
+    compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
 class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):

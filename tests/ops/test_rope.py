@@ -20,11 +20,12 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from workloads.device import run_device
-from workloads.numerics import reference_tolerance
+from workloads.numerics import compare_outputs
 from workloads.rope import (
     RopeCase,
     ref_rope_neox_position_ids,
     rope_frequency_tables,
+    rope_verification,
 )
 
 # Test fixtures
@@ -138,7 +139,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
         rotary_dim=rotary_dim,
     )
     output = op(x, position_ids)
-    torch.testing.assert_close(output, ref, **reference_tolerance(dtype))
+    compare_outputs(output, ref, rope_verification())
 
 
 @pytest.mark.smoke
@@ -171,12 +172,12 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     x1 = torch.randn(8, 2, 16, device=run_device(), dtype=torch.float16)
     cos1, sin1 = rope_frequency_tables(16, max_position, dtype=x1.dtype, device=run_device())
     ref1 = ref_rope_neox_position_ids(x1, cos1, sin1, position_ids.long(), rotary_dim=None)
-    torch.testing.assert_close(op(x1, position_ids), ref1, atol=5e-3, rtol=1e-5)
+    compare_outputs(op(x1, position_ids), ref1, rope_verification())
 
     x2 = torch.randn(8, 2, 32, device=run_device(), dtype=torch.float16)
     cos2, sin2 = rope_frequency_tables(32, max_position, dtype=x2.dtype, device=run_device())
     ref2 = ref_rope_neox_position_ids(x2, cos2, sin2, position_ids.long(), rotary_dim=None)
-    torch.testing.assert_close(op(x2, position_ids), ref2, atol=5e-3, rtol=1e-5)
+    compare_outputs(op(x2, position_ids), ref2, rope_verification())
 
 
 # Non-neox (RoFormer) RoPE tests

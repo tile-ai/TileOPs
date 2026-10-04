@@ -86,7 +86,9 @@ class Conv1dWorkload(WorkloadBase):
         return out.contiguous()
 
     def verification(self, *inputs):
-        return convolution_verification(inputs[0].dtype)
+        return convolution_verification(
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+        )
 
 
 class Conv2dWorkload(WorkloadBase):
@@ -170,7 +172,9 @@ class Conv2dWorkload(WorkloadBase):
         return out.contiguous()
 
     def verification(self, *inputs):
-        return convolution_verification(inputs[0].dtype)
+        return convolution_verification(
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+        )
 
 
 class Conv3dWorkload(WorkloadBase):
@@ -264,14 +268,20 @@ class Conv3dWorkload(WorkloadBase):
         return out.contiguous()
 
     def verification(self, *inputs):
-        return convolution_verification(inputs[0].dtype)
+        return convolution_verification(
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+        )
 
 
-def convolution_verification(dtype):
+def convolution_verification(dtype, *, padding=0, kernel_shape=()):
     """One numerical policy for the 1D, 2D and 3D convolution families."""
     from workloads.numerics import Exact, reference_tolerance
 
     tolerance = reference_tolerance(dtype)
+    # An even filter under "same" padding needs an asymmetric explicit pad. The
+    # reference and explicit-pad kernels can choose different reduction orders.
+    if dtype == torch.float16 and padding == "same" and any(k % 2 == 0 for k in kernel_shape):
+        tolerance = {"atol": 2e-3 if len(kernel_shape) == 1 else 2e-2, "rtol": 3e-3}
     if dtype == torch.float32:
         tolerance = {"atol": 6e-2, "rtol": 1.6e-2}
     return Exact(**tolerance)

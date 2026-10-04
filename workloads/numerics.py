@@ -91,7 +91,14 @@ def logit_mask_validator(logits: torch.Tensor, near: torch.Tensor) -> Callable:
         assert got.dtype == logits.dtype, "masking changed the logit dtype"
         taken, kept = got != -float("inf"), expected != -float("inf")
         assert not ((taken ^ kept) & ~near).any(), "mask differs away from boundary"
-        assert torch.equal(got[taken], logits[taken]), "retained logits changed"
+        passed = taken & ~logits.isnan()
+        bits = {1: torch.int8, 2: torch.int16, 4: torch.int32, 8: torch.int64}[
+            logits.element_size()
+        ]
+        assert torch.equal(got[passed].view(bits), logits[passed].view(bits)), (
+            "retained logits changed"
+        )
+        assert got[taken & logits.isnan()].isnan().all(), "retained NaN changed"
 
     return validate
 

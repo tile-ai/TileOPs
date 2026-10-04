@@ -57,87 +57,49 @@ are listed in [ops-design.md](../../.claude/domain-rules/ops-design.md).
 
 ## Benchmark
 
-A benchmark does not import from [`tests/`](../../tests/). It reads the
-op's reference from [`workloads/`](../../workloads/) — the same definition the
-test checks against — and times it as the torch baseline.
+Benchmarks consume the same workload reference and verification contract as tests,
+and own timing, competitor selection and reporting. They do not import from
+[`tests/`](../../tests/) or override the workload reference or numerical policy.
 
-The `tests/` boundary buys decoupling: nightly benchmarks keep running across
-test-side refactors. Correctness uses the same workload declaration in both
-consumers; timing remains the benchmark's responsibility. A policy change
-therefore changes validation everywhere, at one explicit location.
+Each comparable implementation is verified against that reference before timing.
+A competitor with different semantics must be explicitly marked incomparable;
+its timing cannot produce a correctness-backed performance ratio.
 
-A baseline that is another idiom for the same computation, or a different
-implementation, is timed under its own tag next to the reference: the tag is
-what names it in the report, so it is checked against the reference before the
-case is timed. A benchmark never overrides `ref_program`, because the row timing
-the reference would then time something no test validated.
-
-Which manifest entry a benchmark measures is settled by running it, not by
-reading it. The op is whatever class the benchmark constructs, so the run's
-report carries that class's name and is compared against the ops the bench-file→op
-mapping assigns to that file. A source check can only look for a marker, and a marker is not the op:
-it goes unchecked against what ran, and it makes the shape of the source — a
-literal here, a construction there — a condition of passing.
-
-What the source does answer is the file's own contract: workloads from the
-manifest, roofline from the op. That needs no op name, so no benchmark shape is
-illegal.
+Reports identify the operator that actually ran. Coverage is checked against
+those runtime identities, rather than inferred from source-code patterns.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
 ## Workloads layer
 
-The shared layer, and the only one both tests and benchmarks import.
+[`workloads/`](../../workloads/) owns input generation, reference computation and
+numerical verification. A concrete workload combines these through
+`gen_inputs`, `ref_program` and `verification`; related operators may share a
+parameterized workload. Manifest rows supply shapes, dtypes and other declared
+parameters. Numerical policy belongs at the narrowest shared workload boundary,
+so changing it changes validation for both tests and benchmarks.
 
-**Provides**: `WorkloadBase` (`gen_inputs`), `FixtureMeta` / `FixtureBase`
-(parametrize), and one workload class per op — or one parameterized class a
-family shares.
+Declared state updates are part of the observable result, alongside returned
+tensors. Workloads expose the same result structure for the implementation and
+reference. Partial or unavailable verification must be explicit; a timing or an
+error metric alone does not establish correctness.
 
-**Must contain**: the reference computation of the op a class is named for,
-and input construction the entry's workload rows do not determine. Shapes,
-dtypes, presence and metadata values come from instantiating the rows
-([manifest.md § Workloads](manifest.md#workloads)).
-
-**Must contain**: `verification(*inputs)`, when the default exact comparison with
-per-output dtype tolerances is insufficient. The declaration and `ref_program`
-belong to the narrowest shared class naming an operator. Shape-only bases are
-extended here, never by a consumer-local reference or comparator.
-Declared in-place state updates are observable results: a shared workload adapter
-exposes them alongside the returned tensors, and the reference returns the same
-structure. Neither consumer may silently omit those updates from comparison.
-
-**Must not contain**: pytest outcomes, `check`, timing, roofline calculations,
-or the choice of benchmark competitors.
-
-The only execution and comparison implementation is `workloads/numerics.py`:
-
-- `verify(subject, inputs, *, reference, evidence, subject_inputs=None)` executes
-  the reference and subject, restores inputs on success and failure, and runs
-  declared negative controls.
-- `compare_outputs(produced, expected, evidence)` checks output structure and
-  numerical policy. `Exact` covers every output; `Partial` names an unchecked
-  suffix; `Custom` supplies a numerical assertion after mandatory structure checks.
-  A statistical `Custom` may additionally declare a `probe(subject, inputs)` for
-  repeated draws. Unavailable verification must be explicitly declared.
-- `CheckResult` carries checked/total output counts, the diagnostic maximum error,
-  and an unchecked reason. A metric alone is never proof of comparison.
-
-`TestBase.check(op, *inputs, runs=None)` adapts this result to pytest and JUnit.
-`OpBenchmark.compare(functors, *inputs, ...)` reads the same declaration once for
-all tags, then owns timing and reporting. Neither accepts numerical overrides.
-An external competitor with different semantics may be explicitly named in
-`noncomparable={tag: reason}`; its timing has no correctness-backed ratio.
+[`numerics.py`](../../workloads/numerics.py) owns execution and comparison.
+`verify` handles input isolation, restoration and declared controls or repeated
+sampling; `compare_outputs` checks already-produced results against the same
+contract. Both consumers use this shared machinery:
 
 ```text
-Concrete workload: gen_inputs + ref_program + verification
-             |                      |
-       TestBase.check       OpBenchmark.compare
-             |                      |
-             +------ verify --------+
-                       |
-                compare_outputs
-                       |
-                  CheckResult
+Workload: inputs + reference + verification
+                    |
+       TestBase.check / OpBenchmark.compare
+                    |
+                  verify
+                    |
+              compare_outputs
 ```
+
+Workloads do not own pytest outcomes, timing, roofline calculations or benchmark
+competitor selection. Those remain at the consumer boundary.
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

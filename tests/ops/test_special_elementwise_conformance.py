@@ -10,9 +10,10 @@ manifest spec rules (.claude/domain-rules/manifest-spec.md).
 import pytest
 import torch
 
+from tests.test_base import TestBase
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
-from workloads.numerics import reference_tolerance
+from workloads.elementwise import ElementwiseWorkload
 
 # WhereFwdOp full broadcasting
 
@@ -37,11 +38,11 @@ def test_where_broadcast_parity(cond_shape, inp_shape, other_shape, dtype):
     )
     inp = torch.randn(inp_shape, device=run_device(), dtype=dtype)
     other = torch.randn(other_shape, device=run_device(), dtype=dtype)
-    ref = torch.where(cond, inp, other)
 
     op = WhereFwdOp()
-    out = op(cond, inp, other)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+    workload = ElementwiseWorkload(type(op).__name__, (cond, inp, other))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -81,11 +82,11 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
     mx = torch.randn(max_shape, device=run_device(), dtype=dtype) + 0.5
     # Make max >= min where tested ranges overlap: PyTorch clamp tolerates a
     # mismatch, but the reference is only meaningful without one.
-    ref = torch.clamp(inp, mn, mx)
 
     op = ClampTensorFwdOp()
-    out = op(inp, mn, mx)
-    torch.testing.assert_close(out, ref, **reference_tolerance(dtype))
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mn, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 # ClampTensorFwdOp must accept Tensor min with max=None and
@@ -99,10 +100,11 @@ def test_clamp_min_only_none_routing():
 
     inp = torch.randn((4, 8), device=run_device(), dtype=torch.float32)
     mn = torch.randn((4, 8), device=run_device(), dtype=torch.float32) - 0.5
-    ref = torch.clamp(inp, mn, None)
+
     op = ClampTensorFwdOp()
-    out = op(inp, mn, None)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mn, None))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -111,10 +113,11 @@ def test_clamp_max_only_none_routing():
 
     inp = torch.randn((4, 8), device=run_device(), dtype=torch.float32)
     mx = torch.randn((4, 8), device=run_device(), dtype=torch.float32) + 0.5
-    ref = torch.clamp(inp, None, mx)
+
     op = ClampTensorFwdOp()
-    out = op(inp, None, mx)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -157,9 +160,12 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     mx = torch.ones(4, device=run_device(), dtype=torch.float32)
 
     op = ClampTensorFwdOp()
-    torch.testing.assert_close(op(inp, mn, mx), torch.clamp(inp, mn, mx))
-    torch.testing.assert_close(op(inp, mn, None), torch.clamp(inp, min=mn))
-    torch.testing.assert_close(op(inp, None, mx), torch.clamp(inp, max=mx))
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mn, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mn, None))
+    TestBase.check(workload, op, *workload.gen_inputs())
+    workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
     assert len(op.built_kernels(ELEMENTWISE)) == 3, "one kernel per presence pattern"
 
@@ -176,10 +182,11 @@ def test_clamp_scalar_param_names(min_val, max_val):
     from tileops.ops.elementwise import ClampScalarFwdOp
 
     inp = torch.randn(1024, device=run_device(), dtype=torch.float32)
-    ref = torch.clamp(inp, min_val, max_val)
+
     op = ClampScalarFwdOp(min=min_val, max=max_val)
-    out = op(inp)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp,), min=min_val, max=max_val)
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -192,11 +199,11 @@ def test_clamp_min_only_tensor(input_shape, min_shape):
 
     inp = torch.randn(input_shape, device=run_device(), dtype=torch.float32)
     mn = torch.randn(min_shape, device=run_device(), dtype=torch.float32)
-    ref = torch.clamp_min(inp, mn) if min_shape else torch.clamp(inp, min=mn.item())
 
     op = ClampTensorFwdOp()
-    out = op(inp, mn)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mn))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -209,11 +216,11 @@ def test_clamp_max_only_tensor(input_shape, max_shape):
 
     inp = torch.randn(input_shape, device=run_device(), dtype=torch.float32)
     mx = torch.randn(max_shape, device=run_device(), dtype=torch.float32)
-    ref = torch.clamp_max(inp, mx) if max_shape else torch.clamp(inp, max=mx.item())
 
     op = ClampTensorFwdOp()
-    out = op(inp, None, mx)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 # Regression: NaN propagation for Tensor-bound clamp variants.
@@ -235,10 +242,10 @@ def test_clamp_tensor_nan_propagation(dtype):
     mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=run_device(), dtype=dtype)
     mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=run_device(), dtype=dtype)
 
-    ref = torch.clamp(x, mn, mx)
     op = ClampTensorFwdOp()
-    out = op(x, mn, mx)
-    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mn, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 # Single-bound NaN behaviour is covered by test_clamp_min_nan_propagation /
@@ -255,10 +262,10 @@ def test_clamp_min_only_nan_propagation(dtype):
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device(), dtype=dtype)
     mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=run_device(), dtype=dtype)
 
-    ref = torch.clamp_min(x, mn)
     op = ClampTensorFwdOp()
-    out = op(x, mn)
-    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mn))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -270,10 +277,10 @@ def test_clamp_max_only_nan_propagation(dtype):
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device(), dtype=dtype)
     mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=run_device(), dtype=dtype)
 
-    ref = torch.clamp_max(x, mx)
     op = ClampTensorFwdOp()
-    out = op(x, None, mx)
-    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, None, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 # MaskedFillTensorFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
@@ -324,20 +331,10 @@ def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
 
     inp, mask, value = _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype)
 
-    out_shape = torch.broadcast_shapes(input_shape, mask_shape)
-    ref = inp.expand(out_shape).clone().masked_fill(mask.expand(out_shape), value.item())
-
     op = MaskedFillTensorFwdOp()
-    out = op(inp, mask, value)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    elif dtype == torch.float32:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    else:
-        tol = {"atol": 0, "rtol": 0}
-    torch.testing.assert_close(out, ref, **tol)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mask, value))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -346,8 +343,8 @@ def test_masked_fill_scalar_param_names():
 
     inp = torch.randn(1024, device=run_device(), dtype=torch.float32)
     mask = torch.randint(0, 2, (1024,), device=run_device()).bool()
-    ref = inp.masked_fill(mask, -1.0)
 
     op = MaskedFillScalarFwdOp(value=-1.0)
-    out = op(inp, mask)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
+    TestBase.check(workload, op, *workload.gen_inputs())

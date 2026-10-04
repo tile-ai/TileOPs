@@ -6,6 +6,7 @@ from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdWorkload
+from workloads.numerics import compare_outputs
 
 pytestmark = pytest.mark.smoke
 
@@ -283,8 +284,11 @@ def test_gated_deltanet_dense_decode_propagates_fp32_state() -> None:
     for _ in range(4):
         expected_o, expected_state = workload.ref_program(q, k, v, g, beta, expected_state)
         got_o, state = op(q, k, v, g, beta, state)
-        torch.testing.assert_close(got_o, expected_o, atol=2e-7, rtol=2e-7)
-        torch.testing.assert_close(state, expected_state, atol=2e-7, rtol=2e-7)
+        compare_outputs(
+            (got_o, state),
+            (expected_o, expected_state),
+            workload.verification(q, k, v, g, beta, state),
+        )
 
 
 def test_gated_deltanet_contract_reaches_target_builder() -> None:

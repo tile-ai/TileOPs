@@ -3,7 +3,8 @@
 The references of the random ops draw their uniforms from Philox4x32-10 keyed by ``seed``
 and counted by ``(draw, row, offset)``, written in integer tensor arithmetic so that the
 draws are the same on every device, meta included. A kernel draws from its own Philox
-stream, so its samples are compared with these by distribution, never one by one.
+stream for categorical draws, so sampled tokens are checked by distribution.
+Speculative acceptance uses the specified uniform stream and matches exactly.
 """
 
 import torch
@@ -166,6 +167,9 @@ class TopKMaskWorkload(CallWorkload):
     def ref_program(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         return top_k_mask(logits, k)
 
+    def verification(self, *inputs):
+        return top_k_mask_verification(inputs[0])
+
 
 class MinPMaskWorkload(CallWorkload):
     """Logits of one ``MinPMaskFwdOp`` call, with ``min_p`` uniform in ``[0.05, 0.25)``.
@@ -183,6 +187,9 @@ class MinPMaskWorkload(CallWorkload):
 
     def ref_program(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
         return min_p_mask(logits, min_p)
+
+    def verification(self, *inputs):
+        return min_p_mask_verification(*inputs)
 
 
 class TopPMaskWorkload(CallWorkload):
@@ -204,13 +211,7 @@ class TopPMaskWorkload(CallWorkload):
         return top_p_mask(logits, p)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, logit_mask_validator
-
-        logits, p = inputs
-        near = (probability_above(logits.float().softmax(-1)) - p[:, None]).abs() <= 1e-4
-        return Custom(
-            logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"
-        )
+        return top_p_mask_verification(*inputs)
 
 
 class TopKTopPMaskWorkload(CallWorkload):
@@ -224,15 +225,8 @@ class TopKTopPMaskWorkload(CallWorkload):
         return top_p_mask(top_k_mask(logits, k), p)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, logit_mask_validator
-
         logits, k, p = inputs
-        near = (
-            probability_above(top_k_mask(logits, k).float().softmax(-1)) - p[:, None]
-        ).abs() <= 1e-4
-        return Custom(
-            logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"
-        )
+        return top_p_mask_verification(logits, p, k=k)
 
 
 class SamplingFromProbsWorkload(CallWorkload):
@@ -270,9 +264,7 @@ class SamplingFromProbsWorkload(CallWorkload):
             tokens = draw(trial, seed, offset)
             assert tokens.shape == (draws,) and tokens.dtype == torch.int32
             assert ((tokens >= 0) & (tokens < vocab)).all()
-            counts = torch.bincount(tokens.long(), minlength=vocab).double()
-            bound = 6 * (draws * share * (1 - share)).sqrt() + 5 * (share > 0)
-            assert ((counts - draws * share).abs() <= bound).all()
+            _assert_follows(tokens, share)
 
         return Custom(
             validate, "categorical support and six-sigma distribution", probe=distribution
@@ -311,10 +303,103 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
             assert torch.equal(tokens == -1, positions > accepted[:, None])
             prefix = positions[:, :num_draft] < accepted[:, None]
             assert torch.equal(tokens[:, :num_draft][prefix], draft_ids[prefix])
-            got_counts = torch.bincount(accepted.long(), minlength=num_draft + 1).double()
-            ref_counts = torch.bincount(expected[1].long(), minlength=num_draft + 1).double()
-            share = ref_counts / batch
-            bound = 5 * (2 * batch * share * (1 - share)).sqrt() + 5
-            assert ((got_counts - ref_counts).abs() <= bound).all()
+            # Acceptance uses a specified uniform stream; only the residual token may differ.
+            assert torch.equal(accepted, expected[1])
+            rows = torch.arange(batch, device=tokens.device)
+            padded = torch.cat([draft, torch.zeros_like(draft[:, :1])], 1)
+            weights = (target[rows, accepted.long()] - padded[rows, accepted.long()]).clamp_min(0)
+            assert (weights[rows, tokens[rows, accepted.long()].long()] > 0).all()
 
-        return Custom(validate, "valid accepted prefix and accepted-length distribution")
+        def distribution(draw, _args):
+            n, drafts, vocabulary = 65536, 2, 16
+            generator = self.rng("chain-distribution", device=draft.device)
+            trial_draft = (
+                torch.rand(drafts, vocabulary, device=draft.device, generator=generator) ** 3
+            )
+            trial_draft /= trial_draft.sum(-1, keepdim=True)
+            trial_target = (
+                torch.rand(drafts + 1, vocabulary, device=draft.device, generator=generator) ** 3
+            )
+            trial_target /= trial_target.sum(-1, keepdim=True)
+            ids = (
+                torch.multinomial(trial_draft, n, replacement=True, generator=generator)
+                .T.to(torch.int32)
+                .contiguous()
+            )
+            args = (
+                trial_draft.expand(n, drafts, vocabulary).contiguous(),
+                ids,
+                trial_target.expand(n, drafts + 1, vocabulary).contiguous(),
+                seed,
+                offset,
+            )
+            got = draw(*args)
+            _assert_verifies_chains(
+                *got,
+                ids,
+                trial_draft,
+                trial_target,
+                torch.minimum(trial_draft, trial_target[:drafts]).sum(-1),
+            )
+
+        return Custom(
+            validate, "exact acceptance prefix and residual-token distribution", probe=distribution
+        )
+
+
+def top_k_mask_verification(logits):
+    from workloads.numerics import Custom, logit_mask_validator
+
+    return Custom(
+        logit_mask_validator(logits, torch.zeros_like(logits, dtype=torch.bool)),
+        "exact top-k mask and retained logit bits",
+    )
+
+
+def min_p_mask_verification(logits, min_p):
+    from workloads.numerics import Custom, logit_mask_validator
+
+    values = logits.float()
+    threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
+    return Custom(
+        logit_mask_validator(logits, (values - threshold).abs() <= 1e-4),
+        "min-p boundary within 1e-4 logit distance",
+    )
+
+
+def top_p_mask_verification(logits, p, *, k=None):
+    from workloads.numerics import Custom, logit_mask_validator
+
+    selected = logits if k is None else top_k_mask(logits, k)
+    near = (probability_above(selected.float().softmax(-1)) - p[:, None]).abs() <= 1e-4
+    return Custom(
+        logit_mask_validator(logits, near), "nucleus boundary within 1e-4 probability mass"
+    )
+
+
+def _assert_follows(samples, probs):
+    """Each index's count within ``6 sigma + 5`` of its expectation; a zero-probability index
+    never drawn. The ``+ 5`` covers indices expected fewer than a few times."""
+    n = samples.numel()
+    count = torch.bincount(samples.long(), minlength=probs.numel()).double()
+    p = probs.double()
+    bound = 6 * (n * p * (1 - p)).sqrt() + 5 * (p > 0)
+    assert ((count - n * p).abs() <= bound).all(), (count, n * p)
+
+
+def _assert_verifies_chains(tokens, num, draft_ids, draft, target, accepted):
+    """The accepted prefix is the drafts and ``-1`` follows the drawn token; the drawn token
+    follows the residual of its position, or target row ``N`` after a whole chain; the first
+    token follows target row 0; ``num`` follows the acceptance probabilities ``accepted``."""
+    assert tokens.dtype == num.dtype == torch.int32
+    num_draft = draft.shape[0]
+    position = torch.arange(num_draft + 1, device=tokens.device)[None]
+    prefix = position[:, :-1] < num[:, None]
+    assert torch.equal(tokens[:, :-1][prefix], draft_ids[prefix])
+    assert (tokens[position > num[:, None]] == -1).all()
+    for stop in range(num_draft + 1):
+        weights = target[stop] if stop == num_draft else (target[stop] - draft[stop]).clamp_min(0)
+        _assert_follows(tokens[num == stop, stop], weights / weights.sum())
+    _assert_follows(tokens[:, 0], target[0])
+    a0, a1 = accepted
+    _assert_follows(num, torch.stack([1 - a0, a0 * (1 - a1), a0 * a1]))

@@ -18,6 +18,8 @@ import pytest
 import torch
 
 from workloads.device import run_device, run_device_available
+from workloads.numerics import compare_outputs
+from workloads.reduction import reduction_verification
 
 pytestmark = pytest.mark.skipif(
     not run_device_available(), reason="the run device is not available"
@@ -176,7 +178,7 @@ def test_all_empty_dim_noop(empty_dim) -> None:
     y = op(x)
     assert y.shape == x.shape
     assert y.dtype == torch.bool
-    assert torch.equal(y, x.bool())
+    compare_outputs(y, x.bool(), reduction_verification((x.bool()).dtype))
 
 
 @pytest.mark.smoke
@@ -191,7 +193,7 @@ def test_any_empty_dim_noop(empty_dim) -> None:
     y = op(x)
     assert y.shape == x.shape
     assert y.dtype == torch.bool
-    assert torch.equal(y, x.bool())
+    compare_outputs(y, x.bool(), reduction_verification((x.bool()).dtype))
 
 
 @pytest.mark.smoke
@@ -216,7 +218,7 @@ def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
 
     assert out.device == x.device
     assert out.dtype == torch.bool
-    assert torch.equal(out, x != 0)
+    compare_outputs(out, x != 0, reduction_verification((x != 0).dtype))
 
 
 # A kernel's architecture check reads the device the op handed over
