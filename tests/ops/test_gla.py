@@ -202,7 +202,6 @@ def test_gla_bwd(
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
         # Validate FLA vs torch reference alignment
-        tols = get_tolerances(torch.float32)
         for name in ["dq", "dk", "dv", "dg"]:
             cos = cosine_sim(ref_grads[name], fla_grads[name])
             print(f"  FLA vs ref {name}: cosine={cos:.6f}")
@@ -223,15 +222,16 @@ def test_gla_bwd(
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
-    # Validate TileOPs vs torch reference
-    tols = get_tolerances(dtype)
+    # The gradients are about 1e-2, so the tolerance is 1% of each one's largest entry.
     for name in ["dq", "dk", "dv", "dg"]:
-        cos = cosine_sim(ref_grads[name], op_grads[name])
+        ref = ref_grads[name].float()
+        cos = cosine_sim(ref, op_grads[name])
         print(f"  TileOPs vs ref {name}: cosine={cos:.6f}")
         torch.testing.assert_close(
             op_grads[name].float(),
-            ref_grads[name].float(),
-            **tols,
+            ref,
+            atol=1e-2 * ref.abs().max().item(),
+            rtol=0,
             msg=lambda m, n=name: f"{n}: {m}",
         )
 
