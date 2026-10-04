@@ -202,20 +202,21 @@ def _gla_fwd_o_from_a_kernel(
                 h_s = T.alloc_shared([dim_k, dim_v], dtype)
 
                 T.copy(q[i_b, start : start + chunk_size, i_h, :], q_s, disable_tma=True)
-                T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
                 T.copy(
                     g_cumsum[i_b, start : start + chunk_size, i_h, :],
                     g_s,
                     disable_tma=True,
                 )
-                T.copy(a[i_b, start : start + chunk_size, i_h, :], a_s, disable_tma=True)
-                for d, j in T.Parallel(dim_k, dim_v):
-                    h_s[d, j] = T.cast(h[i_b, i_c, i_h, d, j], dtype)
                 for i, d in T.Parallel(chunk_size, dim_k):
                     q_gated[i, d] = T.cast(
                         T.cast(q_s[i, d], "float32") * T.exp2(g_s[i, d] * LOG2E),
                         dtype,
                     )
+                # Loaded once q and g are spent, so they do not share the peak with them.
+                T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
+                T.copy(a[i_b, start : start + chunk_size, i_h, :], a_s, disable_tma=True)
+                for d, j in T.Parallel(dim_k, dim_v):
+                    h_s[d, j] = T.cast(h[i_b, i_c, i_h, d, j], dtype)
 
                 acc = T.alloc_fragment([chunk_size, dim_v], "float32")
                 T.fill(acc, 0.0)
@@ -234,7 +235,7 @@ def _gla_fwd_o_from_a_kernel(
 class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterface):
     """Retain the proven state pass while replacing the costly output pass."""
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
     general = True
 
     @classmethod

@@ -475,7 +475,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
     The state walk is laid out the same way over partitions of ``partition_chunks`` chunks.
     """
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
     preferred_over = frozenset({"gla_varlen_prefill"})
 
     # Threads per block. The causal product's GEMM tiles a 16-wide operand, which more than
@@ -513,7 +513,17 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
-        return head_count_refusal(call.heads) or super().refusal(call)
+        """Why the call cannot run, or ``None``; a call refused here takes the per-sequence walk."""
+        reason = head_count_refusal(call.heads) or super().refusal(call)
+        if reason is not None or not call.smem_budget:
+            return reason
+        need = cls._shared_bytes(call.dim_k, call.dim_v, call.dtype.itemsize, call.num_sequences)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs {need} bytes of shared memory per block for {call.num_sequences} sequences "
+            f"at head dim {call.dim_k}; the device gives {call.smem_budget}"
+        )
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
@@ -539,9 +549,23 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
         return per_sequence_blocks > cls._blocks_per_sm * call.sm_count
 
     @classmethod
+    def _partitions(cls, dim_k: int, dim_v: int) -> tuple[int, int]:
+        """Key and value partitions of the walk's state tile."""
+        return max(1, dim_k // cls._state_tile_k), max(1, dim_v // cls._state_tile_v)
+
+    @classmethod
+    def _shared_bytes(cls, dim_k: int, dim_v: int, elem: int, num_sequences: int) -> int:
+        """Shared memory of the largest program, the partition walk, as TileLang compiles it:
+        its prefetch stages and the tail's own tiles, and the int32 offsets of the sequences,
+        which it places apart from them in 16-byte steps."""
+        k_partitions, v_partitions = cls._partitions(dim_k, dim_v)
+        k, v = dim_k // k_partitions, dim_v // v_partitions
+        stage = CHUNK_TOKENS * ((k + v) * elem + k * 4)
+        return (cls._state_stages + 1) * stage + -(-4 * (num_sequences + 1) // 16) * 16
+
+    @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        k_partitions = max(1, call.dim_k // cls._state_tile_k)
-        v_partitions = max(1, call.dim_v // cls._state_tile_v)
+        k_partitions, v_partitions = cls._partitions(call.dim_k, call.dim_v)
         # The longest partition whose blocks still cover the device.
         chunks = call.batch * call.seq_len // CHUNK_TOKENS
         slices = k_partitions * v_partitions

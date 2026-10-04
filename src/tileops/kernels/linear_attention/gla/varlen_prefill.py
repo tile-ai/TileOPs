@@ -479,7 +479,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
     the offsets can describe, and a block past the count the offsets give retires at once.
     """
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
 
     # Threads per block. The state walk and the causal product run two warps: their GEMMs
     # tile a 16-wide operand, which a wider block cannot partition into whole warps. The
@@ -496,7 +496,16 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
-        return head_count_refusal(call.heads) or super().refusal(call)
+        reason = head_count_refusal(call.heads) or super().refusal(call)
+        if reason is not None or not call.smem_budget:
+            return reason
+        need = cls._shared_bytes(call.dim_k, call.dim_v, call.dtype.itemsize, call.num_sequences)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs {need} bytes of shared memory per block for {call.num_sequences} sequences "
+            f"at head dim {call.dim_k}; the device gives {call.smem_budget}"
+        )
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
@@ -508,8 +517,9 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
             call.varlen or (call.seq_len > 1 and call.seq_len % CHUNK_TOKENS != 0)
         )
 
-    @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    @staticmethod
+    def _partitions(dim_k: int, dim_v: int) -> tuple[int, int]:
+        """Key and value partitions of the state walk."""
         # What the launch waits on is one state block's walk, so the state tile is split
         # until the device is covered. The key axis is split first and all the way: a block
         # then reads only its own key channels and its own slice of the float32 gate, and
@@ -518,8 +528,22 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
         # prefetch depth; splitting it further reads the keys and the gate again per slice
         # and measures worse. Re-fit by timing the manifest rows over the pairs that keep
         # both slices at or above the GEMM's minimum operand extent.
-        k_partitions = call.dim_k // GEMM_MIN_N
-        v_partitions = 2 if call.dim_v // 2 >= GEMM_MIN_N else 1
+        return dim_k // GEMM_MIN_N, 2 if dim_v // 2 >= GEMM_MIN_N else 1
+
+    @classmethod
+    def _shared_bytes(cls, dim_k: int, dim_v: int, elem: int, num_sequences: int) -> int:
+        """Shared memory of the largest program as TileLang compiles it: the state walk's
+        prefetch stages or the output's four tiles, and the int32 offsets of the sequences,
+        which it places apart from them in 16-byte steps."""
+        k_partitions, v_partitions = cls._partitions(dim_k, dim_v)
+        k, v = dim_k // k_partitions, dim_v // v_partitions
+        stage = CHUNK_TOKENS * ((k + v) * elem + k * 4)
+        output = (CHUNK_TOKENS * (dim_v + CHUNK_TOKENS + dim_k) + dim_k * dim_v) * elem
+        return max(cls._state_stages * stage, output) + -(-4 * (num_sequences + 1) // 16) * 16
+
+    @classmethod
+    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+        k_partitions, v_partitions = cls._partitions(call.dim_k, call.dim_v)
         return build_entry(
             cls,
             call,

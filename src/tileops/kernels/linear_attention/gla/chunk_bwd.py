@@ -28,7 +28,7 @@ from tileops.kernels.linear_attention.call_spec import (
 )
 from tileops.kernels.linear_attention.gla.chunk_fwd import gla_precompute_g_kernel
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
-from tileops.utils import get_sm_count, get_sm_version
+from tileops.utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
 __all__ = ["GLABwdKernel"]
 
@@ -245,6 +245,7 @@ def _gla_bwd_fused_kernel(
     scale: float,
     dtype: str,
     sub_chunk_size: int = 16,
+    lean: bool = False,
 ) -> Callable:
     """Fused intra+inter backward kernel.
 
@@ -253,6 +254,9 @@ def _gla_bwd_fused_kernel(
     Phase B: Add inter-chunk contributions via GEMM, compute dg, write final outputs.
 
     This avoids the global memory round-trip of the split intra/inter approach.
+
+    *lean* forms dA before A and has phase B read v, do, q and k again and h late, so
+    neither phase A's operands nor h stay live through ``dv_inter``; same results.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
@@ -320,6 +324,11 @@ def _gla_bwd_fused_kernel(
 
                 # PHASE A: Intra-chunk (results kept in fragments)
 
+                if lean:
+                    dA_frag = T.alloc_fragment([BT, BT], accum_dtype)
+                    T.fill(dA_frag, 0.0)
+                    T.gemm(do_s, v_s, dA_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+
                 # ---- A[i,j] = scale * sum_k q*k*exp(g_i - g_j), causal ----
                 A_frag = T.alloc_fragment([BT, BT], accum_dtype)
                 T.fill(A_frag, 0.0)
@@ -341,9 +350,10 @@ def _gla_bwd_fused_kernel(
                 T.gemm(A_s, do_s, dv_frag, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
 
                 # dA = scale * do @ v^T, causal (overwrite A_s)
-                dA_frag = T.alloc_fragment([BT, BT], accum_dtype)
-                T.fill(dA_frag, 0.0)
-                T.gemm(do_s, v_s, dA_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                if not lean:
+                    dA_frag = T.alloc_fragment([BT, BT], accum_dtype)
+                    T.fill(dA_frag, 0.0)
+                    T.gemm(do_s, v_s, dA_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i_t, i_j in T.Parallel(BT, BT):
                     A_s[i_t, i_j] = T.cast(
                         T.if_then_else(
@@ -479,8 +489,9 @@ def _gla_bwd_fused_kernel(
                 h_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
 
-                for i_k, i_v in T.Parallel(dim_k, dim_v):
-                    h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
+                if not lean:
+                    for i_k, i_v in T.Parallel(dim_k, dim_v):
+                        h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
                 for i_k, i_v in T.Parallel(dim_k, dim_v):
                     dh_cast_s[i_k, i_v] = T.cast(dh[i_b, i_c, i_h, i_k, i_v], dtype)
 
@@ -503,11 +514,20 @@ def _gla_bwd_fused_kernel(
                     dv_out[i_b, chunk_start + i_t, i_h, i_v] = dv_frag[i_t, i_v]
 
                 # dq_inter = do @ h^T → write to shared to avoid layout conflict
+                if lean:
+                    do_b = T.alloc_shared([BT, dim_v], dtype)
+                    T.copy(do[i_b, chunk_start : chunk_start + BT, i_h, :], do_b, disable_tma=True)
+                    for i_k, i_v in T.Parallel(dim_k, dim_v):
+                        h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
                 dq_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
                 dq_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
                 T.fill(dq_inter_frag, 0.0)
                 T.gemm(
-                    do_s, h_cast_s, dq_inter_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    do_b if lean else do_s,
+                    h_cast_s,
+                    dq_inter_frag,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
                 )
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dq_inter_s[i_t, i_k] = dq_inter_frag[i_t, i_k]
@@ -521,11 +541,18 @@ def _gla_bwd_fused_kernel(
                     dq_out[i_b, chunk_start + i_t, i_h, i_k] = dq_frag[i_t, i_k]
 
                 # dk_inter = v @ dh^T → write to shared to avoid layout conflict
+                if lean:
+                    v_b = T.alloc_shared([BT, dim_v], dtype)
+                    T.copy(v[i_b, chunk_start : chunk_start + BT, i_h, :], v_b, disable_tma=True)
                 dk_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
                 dk_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
                 T.fill(dk_inter_frag, 0.0)
                 T.gemm(
-                    v_s, dh_cast_s, dk_inter_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                    v_b if lean else v_s,
+                    dh_cast_s,
+                    dk_inter_frag,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
                 )
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dk_inter_s[i_t, i_k] = dk_inter_frag[i_t, i_k]
@@ -539,6 +566,11 @@ def _gla_bwd_fused_kernel(
                     dk_out[i_b, chunk_start + i_t, i_h, i_k] = dk_frag[i_t, i_k]
 
                 # ==== dg ====
+                if lean:
+                    q_b = T.alloc_shared([BT, dim_k], dtype)
+                    k_b = T.alloc_shared([BT, dim_k], dtype)
+                    T.copy(q[i_b, chunk_start : chunk_start + BT, i_h, :], q_b, disable_tma=True)
+                    T.copy(k[i_b, chunk_start : chunk_start + BT, i_h, :], k_b, disable_tma=True)
                 dg_inter = T.alloc_shared([dim_k], accum_dtype)
                 for i_k in T.Parallel(dim_k):
                     dg_inter[i_k] = 0.0
@@ -555,7 +587,7 @@ def _gla_bwd_fused_kernel(
                 corr_s = T.alloc_shared([BT, dim_k], accum_dtype)
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     corr_s[i_t, i_k] = (
-                        T.cast(k_s[i_t, i_k], accum_dtype)
+                        T.cast((k_b if lean else k_s)[i_t, i_k], accum_dtype)
                         * dk_inter_s[i_t, i_k]
                         * T.exp2((g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E)
                     )
@@ -566,8 +598,8 @@ def _gla_bwd_fused_kernel(
                 # dg_local = q * dq - k * dk (using final combined values)
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     g_cumsum_s[i_t, i_k] = (
-                        T.cast(q_s[i_t, i_k], accum_dtype) * dq_frag[i_t, i_k]
-                        - T.cast(k_s[i_t, i_k], accum_dtype) * dk_frag[i_t, i_k]
+                        T.cast((q_b if lean else q_s)[i_t, i_k], accum_dtype) * dq_frag[i_t, i_k]
+                        - T.cast((k_b if lean else k_s)[i_t, i_k], accum_dtype) * dk_frag[i_t, i_k]
                     )
 
                 # Reverse cumsum
@@ -597,6 +629,8 @@ class GLABwdKernel(Kernel, GLABwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # Threads of the default dh pass: one warp group.
+    _THREADS_SEQ = 128
 
     @classmethod
     def applies(cls, call: GLAChunkCall) -> bool:
@@ -604,8 +638,25 @@ class GLABwdKernel(Kernel, GLABwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
-        return head_count_refusal(call.heads) or cls.region_refusal(
+        """Why no program serves this call, or ``None``; reads lower bounds, so a call above
+        them that TileLang still cannot place in the device's shared memory is built and
+        fails at launch."""
+        reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
+        )
+        if reason is not None or not call.smem_budget:
+            return reason
+        c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
+        dh = min(
+            cls._dh_shared_bytes(c, k // kp, v // vp, elem)
+            for vp, kp in cls._partitionings(k, v, cls._THREADS_SEQ) or [(1, 1)]
+        )
+        need = max(cls._fused_live_bytes(c, k, v, elem), dh)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
+            f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
         )
 
     @classmethod
@@ -655,6 +706,9 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         )
         if reason:
             raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
+        # The default fused pass only where every buffer it allocates fits the device.
+        default = self._fused_shared_bytes(chunk_size, dim_k, dim_v, dtype.itemsize)
+        self.lean = default > get_shared_memory_optin(self.device_index)
         self.init_config(config, tune)
         if not tune:
             self._build_kernels(self.config)
@@ -701,30 +755,60 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             )
         return None
 
-    def _partitionings(self, threads_seq: int) -> list[tuple[int, int]]:
+    @staticmethod
+    def _partitionings(dim_k: int, dim_v: int, threads_seq: int) -> list[tuple[int, int]]:
         """The (V, K) partitionings the dh kernel builds at *threads_seq*, finest first."""
         counts = (1, 2, 4, 8)  # a power of two keeps a probed dimension a probed extent
         pairs = [
             (vp, kp)
             for vp in counts
             for kp in counts
-            if self.dim_v % vp == 0
-            and self.dim_k % kp == 0
-            and _dh_tile_refusal(self.dim_k // kp, self.dim_v // vp, threads_seq) is None
+            if dim_v % vp == 0
+            and dim_k % kp == 0
+            and _dh_tile_refusal(dim_k // kp, dim_v // vp, threads_seq) is None
         ]
         # Ties go to the V split, the minor axis of every tensor a block reads and writes.
         return sorted(pairs, key=lambda pair: (pair[0] * pair[1], pair[0]), reverse=True)
 
+    @staticmethod
+    def _dh_shared_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Shared memory of the dh pass over a *k* by *v* slice: its five buffers stay live
+        through the chunk walk, so the sum is what TileLang compiles."""
+        return k * v * 4 + c * k * (4 + 2 * elem) + c * v * elem
+
+    @staticmethod
+    def _fused_shared_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Upper bound on the default fused pass's shared memory: every buffer it allocates,
+        with the 16-row sub-chunk tiles."""
+        a, b, f = c * k * elem, c * v * elem, c * k * 4
+        sub = 16 * 16 * elem + 2 * 16 * k * elem
+        return 3 * a + 2 * b + 4 * f + c * c * elem + 2 * k * v * elem + sub + k * 4
+
+    @staticmethod
+    def _fused_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the lean fused pass's shared memory: the largest set of its buffers
+        live at once, the fp32 gate in all."""
+        a, b, h, causal, f = c * k * elem, c * v * elem, k * v * elem, c * c * elem, c * k * 4
+        sub = 16 * 16 * elem + 16 * k * elem
+        dg = 2 * a + 2 * f + k * 4
+        return max(2 * a + 2 * b, 2 * a + b + causal, 2 * a + causal + sub, b + 2 * h, dg) + f
+
     @property
     def default_config(self) -> dict:
-        # One warp group, then the finest partitioning whose blocks still fit one wave.
-        # A wider block splits the gemm's B operand across warp groups and doubles the V
-        # tile a partitioning must leave; past the SM count a further split only repeats
-        # the gated query.
-        threads_seq = 128
+        # The finest partitioning whose dh slice fits the device and whose blocks still fit
+        # one wave. A wider block splits the gemm's B operand across warp groups and doubles
+        # the V tile a partitioning must leave; past the SM count a further split only
+        # repeats the gated query.
+        threads_seq = self._THREADS_SEQ
         blocks = self.batch * self.heads
         sm_count = get_sm_count(self.device_index)
-        admitted = self._partitionings(threads_seq) or [(1, 1)]
+        budget = get_shared_memory_optin(self.device_index)
+        c, elem = self.chunk_size, self.dtype.itemsize
+        admitted = [
+            (vp, kp)
+            for vp, kp in self._partitionings(self.dim_k, self.dim_v, threads_seq)
+            if self._dh_shared_bytes(c, self.dim_k // kp, self.dim_v // vp, elem) <= budget
+        ] or [(1, 1)]
         fitting = [pair for pair in admitted if blocks * pair[0] * pair[1] <= sm_count]
         num_v_partitions, num_k_partitions = (fitting or admitted[-1:])[0]
         return {
@@ -741,7 +825,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
         for ns in [1, 2, 3]:
             for t_par in [64, 128, 256]:
                 for t_seq in [64, 128, 256]:
-                    for nvp, nkp in self._partitionings(t_seq):
+                    for nvp, nkp in self._partitionings(self.dim_k, self.dim_v, t_seq):
                         configs.append(
                             {
                                 "num_stages": ns,
@@ -803,6 +887,7 @@ class GLABwdKernel(Kernel, GLABwdInterface):
             self.chunk_size,
             self.scale,
             self.dtype_name,
+            lean=self.lean,
         )(ns, thr_par)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:

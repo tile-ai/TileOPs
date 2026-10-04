@@ -136,7 +136,7 @@ def _gla_dense_decode_tl(
 class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
     """Fuse one GLA recurrence step and output projection in one state pass."""
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
 
     @classmethod
     def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
