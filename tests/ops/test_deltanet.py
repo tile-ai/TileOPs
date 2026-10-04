@@ -175,6 +175,8 @@ def test_deltanet_bwd(
         pytest.param(101376, 64, 64, 64, torch.float32, None, id="sm89-c64-fp32-refused"),
         pytest.param(101376, 32, 128, 128, torch.float16, None, id="sm89-c32-d128-refused"),
         pytest.param(101376, 64, 64, 128, torch.float16, None, id="sm89-dv128-refused"),
+        # Refused by what the per-chunk backward holds once dP is written.
+        pytest.param(166912, 64, 160, 16, torch.float32, None, id="sm80-dp-refused"),
         pytest.param(166912, 64, 128, 128, torch.float16, 1, id="sm80-d128"),
         pytest.param(232448, 64, 64, 64, torch.float16, 2, id="sm90-c64-fp16"),
         pytest.param(232448, 64, 128, 128, torch.float16, 1, id="sm90-d128"),
