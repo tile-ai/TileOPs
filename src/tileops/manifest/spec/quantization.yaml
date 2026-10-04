@@ -99,12 +99,9 @@ INT8QuantPerBlockFwdOp:
     flops: "5 * M * K + 2 * M * ceil_div(K, 128)"
 
 INT4QuantPerGroupFwdOp:
-  # Asymmetric INT4 with a scale and a zero point per group of group_size elements along
-  # K: group_size == K is per channel. The outputs are GemmW4A16FwdOp's weight operands.
-  # A group's range [lo, hi] is its minimum and maximum widened to include 0, so the zero
-  # point lies in [0, 15]. scale = (hi - lo) / 15, at least the smallest normal of T, and
-  # 1.0 for an all-zero group; it is rounded to T, and the values are quantized against the
-  # rounded scale: zero = round(-lo / scale), q = clamp(round(w / scale) + zero, 0, 15).
+  # DeepSpeed QuantizerBuilder().load().quantize(w, N*K/group_size, 4, Asymmetric).
+  # Codes are clamp(round((w - (hi+lo)/2) * multiplier), -8, 7), multiplier=16/(hi-lo).
+  # Constant groups use multiplier 1; params stores [1/multiplier, (hi+lo)/2].
   family: quantization
   status: implemented
   signature:
@@ -114,26 +111,23 @@ INT4QuantPerGroupFwdOp:
     inputs:
       w: {dtype: T, shape: "[N, K]"}
     outputs:
-      # Two INT4 values per byte, in the order GemmW4A16FwdOp.repack produces.
-      packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
-      weight_scale: {dtype: T, shape: "[N, K // group_size]"}
-      weight_zero: {dtype: uint8, shape: "[N, K // group_size]"}
+      # First code in the high nibble; params rows follow flattened input groups.
+      packed_weight: {dtype: int8, shape: "[N, K // 2]"}
+      params: {dtype: float32, shape: "[N * K // group_size, 2]"}
     shape_rules:
     - "group_size > 0"
-    # The packing order is defined per 128-element K step.
-    - "K % 128 == 0 and K % group_size == 0"
+    - "K % 2 == 0 and K % group_size == 0"
   workloads:
   - {N: 14336, K: 4096, dtype_cases: [{T: float16}], label: llama-8b-mlp-up}
-  - {N: 14336, K: 4096, group_size: 4096, dtype_cases: [{T: float16}], label: llama-8b-mlp-up-chan}
+  - {N: 4096, K: 4096, group_size: 64, dtype_cases: [{T: float16}], label: llama-8b-q-proj}
   - {N: 8192, K: 28672, dtype_cases: [{T: float16}], label: llama-70b-mlp-down}
   - {N: 5120, K: 8192, dtype_cases: [{T: float16}], label: qwen3-32b-o-proj}
   - {N: 18944, K: 3584, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-up}
-  - {N: 3584, K: 18944, group_size: 18944, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-down-chan}
+  - {N: 3584, K: 18944, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-down}
+  - {N: 20480, K: 5120, group_size: 64, dtype_cases: [{T: float16}], label: opt-13b-mlp-up}
+  - {N: 14336, K: 4096, group_size: 4096, dtype_cases: [{T: float16}], label: llama-8b-mlp-up-chan}
   roofline:
-    # Per element: the min, the max, the scaling, round, the zero-point add and clamp; per
-    # group: widening the range to 0 (2), the range, its divide, the floor and zero guard, and
-    # the zero point (negate, divide, round).
-    flops: "6 * N * K + 9 * N * (K // group_size)"
+    flops: "7 * N * K + 6 * (N * K // group_size)"
 
 SmoothQuantFwdOp:
   # q = quantize_per_row(x / smooth): per-channel smoothing, then symmetric INT8 per row.

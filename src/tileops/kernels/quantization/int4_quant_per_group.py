@@ -1,4 +1,4 @@
-"""Per-group asymmetric INT4 quantization into ``GemmW4A16FwdOp``'s weight operands."""
+"""DeepSpeed-compatible per-group asymmetric INT4 quantization."""
 
 import functools
 from typing import ClassVar, Optional
@@ -9,18 +9,13 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantization.call_spec import INT4QuantPerGroupFwdInterface, QuantizeCall
 from tileops.utils import WARP_LANES
 
 __all__ = ["INT4QuantPerGroupFwdKernel", "INT4QuantPerGroupRowFwdKernel"]
 
-# Elements of a chunk, the K run whose codes are exactly the words (lane, j) of the packing:
-# chunk c of a row is K step c // lanes and packing index j = c % lanes, and word
-# lane * lanes + j of that step holds its codes of pair p of elements 32 j + 8 p + 2 lane
-# (bits 4 p) and 32 j + 8 p + 2 lane + 1 (bits 16 + 4 p).
-_CHUNK = W4A16_LAYOUT.mma_step_k // W4A16_LAYOUT.lanes
+_CHUNK = 32
 
 
 @functools.lru_cache(maxsize=32)
@@ -32,7 +27,6 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
     otherwise thread ``tx`` of CTA ``bx`` holds chunk ``bx * threads + tx`` and the lanes
     of a group reduce its range by shuffles.
     """
-    abi_lanes = W4A16_LAYOUT.lanes
     vec = VECTOR_ACCESS_BYTES // 2
     vpc = _CHUNK // vec
     # A chunk is held as 32-bit words of two float16 elements, VECTOR_ACCESS_BYTES // 4 to
@@ -43,17 +37,6 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
     chunks = total // _CHUNK
     groups = total // group_size
     lanes = group_size // _CHUNK
-    # torch computes (hi - lo) / 15 as a product with the float32 reciprocal of 15.
-    inv15 = float(torch.tensor(1.0, dtype=torch.float32) / torch.tensor(15.0))
-    tiny = torch.finfo(torch.float16).tiny
-    # A float16 over a normal float16 scale is a half-integer exactly or at least 2**-13 from
-    # one. Its product by the reciprocal plus snap lands on the 2**-14 grid, which puts an
-    # exact half-integer on it and keeps every other quotient on its side; adding
-    # round_magic - snap then rounds half to even to an integer, which the bits of the sum
-    # hold above magic_bits.
-    snap = 768.0
-    round_magic = 12582912.0
-    magic_bits = 0x4B400000
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _int4_quant_per_group_func(threads: int, cpt: int, evict_first: bool, min_blocks: int):
@@ -81,8 +64,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
         def _int4_quant_per_group_main(
             w: T.Tensor((total,), "float16"),
             packed: T.Tensor((total // 8,), "uint32"),
-            scale: T.Tensor((groups,), "float16"),
-            zero: T.Tensor((groups,), "uint8"),
+            params: T.Tensor((groups, 2), "float32"),
         ):
             with T.Kernel(groups if per_cta else T.ceildiv(chunks, threads), threads=threads) as bx:
                 if min_blocks > 1:
@@ -91,14 +73,11 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                 vals = T.alloc_local((cpt, words), "uint32")
                 acc = T.alloc_local((2,), "float16x2")
                 num = T.alloc_local((3,), "float32")
-                code_base = T.alloc_local((1,), "int32")
-                out = T.alloc_local((abi_lanes,), "uint32")
-                recv = T.alloc_local((1,), "uint32")
+                out = T.alloc_local((_CHUNK // 8,), "uint32")
                 warp_range = T.alloc_shared((2, warps), "float32")
 
-                # min and max are exact in float16; the range starts at [0, 0].
-                acc[0] = T.reinterpret(T.uint32(0), "float16x2")
-                acc[1] = T.reinterpret(T.uint32(0), "float16x2")
+                acc[0] = T.reinterpret(T.uint32(0x7C007C00), "float16x2")
+                acc[1] = T.reinterpret(T.uint32(0xFC00FC00), "float16x2")
                 for u in T.unroll(cpt):
                     c = chunk_of(bx, u, tx)
                     if held(u, tx) & (c < chunks):
@@ -110,13 +89,13 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                                 T.address_of(w[c * _CHUNK + p * vec]),
                             )
                     else:
-                        # A zero leaves the range, which includes 0, unchanged.
                         for e in T.serial(words):
                             vals[u, e] = T.uint32(0)
                 for u in T.unroll(cpt):
-                    for e in T.unroll(words):
-                        acc[0] = T.min2(acc[0], T.reinterpret(vals[u, e], "float16x2"))
-                        acc[1] = T.max2(acc[1], T.reinterpret(vals[u, e], "float16x2"))
+                    if held(u, tx) & (chunk_of(bx, u, tx) < chunks):
+                        for e in T.unroll(words):
+                            acc[0] = T.min2(acc[0], T.reinterpret(vals[u, e], "float16x2"))
+                            acc[1] = T.max2(acc[1], T.reinterpret(vals[u, e], "float16x2"))
                 num[0] = T.min(
                     widen(T.reinterpret(acc[0], "uint32"), 0),
                     widen(T.reinterpret(acc[0], "uint32"), 1),
@@ -141,73 +120,32 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                     for i in T.serial(warps):
                         num[0] = T.min(num[0], warp_range[0, i])
                         num[1] = T.max(num[1], warp_range[1, i])
-                s16 = T.cast(
-                    T.if_then_else(
-                        num[1] > num[0],
-                        T.max((num[1] - num[0]) * T.float32(inv15), T.float32(tiny)),
-                        T.float32(1.0),
-                    ),
-                    "float16",
-                )
-                num[2] = T.ieee_frcp(T.cast(s16, "float32"))
-                code_base[0] = T.reinterpret(
-                    T.ieee_add(
-                        T.ieee_fmaf(-num[0], num[2], T.float32(snap)),
-                        T.float32(round_magic - snap),
-                    ),
-                    "int32",
-                ) - T.int32(magic_bits)
+                num[2] = T.if_then_else(num[1] == num[0], 1.0, 16.0 / (num[1] - num[0]))
+                num[0] = (num[1] + num[0]) * 0.5
                 first = (tx == 0) if per_cta else (bx * threads + tx) % lanes == 0
                 g = bx if per_cta else (bx * threads + tx) // lanes
                 if first & (g < groups):
-                    scale[g] = s16
-                    zero[g] = T.cast(code_base[0], "uint8")
-                # code = bits + code_base is zero + the rounded quotient.
-                code_base[0] = code_base[0] - T.int32(magic_bits)
+                    params[g, 0] = 1.0 / num[2]
+                    params[g, 1] = num[0]
                 for u in T.unroll(cpt):
                     c = chunk_of(bx, u, tx)
-                    for lane in T.unroll(abi_lanes):
-                        out[lane] = T.uint32(0)
-                        for p in T.unroll(vpc):
-                            for e in T.unroll(2):
-                                bits = T.reinterpret(
-                                    T.ieee_add(
-                                        T.ieee_fmaf(
-                                            widen(vals[u, p * vwords + lane], e),
-                                            num[2],
-                                            T.float32(snap),
-                                        ),
-                                        T.float32(round_magic - snap),
-                                    ),
+                    for word in T.unroll(_CHUNK // 8):
+                        out[word] = T.uint32(0)
+                        for pair in T.unroll(4):
+                            for half in T.unroll(2):
+                                value = widen(vals[u, word * 4 + pair], half)
+                                code = T.cast(
+                                    T.round(T.ieee_mul(T.ieee_add(value, -num[0]), num[2])),
                                     "int32",
                                 )
-                                # A clamp at 0 is never reached: the rounding is monotone
-                                # and odd, and w >= lo.
-                                code = T.min(bits + code_base[0], T.int32(15))
-                                # The nibbles are disjoint, so adding a shifted code sets it.
-                                out[lane] = out[lane] + (
-                                    T.cast(code, "uint32") << T.uint32(4 * p + 16 * e)
+                                code = T.min(T.max(code, -8), 7) & 15
+                                # DeepSpeed stores the first signed code in the high nibble.
+                                out[word] = out[word] | (
+                                    T.cast(code, "uint32") << T.uint32(8 * pair + 4 * (1 - half))
                                 )
-                    # Transpose the 4 x 4 words of the quad's chunks, one step's, so thread
-                    # j holds the words of packing lane j, 16 contiguous bytes: each stage
-                    # swaps one bit of the thread index with that bit of the word index.
-                    for st in T.unroll(2):
-                        m = 1 << st
-                        upper = (tx >> st) & 1
-                        for y0 in T.unroll(abi_lanes):
-                            if y0 & m == 0:
-                                recv[0] = T.shfl_xor(
-                                    T.if_then_else(upper == 1, out[y0], out[y0 | m]),
-                                    m,
-                                    width=WARP_LANES,
-                                )
-                                if upper == 1:
-                                    out[y0] = recv[0]
-                                else:
-                                    out[y0 | m] = recv[0]
                     if held(u, tx) & (c < chunks):
-                        for x in T.vectorized(abi_lanes):
-                            packed[c * abi_lanes + x] = out[x]
+                        for word in T.vectorized(_CHUNK // 8):
+                            packed[c * (_CHUNK // 8) + word] = out[word]
 
         return _int4_quant_per_group_main
 
@@ -244,20 +182,18 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_cuda(w=w)
         n, k = self.call.rows, self.call.cols
-        groups = (n, k // self.call.group_size)
-        packed = torch.empty((n, k // 2), dtype=torch.uint8, device=w.device)
-        scale = torch.empty(groups, dtype=torch.float16, device=w.device)
-        zero = torch.empty(groups, dtype=torch.uint8, device=w.device)
+        packed = torch.empty((n, k // 2), dtype=torch.int8, device=w.device)
+        params = torch.empty(
+            (n * k // self.call.group_size, 2), dtype=torch.float32, device=w.device
+        )
         # The kernel reads 16-byte vectors from the start of the storage.
         if w.data_ptr() % VECTOR_ACCESS_BYTES:
             w = w.clone()
-        self.kernel(**self.config)(
-            w.view(-1), packed.view(-1).view(torch.uint32), scale.view(-1), zero.view(-1)
-        )
-        return packed, scale, zero
+        self.kernel(**self.config)(w.view(-1), packed.view(-1).view(torch.uint32), params)
+        return packed, params
 
 
 class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
@@ -265,8 +201,7 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     Serves a ``group_size`` of 32 to ``32 * WARP_LANES`` elements, a power of two. A lane
     holds 32 contiguous elements in registers, the lanes of a group reduce its range by
-    shuffles, and each lane packs its codes into the four words they fill. The outputs are
-    bit-equal to the torch reference.
+    shuffles, and each lane packs its codes into the four words they fill.
 
     Args:
         call: The call's shape, dtype, group size and device facts.
@@ -307,8 +242,7 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     Serves a ``group_size`` that is a multiple of 128, up to ``_MAX_THREADS`` threads holding
     ``_MAX_CPT`` chunks of 32 elements each (``group_size == K`` is per-channel
     quantization). The CTA holds its group in registers, reduces the range by shuffles and
-    across warps in shared memory, and packs the codes from the registers. The outputs are
-    bit-equal to the torch reference.
+    across warps in shared memory, and packs the codes from the registers.
 
     Args:
         call: The call's shape, dtype, group size and device facts.
@@ -335,7 +269,7 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     @classmethod
     def applies(cls, call: QuantizeCall) -> bool:
         return (
-            call.group_size % W4A16_LAYOUT.mma_step_k == 0
+            call.group_size % 128 == 0
             and call.group_size <= cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
         )
 
