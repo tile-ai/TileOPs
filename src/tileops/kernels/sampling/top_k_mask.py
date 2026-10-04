@@ -399,7 +399,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
     # Launch policy, fitted on the manifest rows with the repo benchmark. Re-fit by timing
@@ -415,7 +415,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
             return reason
         if call.batch * call.vocab > 2**31 - 1:
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
-        widest = widest_row(call.dtype, cls._THREADS, cls._MAX_SLOTS)
+        widest = widest_row(call.dtype, cls._THREADS, cls._MAX_SLOTS, call.arch)
         if call.vocab > widest:
             return f"holds a row of at most {widest} values in registers, and V = {call.vocab}"
         return None

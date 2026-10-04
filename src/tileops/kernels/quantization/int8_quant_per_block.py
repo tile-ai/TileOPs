@@ -340,7 +340,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
 class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
     """What the two per-block kernels share: the calls they refuse and how they launch."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     # The one integer tensor is ``q``, written before anything reads it.
     autotune_accepts_random_int_inputs = True
 

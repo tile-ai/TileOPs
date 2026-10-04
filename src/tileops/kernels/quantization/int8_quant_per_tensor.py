@@ -321,7 +321,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [80, 86, 89, 90]
     # The integer tensors are the partials and ``q``, both written before anything reads them.
     autotune_accepts_random_int_inputs = True
 
