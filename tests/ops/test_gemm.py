@@ -5,19 +5,19 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,
-    GemmTmaKernel,
+    GemmTMAKernel,
     GemmW4A16Kernel,
     GemvKernel,
     W4A16RepackKernel,
 )
-from tileops.kernels.gemm.call_spec import GemmCall, GemmFp8Call
+from tileops.kernels.gemm.call_spec import GemmCall, GemmFP8Call
 from tileops.kernels.gemm.dense import (
-    GemmFp8BlockScaleKernel,
-    GemmFp8TensorScaleKernel,
+    GemmFP8BlockScaleKernel,
+    GemmFP8TensorScaleKernel,
     _b_eviction,
     _bandwidth_autotune_grid,
 )
-from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
+from tileops.kernels.gemm.fp8_1d2d import GemmFP81D2DFwdKernel
 from tileops.kernels.gemm.heuristics import (
     best_config,
     gemv_config,
@@ -28,7 +28,7 @@ from tileops.kernels.gemm.w4a16 import GROUP_SIZE, _select_config, _stage_meta_p
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
-    GemmFp8Workload,
+    GemmFP8Workload,
     GemmW4A16BasisWorkload,
     GemmW4A16Workload,
     GemmWorkload,
@@ -52,7 +52,7 @@ class GemmTest(GemmWorkload, TestBase):
     pass
 
 
-class GemmFp8Test(GemmFp8Workload, TestBase):
+class GemmFP8Test(GemmFP8Workload, TestBase):
     pass
 
 
@@ -364,7 +364,7 @@ class GemvBoundaryFixture(FixtureBase):
     ]
 
 
-class GemmFp8Fixture(FixtureBase):
+class GemmFP8Fixture(FixtureBase):
     PARAMS = [
         (
             "m, n, k, dtype, scale_mode, out_dtype, bias",
@@ -608,7 +608,7 @@ def test_gemm(
     test.check(op, *test.gen_inputs())
 
 
-@GemmFp8Fixture
+@GemmFP8Fixture
 def test_gemm_fp8(
     m: int,
     n: int,
@@ -618,7 +618,7 @@ def test_gemm_fp8(
     out_dtype: torch.dtype,
     bias: bool,
 ) -> None:
-    test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
+    test = GemmFP8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
     op = GemmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     if dtype != torch.float8_e4m3fn:
@@ -666,11 +666,11 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 
 @pytest.mark.smoke
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
-    test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
+    test = GemmFP8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
     op = GemmFP8FwdOp()
     test.check(op, *test.gen_inputs())
     if served_in_tree(op):
-        assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
+        assert op.kernel.__class__.__name__ == "GemmFP8BlockScaleKernel"
 
 
 @pytest.mark.sm90
@@ -707,7 +707,7 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
 def test_gemm_fp8_block128_default_config(
     shape: tuple[int, int, int], expected: tuple[int, int]
 ) -> None:
-    kernel = GemmFp8BlockScaleKernel(
+    kernel = GemmFP8BlockScaleKernel(
         *shape,
         dtype=torch.float8_e4m3fn,
         out_dtype=torch.bfloat16,
@@ -723,11 +723,11 @@ def test_gemm_fp8_block128_default_config(
 @pytest.mark.parametrize(
     ("m", "scale_b_rows", "bias", "out_dtype", "expected"),
     [
-        pytest.param(128, 128, False, torch.bfloat16, "GemmFp81D2DFwdKernel", id="1d2d"),
-        pytest.param(64, 128, False, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d2d-small-m"),
-        pytest.param(128, 128, True, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d2d-bias"),
-        pytest.param(128, 128, False, torch.float16, "GemmFp8BlockScaleKernel", id="1d2d-fp16"),
-        pytest.param(128, 1, False, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d1d"),
+        pytest.param(128, 128, False, torch.bfloat16, "GemmFP81D2DFwdKernel", id="1d2d"),
+        pytest.param(64, 128, False, torch.bfloat16, "GemmFP8BlockScaleKernel", id="1d2d-small-m"),
+        pytest.param(128, 128, True, torch.bfloat16, "GemmFP8BlockScaleKernel", id="1d2d-bias"),
+        pytest.param(128, 128, False, torch.float16, "GemmFP8BlockScaleKernel", id="1d2d-fp16"),
+        pytest.param(128, 1, False, torch.bfloat16, "GemmFP8BlockScaleKernel", id="1d1d"),
     ],
 )
 def test_gemm_fp8_block_scale_selection(
@@ -735,7 +735,7 @@ def test_gemm_fp8_block_scale_selection(
 ) -> None:
     """The 1D2D kernel serves its region; the general block kernel serves the rest."""
     n, k = 256, 512
-    call = GemmFp8Call(
+    call = GemmFP8Call(
         m=m,
         n=n,
         k=k,
@@ -758,7 +758,7 @@ def test_gemm_fp8_serves_sm89_by_scale_grid() -> None:
         ((m, k // 128), (n, k // 128), "gemm_fp8_block_scale"),
         ((m, k // 128), (n // 128, k // 128), "gemm_fp8_block_scale"),
     ):
-        call = GemmFp8Call(
+        call = GemmFP8Call(
             arch=89,
             sm_count=1,
             m=m,
@@ -780,9 +780,9 @@ def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
 
     device = torch.device(run_device())
     # Construction still checks the call's device, whatever arch the call states.
-    if get_sm_version(device.index) not in GemmFp8TensorScaleKernel.supported_archs:
+    if get_sm_version(device.index) not in GemmFP8TensorScaleKernel.supported_archs:
         pytest.skip("the FP8 kernel is built only on SM89 and SM90")
-    call = GemmFp8Call(
+    call = GemmFP8Call(
         arch=arch,
         sm_count=1,
         m=128,
@@ -794,7 +794,7 @@ def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
         out_dtype=torch.bfloat16,
         device=device,
     )
-    _identity, build = GemmFp8TensorScaleKernel.entry_for(call)
+    _identity, build = GemmFP8TensorScaleKernel.entry_for(call)
     kernel = build()
     assert (kernel.ws_refusal is None) == (arch == 90)
     assert kernel.sm_count == 1
@@ -805,8 +805,8 @@ def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     """The shared-memory epilogue publishes the whole tile."""
-    test = GemmFp8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128")
-    kernel = GemmFp81D2DFwdKernel(
+    test = GemmFP8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128")
+    kernel = GemmFP81D2DFwdKernel(
         128, 256, 512, torch.float8_e4m3fn, torch.bfloat16, shared_epilogue=True
     )
     inputs = test.gen_inputs()
@@ -818,7 +818,7 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_refuses_a_block_n_that_splits_a_scale_block() -> None:
     """A ``block_n`` that does not divide 128 would leave STSM columns unwritten."""
-    kernel = GemmFp81D2DFwdKernel(
+    kernel = GemmFP81D2DFwdKernel(
         128,
         256,
         512,
@@ -826,7 +826,7 @@ def test_gemm_fp8_1d2d_refuses_a_block_n_that_splits_a_scale_block() -> None:
         torch.bfloat16,
         config={"block_n": 56, "num_stages": 3, "group_size_m": 16, "group_unroll": 1},
     )
-    inputs = GemmFp8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128").gen_inputs()
+    inputs = GemmFP8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128").gen_inputs()
     with pytest.raises(ValueError, match="block_n must be one of"):
         kernel(*inputs)
 
@@ -864,12 +864,12 @@ def test_lhs_rows_band_dispatch() -> None:
     two_rows = _gemm_call(2, 2112, 7168)
     assert _selects(nt, two_rows) is GemvKernel
     assert GemvKernel.band_for(two_rows) == "lhs_rows"
-    assert _selects(nt, _gemm_call(2, 7168, 2048)) is GemmTmaKernel
-    assert _selects(nt, _gemm_call(3, 2112, 7168)) is GemmTmaKernel
+    assert _selects(nt, _gemm_call(2, 7168, 2048)) is GemmTMAKernel
+    assert _selects(nt, _gemm_call(3, 2112, 7168)) is GemmTMAKernel
     one_row = _gemm_call(1, 2112, 7168)
     assert _selects(nt, one_row) is GemvKernel
     assert GemvKernel.band_for(one_row) == "lhs_row"
-    assert _selects(nn, _gemm_call(2, 2112, 7168, trans_b=False)) is GemmTmaKernel
+    assert _selects(nn, _gemm_call(2, 2112, 7168, trans_b=False)) is GemmTMAKernel
 
 
 @pytest.mark.sm90
@@ -916,18 +916,18 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
 def test_explicit_structure_config_is_taken_verbatim() -> None:
     """A structure-flagged ``config=`` survives instead of being merged away.
 
-    ``GemmTmaKernel`` has one config schema per structure, so the base's
+    ``GemmTMAKernel`` has one config schema per structure, so the base's
     merge-over-``default_config`` would drop the caller's flag and keep their tile
     values — asking for ``coop2s`` on a shape the selector serves with ``coop2``
     yielded ``coop2`` at ``coop2s``' ``block_n``, which no measurement covers.
     """
-    assert GemmTmaKernel(1536, 2112, 256, torch.bfloat16, trans_b=True).config["block_n"] == 192
+    assert GemmTMAKernel(1536, 2112, 256, torch.bfloat16, trans_b=True).config["block_n"] == 192
 
     requested = {"coop2s": True, "block_n": 64, "block_k": 128, "num_stages": 4}
-    kernel = GemmTmaKernel(1536, 2112, 256, torch.bfloat16, trans_b=True, config=dict(requested))
+    kernel = GemmTMAKernel(1536, 2112, 256, torch.bfloat16, trans_b=True, config=dict(requested))
     assert kernel.config == requested
 
-    merged = GemmTmaKernel(512, 512, 512, torch.float16, config={"block_k": 32}).config
+    merged = GemmTMAKernel(512, 512, 512, torch.float16, config={"block_k": 32}).config
     assert merged["block_k"] == 32
     assert "block_m" in merged and "panel_size" in merged
 
@@ -936,9 +936,9 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
-    """An unaligned innermost dimension leaves ``GemmTmaKernel``, which names the dim.
+    """An unaligned innermost dimension leaves ``GemmTMAKernel``, which names the dim.
 
-    Every ``GemmTmaKernel`` structure loads through TMA, which addresses the
+    Every ``GemmTMAKernel`` structure loads through TMA, which addresses the
     innermost dimension in 16-byte units; which logical dim that is follows the
     layout, so the same extent is served in one layout and refused in another.
     ``GemmCpAsyncKernel`` loads through ``cp.async`` and takes what is refused.
@@ -952,18 +952,18 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
 
     misaligned_k = _gemm_call(256, 512, 1001, dtype=bf)
     assert _selects(nt, misaligned_k) is GemmCpAsyncKernel
-    assert "multiple of 8 elements" in GemmTmaKernel.refusal(misaligned_k)
-    assert "k=1001" in GemmTmaKernel.refusal(misaligned_k)
+    assert "multiple of 8 elements" in GemmTMAKernel.refusal(misaligned_k)
+    assert "k=1001" in GemmTMAKernel.refusal(misaligned_k)
 
     misaligned_n = _gemm_call(256, 511, 1024, dtype=bf, trans_b=False)
     assert _selects(nn, misaligned_n) is GemmCpAsyncKernel
-    assert "n=511" in GemmTmaKernel.refusal(misaligned_n)
+    assert "n=511" in GemmTMAKernel.refusal(misaligned_n)
 
-    assert _selects(nt, _gemm_call(256, 511, 1024, dtype=bf)) is GemmTmaKernel
+    assert _selects(nt, _gemm_call(256, 511, 1024, dtype=bf)) is GemmTMAKernel
     assert _selects(nt, _gemm_call(1, 512, 1001, dtype=bf)) is GemvKernel
 
     with pytest.raises(ValueError, match=r"cannot serve 256x512x1001"):
-        GemmTmaKernel(256, 512, 1001, bf, trans_a=False, trans_b=True)
+        GemmTMAKernel(256, 512, 1001, bf, trans_a=False, trans_b=True)
 
 
 @pytest.mark.sm90
@@ -978,7 +978,7 @@ def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int
     m, n, k = 1536, 3072, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
     a, b = test.gen_inputs()
-    kernel = GemmTmaKernel(
+    kernel = GemmTMAKernel(
         m,
         n,
         k,
@@ -1034,13 +1034,13 @@ def test_structure_routing_matches_test_ids() -> None:
         ("full-fp16-small-m8-splitk", 8, 2112, 7168, torch.float16, True, "splitK4"),
         ("full-fp16-small-m4-basic-ntail", 4, 3000, 2048, torch.float16, True, "basic"),
     ]
-    flags = GemmTmaKernel._STRUCTURE_FLAGS
+    flags = GemmTMAKernel._STRUCTURE_FLAGS
 
     for test_id, m, n, k, dtype, trans_b, want in expected:
         op = GemmFwdOp(trans_a=False, trans_b=trans_b)
         call = _gemm_call(m, n, k, dtype=dtype, trans_b=trans_b)
         cls = _selects(op, call)
-        assert cls is GemmTmaKernel, f"{test_id}: expected the generic kernel, got {cls.__name__}"
+        assert cls is GemmTMAKernel, f"{test_id}: expected the generic kernel, got {cls.__name__}"
         _identity, build = cls.entry_for(call)
         config = build().config
         got = next((f for f in flags if config.get(f)), None)
@@ -1057,7 +1057,7 @@ def test_structure_routing_matches_test_ids() -> None:
 @pytest.mark.smoke
 @pytest.mark.sm90
 def test_gemm_tma_kernel_tune_falls_back_to_default() -> None:
-    """``GemmTmaKernel`` defines no ``autotune_configs``: ``tune=True`` must warn
+    """``GemmTMAKernel`` defines no ``autotune_configs``: ``tune=True`` must warn
     and fall back to ``default_config``.
 
     The in-tree tuner sweeps only the basic mainloop builder, so a silent
@@ -1065,7 +1065,7 @@ def test_gemm_tma_kernel_tune_falls_back_to_default() -> None:
     flagged config (coop2 / split-K). Construction only — no JIT compile.
     """
     with pytest.warns(UserWarning, match="does not define autotune_configs"):
-        kernel = GemmTmaKernel(
+        kernel = GemmTMAKernel(
             4096, 4096, 7168, torch.float16, tune=True, trans_a=False, trans_b=True
         )
     assert kernel.config == kernel.default_config
@@ -1140,7 +1140,7 @@ def test_dense_splitk_gated_tma_matches_reference() -> None:
         "panel_size": 8,
         "split_k": 4,
     }
-    actual = GemmTmaKernel(
+    actual = GemmTMAKernel(
         m,
         2 * n,
         k,

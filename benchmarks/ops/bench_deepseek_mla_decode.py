@@ -5,13 +5,13 @@ import torch
 
 from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.mla import MlaDecodeCall
+from tileops.ops import MLADecodeWithKVCacheFwdOp
+from workloads.attention.mla import MLADecodeCall
 
 
-@pytest.mark.parametrize("call", manifest_calls(MultiHeadLatentAttentionDecodeWithKVCacheFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MLADecodeWithKVCacheFwdOp))
 def test_mla_decode_bench(call) -> None:
-    workload = MlaDecodeCall(call)
+    workload = MLADecodeCall(call)
     inputs = workload.gen_inputs()
     q, q_pe, k, _ = inputs
     batch, heads, dim = q.shape
@@ -50,6 +50,6 @@ def test_mla_decode_bench(call) -> None:
         out, _ = flashmla(query, cache, table, lengths, dim, metadata)
         return out.squeeze(1)
 
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(**workload.arguments(), tune=True)
+    op = MLADecodeWithKVCacheFwdOp(**workload.arguments(), tune=True)
     functors = {"tileops": op, FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn}
     ManifestBenchmark(op, workload).compare(functors, *inputs, count_copies=True)

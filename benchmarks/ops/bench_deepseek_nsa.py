@@ -9,7 +9,7 @@ import pytest
 from benchmarks.baselines import FLA_TAG, assert_output_spec, fla_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.nsa import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
+from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
 
 
 def _setup(op_cls, workload_cls, call):
@@ -18,7 +18,7 @@ def _setup(op_cls, workload_cls, call):
     return workload, workload.gen_inputs(), ManifestBenchmark(op, workload), op
 
 
-def _fla_nsa_fwd(workload: NsaFwdCall):
+def _fla_nsa_fwd(workload: NSAFwdCall):
     """Selected-block attention. None where fla cannot serve the row."""
     # parallel_nsa_fwd masks each selected block against the query's own position, so it has no
     # non-causal form.
@@ -44,7 +44,7 @@ def _fla_nsa_fwd(workload: NsaFwdCall):
     return fn
 
 
-def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
+def _fla_nsa_compressed_fwd(workload: NSACompressedFwdCall):
     """Compression attention over the same compressed k/v. Adapts LSE to the workload's output dtype."""
     fwd = fla_op("ops.nsa.compression.parallel_nsa_compression_fwd")
 
@@ -65,7 +65,7 @@ def _fla_nsa_cmp_fwd(workload: NsaCmpFwdCall):
     return fn
 
 
-def _fla_nsa_topk(workload: NsaTopkCall):
+def _fla_nsa_topk(workload: NSATopKCall):
     """Unmodified FLA selection, including LSE computation from the same Q/K."""
     topk = fla_op("ops.nsa.parallel.parallel_nsa_topk")
 
@@ -85,15 +85,15 @@ def _fla_nsa_topk(workload: NsaTopkCall):
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSACompressedVarlenFwdOp))
-def test_nsa_cmp_fwd_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
-    fla_fn = _fla_nsa_cmp_fwd(workload)
+def test_nsa_compressed_fwd_varlen_bench(call) -> None:
+    workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NSACompressedFwdCall, call)
+    fla_fn = _fla_nsa_compressed_fwd(workload)
     bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSATopKVarlenFwdOp))
 def test_nsa_topk_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NsaTopkCall, call)
+    workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NSATopKCall, call)
     fla_fn = _fla_nsa_topk(workload)
 
     bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
@@ -101,7 +101,7 @@ def test_nsa_topk_varlen_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(NSAVarlenFwdOp))
 def test_nsa_fwd_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSAVarlenFwdOp, NsaFwdCall, call)
+    workload, inputs, bm, op = _setup(NSAVarlenFwdOp, NSAFwdCall, call)
     fla_fn = _fla_nsa_fwd(workload)
     if fla_fn is None:
         bm.compare({"tileops": op, "torch-ref": workload.ref_program}, *inputs)

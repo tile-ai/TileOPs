@@ -6,7 +6,7 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
-    GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    GQAPrefillPagedWithKVCacheRoPEFwdKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -18,10 +18,10 @@ from tileops.ops.op_base import Op
 from tileops.ops.rope import base_freqs
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"]
+__all__ = ["GQAPrefillPagedWithKVCacheFwdOp"]
 
 
-class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
+class GQAPrefillPagedWithKVCacheFwdOp(Op):
     """Packed GQA prefill with paged KV cache append. Layout: THD.
 
     The current chunk is packed by request. ``cache_seqlens`` stores each
@@ -37,7 +37,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_prefill_paged_with_kv_cache_fwd_kernel": GQAPrefillPagedWithKVCacheFwdKernel,
         "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel": GQAPrefillPagedWithFP8KVCacheFwdKernel,
-        "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel": GQAPrefillPagedWithKVCacheRopeFwdKernel,
+        "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel": GQAPrefillPagedWithKVCacheRoPEFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gqa_prefill_paged": GQAPrefillPagedFwdInterface

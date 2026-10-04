@@ -36,16 +36,16 @@ __all__ = ["Mamba2FwdOp"]
 class Mamba2FwdOp(Op):
     """Mamba-2 State-Space Dual (SSD) full forward pass operator.
 
-    Combines DaCumsum → CBProducer → SSDChunkState → SSDStatePassing → SSDChunkScan
+    Combines SSDChunkCumsum → SSDChunkCoupling → SSDChunkState → SSDStatePassing → SSDChunkScan
     into a single callable whose interface matches mamba_chunk_scan_combined from
     the official mamba_ssm library, except that ``final_states`` is always returned.
 
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        "da_cumsum_float16": SSDChunkCumsumFwdOp,
-        "da_cumsum_bfloat16": SSDChunkCumsumFwdOp,
-        "cb_producer": SSDChunkCouplingFwdOp,
+        "ssd_chunk_cumsum_float16": SSDChunkCumsumFwdOp,
+        "ssd_chunk_cumsum_bfloat16": SSDChunkCumsumFwdOp,
+        "ssd_chunk_coupling": SSDChunkCouplingFwdOp,
         "chunk_state": SSDChunkStateFwdOp,
         "state_passing": SSDStatePassingFwdOp,
         "chunk_scan": SSDChunkScanFwdOp,
@@ -77,9 +77,9 @@ class Mamba2FwdOp(Op):
         # This composite owns no kernel; the override reaches the sub-ops that do.
         self.dispatch_kernel(kernel_map)
         # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
-        self._da_cumsum_ops = {
+        self._ssd_chunk_cumsum_ops = {
             getattr(torch, name): self.delegate_for(
-                f"da_cumsum_{name}",
+                f"ssd_chunk_cumsum_{name}",
                 None,
                 chunk_len=chunk_size,
                 out_dtype=getattr(torch, name),
@@ -87,7 +87,9 @@ class Mamba2FwdOp(Op):
             )
             for name in ("float16", "bfloat16")
         }
-        self._cb_producer_op = self.delegate_for("cb_producer", None, chunk_len=chunk_size)
+        self._ssd_chunk_coupling_op = self.delegate_for(
+            "ssd_chunk_coupling", None, chunk_len=chunk_size
+        )
         self._chunk_state_op = self.delegate_for("chunk_state", None)
         self._state_passing_op = self.delegate_for("state_passing", None)
         self._chunk_scan_op = self.delegate_for("chunk_scan", None)
@@ -123,10 +125,10 @@ class Mamba2FwdOp(Op):
         num_chunks = seqlen // chunk_size
 
         # dt_out: (B, H, C, Q) in x's dtype; dA_cumsum: (B, H, C, Q) float32.
-        dt_out, dA_cumsum = self._da_cumsum_ops[x.dtype](dt, A, dt_bias)
+        dt_out, dA_cumsum = self._ssd_chunk_cumsum_ops[x.dtype](dt, A, dt_bias)
 
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T for s <= l, else 0.
-        cb = self._cb_producer_op(C, B)
+        cb = self._ssd_chunk_coupling_op(C, B)
 
         # No seq_idx: this composite does not segment a chunk, so the kernel is
         # built without that branch.

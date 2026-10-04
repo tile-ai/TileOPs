@@ -4,15 +4,15 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
-    NSACmpFwdVarlenKernel,
+    NSACompressedFwdVarlenKernel,
     NSAFwdVarlenKernel,
-    NSATopkVarlenKernel,
+    NSATopKVarlenKernel,
 )
 from tileops.kernels.attention.call_spec import (
     NSACall,
-    NSACmpFwdInterface,
+    NSACompressedFwdInterface,
     NSAFwdInterface,
-    NSATopkFwdInterface,
+    NSATopKFwdInterface,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
@@ -41,10 +41,10 @@ class NSATopKVarlenFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "nsa_topk_varlen_kernel": NSATopkVarlenKernel
+        "nsa_topk_varlen_kernel": NSATopKVarlenKernel
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "nsa_topk_varlen_kernel": NSATopkFwdInterface
+        "nsa_topk_varlen_kernel": NSATopKFwdInterface
     }
 
     def __init__(
@@ -268,10 +268,10 @@ class NSACompressedVarlenFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "nsa_cmp_fwd_varlen_kernel": NSACmpFwdVarlenKernel
+        "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdVarlenKernel
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "nsa_cmp_fwd_varlen_kernel": NSACmpFwdInterface
+        "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdInterface
     }
 
     def __init__(
@@ -359,7 +359,7 @@ class NSACompressedVarlenFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-        return self.kernel_for("nsa_cmp_fwd_varlen_kernel", call)(*tensors)
+        return self.kernel_for("nsa_compressed_fwd_varlen_kernel", call)(*tensors)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

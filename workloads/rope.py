@@ -14,7 +14,7 @@ def rope_verification():
     return Exact()
 
 
-class RopeWorkload(WorkloadBase):
+class RoPEWorkload(WorkloadBase):
     def verification(self, *inputs):
         return rope_verification()
 
@@ -276,7 +276,7 @@ def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> 
         raise ValueError(f"Unsupported ndim={x.ndim}")
 
 
-class RopeCase(RopeWorkload):
+class RoPECase(RoPEWorkload):
     """Generic test fixture for RoPE ops.
 
     The op computes cos/sin internally; the test generates only x as input
@@ -330,7 +330,7 @@ def _rotate_half_non_neox(x: torch.Tensor) -> torch.Tensor:
     return rotated.flatten(-2)
 
 
-class RopeCall(CallWorkload):
+class RoPECall(CallWorkload):
     """A manifest rotation checked against independently constructed frequencies."""
 
     def verification(self, *inputs):
@@ -339,7 +339,7 @@ class RopeCall(CallWorkload):
     def ref_program(self, x, position_ids=None):
         name = self.call.signature.name
         p = self.call.params
-        if name == "RopeNeoxPositionIdsFwdOp":
+        if name == "RoPENeoxPositionIdsFwdOp":
             cos, sin = rope_frequency_tables(
                 p.get("rotary_dim") or x.shape[-1],
                 p["max_position"],
@@ -349,10 +349,10 @@ class RopeCall(CallWorkload):
             )
             return ref_rope_neox_position_ids(x, cos, sin, position_ids, p.get("rotary_dim"))
         tables = {
-            "RopeFwdOp": rope_frequency_tables,
-            "RopeLlama31FwdOp": llama31_frequency_tables,
-            "RopeYarnFwdOp": yarn_frequency_tables,
-            "RopeLongRopeFwdOp": longrope_frequency_tables,
+            "RoPEFwdOp": rope_frequency_tables,
+            "RoPELlama31FwdOp": llama31_frequency_tables,
+            "YaRNFwdOp": yarn_frequency_tables,
+            "LongRoPEFwdOp": longrope_frequency_tables,
         }[name]
         seq_len = x.shape[0] if p["input_layout"] == "1d" else x.shape[1]
         kwargs = {k: v for k, v in p.items() if k not in ("input_layout", "rope_layout")}

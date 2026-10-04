@@ -1,17 +1,17 @@
 """NSA attention kernel implementations."""
 
 from tileops.kernels.attention.nsa.compressed_varlen import (
-    NSACmpFwdVarlenKernel,
+    NSACompressedFwdVarlenKernel,
 )
 from tileops.kernels.attention.nsa.topk_varlen import (
-    NSATopkVarlenKernel,
+    NSATopKVarlenKernel,
 )
 from tileops.kernels.attention.nsa.varlen import (
     NSAFwdVarlenKernel,
 )
 
 __all__ = [
-    "NSACmpFwdVarlenKernel",
+    "NSACompressedFwdVarlenKernel",
     "NSAFwdVarlenKernel",
-    "NSATopkVarlenKernel",
+    "NSATopKVarlenKernel",
 ]

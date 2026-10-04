@@ -16,7 +16,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, MGroupedGemmFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoeGroupedGemmKernel", "MoeGroupedGemmMmaKernel"]
+__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -166,7 +166,7 @@ def _moe_grouped_gemm_mma_kernel(
     return _moe_grouped_gemm_mma_func
 
 
-class MoeGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
+class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
     """Adapt staged MoE grouped-GEMM calls to the shared GEMM template."""
 
     supported_archs: list[int] = [90]
@@ -218,7 +218,7 @@ class MoeGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
         return self.inner(a, b, grouped_layout=layout_metadata, out=out)
 
 
-class MoeGroupedGemmMmaKernel(MoeGroupedGemmKernel):
+class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
     """The same grouped GEMM on MMA tiles, for GPUs without the SM90 template."""
 
     supported_archs: list[int] = [80, 86, 89]

@@ -5,8 +5,8 @@ import torch
 
 from benchmarks.baselines import FLASHINFER_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodePagedCall
+from tileops.ops import MHADecodePagedWithKVCacheFwdOp
+from workloads.attention.mha import MHADecodePagedCall
 
 
 def _fa3_mha_decode_paged(workload, k, v):
@@ -88,13 +88,13 @@ def _flashinfer_mha_decode_paged(workload, q, k, v, real_seqlen_kv, block_table)
     return run_fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(MultiHeadAttentionDecodePagedWithKVCacheFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MHADecodePagedWithKVCacheFwdOp))
 def test_mha_decode_paged_bench(call) -> None:
-    workload = MhaDecodePagedCall(call)
+    workload = MHADecodePagedCall(call)
     inputs = workload.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(**workload.arguments(), tune=True)
+    op = MHADecodePagedWithKVCacheFwdOp(**workload.arguments(), tune=True)
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 

@@ -10,11 +10,11 @@ import torch
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["TopkSelectorCall", "TopkSelectorFwdInterface", "TopkSelectorKernel"]
+__all__ = ["TopKSelectCall", "TopKSelectFwdInterface", "TopKSelectKernel"]
 
 
 @dataclasses.dataclass(frozen=True)
-class TopkSelectorCall(CallSpec):
+class TopKSelectCall(CallSpec):
     """One windowed top-k selection over a $[B \\times S \\times S\\_kv \\times G]$ score tensor."""
 
     batch: int = 0
@@ -26,10 +26,10 @@ class TopkSelectorCall(CallSpec):
     out_dtype: Optional[torch.dtype] = None
 
 
-class TopkSelectorFwdInterface(KernelInterface):
+class TopKSelectFwdInterface(KernelInterface):
     """The highest-scoring key positions of each query row's own window."""
 
-    request = TopkSelectorCall
+    request = TopKSelectCall
 
     @abstractmethod
     def forward(
@@ -58,14 +58,14 @@ class TopkSelectorFwdInterface(KernelInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
+def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
     @tilelang.jit(
         out_idx=[1],
         pass_configs={
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
     )
-    def topk_selector_fwd_func(BLOCK_SIZE=1024):
+    def topk_select_fwd_func(BLOCK_SIZE=1024):
         def convert_to_uint16(x):
             hval = T.Cast(T.float16, x)
             bits_uint = T.reinterpret(hval, T.uint16)
@@ -87,7 +87,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
         SMEM_INPUT_SIZE = 4096
 
         @T.prim_func
-        def _topk_selector_kernel_main(
+        def _topk_select_kernel_main(
             index_score: T.Tensor[(batch, seq_len, seq_len_kv, kv_group), in_dtype],
             index: T.Tensor[(batch, seq_len, kv_group, topk), out_dtype],
             starts: T.Tensor[(batch, seq_len), out_dtype],
@@ -337,12 +337,12 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                                         if l_pos < SMEM_INPUT_SIZE:
                                             s_input_idx[r_idx ^ 1, l_pos] = l_cand
 
-        return _topk_selector_kernel_main
+        return _topk_select_kernel_main
 
-    return topk_selector_fwd_func
+    return topk_select_fwd_func
 
 
-class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
+class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 
     Args:
@@ -358,7 +358,7 @@ class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
     """
 
     @staticmethod
-    def _topk_selector_run(
+    def _topk_select_run(
         batch: int,
         seq_len: int,
         seq_len_kv: int,
@@ -371,14 +371,14 @@ class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
         starts: torch.Tensor,
         ends: torch.Tensor,
     ) -> torch.Tensor:
-        return _topk_selector_kernel(
-            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype
-        )(BLOCK_SIZE)(index_score, starts, ends)
+        return _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)(
+            BLOCK_SIZE
+        )(index_score, starts, ends)
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def entry_for(cls, call: TopkSelectorCall) -> Entry:
+    def entry_for(cls, call: TopKSelectCall) -> Entry:
         return call, lambda: cls(
             call.batch,
             call.seq_len,
@@ -411,7 +411,7 @@ class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
         self.out_dtype = out_dtype
         self.out_dtype_str = self.dtype_to_str(self.out_dtype)
 
-        self.kernel = _topk_selector_kernel(
+        self.kernel = _topk_select_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -485,7 +485,7 @@ class TopkSelectorKernel(Kernel, TopkSelectorFwdInterface):
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        return self._topk_selector_run(
+        return self._topk_select_run(
             self.batch,
             self.seq_len,
             self.seq_len_kv,

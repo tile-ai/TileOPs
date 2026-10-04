@@ -7,7 +7,7 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, FixtureBase, WorkloadBase
 
 
-class DaCumsumFwdFixture(FixtureBase):
+class SSDChunkCumsumFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
         import pytest
@@ -49,7 +49,7 @@ class DaCumsumFwdFixture(FixtureBase):
         ]
 
 
-class DaCumsumFwdWorkload(WorkloadBase):
+class SSDChunkCumsumFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -89,7 +89,7 @@ class DaCumsumFwdWorkload(WorkloadBase):
         return dt_raw, A, dt_bias
 
     def ref_program(self, dt, A, dt_bias):
-        return da_cumsum_fwd_ref(
+        return ssd_chunk_cumsum_fwd_ref(
             dt,
             A,
             self.num_chunks,
@@ -484,7 +484,7 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         return Exact(atol=atol, rtol=1e-3)
 
 
-def da_cumsum_fwd_ref(
+def ssd_chunk_cumsum_fwd_ref(
     dt: torch.Tensor,
     A: torch.Tensor,
     num_chunks: int,
@@ -495,7 +495,7 @@ def da_cumsum_fwd_ref(
     dt_max: float = float("inf"),
     dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for da_cumsum_fwd.
+    """PyTorch reference for ssd_chunk_cumsum_fwd.
 
     Applies the same bias / softplus / clamp pipeline as the kernel, then
     computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
@@ -698,7 +698,7 @@ def ssd_decode_ref(
     return y_out
 
 
-def cb_producer_fwd_ref(
+def ssd_chunk_coupling_fwd_ref(
     C_mat: torch.Tensor,
     B_mat: torch.Tensor,
     num_chunks: int,
@@ -728,7 +728,7 @@ def _step_sizes(like: torch.Tensor) -> torch.Tensor:
     return torch.rand(like.shape, device=like.device).to(like.dtype) * 0.1 + 0.01
 
 
-class DaCumsumFwdCall(CallWorkload, DaCumsumFwdWorkload):
+class SSDChunkCumsumFwdCall(CallWorkload, SSDChunkCumsumFwdWorkload):
     """A manifest call of SSDChunkCumsumFwdOp with a negative decay ``A``."""
 
     def gen_inputs(self):
@@ -737,7 +737,7 @@ class DaCumsumFwdCall(CallWorkload, DaCumsumFwdWorkload):
 
     def ref_program(self, dt, A, dt_bias):
         ix = self.call.ix
-        return da_cumsum_fwd_ref(
+        return ssd_chunk_cumsum_fwd_ref(
             dt,
             A,
             ix["NC"],
@@ -750,7 +750,7 @@ class DaCumsumFwdCall(CallWorkload, DaCumsumFwdWorkload):
         )
 
 
-class CBProducerFwdCall(CallWorkload):
+class SSDChunkCouplingFwdCall(CallWorkload):
     """A manifest call of SSDChunkCouplingFwdOp."""
 
     def gen_inputs(self):
@@ -758,7 +758,7 @@ class CBProducerFwdCall(CallWorkload):
 
     def ref_program(self, C_mat, B_mat):
         ix = self.call.ix
-        return cb_producer_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
+        return ssd_chunk_coupling_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
 
     def verification(self, *inputs):
         return coupling_verification()
@@ -869,7 +869,7 @@ def mamba2_fwd_ref(
     Q = chunk_size
     num_chunks = S // Q
 
-    # Step 1: DaCumsum
+    # Step 1: SSDChunkCumsum
     dt_val = dt.float()
     if dt_bias is not None:
         dt_val = dt_val + dt_bias.float()

@@ -15,12 +15,12 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
-from workloads.moe import IndexedExpertMLPWorkload, MoeExpertsWorkload
+from workloads.moe import IndexedExpertMLPWorkload, MoEExpertsWorkload
 
 
 @pytest.mark.parametrize("call", manifest_calls(FusedMoEExpertsFwdOp))
 def test_moe_experts_bench(call) -> None:
-    workload = MoeExpertsWorkload(call)
+    workload = MoEExpertsWorkload(call)
     inputs = workload.gen_inputs()
     output, hidden, w1, w2, topk_weights, topk_ids = inputs
     experts = FusedMoEExpertsFwdOp(**call.arguments({}))

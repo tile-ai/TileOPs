@@ -1,15 +1,15 @@
-from tileops.ops.attention.gqa.bwd import GroupedQueryAttentionBwdOp
-from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
-from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
+from tileops.ops.attention.gqa.bwd import GQABwdOp
+from tileops.ops.attention.gqa.dense import GQADenseFwdOp
+from tileops.ops.attention.gqa.paged import GQAPagedFwdOp
 from tileops.ops.attention.gqa.prefill_paged_kv_append import (
-    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+    GQAPrefillPagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdOp
+from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 
 __all__ = [
-    "GroupedQueryAttentionBwdOp",
-    "GroupedQueryAttentionDenseFwdOp",
-    "GroupedQueryAttentionPagedFwdOp",
-    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionVarlenFwdOp",
+    "GQABwdOp",
+    "GQADenseFwdOp",
+    "GQAPagedFwdOp",
+    "GQAPrefillPagedWithKVCacheFwdOp",
+    "GQAVarlenFwdOp",
 ]

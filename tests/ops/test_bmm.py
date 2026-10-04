@@ -2,11 +2,11 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
-from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
+from tileops.kernels.gemm.bmm import BmmFP8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
-from workloads.gemm import BmmFp8Workload, BmmWorkload
+from workloads.gemm import BmmFP8Workload, BmmWorkload
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
 # BmmFP8FwdOp emits for it is expected output, not a signal.
@@ -17,7 +17,7 @@ class BmmTest(BmmWorkload, TestBase):
     pass
 
 
-class BmmFp8Test(BmmFp8Workload, TestBase):
+class BmmFP8Test(BmmFP8Workload, TestBase):
     pass
 
 
@@ -202,7 +202,7 @@ def test_bmm_persistent_region_holds_manifest_workloads() -> None:
         assert BmmPersistentKernel.applies(call) is claimed, call
 
 
-class BmmFp8Fixture(FixtureBase):
+class BmmFP8Fixture(FixtureBase):
     PARAMS = [
         (
             "batch, m, n, k, dtype, out_dtype",
@@ -242,7 +242,7 @@ class BmmFp8Fixture(FixtureBase):
     ]
 
 
-@BmmFp8Fixture
+@BmmFP8Fixture
 def test_bmm_fp8(
     batch: int,
     m: int,
@@ -251,7 +251,7 @@ def test_bmm_fp8(
     dtype: torch.dtype,
     out_dtype: torch.dtype,
 ) -> None:
-    test = BmmFp8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
+    test = BmmFP8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
     op = BmmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
@@ -265,7 +265,7 @@ def test_bmm_fp8_rejects_e5m2() -> None:
     single purpose (correctness on supported dtypes) and this test carries
     the other (dtype-guard on unsupported dtypes).
     """
-    test = BmmFp8Test(4, 128, 128, 128, torch.float8_e5m2)
+    test = BmmFP8Test(4, 128, 128, 128, torch.float8_e5m2)
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
     with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
         op(*test.gen_inputs())
@@ -285,7 +285,7 @@ def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     batch, m, n, k = 4, 128, 256, 128
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()  # b_kn is [B, K, N]
     # NK-layout: [B, N, K], K-innermost, contiguous.  ``transpose+
     # contiguous`` materialises the physical NK buffer so its shape[2]
@@ -304,7 +304,7 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
     b_nk_view = b_kn.transpose(-2, -1)
     assert b_nk_view.shape == (batch, n, k)
@@ -319,7 +319,7 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
     # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
@@ -337,12 +337,12 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("block", BmmFp8TransposeKernel.TILE_CANDIDATES)
+@pytest.mark.parametrize("block", BmmFP8TransposeKernel.TILE_CANDIDATES)
 def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:
     """The staging kernel is bit-identical to torch's materialized transpose."""
     batch, rows, cols = 2, block + 7, 2 * block + 13
     src = torch.randn(batch, rows, cols, device="cuda").to(torch.float8_e4m3fn)
-    kernel = BmmFp8TransposeKernel(
+    kernel = BmmFP8TransposeKernel(
         batch,
         rows,
         cols,
@@ -361,8 +361,8 @@ def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160
-    assert all(n % tile for tile in BmmFp8TransposeKernel.TILE_CANDIDATES)
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    assert all(n % tile for tile in BmmFP8TransposeKernel.TILE_CANDIDATES)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()
 
@@ -380,7 +380,7 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
 def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
     """What decides the copy is ``b``'s strides, not ``trans_b``."""
     batch, m, n, k = 4, 128, 256, 128
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     # [B, K, N] by shape, K-innermost in memory.
     b_kn_view = b_kn.transpose(-2, -1).contiguous().transpose(-2, -1)
@@ -398,7 +398,7 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     batch, m, n, k = 8, 64, 64, 32
-    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
 

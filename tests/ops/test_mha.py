@@ -4,18 +4,18 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import MHADecodePagedWsKernel
-from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodePagedWorkload
+from tileops.kernels.attention import MHADecodePagedWSKernel
+from tileops.ops import MHADecodePagedWithKVCacheFwdOp
+from workloads.attention.mha import MHADecodePagedWorkload
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
 
-class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):
+class MHADecodePagedTest(MHADecodePagedWorkload, TestBase):
     pass
 
 
-class MhaDecodePagedFixture(FixtureBase):
+class MHADecodePagedFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune",
@@ -87,7 +87,7 @@ class MhaDecodePagedFixture(FixtureBase):
     ]
 
 
-@MhaDecodePagedFixture
+@MHADecodePagedFixture
 def test_mha_decode_paged_op(
     batch: int,
     heads: int,
@@ -99,10 +99,8 @@ def test_mha_decode_paged_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = MhaDecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        page_size=page_size, is_causal=is_causal, tune=tune
-    )
+    test = MHADecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
+    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal, tune=tune)
     test.check(op, *test.gen_inputs())
 
 
@@ -127,7 +125,7 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     leaves them with no live score. Pool rows no request reads hold NaN.
     """
     batch, heads, seqlen_kv, dim, page_size = len(real_lengths), 8, 1024, 64, 256
-    test = MhaDecodePagedTest(
+    test = MHADecodePagedTest(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, torch.float16
     )
     q, k, v, _full, block_table = test.gen_inputs()
@@ -139,7 +137,7 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     k[~read] = float("nan")
     v[~read] = float("nan")
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
+    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
     output = op(q, k, v, real_seqlen_kv, block_table)
 
     assert torch.isfinite(output).all(), "output is not finite for a partly filled cache"
@@ -150,10 +148,10 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 
 @pytest.mark.smoke
 def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
-    test = MhaDecodePagedTest(2, 8, 1, 1024, 64, 256, False, torch.float16)
+    test = MHADecodePagedTest(2, 8, 1, 1024, 64, 256, False, torch.float16)
     q, k, v, lengths, table = test.gen_inputs()
     lengths.fill_(512)
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256)
+    op = MHADecodePagedWithKVCacheFwdOp(page_size=256)
     for width in (2, 4):
         block_table = table[:, :width].contiguous()
         output = op(q, k, v, lengths, block_table)
@@ -169,12 +167,12 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
 def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
     """Several query rows run on the warp-specialized kernel only below the work bound.
 
-    One query row always does; past ``MHADecodePagedWsKernel._MAX_MULTI_QUERY_MACS`` the
+    One query row always does; past ``MHADecodePagedWSKernel._MAX_MULTI_QUERY_MACS`` the
     tensor-core kernel serves several.
     """
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=True)
+    op = MHADecodePagedWithKVCacheFwdOp(page_size=256, is_causal=True)
     heads, dim = 32, 128
-    large = 2 * MHADecodePagedWsKernel._MAX_MULTI_QUERY_MACS // (4 * heads * dim)
+    large = 2 * MHADecodePagedWSKernel._MAX_MULTI_QUERY_MACS // (4 * heads * dim)
 
     def chosen(seqlen_q: int, seqlen_kv: int) -> str:
         q = torch.empty(1, seqlen_q, heads, dim, dtype=torch.float16, device=run_device())
@@ -183,6 +181,6 @@ def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
         key = op.select_implementation("mha_decode_paged", op._attention_call(q, k, block_table))
         return op.kernel_map[key].__name__
 
-    assert chosen(4, 1024) == "MHADecodePagedWsKernel"
-    assert chosen(1, large) == "MHADecodePagedWsKernel"
+    assert chosen(4, 1024) == "MHADecodePagedWSKernel"
+    assert chosen(1, large) == "MHADecodePagedWSKernel"
     assert chosen(4, large) == "GQADecodePagedKernel"

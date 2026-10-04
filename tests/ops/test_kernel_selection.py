@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from tileops.ops import (
-    GroupedQueryAttentionPagedFwdOp,
-    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+    GQAPagedFwdOp,
+    GQAPrefillPagedWithKVCacheFwdOp,
 )
 
 pytestmark = [
@@ -79,9 +79,7 @@ def test_paged_dispatch_regions(ctor: dict, dtype: torch.dtype, expected: str) -
     }
     extents.update(ctor)
     batch, dim = extents["batch"], extents["dim"]
-    op = GroupedQueryAttentionPagedFwdOp(
-        softcap=extents["softcap"], window_size_left=extents["window_size_left"]
-    )
+    op = GQAPagedFwdOp(softcap=extents["softcap"], window_size_left=extents["window_size_left"])
     q_lens = extents["q_lens"] or [1] * batch
     q = torch.empty(sum(q_lens), 32, dim, dtype=dtype, device="cuda")
     k_pages = torch.empty(
@@ -100,14 +98,14 @@ def test_paged_dispatch_regions(ctor: dict, dtype: torch.dtype, expected: str) -
         pytest.param({}, "GQAPrefillPagedWithKVCacheFwdKernel", id="plain-cache"),
         pytest.param(
             {"fuse_rope": True, "max_position": 4096},
-            "GQAPrefillPagedWithKVCacheRopeFwdKernel",
+            "GQAPrefillPagedWithKVCacheRoPEFwdKernel",
             id="fused-rope",
         ),
     ],
 )
 def test_paged_prefill_dispatch_is_unchanged(ctor: dict, expected: str) -> None:
     """Paged prefill keeps its plain and fused-RoPE regions."""
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=256, max_seqlen_q=512, **ctor)
+    op = GQAPrefillPagedWithKVCacheFwdOp(page_size=256, max_seqlen_q=512, **ctor)
     call = op.attention_call(*_prefill_call_tensors())
     assert op.kernel_map[op.select_implementation("gqa_prefill_paged", call)].__name__ == expected
 
@@ -117,7 +115,7 @@ def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
     """An FP8 KV cache still selects the FP8-cache kernel."""
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("this torch build has no float8_e4m3fn")
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=256, max_seqlen_q=512, cache_dtype=torch.float8_e4m3fn
     )
     call = op.attention_call(*_prefill_call_tensors())

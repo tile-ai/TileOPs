@@ -61,7 +61,7 @@ class GemmWorkload(WorkloadBase):
         return Exact(atol=atol, rtol=tol)
 
 
-class GemmFp8Workload(WorkloadBase):
+class GemmFP8Workload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -81,7 +81,7 @@ class GemmFp8Workload(WorkloadBase):
         self.bias = bias
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmFp8Workload":
+    def from_call(cls, call: Any) -> "GemmFP8Workload":
         """The workload of one manifest call of ``GemmFP8FwdOp``."""
         ix = call.ix
         if tuple(ix["SA"]) == (1, 1):
@@ -354,7 +354,7 @@ class BmmWorkload(WorkloadBase):
         return torch.bmm(a, b)
 
 
-class BmmFp8Workload(WorkloadBase):
+class BmmFP8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 
     ``a`` is ``[B, M, K]``; ``b`` is a contiguous ``[B, K, N]``, or ``[B, N, K]`` under
@@ -380,7 +380,7 @@ class BmmFp8Workload(WorkloadBase):
         self.trans_b = trans_b
 
     @classmethod
-    def from_call(cls, call: Any) -> "BmmFp8Workload":
+    def from_call(cls, call: Any) -> "BmmFP8Workload":
         """The workload of one manifest call of ``BmmFP8FwdOp``."""
         ix = call.ix
         return cls(

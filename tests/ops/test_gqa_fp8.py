@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from tileops.ops import GroupedQueryAttentionDenseFwdOp
-from workloads.attention.gqa.dense import GroupedQueryAttentionDensePrefillWorkload
+from tileops.ops import GQADenseFwdOp
+from workloads.attention.gqa.dense import GQADensePrefillWorkload
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
@@ -54,7 +54,7 @@ def _run_fp8_prefill_kernel(
     v_scale: torch.Tensor,
     is_causal: bool = False,
 ) -> torch.Tensor:
-    workload = GroupedQueryAttentionDensePrefillWorkload(
+    workload = GQADensePrefillWorkload(
         batch,
         seq_len,
         seq_len,
@@ -65,7 +65,7 @@ def _run_fp8_prefill_kernel(
         out_dtype=out_dtype,
         is_causal=is_causal,
     )
-    op = GroupedQueryAttentionDenseFwdOp(out_dtype=out_dtype, is_causal=is_causal)
+    op = GQADenseFwdOp(out_dtype=out_dtype, is_causal=is_causal)
     inputs = (q_fp8.contiguous(), k_fp8.contiguous(), v_fp8.contiguous(), q_scale, k_scale, v_scale)
     output = op(*inputs)
     compare_outputs(output, workload.ref_program(*inputs), workload.verification(*inputs))

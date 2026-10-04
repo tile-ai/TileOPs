@@ -3,10 +3,10 @@ import torch
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["DsaDecodeCall", "DsaDecodeWorkload"]
+__all__ = ["DSADecodeCall", "DSADecodeWorkload"]
 
 
-class DsaDecodeWorkload(WorkloadBase):
+class DSADecodeWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -135,14 +135,14 @@ class DsaDecodeWorkload(WorkloadBase):
         return Exact(**tolerance)
 
 
-class DsaDecodeCall(CallWorkload, DsaDecodeWorkload):
-    """A manifest call of DeepSeekSparseAttentionDecodeWithKVCacheFwdOp; the row's generator
+class DSADecodeCall(CallWorkload, DSADecodeWorkload):
+    """A manifest call of DSADecodeWithKVCacheFwdOp; the row's generator
     selects each query's keys."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        DsaDecodeWorkload.__init__(
+        DSADecodeWorkload.__init__(
             self,
             ix["B"],
             ix["H"],

@@ -1,5 +1,5 @@
 """Mamba-2 SSD benchmarks, one case per manifest call, against the mamba_ssm Triton kernels: each stage,
-and the full forward (DaCumsum, CBProducer, SSDChunkState, SSDStatePassing, SSDChunkScan) against
+and the full forward (SSDChunkCumsum, SSDChunkCoupling, SSDChunkState, SSDStatePassing, SSDChunkScan) against
 mamba_chunk_scan_combined.
 """
 
@@ -21,9 +21,9 @@ from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
-    CBProducerFwdCall,
-    DaCumsumFwdCall,
     Mamba2FwdCall,
+    SSDChunkCouplingFwdCall,
+    SSDChunkCumsumFwdCall,
     SSDChunkScanFwdCall,
     SSDChunkStateFwdCall,
     SSDDecodeFwdCall,
@@ -68,9 +68,9 @@ def _torch_baselines(functors: dict, ref_program) -> None:
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkCouplingFwdOp))
-def test_cb_producer_fwd_bench(call) -> None:
+def test_ssd_chunk_coupling_fwd_bench(call) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
-    workload = CBProducerFwdCall(call)
+    workload = SSDChunkCouplingFwdCall(call)
     inputs = workload.gen_inputs()
     op = SSDChunkCouplingFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
@@ -83,8 +83,8 @@ def test_cb_producer_fwd_bench(call) -> None:
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkCumsumFwdOp))
-def test_da_cumsum_fwd_bench(call) -> None:
-    workload = DaCumsumFwdCall(call)
+def test_ssd_chunk_cumsum_fwd_bench(call) -> None:
+    workload = SSDChunkCumsumFwdCall(call)
     dt, A, dt_bias = inputs = workload.gen_inputs()
     op = SSDChunkCumsumFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)

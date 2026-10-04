@@ -16,7 +16,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "GQADenseSlidingWindowKernel",
-    "GQADenseWsKernel",
+    "GQADenseWSKernel",
 ]
 
 
@@ -631,7 +631,7 @@ def _gqa_dense_ws_kernel(
     return main
 
 
-class GQADenseWsKernel(Kernel, GQADenseFwdInterface):
+class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     """Dense attention using the FA3 two-consumer pipeline."""
 
     supported_archs: list[int] = [90]

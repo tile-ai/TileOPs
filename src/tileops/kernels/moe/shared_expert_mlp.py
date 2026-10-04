@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
-from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTmaKernel
+from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTMAKernel
 from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.gemm.persistent.heuristics import GemmType
 from tileops.kernels.gemm.persistent.template import GemmTemplate
@@ -76,7 +76,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         Raises:
             ValueError: Neither kernel serves the shape; the message names both refusals.
         """
-        candidates = (GemmTmaKernel, GemmCpAsyncKernel)
+        candidates = (GemmTMAKernel, GemmCpAsyncKernel)
         for cls in candidates:
             if (cls.unavailable(call) or cls.refusal(call)) is None:
                 return cls(
@@ -151,8 +151,8 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
             and ffn_size >= hidden_size
-            and GemmTmaKernel.applies(gate_up_call)
-            and GemmTmaKernel.applies(down_call)
+            and GemmTMAKernel.applies(gate_up_call)
+            and GemmTMAKernel.applies(down_call)
         ):
             fuse_gate_up = 512 <= num_tokens <= 2048
             template_config = {
@@ -200,11 +200,11 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 self._gemm_down = self._dense_gemm(down_call, gemm_config, device_index)
             gate_config = self._gemm_gate_up.config
             if (
-                isinstance(self._gemm_gate_up, GemmTmaKernel)
+                isinstance(self._gemm_gate_up, GemmTMAKernel)
                 and num_tokens == 32
                 and gate_config.get("split_k", 1) > 1
             ):
-                self._fused_gate_up = GemmTmaKernel(
+                self._fused_gate_up = GemmTMAKernel(
                     m=num_tokens,
                     n=ffn_size * 2,
                     k=hidden_size,

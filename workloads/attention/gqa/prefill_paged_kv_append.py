@@ -223,7 +223,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
 
 
 class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCacheFwdWorkload):
-    """A manifest call of GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp.
+    """A manifest call of GQAPrefillPagedWithKVCacheFwdOp.
 
     An FP8 cache holds the random pages quantized by scales of 0.01; an unquantized one
     passes unit scales.

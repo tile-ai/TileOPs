@@ -5,14 +5,14 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
+from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
 
 
-class NsaFwdTest(NsaFwdWorkload, TestBase):
+class NSAFwdTest(NSAFwdWorkload, TestBase):
     pass
 
 
-class NsaFwdFixture(FixtureBase):
+class NSAFwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
@@ -84,7 +84,7 @@ class NsaFwdFixture(FixtureBase):
     ]
 
 
-@NsaFwdFixture
+@NSAFwdFixture
 def test_nsa_varlen_op(
     batch: int,
     heads: int,
@@ -101,7 +101,7 @@ def test_nsa_varlen_op(
 ) -> None:
     assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaFwdTest(
+    test = NSAFwdTest(
         batch,
         heads,
         c_seq_len,
@@ -123,11 +123,11 @@ def test_nsa_varlen_op(
     test.check(op, *test.gen_inputs())
 
 
-class NsaCmpFwdTest(NsaCmpFwdWorkload, TestBase):
+class NSACompressedFwdTest(NSACompressedFwdWorkload, TestBase):
     pass
 
 
-class NsaCmpFwdFixture(FixtureBase):
+class NSACompressedFwdFixture(FixtureBase):
     PARAMS = [
         (
             "seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype, tune",
@@ -154,8 +154,8 @@ class NsaCmpFwdFixture(FixtureBase):
     ]
 
 
-@NsaCmpFwdFixture
-def test_nsa_cmp_fwd_varlen_op(
+@NSACompressedFwdFixture
+def test_nsa_compressed_fwd_varlen_op(
     seq_num: int,
     c_seq_len: int,
     heads: int,
@@ -168,17 +168,17 @@ def test_nsa_cmp_fwd_varlen_op(
     tune: bool,
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
-    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
+    test = NSACompressedFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
     op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
     test.check(op, *inputs)
 
 
-class NsaTopkTest(NsaTopkWorkload, TestBase):
+class NSATopKTest(NSATopKWorkload, TestBase):
     pass
 
 
-class NsaTopkFixture(FixtureBase):
+class NSATopKFixture(FixtureBase):
     PARAMS = [
         (
             "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype, tune",
@@ -201,7 +201,7 @@ class NsaTopkFixture(FixtureBase):
     ]
 
 
-@NsaTopkFixture
+@NSATopKFixture
 def test_nsa_topk_varlen_op(
     seq_num: int,
     c_seq_len: int,
@@ -216,7 +216,7 @@ def test_nsa_topk_varlen_op(
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
+    test = NSATopKTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
     inputs = test.gen_inputs()
     op = NSATopKVarlenFwdOp(
         scale=scale,
@@ -231,7 +231,7 @@ def test_nsa_topk_varlen_op(
 def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
     """Promoting a rounded half matmul is too late to rank close candidates."""
     torch.manual_seed(1235)
-    workload = NsaTopkWorkload(1, 512, 32, 64, 16, 1.0, 16, 32, torch.float16)
+    workload = NSATopKWorkload(1, 512, 32, 64, 16, 1.0, 16, 32, torch.float16)
     q, k, *metadata = workload.gen_inputs()
     assert torch.equal(
         workload.ref_program(q, k, *metadata),
@@ -242,7 +242,7 @@ def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
 @pytest.mark.smoke
 def test_nsa_topk_ranks_unquantized_scores() -> None:
     """Priority blocks survive; the remaining slot takes the highest raw score."""
-    workload = NsaTopkTest(1, 256, 16, 16, 16, 1.0, 4, 32, torch.float16)
+    workload = NSATopKTest(1, 256, 16, 16, 16, 1.0, 4, 32, torch.float16)
     q, k, *metadata = workload.gen_inputs()
     q = torch.zeros_like(q)
     q[-1].fill_(1)

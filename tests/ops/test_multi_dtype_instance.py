@@ -92,7 +92,7 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
 
 
 @pytest.mark.smoke
-def test_cb_producer_serves_two_dtypes_from_one_instance():
+def test_ssd_chunk_coupling_serves_two_dtypes_from_one_instance():
     from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
@@ -102,7 +102,7 @@ def test_cb_producer_serves_two_dtypes_from_one_instance():
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device=run_device())
         b = torch.randn(batch, s, groups, d_state, dtype=dtype, device=run_device())
         assert op(c, b).dtype == dtype
-    _assert_two_entries(op, "cb_producer")
+    _assert_two_entries(op, "ssd_chunk_coupling")
 
 
 @pytest.mark.smoke

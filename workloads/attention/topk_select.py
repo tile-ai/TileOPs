@@ -4,7 +4,7 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class TopkSelectorWorkload(WorkloadBase):
+class TopKSelectWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -78,13 +78,13 @@ class TopkSelectorWorkload(WorkloadBase):
         return Custom(validate, "selected values, unique indices and exact padding")
 
 
-class TopkSelectorCall(CallWorkload, TopkSelectorWorkload):
+class TopKSelectCall(CallWorkload, TopKSelectWorkload):
     """A manifest call of TopKSelectFwdOp; the row's generators give the windows."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix = call.ix
-        TopkSelectorWorkload.__init__(
+        TopKSelectWorkload.__init__(
             self, ix["B"], ix["S"], ix["S_kv"], ix["G"], ix["topk"], torch.float32, torch.int32
         )
 

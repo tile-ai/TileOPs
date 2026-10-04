@@ -7,7 +7,7 @@ from workloads.device import run_device
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GroupedQueryAttentionPagedCall", "GroupedQueryAttentionPagedFwdWorkload"]
+__all__ = ["GQAPagedCall", "GQAPagedFwdWorkload"]
 
 
 def _cache_scale(scale: torch.Tensor, request: int) -> torch.Tensor:
@@ -15,7 +15,7 @@ def _cache_scale(scale: torch.Tensor, request: int) -> torch.Tensor:
     return scale.view(1, 1, 1) if scale.numel() == 1 else scale[request].view(1, -1, 1)
 
 
-class GroupedQueryAttentionPagedFwdWorkload(WorkloadBase):
+class GQAPagedFwdWorkload(WorkloadBase):
     """Read-only paged GQA over packed queries and rank-4 KV pages.
 
     ``cache_lens[b]`` counts request ``b``'s query tokens, which are the last
@@ -152,13 +152,13 @@ class GroupedQueryAttentionPagedFwdWorkload(WorkloadBase):
         return torch.cat(outputs).to(self.out_dtype or q.dtype).contiguous()
 
 
-class GroupedQueryAttentionPagedCall(CallWorkload, GroupedQueryAttentionPagedFwdWorkload):
-    """A manifest call of GroupedQueryAttentionPagedFwdOp."""
+class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
+    """A manifest call of GQAPagedFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
-        GroupedQueryAttentionPagedFwdWorkload.__init__(
+        GQAPagedFwdWorkload.__init__(
             self,
             ix["H"],
             ix["H_kv"],

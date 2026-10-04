@@ -4,7 +4,11 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.mamba import DaCumsumCall, DaCumsumFwdInterface, DaCumsumFwdKernel
+from tileops.kernels.mamba import (
+    SSDChunkCumsumCall,
+    SSDChunkCumsumFwdInterface,
+    SSDChunkCumsumFwdKernel,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["SSDChunkCumsumFwdOp"]
@@ -21,9 +25,11 @@ class SSDChunkCumsumFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"da_cumsum_fwd": DaCumsumFwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ssd_chunk_cumsum_fwd": SSDChunkCumsumFwdKernel
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "da_cumsum_fwd": DaCumsumFwdInterface
+        "ssd_chunk_cumsum_fwd": SSDChunkCumsumFwdInterface
     }
 
     def __init__(
@@ -93,7 +99,7 @@ class SSDChunkCumsumFwdOp(Op):
         batch, seq_len, n_heads = dt.shape
         dt = dt.contiguous()
         A = A.contiguous()
-        call = DaCumsumCall(
+        call = SSDChunkCumsumCall(
             batch=batch,
             seq_len=seq_len,
             n_heads=n_heads,
@@ -105,5 +111,5 @@ class SSDChunkCumsumFwdOp(Op):
             out_dtype=self.out_dtype,
             device=dt.device,
         )
-        kernel = self.kernel_for("da_cumsum_fwd", call)
+        kernel = self.kernel_for("ssd_chunk_cumsum_fwd", call)
         return kernel(dt, A, dt_bias)

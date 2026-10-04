@@ -941,10 +941,10 @@ entries:
       expect_fail: true
       dtype_cases:
       - T: float16
-  RopeLongRopeFwdOp:
+  LongRoPEFwdOp:
     signature:
       types:
-        RopeX:
+        RoPEX:
           params:
             input_layout: '''1d'' | ''2d'''
             B: Dim
@@ -974,11 +974,11 @@ entries:
       inputs:
         x:
           dtype: T
-          shape: RopeX[input_layout, B, S, H, D]
+          shape: RoPEX[input_layout, B, S, H, D]
       outputs:
         output:
           dtype: T
-          shape: RopeX[input_layout, B, S, H, D]
+          shape: RoPEX[input_layout, B, S, H, D]
       shape_rules:
       - D % 2 == 0
     workloads:

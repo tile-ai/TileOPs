@@ -1,16 +1,16 @@
-from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.attention.gqa.bwd import GroupedQueryAttentionBwdOp
-from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
-from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
+from tileops.ops.attention.gqa.bwd import GQABwdOp
+from tileops.ops.attention.gqa.dense import GQADenseFwdOp
+from tileops.ops.attention.gqa.paged import GQAPagedFwdOp
 from tileops.ops.attention.gqa.prefill_paged_kv_append import (
-    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+    GQAPrefillPagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdOp
-from tileops.ops.attention.mha import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
+from tileops.ops.attention.mha import MHADecodePagedWithKVCacheFwdOp
 from tileops.ops.attention.mla import (
-    MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
-    MultiHeadLatentAttentionVarlenFwdOp,
+    MLADecodeWithKVCacheFwdOp,
+    MLAVarlenFwdOp,
 )
 from tileops.ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
@@ -20,16 +20,16 @@ from tileops.ops.attention.nsa import (
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 
 __all__ = [
-    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
+    "DSADecodeWithKVCacheFwdOp",
     "FP8LightningIndexerFwdOp",
-    "GroupedQueryAttentionBwdOp",
-    "GroupedQueryAttentionDenseFwdOp",
-    "GroupedQueryAttentionPagedFwdOp",
-    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionVarlenFwdOp",
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
-    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "MultiHeadLatentAttentionVarlenFwdOp",
+    "GQABwdOp",
+    "GQADenseFwdOp",
+    "GQAPagedFwdOp",
+    "GQAPrefillPagedWithKVCacheFwdOp",
+    "GQAVarlenFwdOp",
+    "MHADecodePagedWithKVCacheFwdOp",
+    "MLADecodeWithKVCacheFwdOp",
+    "MLAVarlenFwdOp",
     "NSACompressedVarlenFwdOp",
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",

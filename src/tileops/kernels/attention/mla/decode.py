@@ -6,12 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import MlaDecodeCall, MLADecodeFwdInterface
+from tileops.kernels.attention.call_spec import MLADecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin
 
-__all__ = ["MLADecodeMmaKernel", "MLADecodeWsKernel"]
+__all__ = ["MLADecodeMMAKernel", "MLADecodeWSKernel"]
 
 
 def _split_combine(batch, heads, num_split, dim, dtype, lse_dtype):
@@ -787,18 +787,18 @@ def _mla_decode_mma_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dt
     return _mla_decode_mma_func
 
 
-class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
+class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
     supported_archs: list[int] = [90]
     # Where both run, a caller's replacement of this key wins over the MMA kernel.
     preferred_over = frozenset({"mla_decode_mma_kernel"})
     _build = staticmethod(_mla_decode_ws_kernel)
 
     @classmethod
-    def applies(cls, call: MlaDecodeCall) -> bool:
+    def applies(cls, call: MLADecodeCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
+    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:
             return f"serves one KV head, got {call.heads_kv}"
@@ -811,7 +811,7 @@ class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: MlaDecodeCall) -> Entry:
+    def entry_for(cls, call: MLADecodeCall) -> Entry:
         return call, lambda: cls(
             call.batch,
             call.heads,
@@ -919,7 +919,7 @@ class MLADecodeWsKernel(Kernel, MLADecodeFwdInterface):
         )(q, q_pe, k, k_pe, glse, Output_partial)
 
 
-class MLADecodeMmaKernel(MLADecodeWsKernel):
+class MLADecodeMMAKernel(MLADecodeWSKernel):
     """The same decode on MMA, for GPUs without WGMMA."""
 
     supported_archs: list[int] = [80, 86, 89]
@@ -932,7 +932,7 @@ class MLADecodeMmaKernel(MLADecodeWsKernel):
     _NUM_SPLIT = 2
 
     @classmethod
-    def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
+    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves. An empty cache builds no program;
         otherwise shared memory is read at the narrowest head block."""
         if call.heads_kv != 1:

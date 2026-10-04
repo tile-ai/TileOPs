@@ -5,11 +5,11 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.dsa import DsaDecodeCall
+from tileops.ops import DSADecodeWithKVCacheFwdOp
+from workloads.attention.dsa import DSADecodeCall
 
 
-def _torch_sdpa_dsa(workload: DsaDecodeCall):
+def _torch_sdpa_dsa(workload: DSADecodeCall):
     """SDPA over the selection ``ref_program`` masks, or None for a row it cannot serve.
 
     Same computation, without the reference's float32 upcast and materialized score
@@ -37,7 +37,7 @@ def _torch_sdpa_dsa(workload: DsaDecodeCall):
     return fn
 
 
-def _torch_gather_dsa(workload: DsaDecodeCall):
+def _torch_gather_dsa(workload: DSADecodeCall):
     """Dense attention over only the gathered selection, or None when it buys nothing.
 
     Gathering beats masking only where the selection is smaller than the cache.
@@ -63,7 +63,7 @@ def _torch_gather_dsa(workload: DsaDecodeCall):
     return fn
 
 
-def _flashmla_sparse(workload: DsaDecodeCall):
+def _flashmla_sparse(workload: DSADecodeCall):
     run = vllm_op("flash_mla_sparse_fwd", "v1.attention.ops.flashmla")
     scale = workload.sm_scale
     if scale is None:
@@ -84,12 +84,12 @@ def _flashmla_sparse(workload: DsaDecodeCall):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeepSeekSparseAttentionDecodeWithKVCacheFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DSADecodeWithKVCacheFwdOp))
 def test_dsa_decode_bench(call) -> None:
-    workload = DsaDecodeCall(call)
+    workload = DSADecodeCall(call)
     inputs = workload.gen_inputs()
     dtype = workload.dtype
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(**workload.arguments())
+    op = DSADecodeWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     if dtype == torch.bfloat16:
         bm.compare({"tileops": op, "flashmla": _flashmla_sparse(workload)}, *inputs)

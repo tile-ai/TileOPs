@@ -20,11 +20,11 @@ from tileops.kernels.constants import (
     TMA_OOB_FILL_NONE,
     TMA_SWIZZLE_NONE,
 )
-from tileops.kernels.gemm.call_spec import GemmFp8Call, GemmFp8FwdInterface
+from tileops.kernels.gemm.call_spec import GemmFP8Call, GemmFP8FwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
-__all__ = ["GemmFp81D2DFwdKernel"]
+__all__ = ["GemmFP81D2DFwdKernel"]
 
 _FP8_1D2D_HELPER_PATH = csrc_path("fp8_1d2d_helper.h")
 
@@ -469,7 +469,7 @@ def _gemm_fp8_1d2d_kernel(
     return kernel_func
 
 
-class GemmFp81D2DFwdKernel(Kernel, GemmFp8FwdInterface):
+class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     """FP8 NT GEMM for 1D2D scales, bfloat16 output, no bias.
 
     ``scale_a`` is ``[M, ceil(K/128)]`` and ``scale_b`` is
@@ -541,7 +541,7 @@ class GemmFp81D2DFwdKernel(Kernel, GemmFp8FwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GemmFp8Call) -> bool:
+    def applies(cls, call: GemmFP8Call) -> bool:
         return (
             cls.block_scale_grid(call) == "1d2d"
             and call.dtype == torch.float8_e4m3fn
@@ -557,7 +557,7 @@ class GemmFp81D2DFwdKernel(Kernel, GemmFp8FwdInterface):
         )
 
     @classmethod
-    def entry_for(cls, call: GemmFp8Call) -> Entry:
+    def entry_for(cls, call: GemmFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(

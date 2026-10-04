@@ -2,16 +2,16 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention import MlaDecodeCall, MLADecodeMmaKernel
-from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.mla import MlaDecodeWorkload
+from tileops.kernels.attention import MLADecodeCall, MLADecodeMMAKernel
+from tileops.ops import MLADecodeWithKVCacheFwdOp
+from workloads.attention.mla import MLADecodeWorkload
 
 
-class MlaDecodeTest(MlaDecodeWorkload, TestBase):
+class MLADecodeTest(MLADecodeWorkload, TestBase):
     pass
 
 
-class MlaDecodeFixture(FixtureBase):
+class MLADecodeFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune",
@@ -50,7 +50,7 @@ class MlaDecodeFixture(FixtureBase):
     ]
 
 
-@MlaDecodeFixture
+@MLADecodeFixture
 def test_mla_decode(
     batch: int,
     heads: int,
@@ -61,8 +61,8 @@ def test_mla_decode(
     dtype: torch.dtype,
     tune: bool,
 ):
-    test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(tune=tune)
+    test = MLADecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
+    op = MLADecodeWithKVCacheFwdOp(tune=tune)
     test.check(op, *test.gen_inputs())
 
 
@@ -80,8 +80,8 @@ def test_mla_decode(
 )
 def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
     """A cache the tiles do not fill must not reach past its last key."""
-    test = MlaDecodeTest(2, 128, 1, seq_len_kv, 512, 64, torch.float16)
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp()
+    test = MLADecodeTest(2, 128, 1, seq_len_kv, 512, 64, torch.float16)
+    op = MLADecodeWithKVCacheFwdOp()
     test.check(op, *test.gen_inputs())
 
 
@@ -108,7 +108,7 @@ def test_mla_decode_mma_config_follows_the_shared_memory_budget(
     expected: int | str,
 ) -> None:
     """The head block and the refusal follow the default's shared memory at a budget."""
-    call = MlaDecodeCall(
+    call = MLADecodeCall(
         arch=89,
         sm_count=1,
         smem_budget=budget,
@@ -121,10 +121,10 @@ def test_mla_decode_mma_config_follows_the_shared_memory_budget(
         dtype=torch.float16,
     )
     if isinstance(expected, str):
-        assert expected in MLADecodeMmaKernel.refusal(call)
+        assert expected in MLADecodeMMAKernel.refusal(call)
         return
-    assert MLADecodeMmaKernel.refusal(call) is None
-    config = MLADecodeMmaKernel._default_config_for(
+    assert MLADecodeMMAKernel.refusal(call) is None
+    config = MLADecodeMMAKernel._default_config_for(
         budget, dim, pe_dim, torch.float16.itemsize, seqlen_kv
     )
     assert config["block_H"] == expected

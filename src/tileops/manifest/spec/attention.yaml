@@ -7,7 +7,7 @@
 # Causal attention over rectangular calls is bottom-right aligned: query i sits at
 # position i + S_kv - S_q.
 
-GroupedQueryAttentionDenseFwdOp:
+GQADenseFwdOp:
   family: attention
   status: implemented
   ref_api: flash_attn_interface.flash_attn_func
@@ -74,7 +74,7 @@ GroupedQueryAttentionDenseFwdOp:
     # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
     func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
 
-GroupedQueryAttentionVarlenFwdOp:
+GQAVarlenFwdOp:
   family: attention
   status: spec-only
   ref_api: flash_attn_interface.flash_attn_varlen_func
@@ -141,7 +141,7 @@ GroupedQueryAttentionVarlenFwdOp:
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
 
-GroupedQueryAttentionPagedFwdOp:
+GQAPagedFwdOp:
   family: attention
   status: spec-only
   ref_api: flash_attn_interface.flash_attn_with_kvcache
@@ -213,7 +213,7 @@ GroupedQueryAttentionPagedFwdOp:
   roofline:
     func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 
-GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
+GQAPrefillPagedWithKVCacheFwdOp:
   family: attention
   status: implemented
   ref_api: flash_attn_interface.flash_attn_with_kvcache
@@ -275,7 +275,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     # Scores and the cached pages each request reaches, from the lengths the call carries.
     func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
-GroupedQueryAttentionBwdOp:
+GQABwdOp:
   family: attention
   status: implemented
   ref_api: flash_attn_interface._flash_attn_backward
@@ -313,7 +313,7 @@ GroupedQueryAttentionBwdOp:
 # attention — decode (single-query against KV cache)
 # ---------------------------------------------------------------------------
 
-MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
+MHADecodePagedWithKVCacheFwdOp:
   family: attention
   status: implemented
   ref_api: flash_attn_interface.flash_attn_with_kvcache
@@ -352,7 +352,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
 # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
 # ---------------------------------------------------------------------------
 
-MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
+MLADecodeWithKVCacheFwdOp:
   family: attention
   status: implemented
   ref_api: flashinfer.mla.BatchMLAPagedAttentionWrapper.run
@@ -385,7 +385,7 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     # element, the softmax's divide.
     flops: "B * H * (N_kv * (2 * (D + PE) + 2 * D + 5) + D)"
 
-DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
+DSADecodeWithKVCacheFwdOp:
   family: attention
   status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_sparse_fwd
@@ -466,7 +466,7 @@ NSACompressedVarlenFwdOp:
   - {C: 33, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: nsa-ragged-prefill-bf16}
   roofline:
     # Each token scores its own request's closed chunks.
-    func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
+    func: "tileops.perf.formulas.nsa_compressed_fwd_varlen_roofline"
 
 NSATopKVarlenFwdOp:
   family: attention
@@ -541,7 +541,7 @@ NSAVarlenFwdOp:
 # s % PS of page s // PS. The Multi-Head Latent Attention (MLA) latent cache is one
 # [NP, PS, R] tensor with no head axis: every query head reads the same latent row.
 
-MultiHeadLatentAttentionPagedFwdOp:
+MLAPagedFwdOp:
   # Absorbed-form MLA decode over a paged latent cache: key = the whole cache row
   # (kv_c ‖ k_pe), value = its first kv_lora_rank columns. The S_q query tokens are the
   # last S_q positions of each request's cache_seqlens. sm_scale defaults to DK ** -0.5.
@@ -583,7 +583,7 @@ MultiHeadLatentAttentionPagedFwdOp:
     # The scores each query row sees, and the cache rows the block table reaches.
     func: "tileops.perf.formulas.mla_paged_fwd_roofline"
 
-MultiHeadLatentAttentionVarlenFwdOp:
+MLAVarlenFwdOp:
   # MLA prefill over packed requests after the latent is decompressed: the key of head h
   # is k_nope[:, h] ‖ k_pe, with k_pe shared by every head; queries and keys are the same
   # tokens. sm_scale defaults to (DN + PE) ** -0.5.
@@ -650,7 +650,7 @@ PagedKVCacheWriteFwdOp:
     # Only the tokens with a slot are read and written.
     func: "tileops.perf.formulas.paged_kv_cache_write_roofline"
 
-MultiHeadLatentAttentionKVCacheWriteFwdOp:
+MLAKVCacheWriteFwdOp:
   # Writes kv_c ‖ k_pe of token n into slot slot_mapping[n] of the latent cache; -1 skips
   # the token, and distinct non-negative slots are the caller's obligation. With
   # fuse_rope, k_pe is rotated at positions[n] by cos_sin_cache (cos ‖ sin halves) as it
@@ -719,7 +719,7 @@ MergeAttentionStatesFwdOp:
     # divides; per element: two multiplies and an add.
     flops: "T_q * H * (3 * D + 10)"
 
-DeepSeekSparseAttentionPagedFwdOp:
+DSAPagedFwdOp:
   # DeepSeek Sparse Attention: MLA decode over the key positions indices names, read from
   # a paged cache in the FlashMLA DeepSeek-V3.2 FP8 row format. A 656-byte row holds 512
   # float8_e4m3fn latent values, 4 float32 scales (one per 128 of them) and 64 bfloat16

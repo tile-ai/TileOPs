@@ -13,10 +13,10 @@ import torch
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import (
     BmmCall,
-    BmmFp8Call,
-    BmmFp8FwdInterface,
-    BmmFp8TransposeCall,
-    BmmFp8TransposeFwdInterface,
+    BmmFP8Call,
+    BmmFP8FwdInterface,
+    BmmFP8TransposeCall,
+    BmmFP8TransposeFwdInterface,
     BmmFwdInterface,
 )
 from tileops.kernels.gemm.persistent.heuristics import GemmType
@@ -25,10 +25,10 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count, get_sm_version
 
 __all__ = [
-    "BmmFp8Kernel",
-    "BmmFp8PersistentKernel",
-    "BmmFp8TransposeKernel",
-    "BmmFp8WsKernel",
+    "BmmFP8Kernel",
+    "BmmFP8PersistentKernel",
+    "BmmFP8TransposeKernel",
+    "BmmFP8WSKernel",
     "BmmKernel",
     "BmmPersistentKernel",
 ]
@@ -854,7 +854,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         return out
 
 
-class _BmmFp8Kernel(Kernel, BmmFp8FwdInterface):
+class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
     """What the three batched FP8 programs share: the shape, the scales and the epilogue.
 
     Each subclass compiles one program in :meth:`_build_program` and states the config
@@ -871,16 +871,16 @@ class _BmmFp8Kernel(Kernel, BmmFp8FwdInterface):
         return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
 
     @classmethod
-    def applies(cls, call: BmmFp8Call) -> bool:
+    def applies(cls, call: BmmFP8Call) -> bool:
         return cls._k_refusal(call.k) is None
 
     @classmethod
-    def refusal(cls, call: BmmFp8Call) -> Optional[str]:
+    def refusal(cls, call: BmmFP8Call) -> Optional[str]:
         """The K-step reason where that is what refuses, else what the region says."""
         return cls._k_refusal(call.k) or (None if cls.applies(call) else "does not serve this call")
 
     @classmethod
-    def entry_for(cls, call: BmmFp8Call) -> Entry:
+    def entry_for(cls, call: BmmFP8Call) -> Entry:
         """The device index is in the identity: the grid is sized from its SM count."""
         index = call.device.index if call.device is not None else None
         arguments = (call.batch, call.m, call.n, call.k, call.dtype, call.out_dtype)
@@ -977,7 +977,7 @@ class _BmmFp8Kernel(Kernel, BmmFp8FwdInterface):
         return self._compiled_kernel(a, b, scale_a, scale_b)
 
 
-class BmmFp8WsKernel(_BmmFp8Kernel):
+class BmmFP8WSKernel(_BmmFP8Kernel):
     """Three-warpgroup warp-specialized persistent FP8 BMM.
 
     One producer warpgroup issues the TMA loads two consumer warpgroups run WGMMA over,
@@ -1003,7 +1003,7 @@ class BmmFp8WsKernel(_BmmFp8Kernel):
         return block_k <= k and k % block_k == 0 and k // block_k >= 2
 
     @classmethod
-    def applies(cls, call: BmmFp8Call) -> bool:
+    def applies(cls, call: BmmFP8Call) -> bool:
         if cls._k_refusal(call.k) is not None:
             return False
         if not any(cls._k_tile_fits(call.k, tile) for tile in cls.block_k_candidates):
@@ -1065,7 +1065,7 @@ class BmmFp8WsKernel(_BmmFp8Kernel):
         return configs
 
 
-class BmmFp8PersistentKernel(_BmmFp8Kernel):
+class BmmFP8PersistentKernel(_BmmFP8Kernel):
     """Persistent FP8 BMM over a 128-aligned tile grid.
 
     A grid of one block per SM walking the output tiles, which removes the wave
@@ -1076,7 +1076,7 @@ class BmmFp8PersistentKernel(_BmmFp8Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: BmmFp8Call) -> bool:
+    def applies(cls, call: BmmFP8Call) -> bool:
         return (
             cls._k_refusal(call.k) is None
             and call.m % 128 == 0
@@ -1104,7 +1104,7 @@ class BmmFp8PersistentKernel(_BmmFp8Kernel):
         return self._sm90_tile_grid(self.m, self.n, self.k, whole_tiles=True)
 
 
-class BmmFp8Kernel(_BmmFp8Kernel):
+class BmmFP8Kernel(_BmmFP8Kernel):
     """Classic 3D-grid FP8 BMM: one block per output tile, the batch on ``blockIdx.z``.
 
     Its epilogue guards the M and N tails, so it takes any shape an FP8 WGMMA K-step
@@ -1167,7 +1167,7 @@ class BmmFp8Kernel(_BmmFp8Kernel):
         ]
 
 
-class BmmFp8TransposeKernel(Kernel, BmmFp8TransposeFwdInterface):
+class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
     """Swap the last two axes of a contiguous FP8 ``[batch, rows, cols]`` tensor.
 
     Staged through shared memory so both the load and the store stay coalesced,
@@ -1188,7 +1188,7 @@ class BmmFp8TransposeKernel(Kernel, BmmFp8TransposeFwdInterface):
     THREAD_CANDIDATES: tuple[int, ...] = (128,)
 
     @classmethod
-    def entry_for(cls, call: BmmFp8TransposeCall) -> Entry:
+    def entry_for(cls, call: BmmFP8TransposeCall) -> Entry:
         index = call.device.index if call.device is not None else None
         arguments = (call.batch, call.rows, call.cols, call.dtype)
         return (*arguments, index), lambda: cls(*arguments, device_index=index)

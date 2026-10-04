@@ -7,19 +7,19 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner import autotune
 
-from tileops.kernels.attention.call_spec import SparseMlaCall, SparseMLADecodeFwdInterface
+from tileops.kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["SparseMlaBasicKernel", "SparseMlaKernel", "SparseMlaKernelBase"]
+__all__ = ["DSADecodeBasicKernel", "DSADecodeKernel", "DSADecodeKernelBase"]
 
 
-class SparseMlaKernelBase(Kernel, SparseMLADecodeFwdInterface):
+class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     """The shape region and constructor both sparse MLA implementations share."""
 
     @classmethod
-    def entry_for(cls, call: SparseMlaCall) -> Entry:
+    def entry_for(cls, call: DSADecodeCall) -> Entry:
         """The call spec is the identity; the kernel is built on its device."""
         return call, lambda: cls(
             call.batch,
@@ -58,7 +58,7 @@ class SparseMlaKernelBase(Kernel, SparseMLADecodeFwdInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _sparse_mla_kernel(
+def _dsa_decode_kernel(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -113,7 +113,7 @@ def _sparse_mla_kernel(
 
 
     """
-    reason = SparseMlaKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
+    reason = DSADecodeKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
     if reason is not None:
         raise ValueError(reason)
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
@@ -139,7 +139,7 @@ def _sparse_mla_kernel(
             "-DNDEBUG",
         ],
     )
-    def _sparse_mla_fwd_func(block_i: int, threads: int) -> None:
+    def _dsa_decode_fwd_func(block_i: int, threads: int) -> None:
         """
         Performs the forward computation for sparse multi-head attention.
 
@@ -183,7 +183,7 @@ def _sparse_mla_kernel(
                 f"block_i={i_block} is not a multiple of the {producer_rows} rows one "
                 f"gather pass copies with threads={threads}"
             )
-        reason = SparseMlaKernel.gather_refusal(d, d_tail)
+        reason = DSADecodeKernel.gather_refusal(d, d_tail)
         if reason is not None:
             raise ValueError(reason)
 
@@ -192,7 +192,7 @@ def _sparse_mla_kernel(
         h_per_block = padded_h if replicate_h == 1 else 64
 
         @T.prim_func
-        def _sparse_mla_fwd_main(
+        def _dsa_decode_fwd_main(
             q: T.Tensor(q_shape, dtype),  # type: ignore
             kv: T.Tensor(kv_shape, dtype),  # type: ignore
             indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
@@ -520,13 +520,13 @@ def _sparse_mla_kernel(
                                     ] = 0
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
-        return _sparse_mla_fwd_main
+        return _dsa_decode_fwd_main
 
-    return _sparse_mla_fwd_func
+    return _dsa_decode_fwd_func
 
 
 @functools.lru_cache(maxsize=32)
-def _sparse_mla_basic_kernel(
+def _dsa_decode_basic_kernel(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -545,7 +545,7 @@ def _sparse_mla_basic_kernel(
     """
     Architecture-agnostic sparse MLA forward (plain T.gemm + T.Pipelined).
 
-    Re-implements ``_sparse_mla_kernel`` without WGMMA or warp specialization
+    Re-implements ``_dsa_decode_kernel`` without WGMMA or warp specialization
     so it compiles on pre-SM90 targets (sm80 / sm86 / sm89). The math (online
     softmax over gathered top-k KV rows) is identical to the WGMMA version;
     only the execution strategy changes:
@@ -555,7 +555,7 @@ def _sparse_mla_basic_kernel(
       buffering with mbarriers.
     - Per-row KV gather via ``T.copy`` with runtime row indices.
     """
-    reason = SparseMlaKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
+    reason = DSADecodeKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
     if reason is not None:
         raise ValueError(reason)
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
@@ -581,7 +581,7 @@ def _sparse_mla_basic_kernel(
             "-DNDEBUG",
         ],
     )
-    def _sparse_mla_basic_fwd_func(
+    def _dsa_decode_basic_fwd_func(
         block_i: int, threads: int, num_stages: int = 2, block_h: int = 64
     ) -> None:
         if topk % block_i != 0:
@@ -599,7 +599,7 @@ def _sparse_mla_basic_kernel(
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
-        h_per_block = SparseMlaBasicKernel.heads_per_block(head_kv, block_h)
+        h_per_block = DSADecodeBasicKernel.heads_per_block(head_kv, block_h)
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -607,7 +607,7 @@ def _sparse_mla_basic_kernel(
         indices_shape = (batch, seq_len, kv_group, topk)
 
         @T.prim_func
-        def _sparse_mla_basic_fwd_main(
+        def _dsa_decode_basic_fwd_main(
             q: T.Tensor(q_shape, dtype),  # type: ignore
             kv: T.Tensor(kv_shape, dtype),  # type: ignore
             indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
@@ -723,20 +723,20 @@ def _sparse_mla_basic_kernel(
                 T.copy(acc_o, o_shared)
                 T.copy(o_shared, output[b_i, s_i, h0:h1, :d])
 
-        return _sparse_mla_basic_fwd_main
+        return _dsa_decode_basic_fwd_main
 
-    return _sparse_mla_basic_fwd_func
+    return _dsa_decode_basic_fwd_func
 
 
-class SparseMlaBasicKernel(SparseMlaKernelBase):
+class DSADecodeBasicKernel(DSADecodeKernelBase):
     """
     Architecture-agnostic sparse MLA kernel (sm80+).
 
-    ``SparseMlaKernel`` requires SM90 WGMMA plus manual warp specialization;
+    ``DSADecodeKernel`` requires SM90 WGMMA plus manual warp specialization;
     this variant re-implements the same computation with plain ``T.gemm`` and
     ``T.Pipelined`` software pipelining so it runs on any tensor-core target
     (sm80, sm86, sm89). Constructor / forward signatures are identical to
-    ``SparseMlaKernel`` so the op layer can swap between the two.
+    ``DSADecodeKernel`` so the op layer can swap between the two.
 
     Args:
         batch (int): The batch size for the operation.
@@ -761,11 +761,11 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
     general = True
 
     @classmethod
-    def applies(cls, call: SparseMlaCall) -> bool:
+    def applies(cls, call: DSADecodeCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+    def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         """The shared shape region, where the default config fits the block's shared memory."""
         reason = cls.shape_refusal(
             call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
@@ -883,7 +883,7 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         self.q_start_index_s = q_start_index_s
         self.cp0 = cp0
 
-        self.kernel = _sparse_mla_basic_kernel(
+        self.kernel = _dsa_decode_basic_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -951,7 +951,7 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_basic_kernel(
+        return _dsa_decode_basic_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1023,7 +1023,7 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         return q, kv, indices
 
 
-class SparseMlaKernel(SparseMlaKernelBase):
+class DSADecodeKernel(DSADecodeKernelBase):
     """
     Sparse MLA kernel class for handling multi-head attention operations in ML models.
 
@@ -1060,11 +1060,11 @@ class SparseMlaKernel(SparseMlaKernelBase):
         return None
 
     @classmethod
-    def applies(cls, call: SparseMlaCall) -> bool:
+    def applies(cls, call: DSADecodeCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+    def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         """The shared shape region, narrowed to what the warp-specialized gather covers."""
         reason = cls.shape_refusal(
             call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
@@ -1112,7 +1112,7 @@ class SparseMlaKernel(SparseMlaKernelBase):
         self.q_start_index_s = q_start_index_s
         self.cp0 = cp0
 
-        self.kernel = _sparse_mla_kernel(
+        self.kernel = _dsa_decode_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1173,7 +1173,7 @@ class SparseMlaKernel(SparseMlaKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_kernel(
+        return _dsa_decode_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1249,7 +1249,7 @@ class SparseMlaKernel(SparseMlaKernelBase):
         print(f"Start autotuning {self.__class__.__name__}...")
 
         tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
-        # TileLang invokes supply_prog with the candidate JIT params; SparseMlaKernel.supply_prog
+        # TileLang invokes supply_prog with the candidate JIT params; DSADecodeKernel.supply_prog
         # generates inputs from instance shape attributes and takes none, so discard them.
         autotune_kwargs = dict(
             configs=self.autotune_configs,

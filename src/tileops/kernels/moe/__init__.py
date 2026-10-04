@@ -25,11 +25,11 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
-from tileops.kernels.moe.moe_grouped_gemm import MoeGroupedGemmKernel, MoeGroupedGemmMmaKernel
-from tileops.kernels.moe.permute_align import MoePermuteAlignKernel
-from tileops.kernels.moe.permute_contiguous import MoePrePermuteContiguousKernel
+from tileops.kernels.moe.moe_grouped_gemm import MoEGroupedGemmKernel, MoEGroupedGemmMMAKernel
+from tileops.kernels.moe.permute_align import MoEPermuteAlignKernel
+from tileops.kernels.moe.permute_contiguous import MoEPrePermuteContiguousKernel
 from tileops.kernels.moe.shared_expert_mlp import SharedExpertMLPKernel
-from tileops.kernels.moe.unpermute import MoeUnpermuteKernel
+from tileops.kernels.moe.unpermute import MoEUnpermuteKernel
 
 __all__ = [
     "FusedTopKCall",
@@ -47,11 +47,11 @@ __all__ = [
     "IndexedWeightedReduceKernel",
     "MGroupedGemmCall",
     "MGroupedGemmFwdInterface",
-    "MoeGroupedGemmKernel",
-    "MoeGroupedGemmMmaKernel",
-    "MoePermuteAlignKernel",
-    "MoePrePermuteContiguousKernel",
-    "MoeUnpermuteKernel",
+    "MoEGroupedGemmKernel",
+    "MoEGroupedGemmMMAKernel",
+    "MoEPermuteAlignKernel",
+    "MoEPrePermuteContiguousKernel",
+    "MoEUnpermuteKernel",
     "PermuteAlignCall",
     "PermuteAlignFwdInterface",
     "PostPermuteCall",

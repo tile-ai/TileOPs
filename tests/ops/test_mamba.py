@@ -12,8 +12,8 @@ from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.device import run_device
 from workloads.mamba import (
-    DaCumsumFwdFixture,
-    DaCumsumFwdWorkload,
+    SSDChunkCumsumFwdFixture,
+    SSDChunkCumsumFwdWorkload,
     SSDChunkScanFwdFixture,
     SSDChunkScanFwdWorkload,
     SSDChunkStateFwdFixture,
@@ -22,10 +22,10 @@ from workloads.mamba import (
     SSDDecodeWorkload,
     SSDStatePassingFwdFixture,
     SSDStatePassingFwdWorkload,
-    cb_producer_fwd_ref,
     coupling_verification,
     mamba2_fwd_ref,
     mamba2_verification,
+    ssd_chunk_coupling_fwd_ref,
     ssd_chunk_state_fwd_ref,
     ssd_decode_result,
 )
@@ -54,18 +54,18 @@ from workloads.numerics import compare_outputs
         pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
     ],
 )
-def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
+def test_ssd_chunk_coupling_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
     op = SSDChunkCouplingFwdOp(chunk_len, tune=tune)
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
-    ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
+    ref = ssd_chunk_coupling_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
     out = op(C_mat, B_mat)
     compare_outputs(out, ref, coupling_verification())
 
 
 @pytest.mark.smoke
-def test_cb_producer_fwd_noncontiguous():
+def test_ssd_chunk_coupling_fwd_noncontiguous():
     """SSDChunkCouplingFwdOp must handle non-contiguous inputs."""
     batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
     dtype = torch.float16
@@ -76,20 +76,22 @@ def test_cb_producer_fwd_noncontiguous():
     B_mat = B_full[:, ::2, :, :]
     assert not C_mat.is_contiguous()
     assert not B_mat.is_contiguous()
-    ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
+    ref = ssd_chunk_coupling_fwd_ref(
+        C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype
+    )
     out = SSDChunkCouplingFwdOp(chunk_len)(C_mat, B_mat)
     compare_outputs(out, ref, coupling_verification())
 
 
-class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
+class SSDChunkCumsumFwdTest(SSDChunkCumsumFwdWorkload, TestBase):
     pass
 
 
-@DaCumsumFwdFixture
-def test_da_cumsum_fwd(
+@SSDChunkCumsumFwdFixture
+def test_ssd_chunk_cumsum_fwd(
     batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune
 ):
-    test = DaCumsumFwdTest(
+    test = SSDChunkCumsumFwdTest(
         batch,
         num_chunks,
         chunk_len,
@@ -110,11 +112,11 @@ def test_da_cumsum_fwd(
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_da_cumsum_fwd_missing_bias_raises():
-    """DaCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
-    from tileops.kernels.mamba import DaCumsumFwdKernel
+def test_ssd_chunk_cumsum_fwd_missing_bias_raises():
+    """SSDChunkCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
+    from tileops.kernels.mamba import SSDChunkCumsumFwdKernel
 
-    kernel = DaCumsumFwdKernel(
+    kernel = SSDChunkCumsumFwdKernel(
         batch=1,
         num_chunks=2,
         chunk_len=64,
@@ -129,7 +131,7 @@ def test_da_cumsum_fwd_missing_bias_raises():
 
 
 @pytest.mark.smoke
-def test_da_cumsum_fwd_padded_head_tile():
+def test_ssd_chunk_cumsum_fwd_padded_head_tile():
     """Five heads against block_h=4 is the only shape reaching the masked tail."""
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
@@ -137,7 +139,7 @@ def test_da_cumsum_fwd_padded_head_tile():
     dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device=run_device())
     A = -torch.rand(n_heads, dtype=torch.float32, device=run_device())
 
-    test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
+    test = SSDChunkCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
     test.check(op, dt, A, None)
 
 

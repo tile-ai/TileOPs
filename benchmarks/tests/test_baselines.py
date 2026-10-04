@@ -165,9 +165,9 @@ def test_compiled_reference_warmup_updates_state_once():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA SDPA backward")
 def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
     from benchmarks.ops.bench_gqa import _torch_gqa_bwd
-    from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
+    from workloads.attention.gqa.bwd import GQABwdWorkload
 
-    workload = GroupedQueryAttentionBwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
+    workload = GQABwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
     inputs = workload.gen_inputs()
     backward = _torch_gqa_bwd(workload, *inputs[:3])
     verify(

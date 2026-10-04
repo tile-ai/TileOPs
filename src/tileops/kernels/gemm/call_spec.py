@@ -12,14 +12,14 @@ from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
     "BmmCall",
-    "BmmFp8Call",
-    "BmmFp8FwdInterface",
-    "BmmFp8TransposeCall",
-    "BmmFp8TransposeFwdInterface",
+    "BmmFP8Call",
+    "BmmFP8FwdInterface",
+    "BmmFP8TransposeCall",
+    "BmmFP8TransposeFwdInterface",
     "BmmFwdInterface",
     "GemmCall",
-    "GemmFp8Call",
-    "GemmFp8FwdInterface",
+    "GemmFP8Call",
+    "GemmFP8FwdInterface",
     "GemmFwdInterface",
     "GemmW4A16Call",
     "GemmW4A16FwdInterface",
@@ -41,7 +41,7 @@ class GemmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmFp8Call(CallSpec):
+class GemmFP8Call(CallSpec):
     """One FP8 NT matmul, with the scale grids and the bias the call carries.
 
     The layout is fixed: ``a`` is ``[m, k]`` and ``b`` is ``[n, k]``, so no flags.
@@ -90,7 +90,7 @@ class BmmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class BmmFp8Call(CallSpec):
+class BmmFP8Call(CallSpec):
     """One batched FP8 matmul, with the output dtype its epilogue writes."""
 
     batch: int = 0
@@ -102,7 +102,7 @@ class BmmFp8Call(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class BmmFp8TransposeCall(CallSpec):
+class BmmFP8TransposeCall(CallSpec):
     """One swap of the last two axes of a contiguous ``[batch, rows, cols]`` tensor."""
 
     batch: int = 0
@@ -132,10 +132,10 @@ class GemmFwdInterface(KernelInterface):
         """
 
 
-class GemmFp8FwdInterface(KernelInterface):
+class GemmFP8FwdInterface(KernelInterface):
     """FP8 NT matmul: the scaled product of two ``float8_e4m3fn`` operands, plus a bias."""
 
-    request = GemmFp8Call
+    request = GemmFP8Call
 
     @abstractmethod
     def forward(
@@ -167,7 +167,7 @@ class GemmFp8FwdInterface(KernelInterface):
         """
 
     @classmethod
-    def block_scale_grid(cls, call: GemmFp8Call) -> Optional[Literal["1d1d", "1d2d"]]:
+    def block_scale_grid(cls, call: GemmFP8Call) -> Optional[Literal["1d1d", "1d2d"]]:
         """Which block128 grid the scales form, or ``None`` for any other pair.
 
         Both grids take ``scale_a`` per 1x128 block, ``[m, ceil(k / 128)]``. ``"1d1d"``
@@ -259,10 +259,10 @@ class BmmFwdInterface(KernelInterface):
         """
 
 
-class BmmFp8FwdInterface(KernelInterface):
+class BmmFP8FwdInterface(KernelInterface):
     """Batched FP8 matmul with one per-tensor scale on each operand."""
 
-    request = BmmFp8Call
+    request = BmmFP8Call
 
     @abstractmethod
     def forward(
@@ -285,10 +285,10 @@ class BmmFp8FwdInterface(KernelInterface):
         """
 
 
-class BmmFp8TransposeFwdInterface(KernelInterface):
+class BmmFP8TransposeFwdInterface(KernelInterface):
     """The axis swap that puts a batched FP8 operand K-innermost for the WGMMA kernel."""
 
-    request = BmmFp8TransposeCall
+    request = BmmFP8TransposeCall
 
     @abstractmethod
     def forward(self, src: torch.Tensor) -> torch.Tensor:

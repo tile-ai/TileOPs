@@ -4,34 +4,34 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
-    MLADecodeMmaKernel,
-    MLADecodeWsKernel,
+    MLADecodeMMAKernel,
+    MLADecodeWSKernel,
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
 from tileops.kernels.attention.call_spec import (
-    MlaDecodeCall,
+    MLADecodeCall,
     MLADecodeFwdInterface,
-    MlaVarlenCall,
-    MlaVarlenFwdInterface,
+    MLAVarlenCall,
+    MLAVarlenFwdInterface,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
-    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "MultiHeadLatentAttentionVarlenFwdOp",
+    "MLADecodeWithKVCacheFwdOp",
+    "MLAVarlenFwdOp",
 ]
 
 
-class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
+class MLADecodeWithKVCacheFwdOp(Op):
     """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "mla_decode_kernel": MLADecodeWsKernel,
-        "mla_decode_mma_kernel": MLADecodeMmaKernel,
+        "mla_decode_kernel": MLADecodeWSKernel,
+        "mla_decode_mma_kernel": MLADecodeMMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "mla_decode_kernel": MLADecodeFwdInterface
@@ -82,7 +82,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         batch, heads, dim = q.shape
         _, seqlen_kv, heads_kv, _ = k.shape
         inputs = (q, q_pe, k, k_pe)
-        call = MlaDecodeCall(
+        call = MLADecodeCall(
             batch=batch,
             heads=heads,
             heads_kv=heads_kv,
@@ -99,7 +99,7 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
-class MultiHeadLatentAttentionVarlenFwdOp(Op):
+class MLAVarlenFwdOp(Op):
     """Multi-Head Latent Attention (MLA) prefill over packed requests, after the latent is
     decompressed. Layout: THD.
 
@@ -115,7 +115,7 @@ class MultiHeadLatentAttentionVarlenFwdOp(Op):
         "mla_varlen_fwd_ws": MLAVarlenPrefillWSFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "mla_varlen_fwd": MlaVarlenFwdInterface
+        "mla_varlen_fwd": MLAVarlenFwdInterface
     }
 
     def __init__(
@@ -143,10 +143,10 @@ class MultiHeadLatentAttentionVarlenFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def varlen_call(self, inputs: tuple) -> MlaVarlenCall:
+    def varlen_call(self, inputs: tuple) -> MLAVarlenCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k_nope, k_pe, _v, cu_seqlens = inputs
-        return MlaVarlenCall(
+        return MLAVarlenCall(
             batch=cu_seqlens.shape[0] - 1,
             heads=q.shape[1],
             dim_nope=k_nope.shape[2],

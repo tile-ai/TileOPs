@@ -21,14 +21,14 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import TopKSelectFwdOp
-from workloads.attention.topk_select import TopkSelectorCall
+from workloads.attention.topk_select import TopKSelectCall
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-def _flashinfer_topk(workload: TopkSelectorCall, starts: torch.Tensor, ends: torch.Tensor):
+def _flashinfer_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch.Tensor):
     """FlashInfer's top-k over the same scores, or None for a row it cannot serve.
 
     It selects over the last dimension, which is ``seq_len_kv`` only while
@@ -51,7 +51,7 @@ def _flashinfer_topk(workload: TopkSelectorCall, starts: torch.Tensor, ends: tor
 
 @pytest.mark.parametrize("call", manifest_calls(TopKSelectFwdOp))
 def test_topk_select_bench(call) -> None:
-    workload = TopkSelectorCall(call)
+    workload = TopKSelectCall(call)
     inputs = workload.gen_inputs()
 
     op = TopKSelectFwdOp(**workload.arguments(), tune=_TUNE)

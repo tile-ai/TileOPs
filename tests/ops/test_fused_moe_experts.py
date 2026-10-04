@@ -10,7 +10,7 @@ from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPE
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import MoeExpertsWorkload, moe_call, moe_verification, ref_routed_experts
+from workloads.moe import MoEExpertsWorkload, moe_call, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs
 
 
@@ -22,7 +22,7 @@ def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", **dims):
         activation=activation,
         **dims,
     )
-    workload = MoeExpertsWorkload(call)
+    workload = MoEExpertsWorkload(call)
     return FusedMoEExpertsFwdOp(**call.arguments({})), workload, workload.gen_inputs()
 
 
@@ -218,7 +218,7 @@ class TestFusedMoEExpertsFwdOp:
         assert isinstance(experts.make_weighted_reduce(), WeightedReduceNoOp)
 
 
-class TestFusedMoeActivationInjection:
+class TestFusedMoEActivationInjection:
     @pytest.mark.smoke
     def test_injection_with_conflicting_activation_raises(self):
         with pytest.raises(ValueError, match="activation conflicts"):

@@ -13,10 +13,10 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.device import run_device
-from workloads.moe import MoePermuteAlignWorkload, moe_call
+from workloads.moe import MoEPermuteAlignWorkload, moe_call
 
 
-class MoePermuteAlignFixture(FixtureBase):
+class MoEPermuteAlignFixture(FixtureBase):
     PARAMS = [
         (
             "total_tokens, top_k, num_experts, block_size",
@@ -53,7 +53,7 @@ class MoePermuteAlignFixture(FixtureBase):
 # Custom comparator
 
 
-@MoePermuteAlignFixture
+@MoEPermuteAlignFixture
 def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
     call = moe_call(
         "MoEPermuteAlignFwdOp",
@@ -62,7 +62,7 @@ def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block
         num_experts=num_experts,
         block_size=block_size,
     )
-    test = MoePermuteAlignWorkload(call)
+    test = MoEPermuteAlignWorkload(call)
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
     inputs = test.gen_inputs()
 
@@ -123,7 +123,7 @@ def test_permute_align_skewed_distribution() -> None:
     topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device=run_device())
 
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
-    workload = MoePermuteAlignWorkload(
+    workload = MoEPermuteAlignWorkload(
         moe_call(
             "MoEPermuteAlignFwdOp",
             T=total_tokens,

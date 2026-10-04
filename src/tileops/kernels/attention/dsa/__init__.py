@@ -1,13 +1,13 @@
 """DSA attention kernel implementations."""
 
 from tileops.kernels.attention.dsa.decode import (
-    SparseMlaBasicKernel,
-    SparseMlaKernel,
-    SparseMlaKernelBase,
+    DSADecodeBasicKernel,
+    DSADecodeKernel,
+    DSADecodeKernelBase,
 )
 
 __all__ = [
-    "SparseMlaBasicKernel",
-    "SparseMlaKernel",
-    "SparseMlaKernelBase",
+    "DSADecodeBasicKernel",
+    "DSADecodeKernel",
+    "DSADecodeKernelBase",
 ]

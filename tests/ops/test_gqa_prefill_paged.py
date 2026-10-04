@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import served_in_tree
-from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
+from tileops.ops import GQAPrefillPagedWithKVCacheFwdOp
 from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
 from workloads.attention.paged_kv_cache import (
     fill_paged_cache_from_logical,
@@ -159,7 +159,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         cache_seqlens,
         block_table,
     )
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
@@ -266,7 +266,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         cache_seqlens,
         block_table,
     )
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
@@ -338,7 +338,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
     else:
         v_scale = torch.tensor([bad_value], device=run_device(), dtype=torch.float32)
     block_table = torch.tensor([[0]], device=run_device(), dtype=torch.int32)
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         cache_dtype=torch.float8_e4m3fn,
@@ -442,7 +442,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         cache_seqlens,
         block_table,
     )
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
@@ -486,7 +486,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> None:
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=24, max_seqlen_q=16)
+    op = GQAPrefillPagedWithKVCacheFwdOp(page_size=24, max_seqlen_q=16)
     q = torch.randn(2, 8, 64, device=run_device(), dtype=torch.float16)
     k_new = torch.randn(2, 2, 64, device=run_device(), dtype=torch.float16)
     k_pages = torch.zeros(48, 2, 64, device=run_device(), dtype=torch.float16)
@@ -551,7 +551,7 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         cache_seqlens,
         block_table,
     )
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
     )
@@ -599,7 +599,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
     cu_seqlens_q = make_cu_seqlens(q_lens)
     cache_seqlens = torch.tensor(old_lens, device=run_device(), dtype=torch.int32)
     k_scale, v_scale = make_unit_cache_scales()
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+    op = GQAPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
     )

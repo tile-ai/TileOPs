@@ -4,7 +4,7 @@
 per-expert bias during top-k selection (Kimi K2 style); withholding it selects
 straight from the gating scores (Qwen3 / DeepSeek-V3 style).
 
-The shared core (`FusedMoe`) wires `FusedTopKFwdOp` (routing),
+The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
 `FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
 expert handling belongs to `FusedMoESharedExpertFwdOp`.
@@ -26,10 +26,10 @@ from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["FusedMoEFwdOp", "FusedMoe"]
+__all__ = ["FusedMoE", "FusedMoEFwdOp"]
 
 
-class FusedMoe(Op):
+class FusedMoE(Op):
     """Shared composite implementation for routed MoE FFN ops.
 
     The concrete manifest identity (`FusedMoEFwdOp`) subclasses this; the
@@ -122,7 +122,7 @@ class FusedMoe(Op):
         return output
 
 
-class FusedMoEFwdOp(FusedMoe):
+class FusedMoEFwdOp(FusedMoE):
     """Routed MoE FFN.
 
     Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations where

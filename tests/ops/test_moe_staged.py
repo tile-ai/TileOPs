@@ -11,8 +11,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
-    MoeGroupedGemmKernel,
-    MoeGroupedGemmMmaKernel,
+    MoEGroupedGemmKernel,
+    MoEGroupedGemmMMAKernel,
     PostPermuteCall,
     PrePermuteCall,
 )
@@ -29,8 +29,8 @@ from tileops.ops.moe import (
 from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
 from workloads.moe import (
-    MoeExpertMLPWorkload,
-    MoeGroupedGemmWorkload,
+    MoEExpertMLPWorkload,
+    MoEGroupedGemmWorkload,
     moe_call,
     post_permute_verification,
 )
@@ -319,7 +319,7 @@ def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> No
         )
 
 
-# MoEGroupedGemmFwdOp selects MoeGroupedGemmKernel, the adapter over the shared template, through the
+# MoEGroupedGemmFwdOp selects MoEGroupedGemmKernel, the adapter over the shared template, through the
 # staged candidate protocol; these tests route every layout it claims through the op and check the
 # rows the layout defines against the workload's per-expert reference.
 
@@ -382,13 +382,13 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
     """Each claimed layout: the op builds the device's kernel once and matches the reference."""
     num_experts = 6
     op, out = _run(
-        MoeGroupedGemmWorkload(_gemm_call(dtype, layout, K=512, E=num_experts, N=256, **rows))
+        MoEGroupedGemmWorkload(_gemm_call(dtype, layout, K=512, E=num_experts, N=256, **rows))
     )
     assert out.dtype is dtype and out.shape[-1] == 256
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
         arch = get_sm_version(out.device.index)
-        expected = MoeGroupedGemmKernel if arch == 90 else MoeGroupedGemmMmaKernel
+        expected = MoEGroupedGemmKernel if arch == 90 else MoEGroupedGemmMMAKernel
         assert type(kernel) is expected
 
 
@@ -398,7 +398,7 @@ def test_grouped_gemm_reuses_its_kernel_across_row_counts():
     num_experts = 6
     op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     for rows in (600, 300):
-        workload = MoeGroupedGemmWorkload(
+        workload = MoEGroupedGemmWorkload(
             _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=512, E=num_experts, N=256)
         )
         op(*workload.gen_inputs())
@@ -420,7 +420,7 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
         N=192,
         activation=activation,
     )
-    op, out = _run(MoeGroupedGemmWorkload(call))
+    op, out = _run(MoEGroupedGemmWorkload(call))
     assert out.shape == (600, 192)
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
@@ -432,7 +432,7 @@ def test_grouped_gemm_dims_off_the_tile_grid():
     """Cover non-tile-aligned K and N."""
     num_experts = 6
     _run(
-        MoeGroupedGemmWorkload(
+        MoEGroupedGemmWorkload(
             _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=200, K=96, E=num_experts, N=192)
         )
     )
@@ -450,7 +450,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
         N=256,
         out_dtype="float32",
     )
-    workload = MoeGroupedGemmWorkload(call)
+    workload = MoEGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
@@ -463,7 +463,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_a_strided_out():
     """The output buffer is declared contiguous; a strided one is refused before the kernel."""
-    workload = MoeGroupedGemmWorkload(
+    workload = MoEGroupedGemmWorkload(
         _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
     )
     op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
@@ -534,7 +534,7 @@ def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
         n=256,
         k=512,
     )
-    supply = MoeGroupedGemmMmaKernel._supply_prog_for(call)
+    supply = MoEGroupedGemmMMAKernel._supply_prog_for(call)
     a, b, layout, c = supply([None] * 4)
 
     lead = [num_groups, max_m] if kind == "masked" else [rows]
@@ -576,7 +576,7 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
         E=num_experts,
         F=192,
     )
-    op, out = _run(MoeExpertMLPWorkload(call))
+    op, out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
     if served_in_tree(op):
         (gate_up,) = op.gate_up.built_kernels("grouped_gemm").values()

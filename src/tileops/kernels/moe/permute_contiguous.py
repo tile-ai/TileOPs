@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
 
-__all__ = ["MoePrePermuteContiguousKernel"]
+__all__ = ["MoEPrePermuteContiguousKernel"]
 
 
 def _make_tight_scan(numel: int, num_experts: int, top_k: int):
@@ -331,7 +331,7 @@ def _make_gather(
     return _gather
 
 
-class MoePrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
+class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
     supported_archs: list[int] = [80, 86, 89, 90]

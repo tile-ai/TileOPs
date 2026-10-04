@@ -16,7 +16,7 @@ from tileops.kernels.constants import FP8_E4M3_MAX, LOG2E
 __all__ = [
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheRopeFwdKernel",
+    "GQAPrefillPagedWithKVCacheRoPEFwdKernel",
 ]
 
 
@@ -1167,7 +1167,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_rope_fwd_func
 
 
-class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
+class GQAPrefillPagedWithKVCacheRoPEFwdKernel(PagedPrefillKernel):
     """Paged prefill that rotates and appends the new keys before attending.
 
     Appending and attending are two launches of one semantic operation, so this
@@ -1191,7 +1191,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     def _build_program(self) -> None:
         if self.rotary_dim is None or self.max_position is None:
             raise ValueError(
-                "GQAPrefillPagedWithKVCacheRopeFwdKernel requires max_position and rotary_dim"
+                "GQAPrefillPagedWithKVCacheRoPEFwdKernel requires max_position and rotary_dim"
             )
         if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
             raise ValueError("rotary_dim must be positive, even, and <= dim")
@@ -1226,7 +1226,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if cos_table is None or sin_table is None:
-            raise ValueError("GQAPrefillPagedWithKVCacheRopeFwdKernel requires the rotary tables")
+            raise ValueError("GQAPrefillPagedWithKVCacheRoPEFwdKernel requires the rotary tables")
         _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
             self.batch,
             self.heads_kv,

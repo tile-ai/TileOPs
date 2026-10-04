@@ -39,7 +39,7 @@ from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import WARP_LANES
 
-__all__ = ["MHADecodePagedWsKernel"]
+__all__ = ["MHADecodePagedWSKernel"]
 
 # Warps in the consumer group. One warp group of each role, 256 threads: two
 # consumer groups deadlock the block-wide sync the layout pass inserts.
@@ -361,7 +361,7 @@ def _mha_decode_paged_ws_kernel(
     return _func
 
 
-class MHADecodePagedWsKernel(Kernel, MHAPagedDecodeFwdInterface):
+class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     """SM90 paged MHA decode: hand-written warp specialization, no MMA."""
 
     supported_archs: list[int] = [90]

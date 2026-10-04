@@ -68,6 +68,8 @@ _ABBREVIATIONS = (
     "TopP",
     "MinP",
     "MoE",
+    "RoPE",
+    "YaRN",
     "MLP",
     "FFT",
     "RMS",

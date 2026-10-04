@@ -6,7 +6,7 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     GQAPrefillVarlenFwdKernel,
     GQAPrefillVarlenWSFwdKernel,
-    GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
     GQAVarlenFP8FwdKernel,
     GQAVarlenFP8WSFwdKernel,
 )
@@ -19,10 +19,10 @@ from tileops.ops.attention.gqa.parameters import _rope_rotary_dim, _score_softca
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GroupedQueryAttentionVarlenFwdOp"]
+__all__ = ["GQAVarlenFwdOp"]
 
 
-class GroupedQueryAttentionVarlenFwdOp(Op):
+class GQAVarlenFwdOp(Op):
     """Grouped-query attention over packed THD tensors.
 
     ``cu_seqlens_q`` and ``cu_seqlens_kv`` delimit each request. The interface
@@ -41,7 +41,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_varlen": GQAPrefillVarlenFwdKernel,
         "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
-        "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+        "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
         "gqa_varlen_fp8": GQAVarlenFP8FwdKernel,
         "gqa_varlen_fp8_ws": GQAVarlenFP8WSFwdKernel,
     }

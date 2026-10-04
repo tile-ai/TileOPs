@@ -5,13 +5,13 @@ import tilelang
 import torch
 from tilelang import language as T
 
-from tileops.kernels.attention.call_spec import NSACall, NSACmpFwdInterface
+from tileops.kernels.attention.call_spec import NSACall, NSACompressedFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 
 @functools.lru_cache(maxsize=32)
-def _nsa_cmp_fwd_varlen_kernel(
+def _nsa_compressed_fwd_varlen_kernel(
     seq_num: int,
     c_seq_len: int,
     heads: int,
@@ -40,9 +40,9 @@ def _nsa_cmp_fwd_varlen_kernel(
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
     )
-    def _nsa_cmp_fwd_varlen_func(threads: int):
+    def _nsa_compressed_fwd_varlen_func(threads: int):
         @T.prim_func
-        def _parallel_nsa_cmp_fwd_varlen_main(
+        def _parallel_nsa_compressed_fwd_varlen_main(
             q: T.Tensor((c_seq_len, heads, dim_k), dtype),
             k_cmp: T.Tensor((chunk_num, head_kv, dim_k), dtype),
             v_cmp: T.Tensor((chunk_num, head_kv, dim_v), dtype),
@@ -145,12 +145,12 @@ def _nsa_cmp_fwd_varlen_kernel(
                 T.copy(b_o, output[bos + i_t, i_h * group : (i_h + 1) * group, :dim_v])
                 T.copy(b_lse, temp_lse[bos + i_t, i_h * group : (i_h + 1) * group])
 
-        return _parallel_nsa_cmp_fwd_varlen_main
+        return _parallel_nsa_compressed_fwd_varlen_main
 
-    return _nsa_cmp_fwd_varlen_func
+    return _nsa_compressed_fwd_varlen_func
 
 
-class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
+class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     # Chunks one tile holds.
     _BC = 32
@@ -225,7 +225,7 @@ class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _nsa_cmp_fwd_varlen_kernel(
+        return _nsa_compressed_fwd_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
             self.heads,

@@ -70,4 +70,4 @@ TopKSelectFwdOp:
   - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 2048, label: prefill-k2048}
   - {B: 1, S: 1, S_kv: 16384, G: 1, topk: 2048, label: ds-v32-topk-decode-b1}
   roofline:
-    func: tileops.perf.formulas.topk_selector_roofline
+    func: tileops.perf.formulas.topk_select_roofline

@@ -3,7 +3,7 @@
 Verifies:
   - FusedMoESharedExpertFwdOp returns (shared_output, routed_output) tuple
   - shared_output matches SharedExpertMLPKernel reference
-  - routed_output matches FusedMoe output
+  - routed_output matches FusedMoE output
   - Without the shared weights, shared_output is None
   - TP sharding: partial outputs sum to float32 math reference
 """
@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from tests.test_base import TestBase
-from tileops.kernels.gemm.dense import GemmTmaKernel
+from tileops.kernels.gemm.dense import GemmTMAKernel
 from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
@@ -76,14 +76,14 @@ def test_fused_moe_shared_expert_basic(num_tokens):
 
     if get_sm_version() == 90:
         shared_kernel = next(iter(op._shared_expert.built_kernels("shared_expert_mlp").values()))
-        assert isinstance(shared_kernel._gemm_gate_up, GemmTmaKernel)
-        assert isinstance(shared_kernel._gemm_down, GemmTmaKernel)
+        assert isinstance(shared_kernel._gemm_gate_up, GemmTMAKernel)
+        assert isinstance(shared_kernel._gemm_down, GemmTMAKernel)
         if T == 512:
             wide = SharedExpertMLPKernel(512, 7168, 18432, dtype)
             assert isinstance(wide._gemm_gate_up, GemmTemplate)
             assert isinstance(wide._gemm_down, GemmTemplate)
 
-    # routed_out matches FusedMoe
+    # routed_out matches FusedMoE
     op_routed = FusedMoEFwdOp(
         top_k=K,
         scoring_func="softmax",

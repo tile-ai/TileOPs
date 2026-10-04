@@ -9,8 +9,8 @@ resolve the implementation without compiling anything.
 import pytest
 import torch
 
-from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTmaKernel
-from tileops.kernels.gemm.call_spec import BmmFp8Call, GemmCall
+from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTMAKernel
+from tileops.kernels.gemm.call_spec import BmmFP8Call, GemmCall
 from tileops.kernels.linear_attention import (
     DeltaNetChunkCall,
     DeltaNetDecodeCall,
@@ -55,9 +55,9 @@ def _serves(op, call: GemmCall) -> type:
     [
         pytest.param(1, 8, False, True, "GemvKernel", id="lhs-row"),
         pytest.param(8, 1, False, False, "GemvKernel", id="rhs-col"),
-        pytest.param(1, 8, False, False, "GemmTmaKernel", id="lhs-row-wrong-layout"),
-        pytest.param(8, 1, False, True, "GemmTmaKernel", id="rhs-col-wrong-layout"),
-        pytest.param(8, 8, False, False, "GemmTmaKernel", id="neither-is-a-vector"),
+        pytest.param(1, 8, False, False, "GemmTMAKernel", id="lhs-row-wrong-layout"),
+        pytest.param(8, 1, False, True, "GemmTMAKernel", id="rhs-col-wrong-layout"),
+        pytest.param(8, 8, False, False, "GemmTMAKernel", id="neither-is-a-vector"),
         pytest.param(1, 1, False, False, "GemvKernel", id="both-are-vectors"),
     ],
 )
@@ -86,7 +86,7 @@ def test_gemm_vector_on_a_transposed_operand_takes_the_pipelined_mainloop(
     dimension, where the descriptor needs a multiple of 8 fp16 elements, and the
     GEMV kernel has no form for these layouts. ``GemmCpAsyncKernel`` takes them: it
     loads through ``cp.async``, so the dimension the TMA descriptor cannot address
-    costs it nothing. ``GemmTmaKernel`` still refuses, naming that dimension.
+    costs it nothing. ``GemmTMAKernel`` still refuses, naming that dimension.
     """
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     call = GemmCall(
@@ -94,14 +94,14 @@ def test_gemm_vector_on_a_transposed_operand_takes_the_pipelined_mainloop(
     )
 
     assert _serves(op, call) is GemmCpAsyncKernel
-    assert f"and {dim}" in GemmTmaKernel.refusal(call)
+    assert f"and {dim}" in GemmTMAKernel.refusal(call)
 
 
 @pytest.mark.smoke
 def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
     """A TMA-misaligned NT shape on SM90 reaches ``GemmCpAsyncKernel``.
 
-    ``GemmTmaKernel`` refuses it because every structure it builds loads through TMA.
+    ``GemmTMAKernel`` refuses it because every structure it builds loads through TMA.
     ``GemmCpAsyncKernel`` is the general implementation and takes what no other one
     claims, on SM90 as anywhere else.
     """
@@ -587,14 +587,14 @@ def test_gemv_kernel_takes_its_two_row_band_only_where_the_grid_underfills() -> 
 @pytest.mark.parametrize(
     ("batch", "m", "n", "k", "expected"),
     [
-        pytest.param(8, 2048, 2048, 2048, "BmmFp8WsKernel", id="fills-a-warp-specialized-wave"),
-        pytest.param(32, 128, 128, 2048, "BmmFp8PersistentKernel", id="whole-128-tiles-only"),
-        pytest.param(1, 64, 64, 64, "BmmFp8Kernel", id="tails-on-both-axes"),
+        pytest.param(8, 2048, 2048, 2048, "BmmFP8WSKernel", id="fills-a-warp-specialized-wave"),
+        pytest.param(32, 128, 128, 2048, "BmmFP8PersistentKernel", id="whole-128-tiles-only"),
+        pytest.param(1, 64, 64, 64, "BmmFP8Kernel", id="tails-on-both-axes"),
     ],
 )
 def test_bmm_fp8_dispatch(batch: int, m: int, n: int, k: int, expected: str) -> None:
     """The warp-specialized program wins wherever it applies; the classic one takes tails."""
-    call = BmmFp8Call(
+    call = BmmFP8Call(
         arch=_SM90,
         sm_count=132,
         batch=batch,
@@ -651,11 +651,11 @@ _GQA_DENSE_ROWS = [
         "GQADenseSlidingWindowKernel",
         "window-beats-decode",
     ),
-    (("fp16", 1, 4, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseWsKernel", "prefill"),
+    (("fp16", 1, 4, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseWSKernel", "prefill"),
     (("fp16", 1, 4, 32, 4, 72, 2048, (-1, -1), False, 0.0), None, "prefill-dim-72"),
     (
         ("bf16", 2, 8, 8, 8, 64, 512, (-1, -1), True, 30.0),
-        "GQADenseWsKernel",
+        "GQADenseWSKernel",
         "prefill-rope-softcap",
     ),
 ]
@@ -670,12 +670,12 @@ _GQA_DENSE_ROWS = [
 def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
     """Each region, and the boundary that separates it from the next."""
     from tileops.kernels.attention.call_spec import AttentionCall
-    from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
+    from tileops.ops.attention.gqa.dense import GQADenseFwdOp
 
     dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}
     is_fp8 = dtype_name == "fp8"
-    op = GroupedQueryAttentionDenseFwdOp(
+    op = GQADenseFwdOp(
         window_size_left=window[0],
         window_size_right=window[1],
         softcap=softcap,

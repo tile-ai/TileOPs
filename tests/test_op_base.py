@@ -541,30 +541,30 @@ def test_a_key_no_op_declares_is_refused(stale: str) -> None:
     Every key this rename retired is one: dropping it silently would hand the caller the
     shipped implementation under the name it asked to replace.
     """
-    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.kernels.gemm import GemmTMAKernel
     from tileops.ops import GemmFwdOp
 
     with pytest.raises(ValueError, match="no op has"):
-        GemmFwdOp(kernel_map={stale: GemmTmaKernel})
+        GemmFwdOp(kernel_map={stale: GemmTMAKernel})
 
 
 def test_a_key_another_op_declares_passes_through() -> None:
     """A composite hands every sub-op the whole set, so a sibling's key is not an error."""
-    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.kernels.gemm import GemmTMAKernel
     from tileops.ops import GemmFwdOp
 
-    op = GemmFwdOp(kernel_map={"shared_expert_mlp": GemmTmaKernel})
+    op = GemmFwdOp(kernel_map={"shared_expert_mlp": GemmTMAKernel})
     assert "shared_expert_mlp" not in op.kernel_map
 
 
 def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
     """``default_kernel_map`` is ``kernel_types``, and an override may name only a key some
     created op class declares."""
-    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.kernels.gemm import GemmTMAKernel
     from tileops.kernels.gemm.call_spec import GemmFwdInterface
 
     attrs = {
-        "kernel_types": {"probe_kernel": GemmTmaKernel},
+        "kernel_types": {"probe_kernel": GemmTMAKernel},
         "interfaces": {"gemm": GemmFwdInterface},
         "forward": lambda self, *a, **kw: None,
         "_infer_output_shapes": lambda self, *shapes: {},
@@ -573,7 +573,7 @@ def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
     }
     keyed = type("KeyedOp", (Op,), attrs)
     op = keyed()
-    op.dispatch_kernel({"probe_kernel": GemmTmaKernel})
-    assert op.kernel_map == {"probe_kernel": GemmTmaKernel}
+    op.dispatch_kernel({"probe_kernel": GemmTMAKernel})
+    assert op.kernel_map == {"probe_kernel": GemmTMAKernel}
     with pytest.raises(ValueError, match="no op has"):
-        keyed().dispatch_kernel({"stale_kernel": GemmTmaKernel})
+        keyed().dispatch_kernel({"stale_kernel": GemmTMAKernel})

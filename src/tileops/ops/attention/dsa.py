@@ -3,16 +3,16 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaKernel
-from tileops.kernels.attention.call_spec import SparseMlaCall, SparseMLADecodeFwdInterface
+from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeKernel
+from tileops.kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"]
+__all__ = ["DSADecodeWithKVCacheFwdOp"]
 
 
-class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
+class DSADecodeWithKVCacheFwdOp(Op):
     """
     Sparse Attention Decode Operation with Key-Value Cache for DeepSeek.
 
@@ -29,11 +29,11 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
     # The WGMMA warp-specialized kernel serves SM90; the architecture-agnostic basic kernel
     # serves everywhere else. Selection reads the device when a call arrives.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "sparse_mla_kernel": SparseMlaKernel,
-        "sparse_mla_basic_kernel": SparseMlaBasicKernel,
+        "dsa_decode_kernel": DSADecodeKernel,
+        "dsa_decode_basic_kernel": DSADecodeBasicKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "sparse_mla": SparseMLADecodeFwdInterface
+        "dsa_decode": SparseMLADecodeFwdInterface
     }
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -86,13 +86,13 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _sparse_mla_call(
+    def _dsa_decode_call(
         self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
-    ) -> SparseMlaCall:
+    ) -> DSADecodeCall:
         """State what one call is, for selection to filter against."""
         batch, seq_len, heads, q_dim = q.shape
         _, seq_len_kv, heads_kv, _ = kv.shape
-        return SparseMlaCall(
+        return DSADecodeCall(
             batch=batch,
             seq_len=seq_len,
             seq_len_kv=seq_len_kv,
@@ -135,7 +135,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, kv, indices)
-        kernel = self.kernel_for("sparse_mla", self._sparse_mla_call(q, kv, indices))
+        kernel = self.kernel_for("dsa_decode", self._dsa_decode_call(q, kv, indices))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

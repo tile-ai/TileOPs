@@ -16,17 +16,17 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
 )
 from workloads.moe import (
-    MoeExpertMLPWorkload,
-    MoeGroupedGemmWorkload,
-    MoePostPermuteWorkload,
-    MoePrePermuteWorkload,
+    MoEExpertMLPWorkload,
+    MoEGroupedGemmWorkload,
+    MoEPostPermuteWorkload,
+    MoEPrePermuteWorkload,
     gated_activation,
 )
 
 
 @pytest.mark.parametrize("call", manifest_calls(MoEPrePermuteFwdOp))
 def test_moe_pre_permute_bench(call) -> None:
-    workload = MoePrePermuteWorkload(call)
+    workload = MoEPrePermuteWorkload(call)
     hidden_states, local_ids = workload.gen_inputs()
     op = MoEPrePermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
@@ -44,7 +44,7 @@ def test_moe_pre_permute_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(MoEPostPermuteFwdOp))
 def test_moe_post_permute_bench(call) -> None:
-    workload = MoePostPermuteWorkload(call)
+    workload = MoEPostPermuteWorkload(call)
     expert_output, weights, inverse = workload.gen_inputs()
     op = MoEPostPermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
@@ -93,7 +93,7 @@ def _tight_psum(op) -> bool:
 
 @pytest.mark.parametrize("call", manifest_calls(MoEGroupedGemmFwdOp))
 def test_moe_grouped_gemm_bench(call) -> None:
-    workload = MoeGroupedGemmWorkload(call)
+    workload = MoEGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
@@ -111,7 +111,7 @@ def test_moe_grouped_gemm_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(MoEExpertMLPFwdOp))
 def test_moe_expert_mlp_bench(call) -> None:
-    workload = MoeExpertMLPWorkload(call)
+    workload = MoEExpertMLPWorkload(call)
     x, w_gate_up, w_down, metadata = workload.gen_inputs()
     op = MoEExpertMLPFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)

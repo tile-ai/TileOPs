@@ -8,8 +8,8 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.mamba.call_spec import CBProducerCall, CBProducerFwdInterface
-from tileops.kernels.mamba.ssd_chunk_coupling import CBProducerKernel
+from tileops.kernels.mamba.call_spec import SSDChunkCouplingCall, SSDChunkCouplingFwdInterface
+from tileops.kernels.mamba.ssd_chunk_coupling import SSDChunkCouplingKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -24,9 +24,11 @@ class SSDChunkCouplingFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"cb_producer": CBProducerKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ssd_chunk_coupling": SSDChunkCouplingKernel
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "cb_producer": CBProducerFwdInterface
+        "ssd_chunk_coupling": SSDChunkCouplingFwdInterface
     }
 
     def __init__(
@@ -78,7 +80,7 @@ class SSDChunkCouplingFwdOp(Op):
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         batch, seq_len, n_groups, d_state = C_mat.shape
-        call = CBProducerCall(
+        call = SSDChunkCouplingCall(
             batch=batch,
             seq_len=seq_len,
             n_groups=n_groups,
@@ -87,7 +89,7 @@ class SSDChunkCouplingFwdOp(Op):
             dtype=C_mat.dtype,
             device=C_mat.device,
         )
-        kernel = self.kernel_for("cb_producer", call)
+        kernel = self.kernel_for("ssd_chunk_coupling", call)
         return kernel(C_mat, B_mat)
 
     def compute_roof(self) -> str:
