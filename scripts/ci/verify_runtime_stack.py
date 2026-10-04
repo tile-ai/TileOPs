@@ -91,12 +91,23 @@ for dist, why in (
     ("flag_gems", "the flaggems columns"),
     ("flashinfer-python", "the flashinfer columns"),
     ("flash-linear-attention", "the linear-attention columns"),
+    ("deepspeed", "the fused INT4 quantization baseline"),
     ("nvmath-python", "the cuBLASLt-search GEMM baseline"),
 ):
     try:
         md.version(dist)
     except md.PackageNotFoundError:
         sys.exit(f"FAIL: {dist} is not installed; {why} would be missing.")
+
+try:
+    from deepspeed.ops.quantizer import quantizer_op
+
+    assert callable(quantizer_op.quantize)
+except Exception as exc:
+    sys.exit(
+        f"FAIL: DeepSpeed's prebuilt quantizer does not import ({exc}). "
+        "Build it with DS_BUILD_QUANTIZER=1 in the runner image."
+    )
 
 print(
     f"runtime-stack OK: tilelang {tilelang.__version__} | "

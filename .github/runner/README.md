@@ -16,9 +16,8 @@ main commit's short SHA. The release build is the standard one: it is what users
 build compiles a main commit in place of the release, for work that needs tilelang ahead of it.
 
 `--target final` takes the bare tag: the CI runners, with the Actions agent. `--target tilelang`
-takes the `-dev` suffix: local development, no agent. Rebuilding the same three versions appends
-a numeric suffix, `…-tl-<tilelang>-2`. The `ARG` block in the Dockerfile lists the other options,
-with defaults.
+takes the `-dev` suffix: local development, no agent. The `ARG` block in the Dockerfile lists the
+other options, with defaults.
 
 ## Build and roll out
 

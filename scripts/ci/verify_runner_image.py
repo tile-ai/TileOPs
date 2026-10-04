@@ -46,6 +46,22 @@ def main() -> int:
 
     print(f"deep_gemm {deep_gemm.__version__}")
 
+    import deepspeed
+    from deepspeed.ops.quantizer import quantizer_op
+
+    # Row 0 is constant, where a degenerate scale would show up.
+    w = torch.arange(-8, 8, device="cuda", dtype=torch.float16).repeat(4, 8)
+    w[0] = 0
+    packed, params = quantizer_op.quantize(w, 4, 4, quantizer_op.Asymmetric)
+    codes = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).reshape_as(w)
+    restored = codes.float() * params[:, :1] + params[:, 1:]
+    assert packed.dtype == torch.int8 and params.dtype == torch.float32
+    assert packed.shape == (4, 64) and params.shape == (4, 2)
+    assert torch.isfinite(params).all() and (params[:, 0] > 0).all()
+    assert ((restored - w.float()).abs() <= params[:, :1] * (1 + 1e-5)).all()
+    torch.cuda.synchronize()
+    print(f"deepspeed {deepspeed.__version__} INT4 quantizer OK")
+
     # cuBLAS: a broken install shows up here rather than in the first benchmark.
     a = torch.randn(512, 512, device="cuda", dtype=torch.float16)
     assert torch.matmul(a, a).isfinite().all()

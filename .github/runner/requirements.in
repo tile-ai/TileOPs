@@ -39,6 +39,7 @@ pytest-timeout
 pytest-cov
 py-spy
 flash-linear-attention
+deepspeed
 vllm
 cupti-python
 nvmath-python
