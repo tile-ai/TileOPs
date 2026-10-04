@@ -35,6 +35,13 @@ class GQAVarlenFwdOp(Op):
     ``v_scale`` per request and KV head, and name a 16-bit ``out_dtype``; the FP8
     result carries the error of a single e4m3 rounding of the softmax weights, so it
     agrees with the 16-bit path to about 2% relative.
+
+    By default the op does not check the contents of ``cu_seqlens_q`` and
+    ``cu_seqlens_kv``. The kernels read and write the packed tensors at the positions the
+    offsets name, so offsets that do not start at 0, end at the packed length, and never
+    decrease access device memory out of bounds. The caller guarantees well-formed
+    offsets, or passes ``validate_inputs=True``, which checks them on every call at the
+    cost of a device synchronization and cannot run inside CUDA Graph capture.
     """
 
     compile_boundary = True

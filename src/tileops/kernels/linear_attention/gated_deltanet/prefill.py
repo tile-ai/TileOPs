@@ -243,7 +243,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             chunk_size=chunk_size,
             threshold=-10.0,
         )
-        _, ht, mt = fused_gdr_h(
+        ht, mt = fused_gdr_h(
             k=k,
             v=v,
             a=A,
@@ -251,7 +251,6 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             b=beta,
             initial_state=None,
             output_final_state=True,
-            output_h=False,
             cu_seqlens=cp_cu_seqlens_t,
             num_warmup_chunks=num_warmup_chunks,
             k_rnorm=k_rnorm,
@@ -344,7 +343,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             cu_seqlens,
             lengths,
         )
-        o, _states, final_state = fused_gdr_fwd(
+        o, final_state = fused_gdr_fwd(
             q,
             k,
             v,
@@ -353,13 +352,10 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
             beta,
             scale=self.scale,
             initial_state=initial,
-            output_h=False,
             cu_seqlens=offsets,
             cp_seq_map=cp_seq_map,
             raw_cu_seqlens=raw_offsets,
             chunk_size=chunk_size,
-            state_head_first=False,
-            chunks_per_sequence=0,
             state_v_first=self.state_v_first,
             k_rnorm=k_rnorm,
             l2norm=self.l2norm,

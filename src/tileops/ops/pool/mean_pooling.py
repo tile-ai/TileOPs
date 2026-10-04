@@ -1,4 +1,3 @@
-import weakref
 from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
@@ -13,53 +12,6 @@ from tileops.kernels.pool import (
 from tileops.ops.op_base import Op
 
 __all__ = ["MeanPoolingFwdOp"]
-
-
-class _CheckedChunkMaps:
-    """The chunk maps whose values have already been through `MeanPoolingFwdOp`'s checks.
-
-    An entry stands only while both weak references still resolve to the tensors that were
-    checked and neither `_version` has moved, so a map written in place, freed, or replaced
-    is checked again.
-    """
-
-    # Distinct maps remembered at once. A dead tensor leaves its key behind, so the table is
-    # dropped rather than grown once a caller has cycled through this many.
-    _ENTRIES = 8
-
-    def __init__(self) -> None:
-        """Start empty. An entry maps a key to (weak offsets, weak indices, both versions)."""
-        self._seen: Dict[tuple, tuple] = {}
-
-    @staticmethod
-    def _key(offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int) -> tuple:
-        return (id(offsets), id(indices), seq_len, chunks)
-
-    def checked(
-        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
-    ) -> bool:
-        """Whether this map, unchanged since it was checked, may skip the checks."""
-        entry = self._seen.get(self._key(offsets, indices, seq_len, chunks))
-        if entry is None:
-            return False
-        offsets_ref, indices_ref, versions = entry
-        return (
-            offsets_ref() is offsets
-            and indices_ref() is indices
-            and versions == (offsets._version, indices._version)
-        )
-
-    def remember(
-        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
-    ) -> None:
-        """Record that this map passed the checks."""
-        if len(self._seen) >= self._ENTRIES:
-            self._seen.clear()
-        self._seen[self._key(offsets, indices, seq_len, chunks)] = (
-            weakref.ref(offsets),
-            weakref.ref(indices),
-            (offsets._version, indices._version),
-        )
 
 
 class MeanPoolingFwdOp(Op):
@@ -78,6 +30,13 @@ class MeanPoolingFwdOp(Op):
     ceil_mode=True)`` over a view with the sequence axis last. Chunk sums accumulate in
     ``accum_dtype`` and are cast back to the input dtype at the boundary, so a ``float16``
     input with ``accum_dtype=torch.float32`` does not lose the sum to rounding.
+
+    By default the op does not check the contents of ``offsets`` and ``indices``. The
+    kernel indexes ``offsets`` by ``indices`` and ``x`` by ``offsets`` without bounds
+    checks, so a map that does not partition the sequence axis reads device memory out of
+    bounds and returns undefined values. The caller guarantees a consistent map, or passes
+    ``validate_inputs=True``, which checks it on every call at the cost of device
+    synchronizations and cannot run inside CUDA Graph capture.
 
     Example:
         ```python linenums="1"
@@ -101,6 +60,7 @@ class MeanPoolingFwdOp(Op):
         chunk_size: int,
         accum_dtype: torch.dtype,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -111,11 +71,14 @@ class MeanPoolingFwdOp(Op):
             chunk_size: Manifest ``params.chunk_size``, ``int``, a positive multiple of 32.
             accum_dtype: Manifest ``params.accum_dtype``, ``torch.dtype`` — what a chunk sum
                 accumulates in.
+            validate_inputs: Check ragged metadata contents synchronously on each call.
+                Disable during CUDA Graph capture; shapes and dtypes are always checked.
             target: Backend target to serve this op, or ``None`` to decide from the input
                 device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
+        self.validate_inputs = validate_inputs
         self.chunk_size = chunk_size
         self.accum_dtype = accum_dtype
         self.target = target
@@ -123,7 +86,6 @@ class MeanPoolingFwdOp(Op):
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
         self._placeholders: Dict[tuple, torch.Tensor] = {}
-        self._checked_maps = _CheckedChunkMaps()
         self.dispatch_kernel(kernel_map)
 
     def _placeholder(self, shape: tuple[int, ...], device: torch.device) -> torch.Tensor:
@@ -155,8 +117,8 @@ class MeanPoolingFwdOp(Op):
             ragged one.
 
         Raises:
-            ValueError: ``indices`` does not hold one row per chunk ``offsets`` implies, or
-                ``offsets`` does not partition ``x``'s sequence axis.
+            ValueError: With ``validate_inputs=True``, ``indices`` disagrees with
+                ``offsets`` or ``offsets`` does not partition the sequence axis.
         """
         return self._call_boundary(x, offsets, indices)
 
@@ -173,7 +135,8 @@ class MeanPoolingFwdOp(Op):
         ragged = offsets is not None
         if ragged:
             chunks = indices.shape[0]
-            self._validate_ragged(offsets, indices, seq_len, chunks)
+            if self.validate_inputs:
+                self._check_ragged(offsets, indices, seq_len, chunks)
             seq_num = offsets.shape[0] - 1
             offsets_arg, indices_arg = offsets.contiguous(), indices.contiguous()
         else:
@@ -200,20 +163,6 @@ class MeanPoolingFwdOp(Op):
         )
         kernel = self.kernel_for("mean_pooling", call)
         return kernel(x, offsets_arg, indices=indices_arg)
-
-    def _validate_ragged(
-        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
-    ) -> None:
-        """Check a chunk map once, then skip it while the same tensors come back unchanged.
-
-        `_check_ragged` reads `offsets` and `indices` element by element, costing a dozen
-        device launches and as many syncs that a ragged call would otherwise pay before
-        every pooling. A chunk map is built once and passed to many calls.
-        """
-        if self._checked_maps.checked(offsets, indices, seq_len, chunks):
-            return
-        self._check_ragged(offsets, indices, seq_len, chunks)
-        self._checked_maps.remember(offsets, indices, seq_len, chunks)
 
     def _check_ragged(
         self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int

@@ -12,7 +12,6 @@ import torch
 from tileops.kernels.constants import LOG2E, WARP_MMA_ROWS
 from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
     L2NORM_EPS,
-    prepare_chunk_offsets,
     step_size,
 )
 from tileops.utils import get_sm_count
@@ -38,12 +37,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     b_dtype,
     h0_dtype,
     ht_dtype,
-    h_dtype,
     o_dtype,
     seqlen_dtype,
     use_initial_state,
     store_final_state,
-    store_h,
     store_o,
     is_varlen,
     is_cp,
@@ -51,13 +48,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     beta_sigmoid=False,
     allow_neg_eigval=False,
     block_DV=128,
-    state_head_first=False,
-    chunks_per_sequence=0,
     state_v_first=False,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
-    num_chunks = T.dynamic("num_chunks")
     raw_batch_size = T.dynamic("raw_batch_size")
     block_S = chunk_size
     # A build that does not normalize never reads this tensor, and the host hands it one
@@ -78,7 +72,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
         a_shape = (1, num_tokens, H, chunk_size)
         g_shape = (1, num_tokens, H)
         b_shape = (1, num_tokens, H)
-        h_shape = (1, num_chunks, H, DK, DV)
     else:
         rnorm_shape = (batch_size, rnorm_tokens, Hg)
         q_shape = (batch_size, num_tokens, Hg, DK)
@@ -88,15 +81,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
         a_shape = (batch_size, num_tokens, H, chunk_size)
         g_shape = (batch_size, num_tokens, H)
         b_shape = (batch_size, num_tokens, H)
-        h_shape = (batch_size, num_chunks, H, DK, DV)
-    if state_v_first and store_h:
-        raise ValueError("a value-major state has no per-chunk state buffer to write")
     # Under a value-major state the accumulator holds S^T, so every contraction reading or
     # writing it swaps operand order and the value tile becomes its leading extent.
     state_rows, state_cols = (block_DV, DK) if state_v_first else (DK, block_DV)
     state_axes = (DV, DK) if state_v_first else (DK, DV)
-    if state_head_first:
-        h_shape = (raw_batch_size, H, chunks_per_sequence + 1, DK, DV)
     h0_shape = (batch_size, H, *state_axes)
     ht_shape = (raw_batch_size, H, *state_axes)
 
@@ -111,11 +99,9 @@ def _build_fused_chunk_gdr_fwd_kernel(
         k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
         h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
-        chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         cp_seq_map: T.Tensor([batch_size], dtype=seqlen_dtype),
         raw_cu_seqlens: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
         o: T.Tensor(o_shape, dtype=o_dtype),
-        h: T.Tensor(h_shape, dtype=h_dtype),
         ht: T.Tensor(ht_shape, dtype=ht_dtype),
     ):
         with T.Kernel(T.ceildiv(DV, block_DV) * batch_size * H, threads=512) as (bbhv,):
@@ -127,13 +113,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
             seq_start_idx = T.alloc_var("int32")
             seq_end_idx = T.alloc_var("int32")
             seq_split_idx = T.alloc_var("int32")
-            chunk_start_idx = T.alloc_var("int32")
-            chunk_split_idx = T.alloc_var("int32")
 
             batch_idx = 0 if is_varlen else bb
             seq_start_idx = cu_seqlens[bb] if is_varlen else 0
             seq_end_idx = cu_seqlens[bb + 1] if is_varlen else num_tokens
-            chunk_start_idx = chunk_offsets[bb] if is_varlen else 0
 
             raw_batch_idx = T.alloc_var("int32")
             raw_seq_end_idx = T.alloc_var("int32")
@@ -141,12 +124,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
             raw_batch_idx = cp_seq_map[bb] if is_cp else bb
             raw_seq_end_idx = raw_cu_seqlens[raw_batch_idx + 1] if is_cp else seq_end_idx
             need_store_final_state = store_final_state & (raw_seq_end_idx == seq_end_idx)
-            state_chunk_start_idx = T.alloc_var("int32")
-            state_chunk_start_idx = (
-                (seq_start_idx - raw_cu_seqlens[raw_batch_idx]) // block_S
-                if state_head_first
-                else 0
-            )
 
             num_iters = T.alloc_var("int32")
             num_unmasked_iters = T.alloc_var("int32")
@@ -268,17 +245,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.copy(
                             h_fragment,
                             ht[raw_batch_idx, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
-                        )
-                    if state_head_first and store_h:
-                        T.copy(
-                            h_fragment,
-                            h[
-                                raw_batch_idx,
-                                bh,
-                                chunks_per_sequence,
-                                0:DK,
-                                bv * block_DV : (bv + 1) * block_DV,
-                            ],
                         )
 
             elif tx < 256:
@@ -562,33 +528,9 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_5)
 
                         T.barrier_wait(bar_1, i_s % 2)
-                        if store_h:
-                            if state_head_first:
-                                T.copy(
-                                    h_shared,
-                                    h[
-                                        raw_batch_idx,
-                                        bh,
-                                        state_chunk_start_idx + i_s,
-                                        0:DK,
-                                        bv * block_DV : (bv + 1) * block_DV,
-                                    ],
-                                )
-                            else:
-                                T.copy(
-                                    h_shared,
-                                    h[
-                                        batch_idx,
-                                        chunk_start_idx + i_s,
-                                        bh,
-                                        0:DK,
-                                        bv * block_DV : (bv + 1) * block_DV,
-                                    ],
-                                )
 
                     if num_unmasked_iters < num_iters:
                         seq_split_idx = seq_start_idx + num_unmasked_iters * block_S
-                        chunk_split_idx = chunk_start_idx + num_unmasked_iters
 
                         T.barrier_arrive(bar_0)
 
@@ -606,29 +548,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_5)
 
                         T.barrier_wait(bar_1, num_unmasked_iters % 2)
-                        if store_h:
-                            if state_head_first:
-                                T.copy(
-                                    h_shared,
-                                    h[
-                                        raw_batch_idx,
-                                        bh,
-                                        state_chunk_start_idx + num_unmasked_iters,
-                                        0:DK,
-                                        bv * block_DV : (bv + 1) * block_DV,
-                                    ],
-                                )
-                            else:
-                                T.copy(
-                                    h_shared,
-                                    h[
-                                        batch_idx,
-                                        chunk_split_idx,
-                                        bh,
-                                        0:DK,
-                                        bv * block_DV : (bv + 1) * block_DV,
-                                    ],
-                                )
 
                     seq_split_idx = seq_start_idx + (num_iters - 1) * block_S
 
@@ -657,14 +576,11 @@ def fused_gdr_fwd(
     scale: float | None = None,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = True,
-    output_h: bool = False,
     output_o: bool = True,
     cu_seqlens: torch.LongTensor | None = None,
     cp_seq_map: torch.LongTensor | None = None,
     raw_cu_seqlens: torch.LongTensor | None = None,
     chunk_size: int = 64,
-    state_head_first: bool = False,
-    chunks_per_sequence: int = 0,
     state_v_first: bool = False,
     k_rnorm: torch.Tensor | None = None,
     l2norm: bool = False,
@@ -679,16 +595,11 @@ def fused_gdr_fwd(
 
     if cu_seqlens is None:
         real_batch_size = batch_size
-        num_chunks = tilelang.cdiv(num_tokens, chunk_size) if output_h else 0
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        chunk_offsets = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
         seqlen_dtype = torch.int32
         is_varlen = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        chunk_offsets = prepare_chunk_offsets(cu_seqlens, chunk_size).to(cu_seqlens.dtype)
-        # Only a per-chunk buffer needs the count, and reading it synchronizes the device.
-        num_chunks = int(chunk_offsets[-1].item()) if output_h else 0
         seqlen_dtype = cu_seqlens.dtype
         is_varlen = True
 
@@ -704,21 +615,6 @@ def fused_gdr_fwd(
         initial_state = torch.empty(
             (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
         )
-    if state_head_first and raw_cu_seqlens is None:
-        raw_cu_seqlens = cu_seqlens
-    if state_head_first:
-        if chunks_per_sequence <= 0:
-            raise ValueError("chunks_per_sequence must be positive for head-first states")
-        state_batch_size = (
-            raw_cu_seqlens.shape[0] - 1 if raw_cu_seqlens is not None else real_batch_size
-        )
-        h = torch.empty(
-            (state_batch_size, H, chunks_per_sequence + 1, K, V),
-            dtype=k.dtype,
-            device=k.device,
-        )
-    else:
-        h = torch.empty((batch_size, num_chunks, H, K, V), dtype=k.dtype, device=k.device)
     if raw_cu_seqlens is None:
         raw_cu_seqlens = torch.empty((real_batch_size + 1,), dtype=seqlen_dtype, device=k.device)
         final_state = torch.empty(
@@ -735,9 +631,7 @@ def fused_gdr_fwd(
     # prefill benchmark to move it.
     sm_fill = 0.7
     target_num_ctas = int(get_sm_count(k.device.index) * sm_fill)
-    if V == 64 and not is_cp and chunks_per_sequence > 0:
-        block_DV = 8 if chunks_per_sequence <= 64 else 16
-    elif grid_size >= target_num_ctas:
+    if grid_size >= target_num_ctas:
         block_DV = min(128, V)
     elif grid_size * 2 >= target_num_ctas:
         block_DV = min(64, V)
@@ -760,13 +654,11 @@ def fused_gdr_fwd(
         b_dtype=b.dtype,
         h0_dtype=initial_state.dtype,
         ht_dtype=final_state.dtype,
-        h_dtype=h.dtype,
         o_dtype=o.dtype,
         seqlen_dtype=seqlen_dtype,
         accum_dtype="float32",
         use_initial_state=use_initial_state,
         store_final_state=output_final_state,
-        store_h=output_h,
         store_o=output_o,
         is_varlen=is_varlen,
         is_cp=is_cp,
@@ -774,8 +666,6 @@ def fused_gdr_fwd(
         beta_sigmoid=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
         block_DV=block_DV,
-        state_head_first=state_head_first,
-        chunks_per_sequence=chunks_per_sequence,
         state_v_first=state_v_first,
     )
     if k_rnorm is None:
@@ -790,19 +680,15 @@ def fused_gdr_fwd(
         k_rnorm,
         initial_state,
         cu_seqlens,
-        chunk_offsets,
         cp_seq_map,
         raw_cu_seqlens,
         o,
-        h,
         final_state,
     )
 
     if not output_final_state:
         final_state = None
-    if not output_h:
-        h = None
     if not output_o:
         o = None
 
-    return o, h, final_state
+    return o, final_state

@@ -300,37 +300,41 @@ class MeanPoolingWorkload(WorkloadBase):
             return (x,)
         return (x, *mean_pooling_chunk_index(self.seq_lens, self.chunk_size))
 
+    def chunk_slices(
+        self,
+        x: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> tuple[tuple[int, int], ...]:
+        """Resolve metadata outside a compiled reference; the math stays shared."""
+        if offsets is None:
+            return tuple(
+                (start, min(start + self.chunk_size, x.shape[1]))
+                for start in range(0, x.shape[1], self.chunk_size)
+            )
+        bounds = offsets.tolist()
+        return tuple(
+            (
+                bounds[sequence] + chunk * self.chunk_size,
+                min(bounds[sequence] + (chunk + 1) * self.chunk_size, bounds[sequence + 1]),
+            )
+            for sequence, chunk in indices.tolist()
+        )
+
+    @staticmethod
+    def reference_slices(x: torch.Tensor, slices: tuple[tuple[int, int], ...]) -> torch.Tensor:
+        """Mean of each named chunk in the caller's order, with no padding in its divisor."""
+        if not slices:
+            return x.new_empty((x.shape[0], 0, *x.shape[2:]))
+        return torch.stack([x[:, start:end].mean(1) for start, end in slices], dim=1)
+
     def ref_program(
         self,
         x: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
         indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        _ = indices
-        batch, seq_len, heads, dim = x.shape
-        if offsets is None:
-            chunks = -(-seq_len // self.chunk_size)
-            output = torch.empty(batch, chunks, heads, dim, dtype=x.dtype, device=x.device)
-            for chunk_id in range(chunks):
-                start = chunk_id * self.chunk_size
-                output[:, chunk_id] = x[:, start : start + self.chunk_size].mean(dim=1)
-            return output
-
-        lengths = (offsets[1:] - offsets[:-1]).tolist()
-        counts = [-(-n // self.chunk_size) for n in lengths]
-        output = torch.empty(batch, sum(counts), heads, dim, dtype=x.dtype, device=x.device)
-        for b in range(batch):
-            # Reset per row: `offsets` partitions every batch row the same way, so each
-            # row's chunks fill the same output slots.
-            chunk_idx = 0
-            for seq_id, chunks_i in enumerate(counts):
-                seq_start, seq_end = int(offsets[seq_id]), int(offsets[seq_id + 1])
-                for local in range(chunks_i):
-                    chunk_start = seq_start + local * self.chunk_size
-                    chunk_end = min(chunk_start + self.chunk_size, seq_end)
-                    output[b, chunk_idx] = x[b, chunk_start:chunk_end].mean(dim=0)
-                    chunk_idx += 1
-        return output
+        return self.reference_slices(x, self.chunk_slices(x, offsets, indices))
 
 
 class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):

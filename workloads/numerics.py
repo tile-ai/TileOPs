@@ -23,6 +23,7 @@ __all__ = [
     "assert_close",
     "assert_normalized_error",
     "assert_quantized",
+    "assert_rounded",
     "compare_outputs",
     "describe",
     "logit_mask_validator",
@@ -448,6 +449,19 @@ def verify(
         return result
     finally:
         restore()
+
+
+def assert_rounded(
+    got: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float = 0
+) -> None:
+    """Allow one adjacent stored value, then enforce the arithmetic error bound.
+
+    Independent reductions can straddle a half/bfloat rounding boundary even when
+    their FP32 error is smaller than a storage step. This allowance applies only
+    to the narrowed output; callers verify FP32 state without it.
+    """
+    adjacent = torch.nextafter(expected, got)
+    torch.testing.assert_close(got.float(), adjacent.float(), atol=atol, rtol=rtol, equal_nan=True)
 
 
 def assert_close(got: Any, expected: Any, *, atol: float, rtol: float) -> None:

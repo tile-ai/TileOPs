@@ -342,15 +342,10 @@ def test_mean_pooling_bench(call) -> None:
     reference = workload.ref_program
     if len(inputs) > 1 and inputs[1] is not None:
         # Fixed chunk bounds permit full-graph compilation of ragged workloads.
-        offsets = inputs[1].tolist()
-        slices = [
-            (start, min(start + workload.chunk_size, end))
-            for begin, end in zip(offsets[:-1], offsets[1:], strict=True)
-            for start in range(begin, end, workload.chunk_size)
-        ]
+        slices = workload.chunk_slices(*inputs)
 
         def reference(x, *_metadata):
-            return torch.stack([x[:, begin:end].mean(1) for begin, end in slices], dim=1)
+            return workload.reference_slices(x, slices)
 
     functors = {
         "tileops": op,

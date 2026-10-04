@@ -715,21 +715,22 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         request, which ``seqlen_q`` already states.
         """
         c = self.config
-        # A cache shorter than one tile per split is not worth splitting.
-        real_max = int(real_seqlen_kv.max().item())
+        # Specialize from the static table capacity. Kernels bound each split by
+        # the live device lengths, so a graph replay can grow or shrink the cache.
+        capacity = self.max_pages_per_req * self.page_size
         num_split = c["num_split"]
-        if real_max < num_split * c["block_N"]:
+        if capacity < num_split * c["block_N"]:
             kernel = gqa_decode_no_split_paged_kernel(*self._builder_args)(
                 c["block_M"], c["block_N"], c["num_stages"], c["threads"]
             )
             q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
             return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
-        chunk_size = real_max // (num_split * c["block_N"]) * c["block_N"]
+        chunk_size = capacity // (num_split * c["block_N"]) * c["block_N"]
         split_length = torch.full(
             (self.batch, num_split), chunk_size, dtype=torch.int32, device=Q.device
         )
-        split_length[:, -1] = real_max - (num_split - 1) * chunk_size
+        split_length[:, -1] = capacity - (num_split - 1) * chunk_size
         acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
         glse = torch.empty(
             (self.batch, self.heads_kv, num_split, self.rows), dtype=torch.float32, device=Q.device

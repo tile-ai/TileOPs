@@ -43,8 +43,8 @@ def _check(op, workload, inputs) -> None:
 
 def _built_kernel(op, inputs):
     """The kernel *op* selects and builds for *inputs*."""
-    q, k_pages, _, page_table, _, cu_seqlens_q = inputs[:6]
-    call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
+    q, k_pages, _, page_table = inputs[:4]
+    call = op.paged_call(q, k_pages, page_table)
     return op.kernel_for("gqa_paged", call)
 
 
@@ -255,3 +255,41 @@ def test_gqa_paged_packed_query_lengths(
         32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
     )
     _check(GQAPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.parametrize("batch", [2, 1], ids=["dynamic", "single-request"])
+def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
+    """Dispatch is static; packed lengths and cache lengths remain replay inputs."""
+    workload = _decode(batch, 32, 4, [4096, 64][:batch], 128, 64)
+    inputs = workload.gen_inputs()
+    inputs[4][0] = 128  # A mostly empty table must also be safe on the split path.
+    workload.cache_lens[0] = 128
+    op = GQAPagedFwdOp()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = op(*inputs)
+    # Same tensor addresses and shapes, different sequence boundaries. The dynamic
+    # path must not keep the uniform packing it saw during warmup or capture.
+    if batch == 2:
+        inputs[5][1] = 0
+        workload.q_lens = [0, 2]
+        inputs[4][-1] = 63
+        workload.cache_lens[-1] = 63
+    v_pages, page_table, page_size = inputs[2], inputs[3][0], inputs[2].shape[1]
+    live_values = v_pages.clone()
+    for length in (128, 2048, 63, 0):
+        inputs[4][0] = length
+        workload.cache_lens[0] = length
+        # Slots past the cache keep stale contents; a non-finite one must not reach the output.
+        v_pages.copy_(live_values)
+        slots = torch.arange(length, page_table.numel() * page_size, device=v_pages.device)
+        v_pages[page_table[slots // page_size], slots % page_size] = float("nan")
+        graph.replay()
+        TestBase.check(workload, op, *inputs, runs=lambda *args: output)

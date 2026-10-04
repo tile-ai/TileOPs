@@ -63,18 +63,13 @@ class EngramGateConvBwdWorkload(WorkloadBase):
         conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=run_device()) * 0.02
         dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=run_device()) * 0.1
 
-        # Compute saved intermediates via reference forward
-        def _rmsnorm(x, w):
-            x_f = x.float()
-            rrms = (x_f**2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
-            return x_f * rrms * w.float(), rrms.squeeze(-1)
-
-        h_norm, rrms_h = _rmsnorm(H, rms_w_h)
-        k_norm, rrms_k = _rmsnorm(k, rms_w_h)
+        # Compute saved intermediates with the same normalization as the reference.
+        h_norm, rrms_h = _rmsnorm(H, rms_w_h, self.eps)
+        k_norm, rrms_k = _rmsnorm(k, rms_w_h, self.eps)
         dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
         alpha = torch.sigmoid(dot / (self.d**0.5))
         v_hat = alpha * v.float()
-        _, rrms_v = _rmsnorm(v_hat.to(self.dtype), rms_w_v)
+        _, rrms_v = _rmsnorm(v_hat.to(self.dtype), rms_w_v, self.eps)
 
         vhat = v_hat.to(self.dtype)
         alpha_squeezed = alpha.squeeze(-1).float()
@@ -196,7 +191,7 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     v_hat_norm, rrms_v = _rmsnorm(v_hat.to(H.dtype), rms_w_v, eps)
 
     v_perm = v_hat_norm.float().permute(0, 2, 1)
-    v_padded = F.pad(v_perm, (CONV_KERNEL_SIZE - 1, 0))
+    v_padded = F.pad(v_perm, (conv_w.shape[0] - 1, 0))
     conv_w_expanded = conv_w.float().T.unsqueeze(1)
     conv_out = F.conv1d(v_padded, conv_w_expanded, groups=d).permute(0, 2, 1)
 
@@ -225,19 +220,16 @@ def ref_engram_gate_conv_bwd(
     w_v_ag = rms_w_v.float().detach().requires_grad_(True)
     cw_ag = conv_w.float().detach().requires_grad_(True)
 
-    def _rmsnorm(x, w):
-        return x * (x**2).mean(dim=-1, keepdim=True).add(eps).rsqrt() * w
-
-    h_norm = _rmsnorm(H_ag, w_h_ag)
-    k_norm = _rmsnorm(k_ag, w_h_ag)
+    h_norm, _ = _rmsnorm(H_ag, w_h_ag, eps)
+    k_norm, _ = _rmsnorm(k_ag, w_h_ag, eps)
 
     dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
     alpha_ag = torch.sigmoid(dot / (d**0.5))
     v_hat_ag = alpha_ag * v_ag
-    v_hat_norm = _rmsnorm(v_hat_ag, w_v_ag)
+    v_hat_norm, _ = _rmsnorm(v_hat_ag, w_v_ag, eps)
 
     v_perm = v_hat_norm.permute(0, 2, 1)
-    v_padded = F.pad(v_perm, (CONV_KERNEL_SIZE - 1, 0))
+    v_padded = F.pad(v_perm, (conv_w.shape[0] - 1, 0))
     cw_expanded = cw_ag.T.unsqueeze(1)
     conv_out = F.conv1d(v_padded, cw_expanded, groups=d).permute(0, 2, 1)
     Y_ag = F.silu(conv_out) + v_hat_ag

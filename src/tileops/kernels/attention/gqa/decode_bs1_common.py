@@ -5,6 +5,10 @@ import tilelang.language as T
 import torch
 
 RING_DEPTH = 2
+_CONSUMER_THREADS = 128
+# TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
+# producer and consumer ranges take 3 and 4.
+_CONSUMER_BARRIER = 5
 
 COMPILE_FLAGS = [
     "-O3",
@@ -78,6 +82,7 @@ def make_gqa_decode_bs1_split(
         scale: float,
         kv_group_num: int,
         ring_depth: int,
+        dtype: str,
         accum_dtype: str,
     ):
         """Create the paging-independent WGMMA consumer macro."""
@@ -115,6 +120,14 @@ def make_gqa_decode_bs1_split(
             )
             for k in T.serial(loop_range):
                 T.mbarrier_wait_parity(ready[k % ring_depth], (k // ring_depth) % ring_depth)
+                if (k + 1) * block_n > this_len:
+                    # A page holds whatever its slots past the cache last held, and a
+                    # zero weight does not cancel a non-finite value in P @ V.
+                    for j, d in T.Parallel(block_n, dim):
+                        if k * block_n + j >= this_len:
+                            Vs[k % ring_depth, j, d] = T.cast(0, dtype)
+                    T.fence_proxy_async()
+                    T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
                 T.wgmma_gemm(
                     Qs,
                     Ks[k % ring_depth, :, :],
@@ -152,10 +165,15 @@ def make_gqa_decode_bs1_split(
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(free[k % ring_depth])
             for i, j in T.Parallel(block_m, dim):
-                acc_o[i, j] /= logsum[i]
+                # A graph may replay with fewer live tiles than static splits.
+                acc_o[i, j] /= T.if_then_else(this_len > 0, logsum[i], 1.0)
             for i in T.Parallel(block_m):
                 if i < kv_group_num:
-                    glse[bid, hid * kv_group_num + i, sid] = T.log2(logsum[i]) + sm[i] * scale
+                    glse[bid, hid * kv_group_num + i, sid] = T.if_then_else(
+                        this_len > 0,
+                        T.log2(logsum[i]) + sm[i] * scale,
+                        -T.infinity(accum_dtype),
+                    )
             for i, j in T.Parallel(block_m, dim):
                 if i < kv_group_num:
                     Output_partial[bid, hid * kv_group_num + i, sid, j] = acc_o[i, j]
@@ -169,6 +187,7 @@ def make_gqa_decode_bs1_split(
         scale,
         kv_group_num,
         RING_DEPTH,
+        dtype,
         accum_dtype,
     )
 
@@ -277,13 +296,18 @@ def make_gqa_decode_bs1_combine(
                 lse_vec[s] = glse[bid, hq, s]
             T.fill(lse_max, -T.infinity(accum_dtype))
             T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
+            lse_max[0] = T.if_then_else(lse_max[0] == -T.infinity(accum_dtype), 0.0, lse_max[0])
             lse_logsum[0] = 0
             for s in T.serial(ctx_splits):
                 lse_logsum[0] += T.exp2(glse[bid, hq, s] - lse_max[0])
             lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
             T.clear(o_accum)
             for s in T.serial(ctx_splits):
-                weight = T.exp2(glse[bid, hq, s] - lse_logsum[0])
+                weight = T.if_then_else(
+                    glse[bid, hq, s] == -T.infinity(accum_dtype),
+                    0.0,
+                    T.exp2(glse[bid, hq, s] - lse_logsum[0]),
+                )
                 for j in T.Parallel(dim):
                     o_accum[j] += Output_partial[bid, hq, s, j] * weight
             for j in T.Parallel(dim):

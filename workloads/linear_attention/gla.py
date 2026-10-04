@@ -120,18 +120,7 @@ class GLAInferenceWorkload(GLAChunkwiseWorkload):
         g: torch.Tensor,
         initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        from fla.ops.gla import chunk_gla, fused_recurrent_gla
-
-        reference = fused_recurrent_gla if q.shape[1] == 1 else chunk_gla
-        return reference(
-            q,
-            k,
-            v,
-            g,
-            scale=self.scale if self.scale is not None else self.dim_k**-0.5,
-            initial_state=initial_state,
-            output_final_state=True,
-        )
+        return gla_inference_ref(q, k, v, g, initial_state, scale=self.scale)
 
     def verification(self, *inputs):
         return inference_verification(inputs[0].dtype, decode=inputs[0].shape[1] == 1)
@@ -289,20 +278,9 @@ class GLAInferenceCall(CallWorkload):
         )
 
     def ref_program(self, q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
-        from fla.ops.gla import chunk_gla, fused_recurrent_gla
-
-        scale = self.call.ix["scale"]
-        arguments = dict(
-            scale=q.shape[-1] ** -0.5 if scale is None else scale,
-            initial_state=initial_state,
-            output_final_state=True,
-            cu_seqlens=cu_seqlens,
+        return gla_inference_ref(
+            q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu, scale=self.call.ix["scale"]
         )
-        if q.shape[1] == 1:
-            return fused_recurrent_gla(q, k, v, g, **arguments)
-        # chunk_gla builds its chunk index on the host, and the host copy of the offsets
-        # is what spares it a device-to-host synchronization for them.
-        return chunk_gla(q, k, v, g, cu_seqlens_cpu=cu_seqlens_cpu, **arguments)
 
     def verification(self, *inputs):
         return inference_verification(inputs[0].dtype, decode=inputs[0].shape[1] == 1)
@@ -316,7 +294,7 @@ def decode_verification(dtype):
 
 
 def inference_verification(dtype, *, decode=False):
-    from workloads.numerics import Custom, assert_close
+    from workloads.numerics import Custom, assert_close, assert_rounded
 
     if decode:
 
@@ -325,10 +303,7 @@ def inference_verification(dtype, *, decode=False):
             # does not apply. The stored output may straddle a half/bfloat rounding
             # boundary after two FP32 reduction orders; allow one adjacent value,
             # then apply the original absolute bound to the remaining error.
-            actual, target = got[0], expected[0]
-            adjacent = torch.nextafter(target, actual)
-            residual = (actual.float() - adjacent.float()).abs()
-            assert_close(residual, torch.zeros_like(residual), atol=3e-7, rtol=0)
+            assert_rounded(got[0], expected[0], atol=3e-7)
             assert_close(got[1], expected[1], atol=3e-7, rtol=3e-7)
 
         return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
@@ -372,3 +347,20 @@ def chunkwise_verification(dtype, *, backward=False):
             )
 
     return Custom(validate, "gradient error bounded by 1% of each gradient's amplitude")
+
+
+def gla_inference_ref(
+    q, k, v, g, initial_state=None, cu_seqlens=None, cu_seqlens_cpu=None, *, scale=None
+):
+    """FLA inference oracle shared by dense fixtures and packed manifest rows."""
+    from fla.ops.gla import chunk_gla, fused_recurrent_gla
+
+    args = dict(
+        scale=q.shape[-1] ** -0.5 if scale is None else scale,
+        initial_state=initial_state,
+        output_final_state=True,
+        cu_seqlens=cu_seqlens,
+    )
+    if q.shape[1] == 1:
+        return fused_recurrent_gla(q, k, v, g, **args)
+    return chunk_gla(q, k, v, g, cu_seqlens_cpu=cu_seqlens_cpu, **args)

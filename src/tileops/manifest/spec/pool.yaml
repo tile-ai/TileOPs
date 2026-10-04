@@ -528,6 +528,7 @@ MeanPoolingFwdOp:
     params:
       chunk_size: {type: int}
       accum_dtype: {type: torch.dtype}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       x: {dtype: T, shape: "[B, S, H, D]"}
       offsets: {dtype: int32, optional: true, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}

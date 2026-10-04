@@ -43,8 +43,8 @@ class AttentionCall(CallSpec):
     """What one attention call is, as the op knows it.
 
     Assembled in ``forward`` from op state plus what only the call knows: the
-    element type, whether the packed ranges are uniform, whether the inputs are
-    FP8. The device fields come from ``CallSpec``.
+    element type, whether packed ranges are provably uniform, whether the inputs are
+    FP8. Mutable device metadata is consumed by kernels, never read to construct this spec. The device fields come from ``CallSpec``.
     """
 
     dtype: Optional[torch.dtype] = None

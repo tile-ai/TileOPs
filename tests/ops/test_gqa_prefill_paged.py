@@ -12,7 +12,7 @@ from workloads.attention.paged_kv_cache import (
     make_interleaved_block_table,
     make_unit_cache_scales,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_is_cuda
 from workloads.numerics import compare_outputs
 from workloads.sequence_metadata import make_cu_seqlens
 
@@ -274,18 +274,32 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         softcap=softcap,
     )
 
-    output = op(
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        k_scale,
-        v_scale,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-    )
+    def run():
+        return op(
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        )
+
+    if run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            run()
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = run()
+        graph.replay()
+    else:
+        output = run()
     assert isinstance(output, torch.Tensor)
     compare_outputs(
         (output, k_pages, v_pages),
@@ -342,6 +356,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         cache_dtype=torch.float8_e4m3fn,
+        validate_inputs=True,
     )
 
     with pytest.raises(ValueError, match=f"{scale_name}.*finite positive"):
@@ -452,18 +467,32 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         rotary_dim=rotary_dim,
     )
 
-    output = op(
-        q_raw,
-        k_new_raw,
-        v_new,
-        k_pages,
-        v_pages,
-        k_scale,
-        v_scale,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-    )
+    def run():
+        return op(
+            q_raw,
+            k_new_raw,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        )
+
+    if run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            run()
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = run()
+        graph.replay()
+    else:
+        output = run()
     compare_outputs(
         (output, k_pages, v_pages),
         ref,

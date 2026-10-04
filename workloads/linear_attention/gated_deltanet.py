@@ -191,16 +191,6 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         )
 
 
-def _decay_rates(like: torch.Tensor) -> torch.Tensor:
-    """``A_log``, as Gated DeltaNet initializes it: the log of a rate in ``[1, 16]``."""
-    return torch.empty_like(like).uniform_(1.0, 16.0).log()
-
-
-def _time_step_bias(like: torch.Tensor) -> torch.Tensor:
-    """``dt_bias``, the value whose softplus is a time step in ``(0, 0.1]``."""
-    return torch.empty_like(like).uniform_(1e-3, 0.1).expm1().log()
-
-
 class GatedDeltaNetFwdCall(CallWorkload):
     """A manifest call of GatedDeltaNetFwdOp.
 
@@ -214,6 +204,10 @@ class GatedDeltaNetFwdCall(CallWorkload):
             super().gen_inputs()
         )
         raw_gate = self.call.ix["use_gate_in_kernel"]
+        if raw_gate:
+            # Log decay rates in [1, 16] and inverse-softplus time steps in [1e-3, 0.1].
+            a_log = torch.empty_like(a_log).uniform_(1.0, 16.0).log()
+            dt_bias = torch.empty_like(dt_bias).uniform_(1e-3, 0.1).expm1().log()
         return (
             _small(q),
             _small(k),
@@ -223,8 +217,8 @@ class GatedDeltaNetFwdCall(CallWorkload):
             _small(initial_state, 0.01),
             cu_seqlens,
             cu_seqlens_cpu,
-            _decay_rates(a_log) if raw_gate else a_log,
-            _time_step_bias(dt_bias) if raw_gate else dt_bias,
+            a_log,
+            dt_bias,
         )
 
     def ref_program(
@@ -280,7 +274,7 @@ def gated_verification(
     l2norm=False,
     state_v_first=False,
 ):
-    from workloads.numerics import Custom, assert_close
+    from workloads.numerics import Custom, assert_close, assert_rounded
 
     q = inputs[0]
     if q.shape[1] == 1:
@@ -307,7 +301,8 @@ def gated_verification(
             output_atol, state_atol = 2e-3, 6e-3
 
     def validate(got, expected):
-        assert_close(got[0], expected[0], atol=output_atol, rtol=rtol)
+        compare_output = assert_rounded if q.shape[1] == 1 else assert_close
+        compare_output(got[0], expected[0], atol=output_atol, rtol=rtol)
         assert_close(got[1], expected[1], atol=state_atol, rtol=rtol)
 
     return Custom(validate, "output and FP32 recurrence state, including input transforms")
