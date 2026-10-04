@@ -76,6 +76,8 @@ An entry serves four duties, plus a record of a composite op's internal structur
 - `status` decides which code-dependent checks run, never which methods the signature generates: a class with an entry gets them all.
 - **`ref_api`.** Optional qualified name of the API the op follows semantically. Preflight checks the path's syntax without importing the reference package. Nightly resolves every registered path in the runner image; missing packages or attributes fail the check. This field does not select a benchmark baseline or assert identical signatures.
 
+Use nightly timings to choose between compatible community APIs, comparing geometric mean latency over the same cases and checking coverage. The [2026-10-03 H200 snapshot](https://github.com/tile-ai/TileOPs-nightly/tree/7ddea4f709e10ae29a6c57a9bf889e7349b2b8ce) informed the current choices; it predates the FLA NSA top-k and DeepSpeed INT4 baselines. For a compiled composite, register the existing reference function when available; `torch.compile` itself is not an operator API. Leave the field absent when no single path describes the composite baseline.
+
 ## Signature
 
 ### Indices and Kinds
@@ -206,6 +208,8 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 An op without effect declarations reads its inputs and allocates its outputs. Effects annotate the signature's tensors, as [table 9](#t-effects) lists, and decide the operator schema and the roofline read/write count.
 
 ## Workloads
+
+Prefer a few serving scenarios over shape sweeps. The Qwen3 rows use the published [8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json) and [30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/main/config.json) dimensions, with small decode batches and chunked prefill; EP8 rows model 16 local experts. DeltaNet rows use the [1.3B configuration](https://huggingface.co/fla-hub/delta_net-1.3B-100B/blob/main/config.json). Sequence lengths and batch sizes are representative scenarios, not model requirements.
 
 ### Rows
 

@@ -428,7 +428,7 @@ def test_generated_checks_reject_an_invalid_call(op_cls) -> None:
 
 @pytest.mark.smoke
 def test_int4_reference_round_trips_a_group_of_one_sign() -> None:
-    """A group of one sign round-trips within one step, and a tiny range keeps a scale."""
+    """Only positive saturation may exceed half a step; tiny ranges keep a scale."""
     w = torch.empty(2, 128, dtype=torch.float16, device=run_device())
     w[0] = torch.linspace(1.0, 1.5, 128)
     w[1] = torch.linspace(0.0, 1e-5, 128)
@@ -437,7 +437,8 @@ def test_int4_reference_round_trips_a_group_of_one_sign() -> None:
     step = params[:, :1]
     restored = q * step + params[:, 1:]
     assert (step > 0).all()
-    assert ((restored - w.float()).abs() <= step + 1e-6).all()
+    bound = torch.where(q == 7, step, step / 2)
+    assert ((restored - w.float()).abs() <= bound + 1e-6).all()
 
 
 def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
@@ -477,7 +478,7 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("group_size", [128, 1024])
 def test_int4_per_group_round_trip(group_size: int) -> None:
-    """Signed packing and float offsets reconstruct each group within one quantization step."""
+    """Nearest rounding is within half a step, except the saturated positive endpoint."""
     rows, cols = 256, 1024
     groups = rows * cols // group_size
     magnitude = torch.logspace(-2, 2, groups, device=run_device())
@@ -490,7 +491,9 @@ def test_int4_per_group_round_trip(group_size: int) -> None:
     codes = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(groups, group_size)
     restored = codes.float() * params[:, :1] + params[:, 1:]
     error = (restored - w.float().view(groups, group_size)).abs()
-    assert (error <= params[:, :1] * (1 + 1e-5)).all()
+    step = params[:, :1]
+    bound = torch.where(codes == 7, step, step / 2)
+    assert (error <= bound + step * 1e-5).all()
 
 
 def _zero_odd_tiles(w: torch.Tensor) -> torch.Tensor:

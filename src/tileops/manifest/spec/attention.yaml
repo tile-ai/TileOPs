@@ -68,6 +68,7 @@ GroupedQueryAttentionDenseFwdOp:
   - {B: 16, S_q: 1, S_kv: 8192, H: 22, H_kv: 1, D: 128, dtype_cases: [{T: bfloat16}], label: starcoderbase-3b-8k}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
+  - {B: 1, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-prefill}
   roofline:
     # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
     func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
@@ -341,6 +342,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
   - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv1k}
   - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv512}
   - {S_q: 4, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1000, 2)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: speculative-decode}
+  - {S_q: 1, H: 32, D: 64, N_kv: 2048, W: 16, kv_lens: [2048], page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-decode-b1}
   roofline:
     func: tileops.perf.formulas.paged_decode_roofline
 
@@ -459,6 +461,7 @@ NSACompressedVarlenFwdOp:
   workloads:
   - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
   - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
+  - {C: 33, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: nsa-ragged-prefill-bf16}
   roofline:
     # Each token scores its own request's closed chunks.
     func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
@@ -524,6 +527,7 @@ NSAVarlenFwdOp:
   - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: false, scale: 0.1, block_size: 32, seq_lens: [4000, 4190], dtype_cases: [{T: float16}], label: prefill-noncausal-2x4k}
+  - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: nsa-ragged-prefill-bf16}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"

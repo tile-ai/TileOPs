@@ -1,7 +1,7 @@
 # reduction.yaml -- manifest entries for the reduction family (docs/design/manifest.md).
 
 SoftmaxFwdOp:
-  ref_api: torch.nn.functional.softmax
+  ref_api: quack.softmax
   family: reduction
   status: implemented
   signature:
@@ -31,6 +31,7 @@ SoftmaxFwdOp:
   - {S: [32768, 65536], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: quack-throughput-65536}
   - {S: [16384, 131072], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: quack-throughput-131072}
   - {S: [8192, 262144], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: quack-throughput-262144}
+  - {S: [1, 151936], dim: -1, dtype_cases: [{T: float32}], label: qwen3-8b-lm-head-b1}
   roofline:
     flops: "5 * prod(S)"
 
@@ -259,7 +260,7 @@ StdFwdOp:
     flops: "4 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 VarMeanFwdOp:
-  ref_api: torch.var_mean
+  ref_api: flag_gems.ops.var_mean
   family: reduction
   status: implemented
   signature:
@@ -286,7 +287,7 @@ VarMeanFwdOp:
     flops: "4 * prod(S)"
 
 ArgmaxFwdOp:
-  ref_api: torch.argmax
+  ref_api: flag_gems.ops.argmax
   family: reduction
   status: implemented
   signature:

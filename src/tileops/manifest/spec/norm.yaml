@@ -1,7 +1,7 @@
 # norm.yaml -- manifest entries for the norm family (docs/design/manifest.md).
 
 RMSNormFwdOp:
-  ref_api: torch.nn.functional.rms_norm
+  ref_api: quack.rmsnorm
   family: norm
   status: implemented
   signature:
@@ -36,6 +36,7 @@ RMSNormFwdOp:
   - {B: [32768], normalized_shape: [65536], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-65536}
   - {B: [16384], normalized_shape: [131072], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-131072}
   - {B: [8192], normalized_shape: [262144], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-262144}
+  - {B: [1, 32], normalized_shape: [128], eps: 1.0e-06, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3-8b-qk-norm-decode}
   roofline:
     # Square and accumulate (2), normalize (1), and the weight (1) when present.
     flops: "(4 if present(weight) else 3) * prod(B) * prod(normalized_shape)"
@@ -74,6 +75,7 @@ LayerNormFwdOp:
 AdaLayerNormFwdOp:
   family: norm
   status: implemented
+  ref_api: workloads.norm.AdaLayerNormWorkload.ref_program
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
     params:
@@ -95,6 +97,7 @@ AdaLayerNormFwdOp:
 AdaLayerNormZeroFwdOp:
   family: norm
   status: implemented
+  ref_api: workloads.norm.AdaLayerNormZeroWorkload.ref_program
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
     params:
@@ -271,7 +274,7 @@ BatchNormBwdOp:
     flops: "9 * B * C * prod(L)"
 
 GroupNormFwdOp:
-  ref_api: torch.nn.functional.group_norm
+  ref_api: flag_gems.ops.group_norm
   family: norm
   status: implemented
   signature:

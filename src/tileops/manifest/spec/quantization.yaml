@@ -138,6 +138,7 @@ SmoothQuantFwdOp:
   # q = quantize_per_row(x / smooth): per-channel smoothing, then symmetric INT8 per row.
   family: quantization
   status: implemented
+  ref_api: workloads.quantization.quantize.smooth_quant
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -163,6 +164,7 @@ SmoothQuantFwdOp:
 INT8DequantPerTensorFwdOp:
   family: quantization
   status: implemented
+  ref_api: workloads.quantization.int8_dequant.int8_dequant_per_tensor
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -187,6 +189,7 @@ INT8DequantPerTensorFwdOp:
 INT8DequantPerChannelFwdOp:
   family: quantization
   status: implemented
+  ref_api: workloads.quantization.int8_dequant.int8_dequant_per_channel
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -210,6 +213,7 @@ INT8DequantPerChannelFwdOp:
 INT8DequantPerBlockFwdOp:
   family: quantization
   status: implemented
+  ref_api: workloads.quantization.int8_dequant.int8_dequant_per_block
   signature:
     forall: {M: Dim, K: Dim}
     params:

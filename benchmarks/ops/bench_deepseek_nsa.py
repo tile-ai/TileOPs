@@ -96,13 +96,24 @@ def _fla_nsa_topk(workload: NsaTopkCall):
 def test_nsa_cmp_fwd_varlen_bench(call) -> None:
     workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NsaCmpFwdCall, call)
     fla_fn = _fla_nsa_cmp_fwd(workload)
+    tolerance = (
+        reference_tolerance(torch.bfloat16)
+        if inputs[0].dtype == torch.bfloat16
+        else {"rtol": 1e-5, "atol": 4e-3}
+    )
 
     def validate(got, expected):
-        # FLA writes its LSE in FP32; both kernels use blockwise accumulation.
+        assert got[0].dtype == expected[0].dtype
+        # FLA writes its LSE in FP32; TileOPs returns the input dtype.
+        assert got[1].dtype in (expected[1].dtype, torch.float32)
         for output, target in zip(got, expected, strict=True):
-            torch.testing.assert_close(output.float(), target.float(), rtol=1e-5, atol=4e-3)
+            torch.testing.assert_close(output.float(), target.float(), **tolerance)
 
-    checked = Custom(validate, "both outputs checked at the NSA unit-test bound; LSE may be FP32")
+    checked = Custom(
+        validate,
+        "both outputs checked at the existing FP16 bound or standard BF16 bound; LSE may be FP32",
+        controls=(zeroed_input(0, "query-zeroed"),),
+    )
     bm.compare(
         {"tileops": op, FLA_TAG: fla_fn},
         *inputs,

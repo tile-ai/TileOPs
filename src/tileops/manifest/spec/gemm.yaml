@@ -1,6 +1,6 @@
 # Dense GEMM family.
 GemmFwdOp:
-  ref_api: "torch.matmul"
+  ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
   status: implemented
 
@@ -47,6 +47,8 @@ GemmFwdOp:
   # that one serves M = 2 instead.
   - {M: 1, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m1-qkv-a}
   - {M: 2, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m2-qkv-a}
+  - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
+  - {M: 128, N: 4096, K: 12288, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-down-prefill}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
@@ -54,7 +56,7 @@ GemmFwdOp:
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
 GemmFP8FwdOp:
-  ref_api: "torch._scaled_mm"
+  ref_api: deep_gemm.fp8_gemm_nt
   family: gemm
   status: implemented
 
@@ -126,7 +128,7 @@ GemmFP8FwdOp:
 GemmW4A16FwdOp:
   family: gemm
   status: implemented
-  ref_api: vllm.model_executor.layers.quantization.utils.marlin_utils.apply_gptq_marlin_linear
+  ref_api: vllm._custom_ops.marlin_gemm
 
   signature:
     forall: {M: Dim, N: Dim, K: Dim, T: "DType[float16]"}
@@ -179,7 +181,7 @@ GemmW4A16FwdOp:
 GroupedGemmFwdOp:
   family: gemm
   status: implemented
-  ref_api: flashinfer.gemm.SegmentGEMMWrapper.run
+  ref_api: quack.gemm_interface.gemm
 
   signature:
     # G groups packed along M rows. Without transpose_a each group multiplies its rows of a by
@@ -227,6 +229,8 @@ GroupedGemmFwdOp:
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: moe-fwd}
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
   - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
+  - {M: 8, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
+  - {M: 257, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,

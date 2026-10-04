@@ -33,6 +33,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = str(REPO_ROOT / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from tileops.manifest import types_document  # noqa: E402
 from tileops.manifest.plan import check_adts as _check_adts  # noqa: E402
@@ -439,6 +441,9 @@ def validate_manifest(
         repo_root = REPO_ROOT
     if levels is None:
         levels = DEFAULT_LEVELS
+    if "refs" in levels:
+        # Reuse the benchmark guard: vLLM must register its ops before FlagGems.
+        import benchmarks.baselines  # noqa: F401
 
     if manifest_path is None:
         from tileops.manifest import load_manifest

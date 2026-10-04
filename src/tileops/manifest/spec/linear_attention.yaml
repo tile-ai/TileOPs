@@ -53,6 +53,7 @@ DeltaNetInferenceFwdOp:
   - {B: 8, S: 1, H: 32, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: decode-fresh}
   - {B: 4, S: 1, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-l2norm}
   - {B: 17, S: 1, H: 6, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-narrow-b17}
+  - {B: 1, S: 257, H: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-continue}
   roofline:
     # Normalizing one head vector is its sum of squares, the epsilon, the reciprocal square
     # root and the scale: 3 * K + 2 for each of Q and K.
@@ -68,7 +69,7 @@ GatedDeltaNetFwdOp:
   # exactly when the gate is computed in the kernel.
   family: linear_attention
   status: implemented
-  ref_api: fla.ops.gated_delta_rule.chunk_gated_delta_rule
+  ref_api: flashinfer.gdn_prefill.chunk_gated_delta_rule
   signature:
     types:
       State:
@@ -435,6 +436,7 @@ DeltaNetChunkFwdOp:
   - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
+  - {B: 1, H: 16, L: 256, DK: 128, DV: 128, chunk_size: 64, dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-train}
   roofline:
     # Per chunk of C = chunk_size tokens: the strict-lower Gram K K^T scaled by beta, the
     # unit-lower-triangular inverse (Aw = Au), the beta scalings, w = Aw (beta k) and
@@ -479,6 +481,7 @@ DeltaNetChunkBwdOp:
   - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
+  - {B: 1, H: 16, L: 256, DK: 128, DV: 128, chunk_size: 64, dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-train}
   roofline:
     # Per chunk of C = chunk_size tokens: seven C x DK x DV contractions (v_new = u - w S,
     # do S^T, q^T do, k dS, v_new dS^T, and du S^T and w^T du on the merged du), the causal
@@ -539,6 +542,7 @@ GLAInferenceFwdOp:
   - {B: 1, S: 1, H: 32, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b1-d64}
   - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b8-d128}
   - {B: 3, S: 1, H: 24, K: 128, V: 128, dtype_cases: [{T: float16}], label: decode-first-token}
+  - {B: 1, S: 257, H: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: gla-short-continuation}
   roofline:
     # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
     flops: "B * H * S * (5 * K * V + K + V)"

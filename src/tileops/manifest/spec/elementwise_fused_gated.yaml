@@ -1,12 +1,6 @@
 # elementwise_fused_gated.yaml -- manifest entries for fused gated activation
 # ops: y = activation(gate) * value, with gate/value packed as the two halves
 # of a single (M, 2*N) input tensor.
-#
-# These are TileOPs-private fused kernels with no single ``torch.*`` symbol
-# they mirror (the PyTorch composite expression for SiluAndMulFwdOp is
-# ``F.silu(a) * b``, etc.), so they declare no ``ref_api``. Source of truth
-# for op interfaces in this family. Loaded and merged with other family files by
-# tileops.manifest at runtime. See docs/design/manifest.md for the schema.
 
 SiluAndMulFwdOp:
   # Composite expression: F.silu(gate) * value where x = [gate, value] along
@@ -26,6 +20,7 @@ SiluAndMulFwdOp:
   # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
   - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
   - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
+  - {M: 32, N: 12288, dtype_cases: [{T: bfloat16}], label: qwen3-8b-swiglu-b32}
 
   roofline:
     # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +

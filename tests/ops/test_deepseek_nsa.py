@@ -204,6 +204,9 @@ class NsaTopkFixture(FixtureBase):
                 for dtype in (torch.float16, torch.bfloat16)
             ]
             + [
+                pytest.param(
+                    3, 512, 32, 128, 16, 1.0, 16, 32, torch.float16, False, marks=pytest.mark.full
+                ),
                 # Two sort pairs per lane must not put barriers under a partial-lane mask.
                 pytest.param(
                     1, 65, 16, 64, 16, 0.125, 8, 64, torch.float16, False, marks=pytest.mark.full
