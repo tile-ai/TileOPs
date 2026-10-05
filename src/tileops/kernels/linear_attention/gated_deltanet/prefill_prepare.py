@@ -511,42 +511,23 @@ def _prefill_blocksolve_A_bthd_tl(
                     i_s[3, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
                 T.sync_threads()
 
-                for _r in T.Serial(1):
-                    T.clear(tmp)
-                    T.gemm(a_s[0, :, :], i_s[0, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[0, i, j] = i_s[0, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[0, :, :], a_s[0, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[0, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[2, :, :], i_s[1, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[1, i, j] = i_s[1, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[2, :, :], a_s[2, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[2, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[5, :, :], i_s[2, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[2, i, j] = i_s[2, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[5, :, :], a_s[5, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[5, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[9, :, :], i_s[3, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[3, i, j] = i_s[3, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[9, :, :], a_s[9, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[9, i, j] = tmp[i, j]
+                # (I - a)^-1 = (I + a)(I + a^2)(I + a^4)...: a strictly lower block of
+                # block_c rows vanishes at a^block_c, after log2(block_c) rounds. The last
+                # round's square is never read, so it is not formed.
+                rounds = block_c.bit_length() - 1
+                for r in T.unroll(rounds):
+                    for diag in T.unroll(4):
+                        # Diagonal block d sits at index d * (d + 3) / 2 of the packed a_s.
+                        blk = diag * (diag + 3) // 2
+                        T.clear(tmp)
+                        T.gemm(a_s[blk, :, :], i_s[diag, :, :], tmp)
+                        for i, j in T.Parallel(block_c, block_c):
+                            i_s[diag, i, j] = i_s[diag, i, j] + tmp[i, j]
+                        if r + 1 < rounds:
+                            T.clear(tmp)
+                            T.gemm(a_s[blk, :, :], a_s[blk, :, :], tmp)
+                            for i, j in T.Parallel(block_c, block_c):
+                                a_s[blk, i, j] = tmp[i, j]
                 T.sync_threads()
 
                 T.clear(tmp)
@@ -558,16 +539,6 @@ def _prefill_blocksolve_A_bthd_tl(
                 T.gemm(work_s[0, :, :], i_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[1, i, j] = -tmp[i, j]
-
-                T.clear(tmp)
-                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    work_s[0, i, j] = tmp[i, j]
-                T.sync_threads()
-                T.clear(tmp)
-                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    a_s[4, i, j] = -tmp[i, j]
 
                 T.clear(tmp)
                 T.gemm(a_s[3, :, :], i_s[0, :, :], tmp)
@@ -582,6 +553,17 @@ def _prefill_blocksolve_A_bthd_tl(
                 T.gemm(i_s[2, :, :], work_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[3, i, j] = -tmp[i, j]
+
+                # Block (2, 1) is solved in place only now: block (2, 0) above reads it unsolved.
+                T.clear(tmp)
+                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    work_s[0, i, j] = tmp[i, j]
+                T.sync_threads()
+                T.clear(tmp)
+                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    a_s[4, i, j] = -tmp[i, j]
 
                 T.clear(tmp)
                 T.gemm(a_s[6, :, :], i_s[0, :, :], tmp)
