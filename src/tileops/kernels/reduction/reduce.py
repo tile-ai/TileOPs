@@ -16,6 +16,7 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
+    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
@@ -56,6 +57,11 @@ __all__ = [
     "WelfordReduceKernel",
 ]
 
+# The tiled simple reduce's reduction across threads takes one fp32 per thread of shared
+# memory besides its tile, at the widest thread count the tuner offers. Welford's plan
+# already counts a second tile, held only in its second pass and wider than this.
+_TILED_WORKSPACE_BYTES = max(AUTOTUNE_THREADS) * 4
+
 
 class ReduceKernelBase(Kernel):
     """Built from a `ReduceCall`; shapes an ``[M]`` result the way the op declares it.
@@ -88,6 +94,8 @@ class ReduceKernelBase(Kernel):
             call.smem_budget,
             num_buffers=slots,
             frag_slots=slots,
+            workspace_bytes=0 if slots == 2 else _TILED_WORKSPACE_BYTES,
+            split_workspace=True,
         )
 
     @classmethod
@@ -103,6 +111,8 @@ class ReduceKernelBase(Kernel):
             call.smem_budget,
             num_buffers=slots,
             frag_slots=slots,
+            workspace_bytes=0 if slots == 2 else _TILED_WORKSPACE_BYTES,
+            split_workspace=True,
         )
         return lead, kept, trail, planner, planner.default_config()
 

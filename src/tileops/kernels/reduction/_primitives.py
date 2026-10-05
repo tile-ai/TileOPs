@@ -142,6 +142,8 @@ class BlockConfigPlanner:
             spill.
         workspace_bytes: Shared memory the tiled kernel allocates besides its tiles,
             such as the scratch of a reduction across threads.
+        split_workspace: Whether ``workspace_bytes`` applies only to a row split over more
+            than one tile; a tile that holds the whole row keeps the full budget.
     """
 
     @staticmethod
@@ -166,6 +168,7 @@ class BlockConfigPlanner:
         num_buffers: int = 1,
         frag_slots: int = 1,
         workspace_bytes: int = 0,
+        split_workspace: bool = False,
     ):
         self.N_padded = N_padded
         self.elem_bytes = elem_bytes
@@ -173,6 +176,7 @@ class BlockConfigPlanner:
         self.num_buffers = num_buffers
         self.frag_slots = frag_slots
         self.workspace_bytes = workspace_bytes
+        self.split_workspace = split_workspace
 
     @property
     def _row_bytes(self) -> int:
@@ -248,14 +252,23 @@ class BlockConfigPlanner:
         """
         # The register budget bounds the untiled probe above, not the tile width.
         col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
-        return compute_tile_n(
-            block_m,
-            self.elem_bytes,
-            self.N_padded,
-            alignment=self._column_alignment(block_m, threads),
-            budget=min(self.smem_budget - self.workspace_bytes, col_budget),
-            num_buffers=self.num_buffers,
-        )
+        alignment = self._column_alignment(block_m, threads)
+
+        def widest(budget: int) -> int:
+            return compute_tile_n(
+                block_m,
+                self.elem_bytes,
+                self.N_padded,
+                alignment=alignment,
+                budget=min(budget, col_budget),
+                num_buffers=self.num_buffers,
+            )
+
+        if self.split_workspace:
+            whole = widest(self.smem_budget)
+            if whole >= self.N_padded:
+                return whole
+        return widest(self.smem_budget - self.workspace_bytes)
 
     def tile_n_candidates(self, block_m: int, threads: int) -> list[int]:
         """Return buildable tile widths to time for this pair, widest first.
@@ -318,7 +331,9 @@ class BlockConfigPlanner:
             )
         if tile_n > MAX_SINGLE_TILE_COLS:
             return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
-        held = self.num_buffers * block_m * tile_n * self.elem_bytes + self.workspace_bytes
+        whole_row = self.split_workspace and tile_n >= self.N_padded
+        workspace = 0 if whole_row else self.workspace_bytes
+        held = self.num_buffers * block_m * tile_n * self.elem_bytes + workspace
         if held > self.smem_budget:
             return (
                 f"tile_n={tile_n} with block_m={block_m} needs {held} bytes of "
