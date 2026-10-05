@@ -597,7 +597,7 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # The row-split GEMMs give each warp 16 rows, so eight warps need a 128-row block.
+        # Eight warps need 128 key rows, as `_KEY_BLOCKS` pairs them.
         return [
             {"block_m": m, "block_n": n, "num_stages": s, "threads": t}
             for m, n, s in itertools.product([64, 128], [16, 32, 64], [1, 2])
