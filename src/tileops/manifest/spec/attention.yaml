@@ -76,7 +76,7 @@ GQADenseFwdOp:
 
 GQAVarlenFwdOp:
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flash_attn_interface.flash_attn_varlen_func
   signature:
     forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, T: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
