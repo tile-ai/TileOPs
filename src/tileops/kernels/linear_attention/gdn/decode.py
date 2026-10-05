@@ -1,4 +1,4 @@
-"""SM90 single-token Gated DeltaNet inference decode."""
+"""SM90 single-token Gated DeltaNet (GDN) inference decode."""
 
 from typing import Optional, Tuple
 
@@ -6,16 +6,16 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    GatedDeltaNetCall,
-    GatedDeltaNetFwdInterface,
+    GDNCall,
+    GDNFwdInterface,
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
 
-__all__ = ["GatedDeltaNetDenseDecodeFwdKernel"]
+__all__ = ["GDNDenseDecodeFwdKernel"]
 
 
-class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
+class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     """SM90 FP16/BF16 decode with FP32 recurrent state.
 
     One warp owns a 16-column state tile. Two lanes reduce the K dimension for
@@ -29,11 +29,11 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GatedDeltaNetCall) -> bool:
+    def applies(cls, call: GDNCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
+    def refusal(cls, call: GDNCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         One token continuing a 64- or 128-wide square state, in either layout, under
@@ -57,7 +57,7 @@ class GatedDeltaNetDenseDecodeFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         return "does not support " + ", ".join(unsupported) if unsupported else None
 
     @classmethod
-    def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
+    def entry_for(cls, call: GDNCall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.batch,

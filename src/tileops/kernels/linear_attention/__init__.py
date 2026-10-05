@@ -1,4 +1,4 @@
-"""Linear-attention kernels: DeltaNet, Gated DeltaNet and Gated Linear Attention (GLA).
+"""Linear-attention kernels: DeltaNet, Gated DeltaNet (GDN) and Gated Linear Attention (GLA).
 
 Kimi Delta Attention (KDA) lives in the ``kda`` subpackage: the gated delta rule whose
 decay is one log-space value per key channel.
@@ -17,8 +17,8 @@ from tileops.kernels.linear_attention.call_spec import (
     DeltaNetFwdInterface,
     DeltaNetInferenceCall,
     DeltaNetInferenceFwdInterface,
-    GatedDeltaNetCall,
-    GatedDeltaNetFwdInterface,
+    GDNCall,
+    GDNFwdInterface,
     GLABwdInterface,
     GLAChunkCall,
     GLADecodeCall,
@@ -38,9 +38,9 @@ from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from tileops.kernels.linear_attention.gated_deltanet import (
-    GatedDeltaNetDenseDecodeFwdKernel,
-    GatedDeltaNetDensePrefillFwdKernel,
+from tileops.kernels.linear_attention.gdn import (
+    GDNDenseDecodeFwdKernel,
+    GDNDensePrefillFwdKernel,
 )
 from tileops.kernels.linear_attention.gla import (
     GLABwdKernel,
@@ -70,6 +70,10 @@ __all__ = [
     "DeltaNetFwdKernel",
     "DeltaNetInferenceCall",
     "DeltaNetInferenceFwdInterface",
+    "GDNCall",
+    "GDNDenseDecodeFwdKernel",
+    "GDNDensePrefillFwdKernel",
+    "GDNFwdInterface",
     "GLABwdInterface",
     "GLABwdKernel",
     "GLAChunkCall",
@@ -81,10 +85,6 @@ __all__ = [
     "GLADensePrefillSubchunkKernel",
     "GLAFwdInterface",
     "GLAFwdKernel",
-    "GatedDeltaNetCall",
-    "GatedDeltaNetDenseDecodeFwdKernel",
-    "GatedDeltaNetDensePrefillFwdKernel",
-    "GatedDeltaNetFwdInterface",
     "KDACall",
     "KDAChunkPrefillFwdKernel",
     "KDAFusedPrefillFwdKernel",

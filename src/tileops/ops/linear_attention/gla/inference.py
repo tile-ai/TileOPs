@@ -29,7 +29,7 @@ __all__ = ["GLAInferenceFwdOp"]
 
 
 class GLAInferenceFwdOp(Op):
-    """Gated linear attention for inference, with caller-owned FP32 state.
+    """Gated Linear Attention (GLA) for inference, with caller-owned FP32 state.
 
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call is
     equal-length prefill, packed-varlen prefill, or single-token decode. An absent

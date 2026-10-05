@@ -1,4 +1,4 @@
-"""Gated DeltaNet private helpers shared by the prefill stages."""
+"""Gated DeltaNet (GDN) private helpers shared by the prefill stages."""
 
 import tilelang.language as T
 

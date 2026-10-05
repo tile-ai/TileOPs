@@ -1,7 +1,7 @@
 """
 DeltaNet backward: given dL/do, compute dL/d(q, k, v, beta).
 
-Unlike gated DeltaNet, there is no gate parameter g, so:
+Unlike Gated DeltaNet (GDN), there is no gate parameter g, so:
   - No dg output
   - No exp(g) scaling anywhere
   - Returns 4 gradients: (dq, dk, dv, dbeta)

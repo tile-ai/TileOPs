@@ -1,7 +1,7 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
-"""Gated DeltaNet private fused forward stage."""
+# Adapted and modified for TileOps GDN prefill integration.
+"""Gated DeltaNet (GDN) private fused forward stage."""
 
 import functools
 
@@ -10,7 +10,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E, WARP_MMA_ROWS
-from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+from tileops.kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
     step_size,
 )
@@ -58,9 +58,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
     # token so the allocation carries no cost.
     rnorm_tokens = num_tokens if l2norm else 1
     # Key columns one pass of the query's row reduction holds, which bounds the squares
-    # it keeps in registers beside the warp group's own fragments. Re-fit it by sweeping
-    # it against the Gated DeltaNet prefill benchmark's `prefill-raw-4k` row; 16, 32, 64
-    # and the full key width all measured within 0.3 us of each other there.
+    # it keeps in registers beside the warp group's own fragments.
     l2norm_reduce_width = 32
 
     if is_varlen:
@@ -627,8 +625,7 @@ def fused_gdr_fwd(
     o = torch.empty_like(v)
 
     grid_size = real_batch_size * H
-    # Fraction of the SMs the grid aims to fill. Fitted; re-run the gated DeltaNet
-    # prefill benchmark to move it.
+    # Fraction of the SMs the grid aims to fill.
     sm_fill = 0.7
     target_num_ctas = int(get_sm_count(k.device.index) * sm_fill)
     if grid_size >= target_num_ctas:

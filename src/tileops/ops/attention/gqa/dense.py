@@ -25,7 +25,7 @@ __all__ = ["GQADenseFwdOp"]
 
 
 class GQADenseFwdOp(Op):
-    r"""Grouped-query attention over dense $Q$/$K$/$V$ tensors.
+    r"""Grouped-Query Attention (GQA) over dense $Q$/$K$/$V$ tensors.
 
     By default the op computes causal attention,
 

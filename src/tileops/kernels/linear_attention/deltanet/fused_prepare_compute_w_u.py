@@ -9,7 +9,7 @@ Into a single kernel where Aw/Au stay in shared memory:
   fused: (k, v, beta) -> (Aw, Au, w, u)
 
 This eliminates the Aw/Au global memory round-trip between the two kernels.
-Unlike gated DeltaNet, there is no gate parameter g and no Gamma decay matrix.
+Unlike Gated DeltaNet (GDN), there is no gate parameter g and no Gamma decay matrix.
 """
 
 import functools

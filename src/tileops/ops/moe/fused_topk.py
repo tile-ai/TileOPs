@@ -13,7 +13,7 @@ __all__ = ["FusedTopKFwdOp"]
 
 
 class FusedTopKFwdOp(Op):
-    """MoE top-k routing operator.
+    """Mixture-of-Experts (MoE) top-k routing operator.
 
     Applies scoring (softmax or sigmoid) to router logits and selects the
     top-k experts per token.

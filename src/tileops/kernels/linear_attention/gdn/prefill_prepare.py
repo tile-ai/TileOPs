@@ -1,7 +1,7 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
-"""Gated DeltaNet private recurrence preparation and state-correction stages."""
+# Adapted and modified for TileOps GDN prefill integration.
+"""Gated DeltaNet (GDN) private recurrence preparation and state-correction stages."""
 
 import functools
 
@@ -12,7 +12,7 @@ import tvm.tirx as tirx
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+from tileops.kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
     step_size,
 )

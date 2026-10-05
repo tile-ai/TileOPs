@@ -1,4 +1,4 @@
-"""Benchmark Gated DeltaNet inference, one case per manifest call, against FLA and FlashInfer."""
+"""Benchmark Gated DeltaNet (GDN) inference, one case per manifest call, against FLA and FlashInfer."""
 
 import pytest
 import torch
@@ -6,15 +6,15 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import GatedDeltaNetFwdOp
-from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall
+from tileops.ops import GDNFwdOp
+from workloads.linear_attention.gdn import GDNFwdCall
 
 
-@pytest.mark.parametrize("call", manifest_calls(GatedDeltaNetFwdOp))
-def test_gated_deltanet_fwd_bench(call) -> None:
-    workload = GatedDeltaNetFwdCall(call)
+@pytest.mark.parametrize("call", manifest_calls(GDNFwdOp))
+def test_gdn_fwd_bench(call) -> None:
+    workload = GDNFwdCall(call)
     inputs = workload.gen_inputs()
-    op = GatedDeltaNetFwdOp(**workload.arguments())
+    op = GDNFwdOp(**workload.arguments())
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):

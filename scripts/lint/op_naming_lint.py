@@ -52,6 +52,7 @@ ABBREVIATIONS = {
     "MHA": r"Mha",
     "DSA": r"Dsa",
     "GLA": r"Gla",
+    "GDN": r"Gdn",
     "KDA": r"Kda",
     "RoPE": r"Rope",
     "YaRN": r"Yarn",

@@ -38,7 +38,7 @@ class GLAInferenceCallSpec(CallSpec):
 
 
 class GLAInferenceFwdInterface(KernelInterface):
-    """Gated linear attention for inference: one prefill or decode step over caller-owned state."""
+    """Gated Linear Attention (GLA) for inference: one prefill or decode step over caller-owned state."""
 
     request = GLAInferenceCallSpec
 

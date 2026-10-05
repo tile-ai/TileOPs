@@ -847,7 +847,7 @@ _DSA_QK_DIM, _DSA_V_DIM = 576, 512
 
 
 def dsa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Paged DeepSeek sparse attention over an FP8 latent cache.
+    """Paged DeepSeek Sparse Attention (DSA) over an FP8 latent cache.
 
     Every index slot ``0 <= j < cache_seqlens[b]`` is a score, a repeated slot once per
     occurrence. The latent of each distinct cache row is dequantized once (a multiply per

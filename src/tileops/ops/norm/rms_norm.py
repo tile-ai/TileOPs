@@ -15,7 +15,7 @@ __all__ = ["RMSNormFwdOp"]
 
 
 class RMSNormFwdOp(Op):
-    """Standalone Root Mean Square (RMS) Norm operator.
+    """Standalone Root Mean Square (RMS) Normalization operator.
 
     Follows `torch.nn.functional.rms_norm`. Computes::
 

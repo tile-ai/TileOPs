@@ -22,7 +22,7 @@ __all__ = ["GQABwdOp"]
 
 
 class GQABwdOp(Op):
-    """Layout: BSHD"""
+    """Grouped-Query Attention (GQA) backward. Layout: BSHD."""
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

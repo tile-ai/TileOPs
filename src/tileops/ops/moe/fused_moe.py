@@ -123,7 +123,7 @@ class FusedMoE(Op):
 
 
 class FusedMoEFwdOp(FusedMoE):
-    """Routed MoE FFN.
+    """Routed Mixture-of-Experts (MoE) FFN.
 
     Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations where
     top-k comes straight from the gating scores, and Kimi K2 style ones where a

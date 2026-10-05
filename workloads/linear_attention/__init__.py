@@ -12,7 +12,7 @@ from workloads.linear_attention.deltanet import (
     kernel2_deltanet_torch,
     prepare_wy_repr_deltanet_torch,
 )
-from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdCall, GatedDeltaNetFwdWorkload
+from workloads.linear_attention.gdn import GDNFwdCall, GDNFwdWorkload
 from workloads.linear_attention.gla import (
     GLAChunkwiseCall,
     GLAChunkwiseWorkload,
@@ -33,14 +33,14 @@ __all__ = [
     "DeltaNetFwdWorkload",
     "DeltaNetInferenceCall",
     "DeltaNetInferenceWorkload",
+    "GDNFwdCall",
+    "GDNFwdWorkload",
     "GLAChunkwiseCall",
     "GLAChunkwiseWorkload",
     "GLADecodeCall",
     "GLADecodeWorkload",
     "GLAInferenceCall",
     "GLAInferenceWorkload",
-    "GatedDeltaNetFwdCall",
-    "GatedDeltaNetFwdWorkload",
     "KDAFwdCall",
     "KDAFwdWorkload",
     "compute_w_u_torch",

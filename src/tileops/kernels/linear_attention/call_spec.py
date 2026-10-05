@@ -1,4 +1,4 @@
-"""The facts of one DeltaNet, Gated DeltaNet or Gated Linear Attention (GLA) call that its
+"""The facts of one DeltaNet, Gated DeltaNet (GDN) or Gated Linear Attention (GLA) call that its
 in-tree kernels select and build on, and the kernel interfaces their implementations inherit.
 
 The GLA inference contract lives in ``tileops.kernels.linear_attention.gla.call_spec``.
@@ -21,13 +21,13 @@ __all__ = [
     "DeltaNetFwdInterface",
     "DeltaNetInferenceCall",
     "DeltaNetInferenceFwdInterface",
+    "GDNCall",
+    "GDNFwdInterface",
     "GLABwdInterface",
     "GLAChunkCall",
     "GLADecodeCall",
     "GLADecodeFwdInterface",
     "GLAFwdInterface",
-    "GatedDeltaNetCall",
-    "GatedDeltaNetFwdInterface",
     "KDACall",
     "KDAFwdInterface",
     "head_count_refusal",
@@ -116,8 +116,8 @@ class GLADecodeCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GatedDeltaNetCall(CallSpec):
-    """One gated DeltaNet inference call, with the recurrence semantics the op fixed."""
+class GDNCall(CallSpec):
+    """One GDN inference call, with the recurrence semantics the op fixed."""
 
     batch: int = 0
     seq_len: int = 0
@@ -442,10 +442,10 @@ class GLADecodeFwdInterface(KernelInterface):
         """
 
 
-class GatedDeltaNetFwdInterface(KernelInterface):
+class GDNFwdInterface(KernelInterface):
     """Gated delta rule for inference: one prefill or decode step over caller-owned state."""
 
-    request = GatedDeltaNetCall
+    request = GDNCall
 
     @abstractmethod
     def forward(

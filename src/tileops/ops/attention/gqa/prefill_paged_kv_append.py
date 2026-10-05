@@ -22,7 +22,7 @@ __all__ = ["GQAPrefillPagedWithKVCacheFwdOp"]
 
 
 class GQAPrefillPagedWithKVCacheFwdOp(Op):
-    """Packed GQA prefill with paged KV cache append. Layout: THD.
+    """Packed Grouped-Query Attention (GQA) prefill with paged KV cache append. Layout: THD.
 
     The current chunk is packed by request. ``cache_seqlens`` stores each
     request's logical KV length before append. ``block_table`` maps logical

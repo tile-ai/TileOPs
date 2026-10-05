@@ -12,8 +12,8 @@ from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
-from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
+from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     correct_initial_states,
     fused_gdr_h,
     get_warmup_chunks,
@@ -25,7 +25,7 @@ __all__ = ["DeltaNetDensePrefillFwdKernel"]
 
 
 class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
-    """Ungated delta rule: GDN's block solve and partitioned recurrence with g=0."""
+    """Ungated delta rule: the Gated DeltaNet (GDN) block solve and partitioned recurrence, g=0."""
 
     supported_archs = [90]
 

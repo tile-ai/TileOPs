@@ -18,7 +18,7 @@ __all__ = ["GLAChunkBwdOp", "GLAChunkFwdOp"]
 
 
 class GLAChunkFwdOp(Op):
-    """GLA (Gated Linear Attention) forward operator.
+    """Gated Linear Attention (GLA) forward operator.
 
     Chunked GLA forward: (q, k, v, g) -> (o, final_state).
 
@@ -116,7 +116,7 @@ class GLAChunkFwdOp(Op):
 
 
 class GLAChunkBwdOp(Op):
-    """GLA (Gated Linear Attention) backward operator.
+    """Gated Linear Attention (GLA) backward operator.
 
     Computes gradients (dq, dk, dv, dg) given output gradient do.
 

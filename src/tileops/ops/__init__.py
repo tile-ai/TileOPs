@@ -34,7 +34,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         DeltaNetChunkFwdOp,
         DeltaNetInferenceFwdOp,
         DeltaNetRecurrentFwdOp,
-        GatedDeltaNetFwdOp,
+        GDNFwdOp,
         GLAChunkBwdOp,
         GLAChunkFwdOp,
         GLAInferenceFwdOp,
@@ -213,7 +213,7 @@ _LAZY = {
     "Conv3dFwdOp": ".convolution",
     # FFT
     "FFTC2CFwdOp": ".fft",
-    # Mixture of experts
+    # MoE (Mixture-of-Experts)
     "MoEPrePermuteFwdOp": ".moe",
     "MoEPermuteAlignFwdOp": ".moe",
     "MoEGroupedGemmFwdOp": ".moe",
@@ -226,7 +226,7 @@ _LAZY = {
     "TopKTopPMaskFwdOp": ".sampling",
     "SamplingFromProbsFwdOp": ".sampling",
     "ChainSpeculativeSamplingFwdOp": ".sampling",
-    # Rotary position embedding
+    # RoPE (Rotary Position Embedding)
     "RoPEFwdOp": ".rope",
     "RoPENeoxPositionIdsFwdOp": ".rope",
     "RoPELlama31FwdOp": ".rope",
@@ -252,7 +252,7 @@ _LAZY = {
     "DeltaNetChunkBwdOp": ".linear_attention",
     "DeltaNetInferenceFwdOp": ".linear_attention",
     "DeltaNetRecurrentFwdOp": ".linear_attention",
-    "GatedDeltaNetFwdOp": ".linear_attention",
+    "GDNFwdOp": ".linear_attention",
     "GLAChunkFwdOp": ".linear_attention",
     "GLAInferenceFwdOp": ".linear_attention",
     "GLAChunkBwdOp": ".linear_attention",

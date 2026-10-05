@@ -1,4 +1,4 @@
-"""Dense equal-length Gated DeltaNet inference prefill."""
+"""Dense Gated DeltaNet (GDN) inference prefill, equal-length or packed."""
 
 import functools
 import math
@@ -9,12 +9,12 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    GatedDeltaNetCall,
-    GatedDeltaNetFwdInterface,
+    GDNCall,
+    GDNFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
-from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
+from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     correct_initial_states,
     fused_gdr_h,
     get_warmup_chunks,
@@ -23,10 +23,10 @@ from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
 )
 from tileops.utils import get_sm_count
 
-__all__ = ["GatedDeltaNetDensePrefillFwdKernel"]
+__all__ = ["GDNDensePrefillFwdKernel"]
 
 
-class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
+class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     """SM90 equal-length BTHD inference prefill.
 
     This is the inference owner of the retained partitioned prefill pipeline.
@@ -37,11 +37,11 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GatedDeltaNetCall) -> bool:
+    def applies(cls, call: GDNCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: GatedDeltaNetCall) -> Optional[str]:
+    def refusal(cls, call: GDNCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
@@ -59,7 +59,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel, GatedDeltaNetFwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: GatedDeltaNetCall) -> Entry:
+    def entry_for(cls, call: GDNCall) -> Entry:
         index = call.device.index if call.device is not None else None
         arguments = dict(
             batch=call.batch,

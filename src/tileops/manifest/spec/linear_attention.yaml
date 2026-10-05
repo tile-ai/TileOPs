@@ -63,7 +63,7 @@ DeltaNetInferenceFwdOp:
       B * S * H * (6 * K * V + 2 * K)
       + (2 * B * S * H * (3 * K + 2) if use_qk_l2norm_in_kernel else 0)
 
-GatedDeltaNetFwdOp:
+GDNFwdOp:
   # Inference contract shared by equal-length, packed-varlen, prefill, and
   # single-token decode calls. Unlike the FLA reference, this contract always
   # returns final_state: serving callers need it to continue recurrence.
@@ -272,7 +272,7 @@ GatedDeltaNetFwdOp:
 KDAFwdOp:
   # Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay g
   # (log space), one contract for equal-length, packed-varlen and single-token calls, with
-  # GatedDeltaNetFwdOp's state layout; final_state is always returned. With
+  # GDNFwdOp's state layout; final_state is always returned. With
   # use_gate_in_kernel, g is the raw gate input and the decay is
   # -exp(A_log) * softplus(g + dt_bias), or lower_bound * sigmoid(exp(A_log) * (g + dt_bias))
   # when lower_bound is passed (FLA fused_recurrent_kda).
