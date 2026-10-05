@@ -35,10 +35,18 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
     # The FP32 state must not inherit rounding of the chunk's cumulative log-gates.
-    test.check(
-        op,
-        *inputs,
-    )
+    test.check(op, *inputs)
+    reference = test.ref_program(*inputs)
+    evidence = test.verification(*inputs)
+    # Small outputs must not make either returned tensor optional to correctness.
+    for cleared in (0, 1):
+        faulty = list(reference)
+        faulty[cleared] = torch.zeros_like(faulty[cleared])
+        with pytest.raises(AssertionError):
+            compare_outputs(tuple(faulty), reference, evidence)
+        faulty[cleared] = reference[cleared] * 1.1
+        with pytest.raises(AssertionError):
+            compare_outputs(tuple(faulty), reference, evidence)
 
 
 @pytest.mark.sm90
@@ -105,7 +113,7 @@ def test_gated_deltanet_prefill_reads_offsets_rewritten_in_place() -> None:
     )
     inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
-    op(*inputs)
+    test.check(op, *inputs)
     # A cache keyed by tensor identity would replay the first call's split here.
     inputs[6][2] = 66
     inputs[7][2] = 66
@@ -161,17 +169,14 @@ def test_gated_deltanet_prefill_takes_each_input_transform(
         use_beta_sigmoid_in_kernel=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
     )
-    if dtype == torch.float16:
-        # Measured against the reference: the output reaches 1.03e-3 and the float32
-        # final state 4.3e-3. Both are chunk-decomposition differences the activation
-        # dtype's own 1e-3 bound does not describe, the state's the larger because the
-        # recurrence carries it to the end of the row.
-        test.check(
-            op,
-            *test.gen_inputs(),
-        )
-        return
-    test.check(op, *test.gen_inputs())
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    if l2norm and beta_sigmoid:
+        # Correlated keys expose a truncated triangular inverse that small random
+        # inner products hide. Reuse the same contract and compiled kernel.
+        inputs[1].copy_(inputs[1][:, :1].expand_as(inputs[1]).clone())
+        inputs[4].fill_(-2)
+        test.check(op, *inputs)
 
 
 @pytest.mark.sm90

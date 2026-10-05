@@ -17,6 +17,31 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     op = GatedDeltaNetFwdOp(**workload.arguments())
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
 
+    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+        from fla.ops.gated_delta_rule import (
+            chunk_gated_delta_rule,
+            fused_recurrent_gated_delta_rule,
+        )
+
+        # FLA caches derived metadata by tensor identity; snapshot the live call.
+        cu = None if cu is None else cu.clone()
+        cu_cpu = None if cu_cpu is None else cu_cpu.clone()
+        if call.ix["use_gate_in_kernel"]:
+            g = -torch.exp(a_log) * F.softplus(g.float() + dt_bias)
+        if call.ix["use_beta_sigmoid_in_kernel"]:
+            beta = torch.sigmoid(beta.float()) * (2.0 if call.ix["allow_neg_eigval"] else 1.0)
+        arguments = dict(
+            scale=q.shape[-1] ** -0.5 if call.ix["scale"] is None else call.ix["scale"],
+            initial_state=state,
+            output_final_state=True,
+            cu_seqlens=cu,
+            use_qk_l2norm_in_kernel=call.ix["use_qk_l2norm_in_kernel"],
+            state_v_first=call.ix["state_v_first"],
+        )
+        if q.shape[1] == 1:
+            return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)
+        return chunk_gated_delta_rule(q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_cpu, **arguments)
+
     def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
         offsets = cu
         if offsets is None:
@@ -101,10 +126,10 @@ def test_gated_deltanet_fwd_bench(call) -> None:
             final = final.transpose(-1, -2).contiguous()
         return out[..., :dim].to(q.dtype), final[..., :dim, :dim].contiguous()
 
-    functors = {"tileops": op, "fla": workload.ref_program, FLASHINFER_TAG: flashinfer_fn}
+    functors = {"tileops": op, "fla": fla_fn, FLASHINFER_TAG: flashinfer_fn}
     noncomparable = None
     if inputs[0].shape[1] == 1:
-        # A decode step is checked against FLA's FP32 recurrence; both FlashInfer
+        # A decode step is checked against the FP32 recurrence; both FlashInfer
         # paths carry BF16- or FP16-grade error into the FP32 state.
         noncomparable = {
             FLASHINFER_TAG: "chunk prefill kernel multiplies the FP32 state at input precision"

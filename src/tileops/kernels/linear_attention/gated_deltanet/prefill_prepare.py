@@ -509,7 +509,9 @@ def _prefill_blocksolve_A_bthd_tl(
                     i_s[3, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
                 T.sync_threads()
 
-                for _r in T.Serial(1):
+                # For a strictly lower triangular L, L**block_c = 0. Repeated
+                # doubling forms I + L + ... + L**(block_c - 1), the full inverse.
+                for _r in T.Serial((block_c - 1).bit_length()):
                     T.clear(tmp)
                     T.gemm(a_s[0, :, :], i_s[0, :, :], tmp)
                     for i, j in T.Parallel(block_c, block_c):
@@ -557,16 +559,8 @@ def _prefill_blocksolve_A_bthd_tl(
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[1, i, j] = -tmp[i, j]
 
-                T.clear(tmp)
-                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    work_s[0, i, j] = tmp[i, j]
-                T.sync_threads()
-                T.clear(tmp)
-                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    a_s[4, i, j] = -tmp[i, j]
-
+                # The (2, 0) block needs the original (2, 1) block. Consume it
+                # before overwriting a_s[4] with the inverse's (2, 1) block.
                 T.clear(tmp)
                 T.gemm(a_s[3, :, :], i_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
@@ -580,6 +574,16 @@ def _prefill_blocksolve_A_bthd_tl(
                 T.gemm(i_s[2, :, :], work_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[3, i, j] = -tmp[i, j]
+
+                T.clear(tmp)
+                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    work_s[0, i, j] = tmp[i, j]
+                T.sync_threads()
+                T.clear(tmp)
+                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    a_s[4, i, j] = -tmp[i, j]
 
                 T.clear(tmp)
                 T.gemm(a_s[6, :, :], i_s[0, :, :], tmp)

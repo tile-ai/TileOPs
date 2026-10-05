@@ -137,55 +137,18 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """A token-by-token FP32 recurrence, independent of the chunked kernels and of FLA.
-
-        The sequence boundaries come from the call's offsets, never from the fixture's
-        lengths, so a call whose offsets were rewritten in place is checked as it ran.
-        """
-        scale = q.shape[-1] ** -0.5 if self.scale is None else self.scale
-        group = v.shape[2] // q.shape[2]
-        if cu_seqlens is None:
-            spans = [(0, q.shape[1])] * q.shape[0]
-        else:
-            bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
-            spans = list(zip(bounds[:-1], bounds[1:], strict=True))
-        if self.raw_gate:
-            g = -torch.exp(A_log) * torch.nn.functional.softplus(g.float() + dt_bias)
-        if self.beta_sigmoid:
-            beta = torch.sigmoid(beta.float()) * (2.0 if self.allow_neg_eigval else 1.0)
-        states, output = [], torch.empty_like(v)
-        for sequence, (first, last) in enumerate(spans):
-            state = (
-                torch.zeros(v.shape[2], q.shape[-1], v.shape[-1], device=q.device)
-                if initial_state is None
-                else self._key_major(initial_state[sequence].float())
-            )
-            for token in range(last - first):
-                index = (0, first + token) if cu_seqlens is not None else (sequence, token)
-                # Value head h reads the key head its group shares.
-                q_t = q[index].float().repeat_interleave(group, dim=0)
-                k_t = k[index].float().repeat_interleave(group, dim=0)
-                if self.l2norm:
-                    q_t = q_t * torch.rsqrt(q_t.square().sum(-1, keepdim=True) + 1e-6)
-                    k_t = k_t * torch.rsqrt(k_t.square().sum(-1, keepdim=True) + 1e-6)
-                q_t = q_t * scale
-                decay = g[index].float().exp()
-                old_value = torch.einsum("hkv,hk->hv", state, k_t)
-                value = beta[index].float().unsqueeze(-1) * (
-                    v[index].float() - decay.unsqueeze(-1) * old_value
-                )
-                state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
-                output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
-            states.append(self._key_major(state))
-        return output, torch.stack(states)
-
-    def _key_major(self, state: torch.Tensor) -> torch.Tensor:
-        """*state* between the caller's layout and the ``[HV, K, V]`` the recurrence uses."""
-        return state.transpose(-1, -2) if self.state_v_first else state
-
-    def verification(self, *inputs):
-        return gated_verification(
-            inputs,
+        return gated_deltanet_ref(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            initial_state,
+            cu_seqlens,
+            cu_seqlens_cpu,
+            A_log,
+            dt_bias,
+            scale=self.scale,
             raw_gate=self.raw_gate,
             beta_sigmoid=self.beta_sigmoid,
             allow_neg_eigval=self.allow_neg_eigval,
@@ -193,14 +156,16 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
             state_v_first=self.state_v_first,
         )
 
+    def verification(self, *inputs):
+        return gated_verification(
+            inputs,
+            l2norm=self.l2norm,
+            state_v_first=self.state_v_first,
+        )
+
 
 class GatedDeltaNetFwdCall(CallWorkload):
-    """A manifest call of GatedDeltaNetFwdOp.
-
-    FLA's ``chunk_gated_delta_rule`` is the reference for a prefill call and its
-    ``fused_recurrent_gated_delta_rule`` for a single-token one, which is the kernel FLA
-    supplies for decode.
-    """
+    """A manifest call sharing the focused workload's FP32 recurrence and verification."""
 
     def gen_inputs(self):
         q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias = (
@@ -251,9 +216,6 @@ class GatedDeltaNetFwdCall(CallWorkload):
         p = self.call.ix
         return gated_verification(
             inputs,
-            raw_gate=p["use_gate_in_kernel"],
-            beta_sigmoid=p["use_beta_sigmoid_in_kernel"],
-            allow_neg_eigval=p["allow_neg_eigval"],
             l2norm=p["use_qk_l2norm_in_kernel"],
             state_v_first=p["state_v_first"],
         )
@@ -278,49 +240,66 @@ def gated_deltanet_ref(
     l2norm=False,
     state_v_first=False,
 ):
-    """FLA inference over a manifest row, which benchmarks also time as the comparator.
+    """A token-by-token FP32 recurrence, independent of the chunked kernels and of FLA.
 
-    Focused fixtures check against the FP32 recurrence of ``GatedDeltaNetFwdWorkload``
-    instead, so that the kernels, which adapt FLA's chunked algorithm, are not checked
-    only against the same algorithm.
+    The sequence boundaries come from the call's offsets, never from the fixture's
+    lengths, so a call whose offsets were rewritten in place is checked as it ran.
     """
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
-
-    # FLA caches derived sequence metadata by tensor identity. Give it a per-call
-    # snapshot so in-place changes to caller-owned offsets cannot reuse stale indices.
-    cu_seqlens = None if cu_seqlens is None else cu_seqlens.clone()
-    cu_seqlens_cpu = None if cu_seqlens_cpu is None else cu_seqlens_cpu.clone()
-
+    scale = q.shape[-1] ** -0.5 if scale is None else scale
+    group = v.shape[2] // q.shape[2]
+    if cu_seqlens is None:
+        spans = [(0, q.shape[1])] * q.shape[0]
+    else:
+        bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
+        spans = list(zip(bounds[:-1], bounds[1:], strict=True))
     if raw_gate:
         g = -torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)
     if beta_sigmoid:
-        gain = 2.0 if allow_neg_eigval else 1.0
-        beta = torch.sigmoid(beta.float()) * gain
-    arguments = dict(
-        scale=q.shape[-1] ** -0.5 if scale is None else scale,
-        initial_state=initial_state,
-        output_final_state=True,
-        cu_seqlens=cu_seqlens,
-        use_qk_l2norm_in_kernel=l2norm,
-        state_v_first=state_v_first,
-    )
-    if q.shape[1] == 1:
-        return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)
-    return chunk_gated_delta_rule(
-        q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_seqlens_cpu, **arguments
-    )
+        beta = torch.sigmoid(beta.float()) * (2.0 if allow_neg_eigval else 1.0)
+    states, output = [], torch.empty_like(v)
+    for sequence, (first, last) in enumerate(spans):
+        state = (
+            torch.zeros(v.shape[2], q.shape[-1], v.shape[-1], device=q.device, dtype=torch.float32)
+            if initial_state is None
+            else (
+                initial_state[sequence].float().transpose(-1, -2)
+                if state_v_first
+                else initial_state[sequence].float()
+            )
+        )
+        for token in range(last - first):
+            index = (0, first + token) if cu_seqlens is not None else (sequence, token)
+            # Value head h reads the key head its group shares.
+            q_t = q[index].float().repeat_interleave(group, dim=0)
+            k_t = k[index].float().repeat_interleave(group, dim=0)
+            if l2norm:
+                q_t = q_t * torch.rsqrt(q_t.square().sum(-1, keepdim=True) + 1e-6)
+                k_t = k_t * torch.rsqrt(k_t.square().sum(-1, keepdim=True) + 1e-6)
+            q_t = q_t * scale
+            decay = g[index].float().exp()
+            old_value = torch.einsum("hkv,hk->hv", state, k_t)
+            value = beta[index].float().unsqueeze(-1) * (
+                v[index].float() - decay.unsqueeze(-1) * old_value
+            )
+            state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
+            output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
+        states.append(state.transpose(-1, -2) if state_v_first else state)
+    return output, torch.stack(states)
 
 
 def gated_verification(
     inputs,
     *,
-    raw_gate=False,
-    beta_sigmoid=False,
-    allow_neg_eigval=False,
     l2norm=False,
     state_v_first=False,
 ):
-    from workloads.numerics import Custom, assert_close, assert_rounded, zeroed_input
+    from workloads.numerics import (
+        Custom,
+        assert_close,
+        assert_normalized_error,
+        assert_rounded,
+        zeroed_input,
+    )
 
     q = inputs[0]
     if q.shape[1] == 1:
@@ -339,13 +318,17 @@ def gated_verification(
             and all(value is None for value in inputs[5:])
             else output_atol
         )
-        if q.dtype == torch.float16 and (raw_gate or beta_sigmoid or l2norm):
-            output_atol, state_atol = 2e-3, 6e-3
 
     def validate(got, expected):
         compare_output = assert_rounded if q.shape[1] == 1 else assert_close
         compare_output(got[0], expected[0], atol=output_atol, rtol=rtol)
         assert_close(got[1], expected[1], atol=state_atol, rtol=rtol)
+        if q.shape[1] != 1:
+            # Absolute bounds cover cancellation in the chunked recurrence, but can
+            # exceed small outputs. Also apply the shared normalized-error budget
+            # (1e-3 of combined energy, ~4.5% relative RMS) to each tensor. Clearing
+            # a nonzero tensor has ratio 1 and cannot pass, regardless of magnitude.
+            assert_normalized_error(got, expected)
 
     controls = ()
     if q.shape[1] == 1:
