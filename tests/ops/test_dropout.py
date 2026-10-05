@@ -172,6 +172,3 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.shape == x.shape, f"Shape mismatch: {y.shape} vs {x.shape}"
     assert y.dtype == x.dtype, f"Dtype mismatch: {y.dtype} vs {x.dtype}"
-
-
-# Regression: non-default kernel config

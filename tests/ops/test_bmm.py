@@ -2,8 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm.bmm import BmmPersistentKernel
-from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
 from workloads.gemm import BmmFP8Workload, BmmWorkload
@@ -170,15 +168,11 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
         pytest.param(3, 1000, 1000, 1024, id="ragged-tiles"),
     ],
 )
-def test_bmm_runs_the_persistent_path_where_it_claims_the_call(
+def test_bmm_wave_filling_shapes_match_the_reference(
     batch: int, m: int, n: int, k: int, dtype: torch.dtype
 ) -> None:
-    """A call the persistent path claims runs its template through dispatch."""
-    shape = {"batch": batch, "m": m, "n": n, "k": k}
-    call = BmmCall(**shape, dtype=dtype, device=torch.device(run_device()))
-    if not BmmPersistentKernel.applies(call):
-        pytest.skip("the persistent path serves only a calibrated board")
-    test = BmmTest(*shape.values(), dtype)
+    """Shapes whose whole tiles fill a persistent wave on the calibrated board."""
+    test = BmmTest(batch, m, n, k, dtype)
     op = BmmFwdOp()
     test.check(op, *test.gen_inputs())
 

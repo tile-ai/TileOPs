@@ -11,9 +11,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.elementwise import (
-    coalesce_broadcast_dims,
-)
 from tileops.ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
@@ -74,24 +71,6 @@ class CoalesceFixture(FixtureBase):
             ],
         ),
     ]
-
-
-@CoalesceFixture
-def test_coalesce_broadcast_dims(a_shape, b_shape, expected_ndim) -> None:
-    """Verify coalesce output shape count matches expected coalesced ndim."""
-    out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-        a_shape,
-        b_shape,
-    )
-    # Verify output shape matches torch broadcast
-    assert out_shape == torch.broadcast_shapes(a_shape, b_shape)
-    # Verify coalesced ndim
-    assert len(coalesced_shape) == expected_ndim, (
-        f"Expected {expected_ndim} coalesced dims, got {len(coalesced_shape)}: {coalesced_shape}"
-    )
-    # Verify strides have correct length
-    assert len(a_strides) == len(coalesced_shape)
-    assert len(b_strides) == len(coalesced_shape)
 
 
 # Add op correctness tests

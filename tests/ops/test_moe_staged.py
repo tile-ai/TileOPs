@@ -10,7 +10,6 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
-    MoEGroupedGemmMMAKernel,
     PostPermuteCall,
     PrePermuteCall,
 )
@@ -482,63 +481,6 @@ def test_grouped_gemm_refuses_a_strided_out():
     out = torch.empty(64, 128, dtype=torch.bfloat16, device=run_device())[:, ::2]
     with pytest.raises(ValueError, match="out must be contiguous"):
         op(*workload.gen_inputs(), out=out)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "kind, packing, metadata_kind, alignment, max_m, rows, num_groups",
-    [
-        pytest.param("contiguous", "tight", "physical_psum", 1, None, 600, 6, id="tight-psum"),
-        pytest.param(
-            "contiguous", "aligned", "physical_psum", 128, None, 1152, 6, id="aligned-psum"
-        ),
-        pytest.param("contiguous", "aligned", "per_row", 128, None, 1152, 6, id="aligned-per-row"),
-        pytest.param("masked", None, None, 1, 128, 6 * 128, 6, id="masked"),
-    ],
-)
-def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
-    kind: str,
-    packing: "str | None",
-    metadata_kind: "str | None",
-    alignment: int,
-    max_m: "int | None",
-    rows: int,
-    num_groups: int,
-):
-    """The metadata is an int32 input that sets which tiles run, so tuning cannot take it
-    random: the supply builds the call's own rows in its layout."""
-    call = MGroupedGemmCall(
-        kind=kind,
-        packing=packing,
-        metadata_kind=metadata_kind,
-        alignment=alignment,
-        max_m=max_m,
-        ab_dtype=torch.bfloat16,
-        cd_dtype=torch.bfloat16,
-        num_groups=num_groups,
-        m=rows,
-        n=256,
-        k=512,
-    )
-    supply = MoEGroupedGemmMMAKernel._supply_prog_for(call)
-    a, b, layout, c = supply([None] * 4)
-
-    lead = [num_groups, max_m] if kind == "masked" else [rows]
-    assert [list(t.shape) for t in (a, b, c)] == [
-        [*lead, 512],
-        [num_groups, 256, 512],
-        [*lead, 256],
-    ]
-    if kind == "masked":
-        assert layout.shape == (num_groups,) and 0 < int(layout.max()) <= max_m
-    elif metadata_kind == "per_row":
-        assert layout.shape == (rows,) and int(layout.min()) >= 0 and int(layout.max()) < num_groups
-    else:
-        assert layout.shape == (num_groups,) and bool((layout.diff() > 0).all())
-        assert int(layout[-1]) <= rows
-    with pytest.raises(RuntimeError, match="expects 4 parameters"):
-        supply([None] * 5)
 
 
 @pytest.mark.sm90

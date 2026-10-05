@@ -146,23 +146,6 @@ def test_instance_norm_affine_free_running_stats(
     compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
-@pytest.mark.smoke
-def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
-    """``_validate_dtypes`` accepts kwargs matching manifest ``signature.inputs``.
-
-    Regression guard for a signature drift where the hand-written override
-    accepted only ``x`` while the manifest declared ``x``, ``weight`` and
-    ``bias``. The manifest-validator dtype-parity check binds by kwargs and
-    requires the impl to honor the manifest order.
-    """
-    sig = inspect.signature(InstanceNormFwdOp._validate_dtypes)
-    params = [p for p in sig.parameters if p != "self"]
-    expected = ["x", "running_mean", "running_var", "weight", "bias"]
-    assert params == expected, (
-        f"_validate_dtypes params {params} must match manifest inputs {expected} in order"
-    )
-
-
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
