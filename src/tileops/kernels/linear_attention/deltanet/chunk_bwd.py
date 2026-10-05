@@ -540,8 +540,9 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
     @staticmethod
     def _parallel_live_bytes(c: int, k: int, v: int, elem: int) -> int:
         """Lower bound on the per-chunk backward's shared memory: q, k, w, h and d_v_new are
-        live with do and v_new at the d_attn product, or with do and d_attn at the dq one."""
-        return (3 * c * k + 2 * c * v + k * v + max(c * v, c * c)) * elem
+        live with do and v_new at the d_attn product, or with do and d_attn at the dq one;
+        w, d_v_new, dq and dk are live with dP once it is written."""
+        return max(3 * c * k + 2 * c * v + k * v + max(c * v, c * c), 4 * c * k + c * v) * elem
 
     @staticmethod
     def _recurrence_live_bytes(c: int, k: int, v: int, elem: int) -> int:
