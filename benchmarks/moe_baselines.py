@@ -22,16 +22,10 @@ def flashinfer_experts(hidden, w1, w2, top_k):
     )
     workspace = torch.empty(size, dtype=torch.uint8, device=hidden.device)
 
-    def pack(gate_up):
+    def baseline(x, gate_up, down, weights, ids):
         # CUTLASS SwiGLU stores the linear half before the activated half.
         gate, up = gate_up.chunk(2, dim=1)
-        return torch.cat((up, gate), dim=1)
-
-    # Static weights are packed once, as a deployment loads them; other weights per call.
-    packed = pack(w1)
-
-    def baseline(x, gate_up, down, weights, ids):
-        up_gate = packed if gate_up is w1 else pack(gate_up)
+        up_gate = torch.cat((up, gate), dim=1)
         return run(
             x, ids.int(), weights.float(), up_gate, down, x.dtype, [], workspace_buffer=workspace
         )[0]
