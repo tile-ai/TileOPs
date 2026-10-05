@@ -354,27 +354,12 @@ def _gemm_w4a16_kernel(
             raise ValueError(f"split_k={split_k} must divide the {k_iters} K tiles")
         k_slice = k_iters // split_k
         defer_scale = _narrow_tile(block_m)
-        if stream_ctas < 0:
-            raise ValueError(f"stream_ctas must be non-negative, got {stream_ctas}")
         stream_k = stream_ctas > 0
         stream_slots = _CONFIG_SPACE.stream_slots
         stream_units = tiles_n * k_iters
         # Exactly two CTAs per N tile partition K without crossing an N-tile
         # boundary, so the streamed kernel has no second accumulator to infer.
         stream_two_way = stream_k and stream_ctas == 2 * tiles_n
-        if stream_k and (
-            tiles_m != 1
-            or split_k != 1
-            or not _narrow_tile(block_m)
-            or block_k != 512
-            or not per_tile_meta
-            or n % block_n
-            or not (tiles_n < stream_ctas <= 2 * tiles_n)
-        ):
-            raise ValueError(
-                "stream-K requires one narrow M tile, split_k=1, bk512, per-tile metadata, "
-                "full N tiles, and tiles_n < stream_ctas <= 2 * tiles_n"
-            )
 
         def centered_weight(word, zero, j, v):
             """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16."""

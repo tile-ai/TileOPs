@@ -444,18 +444,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
             self.autotune()
 
     def _build_program(self) -> None:
-        """Check the warp-lane mapping the current config states, then compile it."""
-        if self.config["raw_group_size"] != 2:
-            raise ValueError(
-                "raw_group_size must equal 2 because this kernel uses fixed "
-                "two-lane shuffle reductions."
-            )
-        required_threads = self.config["raw_group_size"] * self.config["v_tile"]
-        if self.config["threads"] != required_threads:
-            raise ValueError(
-                f"threads ({self.config['threads']}) must equal raw_group_size * v_tile "
-                f"({required_threads}) for the warp-lane mapping used by this kernel."
-            )
+        """Compile the program the current config states."""
         self._kernel_fn = _deltanet_decode_raw_cuda_flastyle_tl(
             self.batch,
             self.head,

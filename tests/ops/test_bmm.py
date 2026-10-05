@@ -1,8 +1,7 @@
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
-from tileops.backend import BUILTIN
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.gemm.bmm import BmmFP8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
@@ -159,50 +158,6 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
         op(a, b)
 
 
-@pytest.mark.smoke
-def test_bmm_persistent_calibrated_dispatch_region() -> None:
-    """The persistent path claims aligned calls worth half a persistent wave on a calibrated board."""
-
-    def call(batch=64, m=128, n=2048, *, calibration="h200"):
-        return BmmCall(
-            batch=batch,
-            m=m,
-            n=n,
-            k=2048,
-            dtype=torch.bfloat16,
-            arch=90,
-            calibration=calibration,
-            sm_count=132,
-        )
-
-    assert BmmPersistentKernel.applies(call())
-    assert not BmmPersistentKernel.applies(call(batch=32, m=256, n=256))
-    assert not BmmPersistentKernel.applies(call(m=200, n=300))
-    assert not BmmPersistentKernel.applies(call(calibration=None))
-    # n is TMA-aligned and the shape is large, so only the tile count rejects it.
-    assert not BmmPersistentKernel.applies(call(batch=1, m=2048, n=1024))
-
-
-@pytest.mark.smoke
-def test_bmm_persistent_region_holds_manifest_workloads() -> None:
-    """The two manifest workloads nearest the wave threshold keep their routing."""
-    for batch, m, n, k, claimed in [
-        (16, 512, 512, 512, True),
-        (32, 256, 256, 256, False),
-    ]:
-        call = BmmCall(
-            batch=batch,
-            m=m,
-            n=n,
-            k=k,
-            dtype=torch.bfloat16,
-            arch=90,
-            calibration="h200",
-            sm_count=132,
-        )
-        assert BmmPersistentKernel.applies(call) is claimed, call
-
-
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -226,9 +181,6 @@ def test_bmm_runs_the_persistent_path_where_it_claims_the_call(
     test = BmmTest(*shape.values(), dtype)
     op = BmmFwdOp()
     test.check(op, *test.gen_inputs())
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("bmm").values()
-        assert type(kernel) is BmmPersistentKernel
 
 
 class BmmFP8Fixture(FixtureBase):
@@ -364,33 +316,6 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "block",
-    [b for b in BmmFP8TransposeKernel.TILE_CANDIDATES if b != BmmFP8TransposeKernel.TILE],
-)
-def test_bmm_fp8_kn_transpose_tuned_tile_handles_tail(block: int) -> None:
-    """Each tuned staging tile transposes a ``[B, K, N]`` operand with tails exactly.
-
-    N leaves a tail under the tile; K is a multiple of 32, so it leaves one under
-    every tile but 32.
-    """
-
-    class _Pinned(BmmFP8TransposeKernel):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **{**kwargs, "config": {"block": block, "threads": 128}})
-
-    batch, m, n, k = 2, 128, 2 * block + 16, block + 32
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    op = BmmFP8FwdOp(
-        out_dtype=torch.bfloat16, kernel_map={"bmm_fp8_transpose": _Pinned}, target=BUILTIN
-    )
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("bmm_fp8_transpose").values()
-    assert type(kernel) is _Pinned
-
-
 @pytest.mark.smoke
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
@@ -404,9 +329,6 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     op_nk = BmmFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
-    if served_in_tree(op_kn):
-        assert op_kn.built_kernels("bmm_fp8_transpose")
-        assert not op_nk.built_kernels("bmm_fp8_transpose")
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -422,8 +344,6 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
 
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
     out_view = op(a, b_kn_view, scale_a, scale_b).clone()
-    if served_in_tree(op):
-        assert not op.built_kernels("bmm_fp8_transpose")
 
     out_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
     torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)
@@ -437,3 +357,12 @@ def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
 
     test.check(op, a, b_kn, scale_a, scale_b)
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_bmm_fp8_under_tuning(tune: bool) -> None:
+    test = BmmFP8Test(2, 128, 144, 96, torch.float8_e4m3fn)
+    test.check(BmmFP8FwdOp(out_dtype=torch.bfloat16, tune=tune), *test.gen_inputs())

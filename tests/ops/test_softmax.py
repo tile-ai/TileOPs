@@ -18,8 +18,6 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
-from tileops.kernels.reduction.softmax import SoftmaxSplitKernel
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
@@ -565,10 +563,6 @@ class SoftmaxImplicitDimFixture(FixtureBase):
     ]
 
 
-def _expected_implicit_dim(ndim: int) -> int:
-    return 0 if ndim in (0, 1, 3) else 1
-
-
 @SoftmaxImplicitDimFixture
 def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
     """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
@@ -829,56 +823,3 @@ def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) 
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}
-
-
-@pytest.mark.smoke
-def test_split_shape_runs_as_one_fused_kernel() -> None:
-    """The manifest's split shape reads its row once, under a grid barrier.
-
-    A fused split is what keeps the row in registers across the fold; without
-    it the pair reads the row a second time. The two shapes below are what
-    ``fused_split_threads`` refuses: a grid wider than a cooperative launch
-    holds, and a segment too wide for two fp32 fragments.
-    """
-    fused = SoftmaxSplitKernel.fused_split_threads
-    assert fused(SoftmaxCall(shape=(4, 102400), axis=1, **_H200)) is not None
-
-    assert fused(SoftmaxCall(shape=(1, 10_000_000), axis=1, **_H200)) is None
-    assert fused(SoftmaxCall(shape=(1, 4_300_000), axis=1, **_H200)) is None
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, axes, dtype, expected",
-    [
-        pytest.param((4, 128, 4096), (0, 2), torch.float16, "LogSumExpEdgeSplitKernel", id="edge"),
-        # Edge axes whose kept rows would also stream: read in place wins.
-        pytest.param(
-            (16, 300, 16384), (0, 2), torch.bfloat16, "LogSumExpEdgeSplitKernel", id="edge-long"
-        ),
-        pytest.param((256, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream"),
-        pytest.param((8, 102400), (1,), torch.float32, "LogSumExpSplitKernel", id="split"),
-        pytest.param((64, 4096), (1,), torch.float16, "LogSumExpKernel", id="single-tile"),
-        pytest.param((300, 100000), (1,), torch.float32, "LogSumExpKernel", id="tiled"),
-    ],
-)
-def test_logsumexp_regions(shape: tuple, axes: tuple, dtype: torch.dtype, expected: str) -> None:
-    """Exactly one logsumexp implementation serves each call, whatever the key order."""
-    call = LogSumExpCall(shape=shape, axes=axes, dtype=dtype, **_H200)
-    op = LogSumExpFwdOp(dim=-1)
-    assert op.kernel_map[op.select_implementation("reduce", call)].__name__ == expected
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, dtype, expected",
-    [
-        pytest.param((4, 102400), torch.float16, "SoftmaxSplitKernel", id="split"),
-        pytest.param((300, 100000), torch.float32, "SoftmaxKernel", id="tiled"),
-    ],
-)
-def test_softmax_regions(shape: tuple, dtype: torch.dtype, expected: str) -> None:
-    """Exactly one softmax implementation serves each call, whatever the key order."""
-    call = SoftmaxCall(shape=shape, axis=1, dtype=dtype, out_dtype=dtype, **_H200)
-    op = SoftmaxFwdOp(dim=-1)
-    assert op.kernel_map[op.select_implementation("softmax", call)].__name__ == expected

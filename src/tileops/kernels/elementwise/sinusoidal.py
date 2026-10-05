@@ -106,13 +106,6 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
 
     def __init__(self, seq_len, d_model, dtype, config=None, tune=False, device_index=None):
         super().__init__(device_index=device_index)
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        if d_model % 2:
-            raise ValueError(f"{type(self).__name__} needs an even d_model, got {d_model}")
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype

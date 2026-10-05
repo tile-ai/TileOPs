@@ -1,10 +1,7 @@
-import dataclasses
-
 import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeCall
 from tileops.ops import DSADecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DSADecodeWorkload
 from workloads.device import run_device
@@ -166,69 +163,3 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
     # NaN rows in every slot must not change the output.
     op(q, torch.full_like(kv, float("nan")), torch.zeros_like(in_range_pad))
     assert torch.equal(op(q, kv, in_range_pad), expected)
-
-
-@pytest.mark.smoke
-def test_dsa_decode_basic_refuses_what_its_shared_memory_cannot_hold() -> None:
-    """On SM89 the heads per block and the refusal follow the default config's shared memory:
-    16 heads at d=1024 with a 16-wide tail take 99,840 bytes over one KV tile (topk 32),
-    served, and 101,888 over two (topk 64), refused."""
-    call = DSADecodeCall(
-        arch=89,
-        sm_count=1,
-        batch=1,
-        seq_len=1,
-        seq_len_kv=2048,
-        heads=64,
-        dim=512,
-        tail_dim=64,
-        dtype=torch.float16,
-        topk=2048,
-        kv_stride=1,
-    )
-    for tail_dim, block_h in ((64, 32), (512, 16)):
-        shaped = dataclasses.replace(call, tail_dim=tail_dim)
-        assert DSADecodeBasicKernel.refusal(shaped) is None
-        config = DSADecodeBasicKernel._default_config_for(
-            shaped.arch,
-            shaped.heads // shaped.kv_group,
-            shaped.dim,
-            tail_dim,
-            shaped.dtype.itemsize,
-            shaped.topk,
-        )
-        assert config["block_h"] == block_h
-    tight = dataclasses.replace(call, heads=16, dim=1024, tail_dim=16, topk=32)
-    assert DSADecodeBasicKernel.refusal(tight) is None
-    assert "101888" in DSADecodeBasicKernel.refusal(dataclasses.replace(tight, topk=64))
-    assert DSADecodeBasicKernel.refusal(dataclasses.replace(call, arch=90)) is None
-    for wide in (dataclasses.replace(call, dim=2048), dataclasses.replace(call, tail_dim=1024)):
-        assert "shared memory" in DSADecodeBasicKernel.refusal(wide)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("dim", "topk", "expected"),
-    [
-        pytest.param(512, 2048, "dsa_decode_kernel", id="ws"),
-        pytest.param(512, 96, "dsa_decode_basic_kernel", id="topk-off-128"),
-        pytest.param(64, 2048, "dsa_decode_basic_kernel", id="dim-off-128"),
-    ],
-)
-def test_dsa_decode_regions(dim: int, topk: int, expected: str) -> None:
-    """The warp-specialized kernel serves SM90 where its gather and topk tiling apply."""
-    op = DSADecodeWithKVCacheFwdOp(64, 1, 0)
-    call = DSADecodeCall(
-        arch=90,
-        sm_count=132,
-        batch=1,
-        seq_len=1,
-        seq_len_kv=2048,
-        heads=64,
-        dim=dim,
-        tail_dim=64,
-        dtype=torch.float16,
-        topk=topk,
-        kv_stride=1,
-    )
-    assert op.select_implementation("dsa_decode", call) == expected

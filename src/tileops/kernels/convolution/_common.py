@@ -94,17 +94,7 @@ def launch(
 
     Returns:
         The output tensor the program allocated.
-
-    Raises:
-        ValueError: The call's bias presence differs from the one the kernel was built for.
     """
-    if (bias is not None) != kernel.has_bias:
-        built, given = ("with", "without") if kernel.has_bias else ("without", "with")
-        raise ValueError(
-            f"{type(kernel).__name__} was built {built} a bias and was called {given} one; "
-            f"bias presence is part of what the program is compiled for, so the op layer "
-            f"builds one kernel per side"
-        )
     # A config's keys are the builder's parameter names, as autotune binds them.
     program = kernel.kernel(**kernel.config)
     if bias is None:

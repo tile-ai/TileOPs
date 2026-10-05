@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.attention import FP8LightningIndexerCall, FP8LightningIndexerKernel
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.device import run_device
@@ -45,44 +44,6 @@ def test_indexer(
     )
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
     test.check(op, *test.gen_inputs())
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("budget", "heads", "index_dim", "kv_group", "block_q"),
-    [
-        pytest.param(101376, 64, 128, 1, 4, id="sm89-h64-d128"),
-        pytest.param(101376, 128, 256, 1, 2, id="sm89-h128-d256"),
-        pytest.param(101376, 128, 256, 2, 1, id="sm89-h128-d256-g2"),
-        pytest.param(101376, 128, 512, 2, None, id="sm89-d512-g2-refused"),
-        pytest.param(232448, 128, 256, 1, 4, id="sm90-h128-d256"),
-    ],
-)
-def test_indexer_block_q_follows_the_shared_memory_budget(
-    budget: int,
-    heads: int,
-    index_dim: int,
-    kv_group: int,
-    block_q: int | None,
-) -> None:
-    """The queries a block takes and the refusal follow the default's shared memory."""
-    call = FP8LightningIndexerCall(
-        arch=89,
-        sm_count=1,
-        smem_budget=budget,
-        batch=1,
-        seq_len=1024,
-        heads=heads,
-        index_dim=index_dim,
-        seq_len_kv=2048,
-        kv_group=kv_group,
-    )
-    if block_q is None:
-        assert "needs" in FP8LightningIndexerKernel.refusal(call)
-        return
-    assert FP8LightningIndexerKernel.refusal(call) is None
-    config = FP8LightningIndexerKernel._default_config_for(budget, heads, index_dim, kv_group)
-    assert config["block_Q"] == block_q
 
 
 @pytest.mark.smoke

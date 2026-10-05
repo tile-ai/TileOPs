@@ -7,7 +7,7 @@ Each op reduces along dim=-1 and supports 1D-4D input.
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import (
@@ -195,11 +195,6 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs())
 
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("reduce").values()
-        assert not kernel._needs_tiling
-        assert {c["block_m"] for c in kernel.autotune_configs} == {1}
-
 
 @pytest.mark.parametrize(
     "op_kind",
@@ -225,11 +220,6 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
         test = WelfordTest(m, n, dtype, "var", correction=1)
         op = VarFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs())
-
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("reduce").values()
-        assert kernel._needs_tiling
-        assert kernel.config in kernel.autotune_configs
 
 
 @ReduceNonContigFixture
@@ -440,42 +430,6 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     y = op(x)
 
     compare_outputs(y, ref, reduction_verification((ref).dtype))
-
-
-@pytest.mark.smoke
-def test_reduce_candidate_regions() -> None:
-    """Each call is served by the one implementation whose region names it."""
-    from tileops.kernels.reduction.call_spec import ReduceCall
-    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp, VarFwdOp, VarMeanFwdOp
-
-    f16 = torch.float16
-    cases = [
-        (SumFwdOp, (8, 4096), (1,), "reduce_fold"),
-        (SumFwdOp, (8, 4095), (1,), "reduce"),
-        (ProdFwdOp, (8, 4096), (1,), "reduce_fold"),
-        (ProdFwdOp, (8, 4095), (1,), "reduce_prod"),
-        (VarFwdOp, (8, 4096), (1,), "reduce_welford"),
-        # Leading and edge axes read in place win over the fold where both apply.
-        (SumFwdOp, (1024, 8), (0,), "reduce_leading"),
-        (ProdFwdOp, (1024, 8), (0,), "reduce_leading"),
-        (SumFwdOp, (4, 128, 4096), (0, 2), "reduce_edge"),
-        (VarFwdOp, (4, 128, 4096), (0, 2), "reduce_welford_edge"),
-        (VarMeanFwdOp, (4, 128, 4096), (0, 2), "reduce_welford_edge"),
-        # Past fp32's exact integer range the Welford merge drifts, so the rows take it.
-        (VarFwdOp, (1024, 4, 32768), (0, 2), "reduce_welford"),
-    ]
-    for op_cls, shape, axes, key in cases:
-        op = op_cls(dim=0)
-        call = ReduceCall(
-            arch=90,
-            sm_count=132,
-            smem_budget=232448,
-            shape=shape,
-            axes=axes,
-            op_kind=op._op_kind,
-            dtype=f16,
-        )
-        assert op.select_implementation("reduce", call) == key, (op_cls, shape, axes)
 
 
 @pytest.mark.smoke

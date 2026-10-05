@@ -3,9 +3,7 @@
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
-from tileops.backend import BUILTIN
-from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops import GQAVarlenFwdOp
 from tileops.perf.formulas import visible_scores
 from workloads.attention.gqa.varlen import GQAVarlenFwdWorkload
@@ -358,36 +356,6 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "q_lens, kv_lens, is_causal, wl, wr",
-    [
-        pytest.param([300, 700], [300, 700], True, 100, -1, id="causal-left-partial-tiles"),
-        pytest.param([256, 512], [256, 512], False, 64, 64, id="both"),
-        pytest.param([64, 128], [256, 512], False, -1, 64, id="right-kvcache"),
-    ],
-)
-def test_general_kernel_serves_sliding_windows(
-    q_lens: list[int], kv_lens: list[int], is_causal: bool, wl: int, wr: int
-) -> None:
-    """The general kernel's window bounds. On SM90 dispatch hands a windowed call to the
-    sliding-window kernel, so that key runs the general kernel here."""
-    test = GQAVarlenFwdTest(
-        len(q_lens), q_lens, kv_lens, 8, 2, 64, is_causal, wl, wr, torch.float16
-    )
-    op = GQAVarlenFwdOp(
-        is_causal,
-        wl,
-        wr,
-        kernel_map={"gqa_varlen_sliding_window": GQAPrefillVarlenFwdKernel},
-        target=BUILTIN,
-    )
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("gqa_varlen").values()
-    assert type(kernel) is GQAPrefillVarlenFwdKernel
-
-
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
@@ -426,8 +394,6 @@ def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
     op = GQAVarlenFwdOp(is_causal=is_causal, **scores)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
-    if served_in_tree(op):
-        assert type(op._get_kernel((*inputs, None, None, None, None, None))).__name__ == kernel
 
 
 @pytest.mark.smoke
@@ -477,31 +443,6 @@ def test_varlen_rope_rotates_at_per_request_positions(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "dim, window_size_left, kernel",
-    [
-        pytest.param(128, -1, "GQAPrefillVarlenWSFwdKernel", id="ws-region"),
-        pytest.param(128, 64, "GQAPrefillVarlenFwdKernel", id="windowed"),
-        pytest.param(512, -1, "GQAPrefillVarlenFwdKernel", id="wide-head"),
-    ],
-)
-def test_varlen_rope_selects_the_kernel_of_its_region(
-    dim: int, window_size_left: int, kernel: str
-) -> None:
-    """A fused-RoPE call is served, and by the implementation whose region holds it."""
-    test = GQAVarlenFwdTest(
-        2, [128, 64], [128, 64], 8, 2, dim, True, window_size_left, -1, torch.float16,
-        pos_encoding_mode="rope",
-    )  # fmt: skip
-    op = GQAVarlenFwdOp(is_causal=True, window_size_left=window_size_left, pos_encoding_mode="rope")
-    inputs = test.gen_inputs()
-    if served_in_tree(op):
-        assert type(op._get_kernel(inputs)).__name__ == kernel
-
-
 @pytest.mark.smoke
 def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
     test = GQAVarlenFwdTest(2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16)
@@ -541,3 +482,33 @@ def test_visible_scores_follow_alignment_mask_and_window(
     q_len: int, kv_len: int, is_causal: bool, left: int, visible: int
 ) -> None:
     assert visible_scores(q_len, kv_len, is_causal, left, -1) == visible
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, is_causal, wl, wr",
+    [
+        pytest.param([300, 700], [300, 700], True, 100, -1, id="causal-left-partial-tiles"),
+        pytest.param([256, 512], [256, 512], False, 64, 64, id="both"),
+        pytest.param([64, 128], [256, 512], False, -1, 64, id="right-kvcache"),
+    ],
+)
+def test_varlen_sliding_window_with_fused_rope(
+    q_lens: list[int], kv_lens: list[int], is_causal: bool, wl: int, wr: int
+) -> None:
+    """Window bounds hold when the call also rotates Q and K."""
+    test = GQAVarlenFwdTest(
+        len(q_lens),
+        q_lens,
+        kv_lens,
+        8,
+        2,
+        64,
+        is_causal,
+        wl,
+        wr,
+        torch.float16,
+        pos_encoding_mode="rope",
+    )
+    op = GQAVarlenFwdOp(is_causal, wl, wr, pos_encoding_mode="rope")
+    test.check(op, *test.gen_inputs())

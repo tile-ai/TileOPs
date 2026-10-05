@@ -1,6 +1,5 @@
 """What an elementwise kernel is built with: its launch config, output dtype and strategy."""
 
-import warnings
 from dataclasses import dataclass
 
 import torch
@@ -163,60 +162,26 @@ def _bool_output_needs_scalar(
     )
 
 
-def _validate_strategy(requested: str | None, strategies: list[str]) -> None:
-    if requested is not None and requested not in strategies:
-        raise ValueError(f"Unknown strategy '{requested}', expected one of {strategies}")
-
-
-def _warn_direct_override(
-    requested: str | None, kernel_name: str, dtype: torch.dtype | None = None
-) -> None:
-    if requested is None or requested == "direct":
-        return
-    dtype_msg = "dtype=torch.bool" if dtype is None else f"dtype={dtype} with torch.bool output"
-    warnings.warn(
-        f"{kernel_name}: {dtype_msg} requires strategy='direct' "
-        f"(TileLang cannot lower vectorised boolx<N>); "
-        f"overriding requested strategy={requested!r}.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
-
-
 def choose_unary_strategy(
     *,
-    requested: str | None,
-    strategies: list[str],
     default_strategy: str,
     input_dtype: torch.dtype,
     declared_output_dtype: torch.dtype | None,
 ) -> str:
-    _validate_strategy(requested, strategies)
-    if input_dtype == torch.bool:
-        _warn_direct_override(requested, "UnaryKernel")
+    """``direct`` where a bool operand or output cannot be vectorized, else the default."""
+    if input_dtype == torch.bool or _bool_output_needs_scalar(input_dtype, declared_output_dtype):
         return "direct"
-    if _bool_output_needs_scalar(input_dtype, declared_output_dtype):
-        _warn_direct_override(requested, "UnaryKernel", input_dtype)
-        return "direct"
-    return requested or default_strategy
+    return default_strategy
 
 
 def choose_binary_strategy(
     *,
-    requested: str | None,
-    strategies: list[str],
     default_strategy: str,
     input_dtype: torch.dtype,
     declared_output_dtype: torch.dtype | None,
     same_shape: bool,
 ) -> str:
-    _validate_strategy(requested, strategies)
-    if input_dtype == torch.bool:
-        _warn_direct_override(requested, "BinaryKernel")
+    """``direct`` for bool, ``register_copy`` for same-shape operands, else the default."""
+    if input_dtype == torch.bool or _bool_output_needs_scalar(input_dtype, declared_output_dtype):
         return "direct"
-    if _bool_output_needs_scalar(input_dtype, declared_output_dtype):
-        _warn_direct_override(requested, "BinaryKernel", input_dtype)
-        return "direct"
-    if requested == "register_copy" and not same_shape:
-        return "explicit_parallel"
-    return requested or ("register_copy" if same_shape else default_strategy)
+    return "register_copy" if same_shape else default_strategy

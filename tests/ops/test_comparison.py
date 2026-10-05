@@ -10,7 +10,6 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
-from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import ComparisonCase, ElementwiseWorkload
 from workloads.numerics import compare_outputs
@@ -365,8 +364,6 @@ def test_comparison_bool_result_from_int8_storage() -> None:
     b = torch.randn(1, 1, 128, device="cuda", dtype=torch.float16)
     op = GtFwdOp(target=BUILTIN)
     ComparisonTest(a.numel(), a.dtype, "GtFwdOp").check(op, a, b)
-    (kernel,) = op.built_kernels(ELEMENTWISE).values()
-    assert kernel.strategy == "explicit_parallel" and kernel._bool_via_int8
 
 
 @pytest.mark.smoke

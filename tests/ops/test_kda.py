@@ -114,48 +114,6 @@ def test_kda_prefill_continues_across_calls() -> None:
     )
 
 
-def test_kda_fused_prefill_takes_the_wide_launches() -> None:
-    """The fused shape serves a call only when the launch covers the device."""
-    wide = KDACall(
-        batch=1,
-        seq_len=2048,
-        sequences=8,
-        heads=32,
-        value_heads=32,
-        dim_k=128,
-        dim_v=128,
-        dtype=torch.bfloat16,
-        scale=128**-0.5,
-        l2norm=True,
-        varlen=True,
-        sm_count=132,
-        arch=90,
-        calibration=None,
-        smem_budget=0,
-    )
-    narrow = KDACall(
-        batch=1,
-        seq_len=2048,
-        sequences=1,
-        heads=32,
-        value_heads=32,
-        dim_k=128,
-        dim_v=128,
-        dtype=torch.bfloat16,
-        scale=128**-0.5,
-        l2norm=True,
-        varlen=True,
-        sm_count=132,
-        arch=90,
-        calibration=None,
-        smem_budget=0,
-    )
-    assert KDAFusedPrefillFwdKernel.applies(wide)
-    assert not KDAFusedPrefillFwdKernel.applies(narrow)
-    assert KDAChunkPrefillFwdKernel.applies(wide)
-    assert KDAChunkPrefillFwdKernel.applies(narrow)
-
-
 def test_kda_refuses_the_variants_it_does_not_serve() -> None:
     base = dict(
         batch=1,

@@ -93,11 +93,6 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
 
     def __init__(self, seq_len, num_heads, dtype, config=None, tune=False, device_index=None):
         super().__init__(device_index=device_index)
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype

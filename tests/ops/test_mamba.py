@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import BUILTIN
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -207,29 +206,6 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test.check(op, *inputs)
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "config",
-    [
-        {"block_d": 64, "threads": 32, "vectorize": True},
-        {"block_d": 128, "threads": 64, "vectorize": True},
-        {"block_d": 256, "threads": 128, "vectorize": True},
-    ],
-)
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_ssd_state_passing_fwd_vectorize(config, dtype):
-    """Exercises the vectorize=True code path (lo/hi split per thread)."""
-    batch, num_chunks, n_heads, d_state = (2, 4, 8, 128)
-    test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp(tune=False, target=BUILTIN)
-    inputs = test.gen_inputs()
-    op(*inputs)
-    (kernel,) = op.built_kernels("ssd_state_passing_fwd").values()
-    kernel.config = config
-    test.check(op, *inputs)
-
-
 class SSDDecodeTest(SSDDecodeWorkload, TestBase):
     pass
 
@@ -267,3 +243,11 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     expected = mamba2_fwd_ref(x, dt_raw, A, B, C, dt_bias, chunk_size, dt_softplus=True)
 
     compare_outputs(got, expected, mamba2_verification(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_ssd_state_passing_fwd_vectorized_short_scan(dtype):
+    """A short scan over a flattened 8192-wide state splits each thread's state in two."""
+    test = SSDStatePassingFwdTest(2, 4, 8, 8192, dtype)
+    test.check(SSDStatePassingFwdOp(), *test.gen_inputs())

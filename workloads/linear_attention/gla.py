@@ -126,10 +126,14 @@ class GLAInferenceWorkload(GLAChunkwiseWorkload):
         return inference_verification(inputs[0].dtype, decode=inputs[0].shape[1] == 1)
 
 
-def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, initial_state=None):
+def gla_fwd_chunked_torch(
+    q, k, v, g, chunk_size, scale=None, initial_state=None, with_chunk_states=False
+):
     """Fully differentiable chunked GLA forward in float32.
 
     Returns the output and the state the last chunk leaves, which is what the op declares.
+    With *with_chunk_states*, the state is ``[B, NC + 1, H, K, V]``: the state entering
+    each chunk, then the one the last chunk leaves, as the backward takes it.
     """
     B, T, H, K = q.shape
     V = v.shape[-1]
@@ -149,8 +153,9 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, initial_state=None
     h = q.new_zeros(B, H, K, V) if initial_state is None else initial_state.float().clone()
     mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
 
-    o_chunks = []
+    o_chunks, states = [], []
     for c in range(NC):
+        states.append(h)
         sl = slice(c * BC, (c + 1) * BC)
         qc = q[:, sl, :, :]
         kc = k[:, sl, :, :]
@@ -172,6 +177,8 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, initial_state=None
         h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
         h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
 
+    if with_chunk_states:
+        return torch.cat(o_chunks, dim=1), torch.stack([*states, h], dim=1)
     return torch.cat(o_chunks, dim=1), h
 
 

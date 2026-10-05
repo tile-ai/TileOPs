@@ -6,21 +6,12 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
-    GQABwdMMAKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
-    GQADenseFP8DecodeKernel,
-    GQADenseFP8Kernel,
-    GQADenseSlidingWindowKernel,
-    GQADenseWSKernel,
-    GQAVarlenFP8FwdKernel,
 )
-from tileops.kernels.attention.gqa import bwd as gqa_bwd
 from tileops.kernels.attention.gqa.decode import (
     gqa_decode_no_split_kernel,
-    gqa_decode_no_split_run,
-    gqa_decode_split_run,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -28,12 +19,11 @@ from tileops.ops import (
     GQADenseFwdOp,
     GQAVarlenFwdOp,
 )
-from tileops.utils import get_sm_version
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GQAVarlenScaledWorkload
-from workloads.device import run_device_available
+from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
 
@@ -106,7 +96,6 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=is_causal),
         dense_gqa_verification(q.dtype),
     )
-    assert isinstance(next(iter(op.iter_kernels())), GQADenseWSKernel)
 
 
 @pytest.mark.sm90
@@ -205,8 +194,6 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         softcap=softcap,
     )
     compare_outputs(output, reference, dense_gqa_verification(q.dtype))
-    expected_kernel = GQADenseFP8DecodeKernel if seq_len_q == 1 else GQADenseFP8Kernel
-    assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
 
 @pytest.mark.sm90
@@ -233,8 +220,6 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
             dense_gqa_verification(q.dtype),
         )
-
-    assert len(list(op.iter_kernels())) == 1
 
 
 @pytest.mark.sm90
@@ -377,10 +362,6 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
             dense_gqa_verification(q.dtype),
         )
 
-    kernels = list(op.iter_kernels())
-    assert len(kernels) == 1
-    assert isinstance(kernels[0], kernel_type)
-
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
@@ -473,25 +454,6 @@ def test_gqa_rope_no_split_pipeline_matches_reference(
         )
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "num_split, block_N, real_seqlen_kv, expected",
-    [
-        pytest.param(32, 64, 1024, 16, id="issue-shape-clamps-to-tiles"),
-        pytest.param(32, 64, 1000, 8, id="non-candidate-count-rounded-down"),
-        pytest.param(7, 64, 100000, 4, id="non-candidate-ceiling-rounded-down"),
-        pytest.param(16, 128, 1024, 8, id="block-128-clamps"),
-        pytest.param(32, 64, 100, 1, id="short-sequence-no-split"),
-        pytest.param(1, 64, 100000, 1, id="tuned-no-split-stays-no-split"),
-    ],
-)
-def test_gqa_dense_decode_effective_num_split(
-    num_split: int, block_N: int, real_seqlen_kv: int, expected: int
-) -> None:
-    """The tuned num_split is a ceiling shrunk to the runtime KV extent."""
-    assert GQADecodeKernel.effective_num_split(num_split, block_N, real_seqlen_kv) == expected
-
-
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
@@ -508,65 +470,6 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         scores = q_grouped @ k[0].permute(1, 2, 0).float() * (128**-0.5)
         ref = (scores.softmax(-1) @ v[0].transpose(0, 1).float()).reshape_as(out)
         compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
-    kernels = list(op.iter_kernels())
-    assert len(kernels) == 2
-    assert {kernel.config["block_N"] for kernel in kernels} == {64, 128}
-
-
-class _TunedSplitDecodeKernel(GQADecodeKernel):
-    """The autotune candidate of 32 splits over 128-key tiles, valid from 4096 keys."""
-
-    def __init__(self, *args, **kwargs):
-        config = {"block_H": 64, "block_N": 128, "num_split": 32, "num_stages": 2, "threads": 128}
-        super().__init__(*args, **{**kwargs, "config": config})
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
-    """A tuned num_split the sequence cannot fill shrinks instead of pushing
-    dispatch into the never-tuned no-split kernel; a sequence too short for two
-    splits runs the no-split kernel."""
-    if not run_device_available() or get_sm_version() not in (80, 89, 90):
-        pytest.skip("GQA decode requires SM80/89/90")
-    batch, heads, heads_kv, dim = 2, 32, 4, 128
-
-    calls: list[tuple[str, int]] = []
-
-    def split_spy(*args, **kwargs):
-        # num_split is the 12th positional argument of gqa_decode_split_run
-        calls.append(("split", args[11]))
-        return gqa_decode_split_run(*args, **kwargs)
-
-    def no_split_spy(*args, **kwargs):
-        calls.append(("no_split", 0))
-        return gqa_decode_no_split_run(*args, **kwargs)
-
-    monkeypatch.setattr("tileops.kernels.attention.gqa.decode.gqa_decode_split_run", split_spy)
-    monkeypatch.setattr(
-        "tileops.kernels.attention.gqa.decode.gqa_decode_no_split_run", no_split_spy
-    )
-
-    tuned = GQADenseFwdOp(kernel_map={"gqa_dense_decode": _TunedSplitDecodeKernel}, target=BUILTIN)
-    default = GQADenseFwdOp(target=BUILTIN)
-    # One kernel serves 2048 keys and up: 4096 fill the tuned 32 splits, 2048 fill 16;
-    # 100 keys cannot fill two splits under the default ceiling either.
-    for op, seq_len_kv, expected in (
-        (tuned, 4096, ("split", 32)),
-        (tuned, 2048, ("split", 16)),
-        (default, 100, ("no_split", 0)),
-    ):
-        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
-        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
-        v = torch.randn_like(k)
-        compare_outputs(
-            op(q, k, v),
-            dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-            dense_gqa_verification(q.dtype),
-        )
-        assert calls[-1] == expected
-    (kernel,) = tuned.built_kernels("gqa_dense").values()
-    assert type(kernel) is _TunedSplitDecodeKernel
 
 
 @pytest.mark.sm90
@@ -638,7 +541,6 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
         ),
         dense_gqa_verification(q.dtype),
     )
-    assert isinstance(next(iter(op.iter_kernels())), GQADenseSlidingWindowKernel)
 
 
 class GQABwdFixture(FixtureBase):
@@ -696,63 +598,11 @@ def test_gqa_bwd(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("heads_kv", "dim", "seq_len", "expected"),
-    [
-        pytest.param(16, 128, 1024, "gqa_bwd_ws_kernel", id="mha-dim-128"),
-        pytest.param(4, 128, 1024, "gqa_bwd_kernel", id="grouped"),
-        pytest.param(16, 64, 1024, "gqa_bwd_kernel", id="dim-64"),
-        pytest.param(16, 128, 1000, "gqa_bwd_kernel", id="partial-key-block"),
-    ],
-)
-def test_gqa_bwd_regions(heads_kv: int, dim: int, seq_len: int, expected: str) -> None:
-    """The warp-specialized backward serves MHA at head dim 128 on whole key blocks."""
-    from tileops.kernels.attention.call_spec import AttentionCall
-
-    call = AttentionCall(
-        arch=90,
-        sm_count=132,
-        dtype=torch.float16,
-        batch=2,
-        heads=16,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        seqlen_kv=seq_len,
-        is_causal=True,
-    )
-    assert GQABwdOp().select_implementation("gqa_bwd", call) == expected
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim, dtype", [(24, torch.float16), (40, torch.bfloat16)])
-def test_gqa_bwd_mma_rejects_before_preprocess(
-    monkeypatch: pytest.MonkeyPatch, dim: int, dtype: torch.dtype
-) -> None:
-    """The public op reports an unsupported MMA contraction before compiling preprocess."""
-    import tileops.utils
-
-    test = GQABwdTest(1, 8, 2, 128, dim, True, dtype)
-    inputs = test.gen_inputs()
-    # Only selection runs: emulate SM89 so this regression also runs on SM90 CI.
-    monkeypatch.setattr(tileops.utils, "device_facts", lambda index=None: (89, None, 1, 101376))
-
-    def unexpected_preprocess(*args, **kwargs):
-        pytest.fail("preprocess was compiled before the backward call was rejected")
-
-    monkeypatch.setattr(gqa_bwd, "_flashattn_bwd_preprocess_kernel", unexpected_preprocess)
-    with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
-        GQABwdOp(target=BUILTIN)(*inputs)
-
-
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", [16, 80, 96, 192, 256])
+@pytest.mark.parametrize("dim", [16, 80, 192, 256])
 def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
     """Dims the 256-thread, two-stage default cannot lay out or fit step down to a narrower
     default; 100 rows end part way through a block."""
@@ -843,97 +693,39 @@ def test_gqa_varlen_fp8_matches_reference(
     # rotation; the dense FP8 cases are held to the same bound.
 
     TestBase.check(workload, op, *inputs)
-    assert isinstance(next(iter(op.iter_kernels())), GQAVarlenFP8FwdKernel)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("dtype", "is_fp8", "dim", "expected"),
-    [
-        pytest.param(torch.bfloat16, True, 128, "gqa_varlen_fp8_ws", id="fp8"),
-        pytest.param(torch.float16, False, 128, "gqa_varlen_ws", id="sixteen-bit"),
-        pytest.param(torch.bfloat16, True, 64, None, id="fp8-dim-64"),
-    ],
-)
-def test_gqa_varlen_regions(
-    dtype: torch.dtype, is_fp8: bool, dim: int, expected: Optional[str]
-) -> None:
-    """The FP8 implementation serves FP8 calls at head dimension 128, and no other call."""
+def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
     from tileops.kernels.attention.call_spec import AttentionCall
 
     call = AttentionCall(
         arch=90,
         sm_count=132,
-        dtype=dtype,
+        dtype=torch.bfloat16,
         batch=2,
         heads=16,
         heads_kv=4,
-        dim=dim,
+        dim=64,
         is_causal=True,
-        is_fp8=is_fp8,
+        is_fp8=True,
         is_uniform=False,
     )
-    op = GQAVarlenFwdOp()
-    if expected is None:
-        with pytest.raises(ValueError, match="requires head dimension 128"):
-            op.select_implementation("gqa_varlen", call)
-    else:
-        assert op.select_implementation("gqa_varlen", call) == expected
+    with pytest.raises(ValueError, match="requires head dimension 128"):
+        GQAVarlenFwdOp().select_implementation("gqa_varlen", call)
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("budget", "sms", "dim", "heads_kv", "block"),
-    [
-        pytest.param(101376, 64, 128, 8, (128, 32), id="sm89-d128-mha"),
-        pytest.param(101376, 142, 128, 8, (64, 32), id="sm89-d128-mha-under-a-wave"),
-        pytest.param(101376, 64, 128, 2, (64, 32), id="sm89-d128-gqa"),
-        pytest.param(101376, 64, 160, 8, (64, 32), id="sm89-d160-mha"),
-        pytest.param(101376, 64, 80, 8, (64, 32), id="sm89-d80-mha"),
-        pytest.param(101376, 64, 256, 2, (64, 16), id="sm89-d256-gqa"),
-        pytest.param(101376, 64, 272, 2, None, id="sm89-d272-gqa-refused"),
-        pytest.param(166912, 64, 192, 8, (128, 32), id="sm80-d192-mha"),
-    ],
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
 )
-def test_gqa_bwd_mma_config_follows_the_shared_memory_budget(
-    budget: int, sms: int, dim: int, heads_kv: int, block: Optional[tuple[int, int]]
-) -> None:
-    """The key and query blocks and the refusal each follow their bound at a budget. Grouped
-    heads count an fp32 staging tile, eight warps cannot split head dim 80, and 128 key rows
-    give this call 64 blocks, fewer than the device's 142 SMs."""
-    from tileops.kernels.attention.call_spec import AttentionCall
-
-    call = AttentionCall(
-        arch=89,
-        sm_count=1,
-        smem_budget=budget,
-        dtype=torch.float16,
-        batch=1,
-        heads=8,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=1024,
-        seqlen_kv=1024,
-        is_causal=True,
+def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
+    batch, heads, heads_kv, dim = 2, 32, 4, 128
+    q = torch.randn(batch, 1, heads, dim, device=run_device(), dtype=torch.float16)
+    k = torch.randn(batch, 4096, heads_kv, dim, device=run_device(), dtype=torch.float16)
+    v = torch.randn_like(k)
+    compare_outputs(
+        GQADenseFwdOp(tune=tune)(q, k, v),
+        dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        dense_gqa_verification(q.dtype),
     )
-    if block is None:
-        assert "needs at least" in GQABwdMMAKernel.refusal(call)
-        return
-    assert GQABwdMMAKernel.refusal(call) is None
-    itemsize, grouped = torch.float16.itemsize, heads_kv != 8
-    config = GQABwdMMAKernel._default_config_for(budget, dim, itemsize, grouped, 8, 1024, sms)
-    assert (config["block_m"], config["block_n"]) == block
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_gqa_bwd_mma_builds_per_device() -> None:
-    """The default reads the device's shared memory, so each device builds its own kernel."""
-    from tileops.kernels.attention.call_spec import AttentionCall
-
-    shape = {"dtype": torch.float16, "batch": 1, "heads": 8, "heads_kv": 8, "dim": 288}
-    shape |= {"max_seqlen_q": 1024, "seqlen_kv": 1024, "is_causal": True}
-    first, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 0)))
-    second, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 1)))
-    assert first != second

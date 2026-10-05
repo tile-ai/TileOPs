@@ -8,7 +8,6 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
-from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import (
     GeluAndMulCase,
@@ -120,33 +119,6 @@ def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
     for dtype in (torch.float16, torch.float32):
         x = torch.randn(16, 16, device=run_device(), dtype=dtype)
         assert op(x).dtype == dtype
-    assert len(op.built_kernels(ELEMENTWISE)) == 2
-
-
-@pytest.mark.cuda_only
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "tune",
-    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
-)
-def test_silu_and_mul_config_is_in_the_autotune_space(tune: bool) -> None:
-    """The shipped config is one the tuner can land on, and tune=True tunes instead of falling back."""
-    import warnings
-
-    op = SiluAndMulFwdOp(tune=tune)
-    x = torch.randn(1024, 2 * 4096, device=run_device(), dtype=torch.float16)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        op(x)
-    assert not [w for w in caught if "falling back" in str(w.message)], (
-        f"fell back instead of tuning: {[str(w.message) for w in caught]}"
-    )
-    (kernel,) = op.iter_kernels()
-    assert any(
-        c["threads"] == kernel.config["threads"]
-        and c["num_per_thread"] == kernel.config["num_per_thread"]
-        for c in kernel.autotune_configs
-    )
 
 
 # Strategy selection tests

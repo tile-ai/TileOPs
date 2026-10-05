@@ -8,15 +8,15 @@ from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
-from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import MoEExpertsWorkload, moe_call, moe_verification, ref_routed_experts
+from workloads.moe import MoEExpertsWorkload, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 
 def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", **dims):
     """A manifest call of the expert MLP at *dims*, its inputs and the op built from it."""
-    call = moe_call(
+    call = manifest_call(
         "FusedMoEExpertsFwdOp",
         {"D": str(dtype).removeprefix("torch.")},
         activation=activation,
@@ -181,10 +181,6 @@ class TestFusedMoEExpertsFwdOp:
         experts, args = _small_route_case(ids, dtype)
         experts(*args)
         compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
-        if get_sm_version() == 90:
-            indexed = experts._indexed_mlp
-            built = {r for r in indexed.kernel_types if indexed.built_kernels(r)}
-            assert built == set(indexed.kernel_types), built
 
     @pytest.mark.cuda_only
     @pytest.mark.smoke

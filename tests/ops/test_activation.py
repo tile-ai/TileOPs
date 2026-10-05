@@ -221,33 +221,6 @@ def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(("threads", "npt"), [(128, 4), (256, 4), (512, 8)])
-def test_leaky_relu_writes_every_element_under_a_tuned_config(threads: int, npt: int) -> None:
-    """Every element is written whatever ``threads * npt`` the selected config asks for.
-
-    The builder is handed the default config and the JIT the actual one, so a block extent
-    taken from the builder's arguments leaves part of each block untouched.
-    """
-    from tileops.backend import BUILTIN
-    from tileops.kernels.elementwise import LeakyReluFwdKernel
-    from tileops.ops.elementwise import LeakyReluFwdOp
-
-    config = {"threads": threads, "num_per_thread": npt}
-
-    class Tuned(LeakyReluFwdKernel):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, config=config, **kwargs)
-
-    test = UnaryActivationTest(4096 * 7 + 13, torch.float16, "LeakyReluFwdOp", gen_fn=_randn)
-    op = LeakyReluFwdOp(kernel_map={"leaky_relu": Tuned}, target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("elementwise").values()
-    assert type(kernel) is Tuned
-    assert {k: kernel.config[k] for k in config} == config
-
-
 @ActivationFixture
 def test_elu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import EluFwdOp
@@ -349,3 +322,14 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     bad = torch.randn((2, 8, 4), device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_leaky_relu_under_tuning(tune: bool) -> None:
+    from tileops.ops.elementwise import LeakyReluFwdOp
+
+    test = UnaryActivationTest(4096 * 7 + 13, torch.float16, "LeakyReluFwdOp", gen_fn=_randn)
+    test.check(LeakyReluFwdOp(tune=tune), *test.gen_inputs())

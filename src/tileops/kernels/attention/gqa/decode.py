@@ -1,3 +1,4 @@
+import copy
 import functools
 import itertools
 from typing import Optional
@@ -659,8 +660,11 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             for param in params:
                 if param.is_scalar():
                     inputs.append(seqlen_kv)
-                else:
-                    inputs.append(default_supply(param))
+                    continue
+                # K and V carry the symbolic extent in their shape; give it the same value.
+                static = copy.copy(param)
+                static.shape = [d if isinstance(d, int) else seqlen_kv for d in param.shape]
+                inputs.append(default_supply(static))
             return inputs
 
         return supply_prog

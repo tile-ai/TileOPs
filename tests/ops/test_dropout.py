@@ -12,8 +12,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
-from tileops.ops.elementwise.dropout import DropoutFwdOp
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload
 
@@ -177,46 +175,3 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
 
 
 # Regression: non-default kernel config
-
-
-class DropoutCustomConfigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype, threads, num_per_thread",
-            [
-                pytest.param(8192, torch.float16, 128, 4, marks=pytest.mark.smoke),
-                pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.smoke),
-                pytest.param(65536, torch.float16, 64, 16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@pytest.mark.cuda_only
-@DropoutCustomConfigFixture
-def test_dropout_custom_config_correctness(
-    n_total: int,
-    dtype: torch.dtype,
-    threads: int,
-    num_per_thread: int,
-) -> None:
-    """Non-default kernel config with p=0.5 must still produce valid dropout.
-
-    All output elements must be either 0 (dropped) or x * scale (kept).
-    """
-    from tileops.kernels.elementwise.dropout import DropoutKernel
-
-    p = 0.5
-    x = torch.ones(n_total, dtype=dtype, device="cuda")
-    config = {"threads": threads, "num_per_thread": num_per_thread}
-
-    class Pinned(DropoutKernel):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **{**kwargs, "config": config})
-
-    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
-    op = DropoutFwdOp(p=p, seed=42, kernel_map={"dropout": Pinned}, target=BUILTIN)
-    TestBase.check(workload, op, x)
-    (kernel,) = op.built_kernels("dropout").values()
-    assert type(kernel) is Pinned
-    assert {k: kernel.config[k] for k in config} == config

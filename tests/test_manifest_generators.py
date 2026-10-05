@@ -121,9 +121,9 @@ def test_sparse_topk_positions_draw_visible_positions_and_pad():
 
 
 def test_sampling_chain_ids_allow_more_drafts_than_vocabulary():
-    from workloads.sampling import sampling_call
+    from workloads.workload_base import manifest_call
 
-    call = sampling_call("ChainSpeculativeSamplingFwdOp", B=4, N=600, V=64)
+    call = manifest_call("ChainSpeculativeSamplingFwdOp", B=4, N=600, V=64)
     rows = call.values("draft_token_ids")
     assert len(rows) == 4 and all(len(row) == 600 for row in rows)
     assert all(0 <= token < 64 for row in rows for token in row)

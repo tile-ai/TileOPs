@@ -17,13 +17,9 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
-from workloads.moe import (
-    FusedTopKWorkload,
-    moe_call,
-    moe_verification,
-    ref_routed_experts,
-)
+from workloads.moe import FusedTopKWorkload, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 # vLLM optional import
 
@@ -415,7 +411,7 @@ def test_correction_bias_routing_precision() -> None:
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
 
-    call = moe_call(
+    call = manifest_call(
         "FusedTopKFwdOp",
         {"G": "float32"},
         T=T,

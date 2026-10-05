@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
 from workloads.numerics import verify
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
@@ -46,17 +45,7 @@ __all__ = [
     "FixtureBase",
     "FixtureMeta",
     "TestBase",
-    "served_in_tree",
 ]
-
-
-def served_in_tree(op: Any) -> bool:
-    """Whether a call settled *op* on the in-tree implementation.
-
-    Gates an assertion about the in-tree kernels, so the rest of the test also runs
-    against a backend that serves the op.
-    """
-    return op.settled_target is BUILTIN
 
 
 class TestBase(WorkloadBase):

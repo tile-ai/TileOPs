@@ -523,13 +523,14 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     @classmethod
     def _default_config_for(cls, budget: int, dim: int, itemsize: int, grouped: bool) -> dict:
         """The widest default that lays out at *dim* and fits *budget* bytes per block."""
-        fits = [
-            c
-            for c in cls._DEFAULTS
-            if (c["threads"] == 128 or dim % 32 == 0)
-            and cls._config_bytes(c, dim, itemsize, grouped) <= budget
-        ]
+        fits = [c for c in cls._DEFAULTS if cls._builds(c, budget, dim, itemsize, grouped)]
         return dict(fits[0] if fits else cls._DEFAULTS[-1])
+
+    @classmethod
+    def _builds(cls, config: dict, budget: int, dim: int, itemsize: int, grouped: bool) -> bool:
+        """Whether *config*'s program lays out at *dim* and fits *budget* bytes per block."""
+        lays_out = config["threads"] == 128 or dim % 32 == 0
+        return lays_out and cls._config_bytes(config, dim, itemsize, grouped) <= budget
 
     @staticmethod
     def _config_bytes(config: dict, dim: int, itemsize: int, grouped: bool) -> int:
@@ -548,10 +549,14 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         num_stages = [1, 2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [
+        budget = get_shared_memory_optin(self.device_index)
+        grouped = self.heads != self.heads_kv
+        configs = (
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]}
             for c in _configs
+        )
+        return [
+            c for c in configs if self._builds(c, budget, self.dim, self.dtype.itemsize, grouped)
         ]
 
     def forward(

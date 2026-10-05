@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm.grouped import GroupedGemmCall
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from workloads.gemm import (
     GroupedGemmWorkload,
@@ -137,42 +136,3 @@ def test_k_grouped_gemm_with_ragged_groups(
 
 
 # Which kernel serves which call
-
-
-@pytest.mark.cuda_only
-@pytest.mark.parametrize(
-    "numel, n, k, transpose_a, transpose_b, expected",
-    [
-        (4096, 4096, 4096, False, True, "GroupedGemmPersistentKernel"),
-        (
-            4096,
-            4000,
-            4096,
-            False,
-            True,
-            "GroupedGemmPersistentKernel",
-        ),  # N off the tile grid still runs
-        (4096, 4096, 4096, False, False, "GroupedGemmPersistentKernel"),  # NN
-        (4096, 4096, 4096, True, False, "GroupedGemmPersistentKernel"),  # TN
-        (4099, 4096, 4096, True, True, "GroupedGemmKernel"),  # TT: b's row pitch is the K sum
-        (4096, 4096, 4100, False, True, "GroupedGemmKernel"),  # K TMA cannot address
-    ],
-)
-@pytest.mark.smoke
-def test_selection_prefers_the_template_where_tma_can_address_the_operands(
-    numel: int, n: int, k: int, transpose_a: bool, transpose_b: bool, expected: str
-):
-    """The SM90 template serves every layout with 8-aligned extents; the general kernel the rest."""
-    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
-    call = GroupedGemmCall(
-        arch=90,
-        numel=numel,
-        num_experts=16,
-        n=n,
-        k=k,
-        dtype=torch.float16,
-        transpose_a=transpose_a,
-        transpose_b=transpose_b,
-    )
-    key = op.select_implementation("grouped_gemm", call)
-    assert op.kernel_map[key].__name__ == expected

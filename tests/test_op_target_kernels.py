@@ -9,7 +9,6 @@ happens. Uses a fake target, so no vendor hardware is involved.
 import pytest
 import torch
 
-from tests.workload_test_base import served_in_tree
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
@@ -217,7 +216,7 @@ def test_a_targets_kernels_are_the_ops_entries():
     assert list(op.built_kernels("instance_norm").values()) == target.built
     assert list(op.iter_kernels()) == [], "nothing here for autotune"
     assert op.run_config() is None
-    assert op.settled_target == "acme" and not served_in_tree(op)
+    assert op.settled_target == "acme"
 
 
 def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
@@ -270,13 +269,13 @@ def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
 
 
 def test_an_in_tree_settling_reads_builtin_however_it_was_chosen():
-    """``served_in_tree`` gates in-tree assertions, so detection must count too."""
+    """A detected target and a pinned one both settle on the in-tree implementation."""
     detected, pinned = _stub_op(), _stub_op(target=BUILTIN)
     assert detected.settled_target is None and pinned.settled_target is None
 
     for op in (detected, pinned):
         op(*_inputs())
-        assert op.settled_target is BUILTIN and served_in_tree(op)
+        assert op.settled_target is BUILTIN
 
 
 def test_the_target_is_settled_once_and_kept():

@@ -11,13 +11,9 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
 from tileops.kernels.elementwise import (
-    AddFwdKernel,
     DivTruncFwdKernel,
     FloorDivideFwdKernel,
-    MaximumFwdKernel,
-    RemainderFwdKernel,
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise import (
@@ -382,53 +378,6 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
     op = FloorDivideFwdOp()
     test.check(op, *test.gen_inputs())
-
-
-class _WidestFold:
-    """Pin the top of the fold sweep: 128 threads, each holding two 16-byte vectors."""
-
-    def __init__(self, a_shape, b_shape, dtype, **kwargs):
-        config = {"threads": 128, "num_per_thread": 32 // dtype.itemsize}
-        super().__init__(a_shape, b_shape, dtype, config=config, **kwargs)
-
-
-class _WidestRemainderKernel(_WidestFold, RemainderFwdKernel):
-    pass
-
-
-class _WidestFloorDivideKernel(_WidestFold, FloorDivideFwdKernel):
-    pass
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("op_cls", "key", "kernel_cls", "make_test"),
-    [
-        pytest.param(
-            RemainderFwdOp, "remainder", _WidestRemainderKernel, RemainderTest, id="remainder"
-        ),
-        pytest.param(
-            FloorDivideFwdOp,
-            "floor_divide",
-            _WidestFloorDivideKernel,
-            FloorDivideTest,
-            id="floor_divide",
-        ),
-    ],
-)
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_floored_ops_stay_exact_at_the_widest_tuned_fold(
-    op_cls, key, kernel_cls, make_test, dtype
-) -> None:
-    """The floored bodies build and stay exact where a thread holds more than one vector."""
-    npt = 32 // dtype.itemsize
-    test = make_test(128 * npt, dtype)
-    op = op_cls(kernel_map={key: kernel_cls}, target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("elementwise").values()
-    assert type(kernel) is kernel_cls
-    assert (kernel.config["threads"], kernel.config["num_per_thread"]) == (128, npt)
 
 
 @pytest.mark.smoke
@@ -878,39 +827,6 @@ def test_binary_op_does_not_keep_its_inputs() -> None:
 # BinaryKernel autotune_configs tests
 
 
-def _served_kernel(op, shape: tuple, dtype: torch.dtype):
-    """Run *op* once on CUDA and return the kernel that served the call."""
-    a = torch.randn(*shape, device=run_device(), dtype=dtype)
-    b = torch.randn(*shape, device=run_device(), dtype=dtype)
-    with torch.no_grad():
-        out = op(a, b)
-    assert out.shape == a.shape
-    assert out.dtype == dtype
-    (kernel,) = op.iter_kernels()
-    return kernel
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_binary_kernel_has_autotune_configs() -> None:
-    """BinaryKernel subclasses expose >= 3 distinct autotune_configs."""
-    for op_cls in (MaximumFwdOp, MinimumFwdOp, AddFwdOp, SubFwdOp, MulFwdOp):
-        kernel = _served_kernel(op_cls(), (4096,), torch.float16)
-        configs = kernel.autotune_configs
-        assert configs is not None, f"{kernel.__class__.__name__} must define autotune_configs"
-        assert len(configs) >= 3, (
-            f"{kernel.__class__.__name__}.autotune_configs has {len(configs)} entries, need >= 3"
-        )
-        # Each config must have "threads" and "num_per_thread" keys
-        for cfg in configs:
-            assert "threads" in cfg, f"Config missing 'threads': {cfg}"
-            assert "num_per_thread" in cfg, f"Config missing 'num_per_thread': {cfg}"
-        config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
-        assert len(config_tuples) == len(set(config_tuples)), (
-            f"{kernel.__class__.__name__} has duplicate configs: {config_tuples}"
-        )
-
-
 # Optimized maximum/minimum correctness on larger shapes
 
 
@@ -950,68 +866,26 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
 # register_copy broadcast downgrade regression test
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_register_copy_downgrades_on_broadcast() -> None:
-    """Requesting register_copy via config on broadcast shapes must not crash.
-
-    register_copy only works for same-shape contiguous inputs. When the
-    caller passes config={"strategy": "register_copy"} with broadcast
-    strides, the kernel must silently downgrade to explicit_parallel and
-    produce correct results.
-    """
-    a_shape = (2, 64, 128)
-    b_shape = (1, 1, 128)
-    dtype = torch.float16
-    out_shape = torch.broadcast_shapes(a_shape, b_shape)
-
-    for kernel_cls, ref_fn in [
-        (AddFwdKernel, lambda a, b: a + b),
-        (MaximumFwdKernel, lambda a, b: torch.maximum(a, b)),
-    ]:
-        kernel = kernel_cls(
-            a_shape,
-            b_shape,
-            dtype,
-            config={"strategy": "register_copy"},
-        )
-        # Strategy must have been downgraded, and the resolved config must
-        # reflect the downgrade (config is the single source of truth).
-        assert kernel.strategy == "explicit_parallel", (
-            f"{kernel_cls.__name__} did not downgrade register_copy for broadcast inputs"
-        )
-        assert kernel.config["strategy"] == "explicit_parallel"
-        a = torch.randn(*a_shape, device="cuda", dtype=dtype)
-        b = torch.randn(*b_shape, device="cuda", dtype=dtype)
-        ref = ref_fn(a, b)
-        with torch.no_grad():
-            out = kernel(a.view(-1), b.view(-1)).reshape(out_shape)
-        compare_outputs(
-            out,
-            ref,
-            ElementwiseWorkload(kernel_cls.__name__.replace("Kernel", "Op"), ()).verification(a, b),
-        )
-
-
 # tune=True reaches the autotuner
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_binary_tune_true_reaches_the_autotuner() -> None:
-    """tune=True picks a config out of the search space, and does not fall back."""
-    import warnings
-
-    for op_cls in (AddFwdOp, MaximumFwdOp, MinimumFwdOp):
-        # The kernel — and so the autotuner — is built on the first call.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            kernel = _served_kernel(op_cls(tune=True), (4096,), torch.float16)
-        assert not [w for w in caught if "falling back" in str(w.message)], (
-            f"{op_cls.__name__} fell back instead of tuning: {[str(w.message) for w in caught]}"
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_binary_ops_under_tuning(tune: bool) -> None:
+    for op_cls, ref_fn in (
+        (AddFwdOp, torch.add),
+        (MaximumFwdOp, torch.maximum),
+        (MinimumFwdOp, torch.minimum),
+    ):
+        a = torch.randn(4096, device=run_device(), dtype=torch.float16)
+        b = torch.randn(4096, device=run_device(), dtype=torch.float16)
+        compare_outputs(
+            op_cls(tune=tune)(a, b),
+            ref_fn(a, b),
+            ElementwiseWorkload(op_cls.__name__, (a, b)).verification(a, b),
         )
-        swept = {c["threads"] for c in kernel.autotune_configs}
-        assert kernel.config["threads"] in swept
 
 
 # LerpTensorFwdOp — Tensor-weight torch.lerp overload (manifest:

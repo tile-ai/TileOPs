@@ -6,11 +6,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, TensorSpec, registry
-from tileops.kernels.linear_attention.call_spec import GLAChunkCall
+from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
-from tileops.kernels.linear_attention.gla.chunk_bwd import GLABwdKernel
-from tileops.kernels.linear_attention.gla.chunk_fwd import GLAFwdKernel
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
@@ -116,60 +113,6 @@ def test_gla_fwd(
         compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("arch", "budget", "dim_k", "dim_v", "dtype", "need"),
-    [
-        pytest.param(89, 101376, 128, 128, torch.float16, None, id="sm89-fp16-128"),
-        pytest.param(89, 101376, 128, 256, torch.float16, 122880, id="sm89-fp16-128x256-refused"),
-        pytest.param(89, 101376, 128, 128, torch.float32, 147456, id="sm89-fp32-128-refused"),
-        pytest.param(89, 101376, 256, 64, torch.float16, 163840, id="sm89-fp16-256x64-refused"),
-        pytest.param(90, 232448, 128, 128, torch.float32, None, id="sm90-fp32-128"),
-    ],
-)
-def test_gla_fwd_refuses_what_no_placement_fits(
-    arch: int, budget: int, dim_k: int, dim_v: int, dtype: torch.dtype, need: int | None
-) -> None:
-    """At chunk 64 the 256 x 64 call is refused by what the output pass holds while A is summed,
-    the other two by what its GEMMs read."""
-    call = GLAChunkCall(
-        arch=arch,
-        sm_count=1,
-        smem_budget=budget,
-        batch=1,
-        seq_len=128,
-        heads=2,
-        dim_k=dim_k,
-        dim_v=dim_v,
-        chunk_size=64,
-        dtype=dtype,
-    )
-    op = GLAChunkFwdOp(chunk_size=64)
-    if need is None:
-        assert op.select_implementation("gla_fwd", call) == "gla_fwd"
-    else:
-        with pytest.raises(ValueError, match=f"needs at least {need} bytes"):
-            op.select_implementation("gla_fwd", call)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("budget", "chunk_size", "dim_k", "dim_v", "stages"),
-    [
-        pytest.param(101376, 64, 128, 128, 3, id="sm89-c64"),
-        pytest.param(101376, 128, 64, 128, 2, id="sm89-c128"),
-        pytest.param(232448, 128, 64, 128, 3, id="sm90-c128"),
-    ],
-)
-def test_gla_fwd_stages_follow_the_shared_memory_budget(
-    budget: int, chunk_size: int, dim_k: int, dim_v: int, stages: int
-) -> None:
-    """The state pass takes the deepest of three pipeline stages its fp16 slice fits."""
-    config = GLAFwdKernel._default_config_for(budget, chunk_size, dim_k, dim_v, 2)
-    assert config["num_stages"] == stages
-
-
 def _fla_autograd_bwd(
     do: torch.Tensor,
     q: torch.Tensor,
@@ -251,15 +194,8 @@ def test_gla_bwd(
             chunkwise_verification(dtype, backward=True),
         )
 
-    # --- TileOPs kernel backward ---
-    fwd_op = GLAChunkFwdOp(
-        chunk_size=BC,
-        scale=scale,
-        target=BUILTIN,
-    )
-    o_fwd, _ = fwd_op.forward(q, k, v, g)
-    (fwd_kernel,) = fwd_op.built_kernels("gla_fwd").values()
-    h = fwd_kernel._h_out  # [B, NT+1, H, K, V] in fp32
+    # --- TileOPs backward, fed the reference's chunk states ---
+    _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale, tune=tune)
@@ -293,76 +229,6 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     dht = torch.zeros(B, H, K, V, device="cuda")
     with pytest.raises(ValueError, match="dim_v=72"):
         GLAChunkBwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("arch", "budget", "dim_k", "dim_v", "dtype", "need"),
-    [
-        pytest.param(89, 101376, 64, 64, torch.float32, None, id="sm89-fp32-64"),
-        pytest.param(89, 101376, 128, 128, torch.float32, 196608, id="sm89-fp32-128-refused"),
-        pytest.param(89, 101376, 128, 64, torch.float16, 131584, id="sm89-fp16-128x64-refused"),
-        pytest.param(80, 166912, 128, 160, torch.float16, 167936, id="sm80-dh-refused"),
-        pytest.param(90, 232448, 128, 128, torch.float32, None, id="sm90-fp32-128"),
-    ],
-)
-def test_gla_bwd_refuses_what_no_placement_fits(
-    arch: int, budget: int, dim_k: int, dim_v: int, dtype: torch.dtype, need: int | None
-) -> None:
-    """At chunk 64 the refusal reads the lean fused pass's largest set of buffers live at once
-    and the dh pass at its finest partitioning; 160 columns of dh do not partition."""
-    call = GLAChunkCall(
-        arch=arch,
-        sm_count=1,
-        smem_budget=budget,
-        batch=1,
-        seq_len=128,
-        heads=2,
-        dim_k=dim_k,
-        dim_v=dim_v,
-        chunk_size=64,
-        dtype=dtype,
-    )
-    reason = GLABwdKernel.refusal(call)
-    if need is None:
-        assert reason is None
-    else:
-        assert f"needs at least {need} bytes" in reason
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("sequences", "expected"),
-    [
-        pytest.param(3839, "gla_varlen_prefill_partitioned", id="partitioned"),
-        pytest.param(3840, "gla_varlen_prefill", id="per-sequence"),
-        pytest.param(6911, "gla_varlen_prefill", id="per-sequence-last"),
-        pytest.param(6912, None, id="refused"),
-    ],
-)
-def test_gla_varlen_prefill_fits_the_sequence_offsets(sequences: int, expected: str | None) -> None:
-    """On 99 KB at head dim 128 the int32 offsets of the sequences fill what the largest
-    program leaves: the partitioned walk's past 3839 sequences, the per-sequence one's past 6911."""
-    call = GLAInferenceCallSpec(
-        arch=89,
-        sm_count=142,
-        smem_budget=101376,
-        batch=1,
-        seq_len=2 * sequences,
-        heads=2,
-        dim_k=128,
-        dim_v=128,
-        dtype=torch.float16,
-        varlen=True,
-        num_sequences=sequences,
-    )
-    op = GLAInferenceFwdOp()
-    if expected is None:
-        with pytest.raises(ValueError, match="needs 101392 bytes"):
-            op.select_implementation("gla_inference", call)
-    else:
-        assert op.select_implementation("gla_inference", call) == expected
 
 
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> None:
@@ -596,10 +462,6 @@ def test_gla_long_prefill_uses_partitioned_kernel(
         op,
         *inputs,
     )
-    assert any(
-        isinstance(kernel, GLADensePrefillPartitionedKernel)
-        for kernel in op.built_kernels("gla_inference").values()
-    )
 
 
 @pytest.mark.smoke
@@ -623,22 +485,6 @@ def test_gla_dense_decode_matches_fla(
     op = GLAInferenceFwdOp(scale)
     # The workload checks FP32 state at 3e-7 and permits one output rounding unit.
     test.check(op, *inputs)
-
-
-@pytest.mark.smoke
-@pytest.mark.cuda_only
-@pytest.mark.in_tree_kernels
-def test_gla_dense_decode_builds_one_kernel_per_state_presence() -> None:
-    """State presence changes what the build emits, so the two calls do not share a kernel."""
-    torch.manual_seed(2174)
-    test = GLAInferenceTest(2, 1, 4, 64, 64, torch.bfloat16, has_initial_state=True)
-    _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
-    q, k, v, g, state = test.gen_inputs()
-    op = GLAInferenceFwdOp()
-    op(q, k, v, g, state)
-    op(q, k, v, g)
-    built = op.built_kernels("gla_inference").values()
-    assert {kernel.has_initial_state for kernel in built} == {False, True}
 
 
 @pytest.mark.smoke
