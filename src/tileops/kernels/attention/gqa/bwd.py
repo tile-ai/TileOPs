@@ -14,7 +14,7 @@ from tileops.kernels.attention.call_spec import (
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_shared_memory_optin
+from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
 
@@ -532,8 +532,9 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     supported_archs: list[int] = [80, 86, 89]
     general: bool = False
     _build = staticmethod(_gqa_bwd_mma_kernel)
-    # Key rows of the default block: the row-split GEMMs give each of its four warps 16.
-    _BLOCK_M = 64
+    # Key rows and threads of the blocks the default tries, widest first: the row-split GEMMs
+    # give each warp 16 key rows.
+    _KEY_BLOCKS = ((128, 256), (64, 128))
 
     @classmethod
     def applies(cls, call: AttentionCall) -> bool:
@@ -546,7 +547,9 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
             return f"head dim must be a multiple of 16 for the MMA contraction, got {call.dim}"
         if not call.smem_budget:
             return None
-        need = cls._live_bytes(call.dim, cls._query_blocks(call.dim)[-1], call.dtype.itemsize)
+        block_m, threads = cls._KEY_BLOCKS[-1]
+        block_n = cls._query_blocks(call.dim, threads // 32)[-1]
+        need = cls._live_bytes(call.dim, block_m, block_n, call.dtype.itemsize)
         if need <= call.smem_budget:
             return None
         return (
@@ -561,17 +564,36 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
             self.dim,
             self.dtype.itemsize,
             self.heads != self.heads_kv,
+            self.batch * self.heads,
+            self.seq_len,
+            get_sm_count(self.device_index),
         )
 
     @classmethod
-    def _default_config_for(cls, budget: int, dim: int, itemsize: int, grouped: bool) -> dict:
-        """The config this kernel builds at *budget* bytes of shared memory per block."""
-        blocks = cls._query_blocks(dim)
-        block_n = next(
-            (n for n in blocks if cls._shared_bytes(dim, n, itemsize, grouped) <= budget),
+    def _default_config_for(
+        cls,
+        budget: int,
+        dim: int,
+        itemsize: int,
+        grouped: bool,
+        batch_heads: int,
+        seq_len: int,
+        sms: int,
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block, for
+        *batch_heads* sequences of *seq_len* keys on *sms* SMs."""
+        # A wider key block halves the grid; one that leaves SMs without a block runs slower.
+        blocks = [
+            (m, n, t)
+            for m, t in cls._KEY_BLOCKS
+            if (m, t) == cls._KEY_BLOCKS[-1] or batch_heads * ((seq_len + m - 1) // m) >= sms
+            for n in cls._query_blocks(dim, t // 32)
+        ]
+        block_m, block_n, threads = next(
+            (b for b in blocks if cls._shared_bytes(dim, b[0], b[1], itemsize, grouped) <= budget),
             blocks[-1],
         )
-        return {"block_m": cls._BLOCK_M, "block_n": block_n, "num_stages": 1, "threads": 128}
+        return {"block_m": block_m, "block_n": block_n, "num_stages": 1, "threads": threads}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -583,23 +605,23 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
         ]
 
     @staticmethod
-    def _query_blocks(dim: int) -> tuple[int, ...]:
-        """Query blocks the default chooses from, widest first. At 16 rows the dQ product's
-        four warps split dim instead, 8 columns at a time."""
+    def _query_blocks(dim: int, warps: int) -> tuple[int, ...]:
+        """Query blocks the default chooses from, widest first. The dQ product splits dim over
+        half the warps, and over all of them at 16 rows, 8 columns at a time."""
         widest = 64 if dim <= 64 else 32
-        return (widest, 16) if dim % 32 == 0 else (widest,)
+        wide = (widest,) if dim % (4 * warps) == 0 else ()
+        return wide + ((16,) if dim % (8 * warps) == 0 else ())
 
-    @classmethod
-    def _shared_bytes(cls, dim: int, block_n: int, itemsize: int, grouped: bool) -> int:
-        """Upper bound on the default program's shared memory: every buffer it allocates, the
-        key, value, query and dO rows, dS, the fp32 lse and delta, and with grouped KV heads
-        the fp32 dV/dK staging tile."""
-        m = cls._BLOCK_M
-        loop = (2 * m * dim + 2 * block_n * dim + m * block_n) * itemsize + 2 * block_n * 4
-        return loop + (m * dim * 4 if grouped else 0)
+    @staticmethod
+    def _shared_bytes(dim: int, block_m: int, block_n: int, itemsize: int, grouped: bool) -> int:
+        """Upper bound on the program's shared memory: every buffer it allocates, the key,
+        value, query and dO rows, dS, the fp32 lse and delta, and with grouped KV heads the
+        fp32 dV/dK staging tile."""
+        tiles = 2 * block_m * dim + 2 * block_n * dim + block_m * block_n
+        return tiles * itemsize + 2 * block_n * 4 + (block_m * dim * 4 if grouped else 0)
 
-    @classmethod
-    def _live_bytes(cls, dim: int, block_n: int, itemsize: int) -> int:
-        """Lower bound on the default program's shared memory: the key, value, query and dO
-        rows live together at the dV product."""
-        return 2 * (cls._BLOCK_M + block_n) * dim * itemsize
+    @staticmethod
+    def _live_bytes(dim: int, block_m: int, block_n: int, itemsize: int) -> int:
+        """Lower bound on the program's shared memory: the key, value, query and dO rows live
+        together at the dV product."""
+        return 2 * (block_m + block_n) * dim * itemsize
