@@ -695,6 +695,8 @@ def test_gqa_varlen_fp8_matches_reference(
     TestBase.check(workload, op, *inputs)
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
     from tileops.kernels.attention.call_spec import AttentionCall

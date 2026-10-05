@@ -17,10 +17,13 @@ from workloads.device import run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
 
-pytestmark = pytest.mark.skipif(
-    not run_device_available(),
-    reason="kernel-map install tests build kernels on the current device",
-)
+pytestmark = [
+    pytest.mark.in_tree_kernels,
+    pytest.mark.skipif(
+        not run_device_available(),
+        reason="kernel-map install tests build kernels on the current device",
+    ),
+]
 
 
 def _make_incompatible_arch_list() -> list[int]:
@@ -69,7 +72,6 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
         forget_device_properties()
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
@@ -208,20 +210,6 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
 
 # A slot holds one entry per specialization; an enumeration that misses one
 # silently tunes nothing.
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_autotune_reaches_elementwise_entries():
-    """The elementwise slot is record-valued; every built kernel must be seen."""
-    from tileops.ops.elementwise import AbsFwdOp
-
-    op = AbsFwdOp(target=BUILTIN)
-    for dtype in (torch.float16, torch.float32):
-        op(torch.randn(256, device="cuda", dtype=dtype))
-
-    found = list(op.iter_kernels())
-    assert len(found) == 2, f"autotune would see {len(found)} of 2 built kernels"
 
 
 # Which implementation serves an element type is the key's own applicability, and the

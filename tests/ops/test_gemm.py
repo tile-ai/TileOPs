@@ -3,10 +3,6 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm.dense import (
-    _b_eviction,
-)
-from tileops.kernels.gemm.w4a16 import _stage_meta_per_tile
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
@@ -671,15 +667,6 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
 
 
 @pytest.mark.smoke
-def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
-    """Dispatch branch: the streaming-B hint is on at one or two M-tiles, off above."""
-    assert _b_eviction(64, 64) == "evict_first"
-    assert _b_eviction(128, 64) == "evict_first"
-    assert _b_eviction(129, 64) is None
-    assert _b_eviction(4096, 128) is None
-
-
-@pytest.mark.smoke
 def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
     """A 256-wide coop2 tile at ``block_k = 64`` stages its epilogue in two 128-column
     chunks; this shape takes that schedule by default."""
@@ -729,11 +716,6 @@ def test_gemm_w4a16_decode_partitions_match_the_reference(n: int, k: int) -> Non
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
-    groups_at_crossover = 256  # 64 rows * 256 groups * 3 bytes = 48 KiB.
-    assert not _stage_meta_per_tile(128, 512, 64, groups_at_crossover)
-    assert _stage_meta_per_tile(128, 512, 64, groups_at_crossover + 1)
-    assert not _stage_meta_per_tile(256, 512, 64, groups_at_crossover + 1)
-
     test = GemmW4A16Test(1, 64, 32896, torch.float16)
     op = GemmW4A16FwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())

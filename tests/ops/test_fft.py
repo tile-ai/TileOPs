@@ -97,6 +97,7 @@ def test_fft_lazy_conjugate_input() -> None:
     compare_outputs(got, workload.ref_program(x), workload.verification(x))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "dtype",

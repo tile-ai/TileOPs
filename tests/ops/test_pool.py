@@ -1552,6 +1552,7 @@ class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
         return x[:, :, ::2, ::2].clone()
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")

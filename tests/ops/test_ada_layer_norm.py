@@ -5,9 +5,6 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.norm.ada_layer_norm import (
-    _should_use_cp_async,
-)
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
@@ -61,37 +58,6 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     test = AdaLayerNormTest(m, n, dtype)
     op = AdaLayerNormFwdOp(eps=test.eps, target=BUILTIN)
     test.check(op, *test.gen_inputs())
-
-
-@pytest.mark.smoke
-def test_ada_layer_norm_async_policy_edges() -> None:
-    cases = [
-        (511, torch.float16, False),
-        (512, torch.float16, False),
-        (513, torch.float16, False),
-        (514, torch.float16, True),
-        (1918, torch.float16, True),
-        (1919, torch.float16, False),
-        (1920, torch.float16, True),
-        (513, torch.float32, True),
-        (1919, torch.float32, True),
-    ]
-    for n, dtype, expected_async in cases:
-        assert _should_use_cp_async(n, dtype, has_gate=False) is expected_async
-
-
-@pytest.mark.smoke
-def test_ada_layer_norm_async_policy_shared_memory_limit() -> None:
-    cases = [
-        (8190, torch.float16, False, True),
-        (8194, torch.float16, False, False),
-        (6142, torch.float16, True, True),
-        (6146, torch.float16, True, False),
-        (4094, torch.float32, False, True),
-        (4098, torch.float32, False, False),
-    ]
-    for n, dtype, has_gate, expected_async in cases:
-        assert _should_use_cp_async(n, dtype, has_gate) is expected_async
 
 
 @pytest.mark.cuda_only

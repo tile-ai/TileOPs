@@ -62,6 +62,7 @@ def _clamp_construct_kwargs(op_name: str) -> dict:
     return {}
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")

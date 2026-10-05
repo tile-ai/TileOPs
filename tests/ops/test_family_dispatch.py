@@ -27,9 +27,13 @@ from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from workloads.device import run_device_available
 
-pytestmark = pytest.mark.skipif(
-    not run_device_available(), reason="selection reads the device architecture"
-)
+pytestmark = [
+    pytest.mark.sm90,
+    pytest.mark.in_tree_kernels,
+    pytest.mark.skipif(
+        not run_device_available(), reason="selection reads the device architecture"
+    ),
+]
 
 _SM90 = 90
 

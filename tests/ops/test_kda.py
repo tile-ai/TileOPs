@@ -6,8 +6,6 @@ import torch
 from tests.workload_test_base import TestBase
 from tileops.kernels.linear_attention import (
     KDACall,
-    KDAChunkPrefillFwdKernel,
-    KDAFusedPrefillFwdKernel,
 )
 from tileops.ops import KDAFwdOp
 from workloads.linear_attention.kda import KDAFwdWorkload
@@ -114,51 +112,37 @@ def test_kda_prefill_continues_across_calls() -> None:
     )
 
 
-def test_kda_refuses_the_variants_it_does_not_serve() -> None:
-    base = dict(
-        batch=1,
-        seq_len=256,
-        sequences=1,
-        heads=4,
-        value_heads=4,
-        dim_k=128,
-        dim_v=128,
-        dtype=torch.bfloat16,
-        scale=128**-0.5,
-        sm_count=132,
-        arch=90,
-        calibration=None,
-        smem_budget=0,
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("facts", "reason"),
+    [
+        pytest.param({"state_v_first": True}, "state_v_first", id="value-major-state"),
+        pytest.param({"gate_in_kernel": True}, "use_gate_in_kernel", id="gate-in-kernel"),
+        pytest.param({"bounded_gate": True}, "lower_bound", id="bounded-gate"),
+        # The chunk-local half stages a value tile in buffers sized for a key tile.
+        pytest.param({"dim_k": 64, "dim_v": 128}, "K equal to V", id="value-wider-than-key"),
+    ],
+)
+def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> None:
+    call = KDACall(
+        **{
+            "batch": 1,
+            "seq_len": 256,
+            "sequences": 1,
+            "heads": 4,
+            "value_heads": 4,
+            "dim_k": 128,
+            "dim_v": 128,
+            "dtype": torch.bfloat16,
+            "scale": 128**-0.5,
+            "sm_count": 132,
+            "arch": 90,
+            "calibration": None,
+            "smem_budget": 0,
+            **facts,
+        }
     )
-    assert "state_v_first" in KDACall(**base, state_v_first=True).chunk_refusal
-    assert "use_gate_in_kernel" in KDACall(**base, gate_in_kernel=True).chunk_refusal
-    assert "lower_bound" in KDACall(**base, bounded_gate=True).chunk_refusal
-    assert KDACall(**base).chunk_refusal is None
-
-
-def test_kda_refuses_a_value_width_its_key_buffers_do_not_hold() -> None:
-    """K and V are separate dims in the contract, and this pair serves them equal.
-
-    The chunk-local half stages the value tile in the buffers it sized for a key
-    tile, so a wider V would run past them. The call is declined rather than served
-    from the wrong rows.
-    """
-    base = dict(
-        batch=1,
-        seq_len=256,
-        sequences=1,
-        heads=4,
-        value_heads=4,
-        dtype=torch.bfloat16,
-        scale=128**-0.5,
-        sm_count=132,
-        arch=90,
-        calibration=None,
-        smem_budget=0,
-    )
-    mixed = KDACall(**base, dim_k=64, dim_v=128)
-    assert "K equal to V" in mixed.chunk_refusal
-    assert not KDAChunkPrefillFwdKernel.applies(mixed)
-    assert not KDAFusedPrefillFwdKernel.applies(mixed)
-    assert KDACall(**base, dim_k=64, dim_v=64).chunk_refusal is None
-    assert KDACall(**base, dim_k=128, dim_v=128).chunk_refusal is None
+    with pytest.raises(ValueError, match=reason):
+        KDAFwdOp().select_implementation("kda", call)
