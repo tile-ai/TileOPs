@@ -28,6 +28,8 @@ __all__ = [
     "GLAFwdInterface",
     "GatedDeltaNetCall",
     "GatedDeltaNetFwdInterface",
+    "KimiDeltaAttentionCall",
+    "KimiDeltaAttentionFwdInterface",
     "head_count_refusal",
 ]
 
@@ -133,6 +135,69 @@ class GatedDeltaNetCall(CallSpec):
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
     num_sequences: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class KimiDeltaAttentionCall(CallSpec):
+    """One Kimi Delta Attention call, with the recurrence semantics the op fixed.
+
+    Kimi Delta Attention is the gated delta rule whose decay is one log-space
+    value per key channel, so ``g`` is as wide as the state's key axis rather
+    than one number per head.
+    """
+
+    batch: int = 0
+    seq_len: int = 0
+    # Independent recurrences the call carries: the batch size, or the packed
+    # sequence count under `varlen`, which `cu_seqlens`'s own shape states.
+    sequences: int = 0
+    heads: int = 0
+    value_heads: int = 0
+    dim_k: int = 0
+    dim_v: int = 0
+    dtype: Optional[torch.dtype] = None
+    scale: float = 0.0
+    has_initial_state: bool = False
+    varlen: bool = False
+    state_v_first: bool = False
+    l2norm: bool = False
+    gate_in_kernel: bool = False
+    beta_sigmoid: bool = False
+    allow_neg_eigval: bool = False
+    bounded_gate: bool = False
+
+    @property
+    def chunk_refusal(self) -> Optional[str]:
+        """Why no in-tree Kimi Delta Attention program serves this call, or ``None``.
+
+        The recurrence variants and state layouts the in-tree pair does not
+        implement, whatever the sequence length. Both implementations ask this
+        first, then state the lengths and widths they serve themselves.
+        """
+        unsupported = [
+            name
+            for name, present in (
+                ("state_v_first=True", self.state_v_first),
+                ("use_gate_in_kernel=True", self.gate_in_kernel),
+                ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
+                ("allow_neg_eigval=True", self.allow_neg_eigval),
+                ("a lower_bound", self.bounded_gate),
+            )
+            if present
+        ]
+        if unsupported:
+            return "does not support " + ", ".join(unsupported)
+        heads = head_count_refusal(self.heads, self.value_heads)
+        if heads is not None:
+            return heads
+        if self.value_heads % self.heads != 0:
+            return f"requires HV a multiple of H, got {self.value_heads} and {self.heads}"
+        # The chunk-local half stages the value tile in the buffers it sized for a
+        # key tile, so the two widths have to agree, as they do in every model that
+        # runs this recurrence.
+        if self.dim_k != self.dim_v or self.dim_k not in (64, 128):
+            return f"serves K equal to V at 64 or 128, got {self.dim_k} and {self.dim_v}"
+        return None
 
 
 class DeltaNetFwdInterface(KernelInterface):
@@ -420,4 +485,54 @@ class GatedDeltaNetFwdInterface(KernelInterface):
         Returns:
             New ``(o, final_state)``: ``o`` shaped like *v* in ``call.dtype``, and the
             ``float32`` state after the last step, laid out like *initial_state*.
+        """
+
+
+class KimiDeltaAttentionFwdInterface(KernelInterface):
+    """Kimi Delta Attention for inference: prefill or decode over caller-owned state."""
+
+    request = KimiDeltaAttentionCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        A_log: Optional[torch.Tensor] = None,
+        dt_bias: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the recurrence from *initial_state* over the call's sequence.
+
+        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``, and
+        nothing is written in place. Unless ``call.gate_in_kernel``, *g* already
+        carries the log-space decay of each key channel; unless
+        ``call.beta_sigmoid``, *beta* already carries the update strength.
+
+        Args:
+            q: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.
+            k: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.
+            v: ``(batch, seq_len, value_heads, dim_v)`` in ``call.dtype``.
+            g: ``(batch, seq_len, value_heads, dim_k)`` log-space per-channel
+                decay in ``call.dtype``.
+            beta: ``(batch, seq_len, value_heads)`` in ``call.dtype``.
+            initial_state: ``float32`` ``(n, value_heads, dim_k, dim_v)``, or
+                ``None`` for zero. ``n`` is the batch size, or the packed
+                sequence count under ``call.varlen``.
+            cu_seqlens: ``int64`` packed sequence offsets, passed exactly when
+                ``call.varlen``.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``.
+            A_log: ``float32`` ``(value_heads,)``, passed exactly when
+                ``call.gate_in_kernel``.
+            dt_bias: ``float32`` ``(value_heads * dim_k,)``, or ``None``.
+
+        Returns:
+            New ``(o, final_state)``: ``o`` shaped like *v* in ``call.dtype``, and
+            the ``float32`` ``(n, value_heads, dim_k, dim_v)`` state after the
+            last step.
         """

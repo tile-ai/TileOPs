@@ -39,6 +39,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLAChunkFwdOp,
         GLAInferenceFwdOp,
         GLARecurrentFwdOp,
+        KimiDeltaAttentionFwdOp,
     )
     from tileops.ops.mamba import (
         Mamba2FwdOp,
@@ -256,6 +257,7 @@ _LAZY = {
     "GLAInferenceFwdOp": ".linear_attention",
     "GLAChunkBwdOp": ".linear_attention",
     "GLARecurrentFwdOp": ".linear_attention",
+    "KimiDeltaAttentionFwdOp": ".linear_attention",
     # Mamba
     "Mamba2FwdOp": ".mamba",
     "SSDChunkCumsumFwdOp": ".mamba",
