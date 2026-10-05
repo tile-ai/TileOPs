@@ -13,14 +13,14 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_dims,
     flaggems_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
+from benchmarks.verification import Exact
+from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 from workloads.reduction import ReductionCall
 
 
@@ -50,23 +50,16 @@ def _bench(op_cls: type, call) -> None:
         def flaggems_fn(x):
             return fn(x, p["ord"], dims, p["keepdim"])
 
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(L1NormFwdOp))
-def test_l1_norm_bench(call) -> None:
-    _bench(L1NormFwdOp, call)
-
-
-@pytest.mark.parametrize("call", manifest_calls(L2NormFwdOp))
-def test_l2_norm_bench(call) -> None:
-    _bench(L2NormFwdOp, call)
-
-
-@pytest.mark.parametrize("call", manifest_calls(InfNormFwdOp))
-def test_inf_norm_bench(call) -> None:
-    _bench(InfNormFwdOp, call)
+@pytest.mark.parametrize("call", manifest_calls(VectorNormFwdOp))
+def test_vector_norm_bench(call) -> None:
+    _bench(VectorNormFwdOp, call)

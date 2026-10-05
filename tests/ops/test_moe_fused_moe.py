@@ -13,9 +13,10 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import (
-    FusedMoeFwdOp,
+    FusedMoEFwdOp,
     FusedTopKFwdOp,
 )
+from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
 
 # vLLM optional import
@@ -190,7 +191,7 @@ def test_fused_moe_qwen3(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoeFwdOp(
+    op_nopad = FusedMoEFwdOp(
         top_k=top_k,
         scoring_func=scoring_func,
         renormalize=renormalize,
@@ -208,7 +209,12 @@ def test_fused_moe_qwen3(
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
-    if _VLLM_AVAILABLE and scoring_func == "softmax":
+    # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
+    if (
+        _VLLM_AVAILABLE
+        and scoring_func == "softmax"
+        and get_shared_memory_optin(hidden.device.index) >= 128 * 1024
+    ):
         out_vllm = _vllm_fused_experts(
             hidden.float(),
             w_gate_up.float(),
@@ -264,7 +270,7 @@ def test_fused_moe_deterministic(case):
     w_gate_up = torch.randn(ne, ff * 2, hs, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(ne, hs, ff, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeFwdOp(
+    op = FusedMoEFwdOp(
         top_k=tk,
         scoring_func="softmax",
         renormalize=False,
@@ -404,7 +410,7 @@ def test_fused_moe_kimi(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoeFwdOp(
+    op_nopad = FusedMoEFwdOp(
         top_k=top_k,
         scoring_func="sigmoid",
         renormalize=True,
@@ -538,7 +544,7 @@ def test_fused_moe_vs_vllm(
     fk = FusedTopKFwdOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
 
-    op = FusedMoeFwdOp(
+    op = FusedMoEFwdOp(
         top_k=top_k,
         scoring_func="sigmoid",
         renormalize=True,
@@ -575,7 +581,7 @@ def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeFwdOp(top_k=K)
+    op = FusedMoEFwdOp(top_k=K)
     op(hidden, gating, w_gate_up, w_down)
     _, topk_ids = FusedTopKFwdOp(K)(gating)
     active = topk_ids.unique().numel()

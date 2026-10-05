@@ -1,11 +1,6 @@
-"""Benchmarks for RMSNorm / LayerNorm and their fused-add variants.
+"""Normalization benchmarks against vendor, QuACK and compiled PyTorch kernels."""
 
-Normalization is where the serving stacks ship hand-written kernels, so every row
-takes the ones that cover it, plus torch eager and inductor: RMSNorm all three of
-flag_gems, flashinfer and vllm; LayerNorm the two with a kernel for it, flag_gems
-and flashinfer; fused-add RMSNorm the two fused kernels, flashinfer's and vllm's;
-fused-add LayerNorm none, which nobody fuses.
-"""
+import math
 
 import pytest
 import torch
@@ -14,23 +9,25 @@ import torch.nn.functional as F
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     FLASHINFER_TAG,
+    QUACK_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_op,
     flashinfer_op,
+    quack_op,
     reference_tolerance,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.normalization import NormCall
+from workloads.norm import NormCall
 
 
 def _flaggems_rms_norm(n: int, eps: float):
@@ -53,11 +50,7 @@ def _flashinfer_rms_norm(eps: float):
 
 
 def _vllm_rms_norm(x: torch.Tensor, eps: float):
-    """vllm's kernel writes into a caller-allocated tensor, so allocate it here.
-
-    Allocating inside the callable would charge the tag for an ``empty_like`` the
-    other tags never pay.
-    """
+    """Bind vLLM's RMSNorm to a reusable output buffer."""
     fn = vllm_op("rms_norm")
     out = torch.empty_like(x)
 
@@ -69,33 +62,17 @@ def _vllm_rms_norm(x: torch.Tensor, eps: float):
 
 
 def _in_place_fused_add(fn, args: tuple, eps: float):
-    """Bind an in-place fused-add norm to its own copies of ``(x, residual)``.
-
-    Both kernels overwrite input and residual, and sharing them would hand every
-    later tag a different tensor than the reference read.
-
-    The residual therefore grows across iterations, by at most ``max|weight|`` each
-    — under 10 for a standard-normal weight, against an fp16 range of 65504 over a
-    few hundred iterations. The kernel reads and writes the same bytes regardless,
-    which is what the row reports.
-    """
+    """Reset private inputs per call, excluding reset copies from kernel timing."""
     x, residual, weight = args
     private = (x.clone(), residual.clone(), weight)
 
     def baseline_fn(x_i, residual_i, weight_i):
+        x_i.copy_(x)
+        residual_i.copy_(residual)
         fn(x_i, residual_i, weight_i, eps)
         return x_i, residual_i
 
     return baseline_fn, private
-
-
-def _assert_fused_add_matches(fn, reference, x, residual, weight, eps, **tolerance) -> None:
-    """Check an in-place fused-add kernel on throwaway copies of its inputs."""
-    x_copy, residual_copy = x.clone(), residual.clone()
-    fn(x_copy, residual_copy, weight, eps)
-    expected_y, expected_add = reference(x, residual, weight)
-    torch.testing.assert_close(x_copy, expected_y, **tolerance)
-    torch.testing.assert_close(residual_copy, expected_add, **tolerance)
 
 
 def _eps(call) -> float:
@@ -118,7 +95,6 @@ def test_rms_norm_bench(call) -> None:
         )
 
     tolerance = reference_tolerance(x.dtype)
-    assert_matches_reference(op, reference, *inputs, **tolerance)
     # The library kernels take a 2-D input and a weight; a row without one has no tag.
     library = {}
     if weight is not None and x.ndim == 2:
@@ -127,17 +103,28 @@ def test_rms_norm_bench(call) -> None:
             FLASHINFER_TAG: _flashinfer_rms_norm(eps),
             VLLM_TAG: _vllm_rms_norm(x, eps),
         }
-    for baseline_fn in library.values():
-        assert_matches_reference(baseline_fn, reference, *inputs, **tolerance)
+
+    quack_rms = quack_op("rmsnorm")
+    width = math.prod(shape)
+
+    def quack_fn(x, weight):
+        return quack_rms(
+            x.reshape(-1, width), None if weight is None else weight.reshape(-1), eps=eps
+        ).reshape_as(x)
+
+    library[QUACK_TAG] = quack_fn
+
+    functors = {
+        "tileops": op,
+        **library,
+        "torch-ref": reference,
+        TORCH_COMPILE_TAG: compiled_reference(reference),
+    }
 
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            **library,
-            "torch-ref": reference,
-            TORCH_COMPILE_TAG: compiled_reference(reference),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=reference, **tolerance)),
     )
 
 
@@ -156,19 +143,21 @@ def test_fused_add_rms_norm_bench(call) -> None:
         return y, add_result
 
     tolerance = reference_tolerance(inputs[0].dtype)
-    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
     fused_kernels = {
         FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
         VLLM_TAG: vllm_op("fused_add_rms_norm"),
     }
     functors = {"tileops": op}
     for tag, fn in fused_kernels.items():
-        _assert_fused_add_matches(fn, baseline_fn, *inputs, eps=eps, **tolerance)
         functors[tag] = _in_place_fused_add(fn, inputs, eps)
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
 
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(LayerNormFwdOp))
@@ -183,7 +172,6 @@ def test_layer_norm_bench(call) -> None:
         return F.layer_norm(x, shape, weight=weight, bias=bias, eps=eps)
 
     tolerance = reference_tolerance(x.dtype)
-    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
     # The library kernels take both affine tensors; a row without them has no tag.
     library = {}
     if weight is not None and bias is not None:
@@ -198,17 +186,35 @@ def test_layer_norm_bench(call) -> None:
             return flashinfer_layer_norm(x, weight, bias, eps)
 
         library = {FLAGGEMS_TAG: flaggems_fn, FLASHINFER_TAG: flashinfer_fn}
-    for library_fn in library.values():
-        assert_matches_reference(library_fn, baseline_fn, *inputs, **tolerance)
+    quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+    unit_weight = (
+        torch.ones(math.prod(shape), dtype=torch.float32, device=x.device)
+        if weight is None
+        else None
+    )
+
+    def quack_fn(x, weight, bias):
+        out = quack_ln(
+            x.reshape(-1, math.prod(shape)),
+            unit_weight if weight is None else weight.float().reshape(-1),
+            None if bias is None else bias.float().reshape(-1),
+            eps=eps,
+        )
+        return out.reshape_as(x)
+
+    library[QUACK_TAG] = quack_fn
+
+    functors = {
+        "tileops": op,
+        **library,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            **library,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn, **tolerance)),
     )
 
 
@@ -225,16 +231,35 @@ def test_fused_add_layer_norm_bench(call) -> None:
         n = x.shape[-1]
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=eps), add_result
 
-    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
-    # flashinfer's and vllm's fused-add kernels are RMSNorm only, so this row is
-    # torch against itself, eager and compiled.
+    from flash_attn.ops.triton.layer_norm import layer_norm_fn
+
+    def flash_attention_fn(x, residual, weight, bias):
+        # The contract rounds the residual sum to the input dtype before normalization.
+        added = x + residual
+        return layer_norm_fn(added, weight, bias, eps=eps), added
+
+    quack_ln = quack_op("layernorm_fwd", "quack.rmsnorm")
+
+    def quack_fn(x, residual, weight, bias):
+        added = x + residual
+        return quack_ln(
+            added.reshape(-1, added.shape[-1]), weight.float(), bias.float(), eps=eps
+        ).reshape_as(x), added
+
+    functors = {
+        "flash-attn": flash_attention_fn,
+        QUACK_TAG: quack_fn,
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
+        ),
     )
 
 
@@ -243,14 +268,18 @@ def _bench(op_cls: type, call, baseline_fn) -> None:
     workload = NormCall(call)
     inputs = workload.gen_inputs()
     op = op_cls(**workload.arguments())
-    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
+    functors = {
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     ManifestBenchmark(op, workload).compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
+        functors,
         *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(reference=baseline_fn, **reference_tolerance(inputs[0].dtype))
+        ),
     )
 
 

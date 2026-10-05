@@ -14,55 +14,53 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
+    FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
+    flashinfer_op,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.rope import (
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
-    RopeNeoxFwdOp,
     RopeNeoxPositionIdsFwdOp,
-    RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
 from workloads.device import run_device
+from workloads.rope import (
+    llama31_frequency_tables,
+    longrope_frequency_tables,
+    rope_frequency_tables,
+    yarn_frequency_tables,
+)
 from workloads.workload_base import CallWorkload
 
-# The torch baseline's frequency base; the rows run every op at its default base.
-_BASE = 10000.0
 
-
-# Bench-local PyTorch baselines
-
-
-def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
-    """Half-split cos/sin tables, shape ``(seq_len, head_dim)``.
-
-    Frequency values are variant-specific, but the timed rotation cost depends
-    only on table geometry, which every RoPE variant shares — so one baseline
-    serves all of them.
-    """
-    half = head_dim // 2
-    freqs = 1.0 / (
-        _BASE ** (torch.arange(0, half, device=run_device(), dtype=torch.float32) / half)
-    )
-    angles = torch.outer(
-        torch.arange(seq_len, device=run_device(), dtype=torch.float32),
-        freqs,
-    )
-    return (
-        torch.cat([torch.cos(angles)] * 2, dim=-1).to(dtype),
-        torch.cat([torch.sin(angles)] * 2, dim=-1).to(dtype),
-    )
+def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype, *, base: float = 10000.0):
+    cos, sin = rope_frequency_tables(head_dim, seq_len, base=base, dtype=dtype)
+    return torch.cat([cos, cos], dim=-1), torch.cat([sin, sin], dim=-1)
 
 
 def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
+
+
+def _rotate_interleaved(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Rotate each adjacent pair, reading the first half of the doubled tables."""
+    half = x.shape[-1] // 2
+    cos_pairs, sin_pairs = cos[..., :half], sin[..., :half]
+    pairs = x.unflatten(-1, (half, 2))
+    even, odd = pairs[..., 0], pairs[..., 1]
+    rotated = torch.stack(
+        (even * cos_pairs - odd * sin_pairs, odd * cos_pairs + even * sin_pairs), dim=-1
+    )
+    return rotated.flatten(-2)
 
 
 def _vllm_rope(
@@ -87,6 +85,7 @@ def _vllm_rope(
     query = x.reshape(num_tokens, -1).clone()
 
     def baseline_fn(positions_i, query_i):
+        query_i.copy_(x.reshape_as(query_i))
         fn(positions_i, query_i, None, head_dim, cache, True)
         return query_i
 
@@ -94,39 +93,65 @@ def _vllm_rope(
 
 
 def _bench_rope(op_cls, call) -> None:
-    """Profile the op on one manifest call against the torch rotation baseline."""
+    """Check and time the rotation using this variant's independent frequency tables."""
     workload = CallWorkload(call)
     tensors = call.materialize(run_device())
     op = op_cls(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
     x = tensors["x"]
-    layout = call.params["layout"]
-    seq_len = x.shape[0] if layout == "1d" else x.shape[1]
-    cos, sin = _rope_tables(seq_len, x.shape[-1], x.dtype)
-    if layout != "1d":
+    input_layout = call.params["input_layout"]
+    seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
+    table_fn = {
+        RopeFwdOp: rope_frequency_tables,
+        RopeLlama31FwdOp: llama31_frequency_tables,
+        RopeYarnFwdOp: yarn_frequency_tables,
+        RopeLongRopeFwdOp: longrope_frequency_tables,
+    }[op_cls]
+    parameters = {k: v for k, v in call.params.items() if k not in ("input_layout", "rope_layout")}
+    if "rescale_factors" in tensors:
+        parameters["rescale_factors"] = tensors["rescale_factors"]
+    cos, sin = table_fn(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **parameters)
+    cos, sin = (torch.cat([table, table], dim=-1) for table in (cos, sin))
+    if input_layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, x.shape[-1]) for t in (cos, sin))
+    # The scheme variants serve NeoX only, so a call without the parameter is NeoX.
+    rotate = _rotate if call.params.get("rope_layout", "neox") == "neox" else _rotate_interleaved
 
     def baseline_fn(t):
-        return _rotate(t, cos, sin)
+        return rotate(t, cos, sin)
 
-    bm.compare(
-        {
-            "tileops": op,
-            "torch-ref": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        x,
-    )
+    apply_rope = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+    dim = x.shape[-1]
+    cache = torch.cat(
+        (cos.reshape(seq_len, dim)[:, : dim // 2], sin.reshape(seq_len, dim)[:, : dim // 2]), -1
+    ).float()
+    positions = torch.arange(seq_len, dtype=torch.int32, device=x.device)
+    if input_layout != "1d":
+        positions = positions.repeat(x.shape[0])
+    scratch = torch.empty((positions.numel(), dim), dtype=x.dtype, device=x.device)
+    neox = call.params.get("rope_layout", "neox") == "neox"
+
+    def flashinfer_fn(x):
+        rotated, _ = apply_rope(
+            positions, x.reshape(positions.numel(), -1), scratch, dim, cache, neox
+        )
+        return rotated.reshape_as(x)
+
+    functors = {
+        "tileops": op,
+        "torch-ref": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+    # FlashInfer's RoPE kernels accept FP16/BF16 inputs only.
+    if x.dtype in (torch.float16, torch.bfloat16):
+        functors[FLASHINFER_TAG] = flashinfer_fn
+    exact = Exact(rtol=2e-2, atol=2e-2, reference=baseline_fn)
+    bm.compare(functors, x, evidence=dict.fromkeys(functors, exact))
 
 
-@pytest.mark.parametrize("call", manifest_calls(RopeNeoxFwdOp))
-def test_rope_neox_bench(call) -> None:
-    _bench_rope(RopeNeoxFwdOp, call)
-
-
-@pytest.mark.parametrize("call", manifest_calls(RopeNonNeoxFwdOp))
-def test_rope_non_neox_bench(call) -> None:
-    _bench_rope(RopeNonNeoxFwdOp, call)
+@pytest.mark.parametrize("call", manifest_calls(RopeFwdOp))
+def test_rope_bench(call) -> None:
+    _bench_rope(RopeFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(RopeLlama31FwdOp))
@@ -153,31 +178,37 @@ def test_rope_neox_position_ids_bench(call) -> None:
     op = RopeNeoxPositionIdsFwdOp(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
 
-    cos, sin = _rope_tables(call.params["max_position"], head_dim, x.dtype)
+    cos, sin = _rope_tables(
+        call.params["max_position"], head_dim, x.dtype, base=call.params["base"]
+    )
 
     def baseline_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
-    # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they
-    # agree to one rounding step of the storage dtype, which is what the default
-    # tolerances allow.
-    check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
-    torch.testing.assert_close(
-        check_fn(*check_args).view(x.shape),
-        baseline_fn(x, position_ids),
-        rtol=1e-2,
-        atol=2e-2,
-    )
     vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
 
+    # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they agree
+    # to one rounding step of it.
+    rotation = Exact(rtol=1e-2, atol=2e-2, reference=baseline_fn)
+    # vllm returns the rotation flattened; the check compares it in the op's shape.
+    vllm_shaped = (
+        lambda *a, _f=vllm_fn: _f(*a).view(x.shape),
+        vllm_args,
+    )
     bm.compare(
         {
             "tileops": op,
-            VLLM_TAG: (vllm_fn, vllm_args),
+            VLLM_TAG: vllm_shaped,
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
         x,
         position_ids,
+        evidence={
+            "tileops": rotation,
+            VLLM_TAG: rotation,
+            "torch-ref": rotation,
+            TORCH_COMPILE_TAG: rotation,
+        },
     )

@@ -1,27 +1,32 @@
-"""Benchmarks for the DeltaNet ops (chunkwise forward, backward and autograd, inference, decode), one case per
+"""Benchmarks for the DeltaNet ops (chunkwise forward and backward, inference, decode), one case per
 manifest call, against FLA and torch.
 """
+
+import dataclasses
 
 import pytest
 
 from benchmarks.baselines import (
+    FLA_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
+    fla_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from benchmarks.verification import Exact, Partial
 from tileops.ops import (
-    DeltaNetAutogradFwdOp,
-    DeltaNetBwdOp,
-    DeltaNetDecodeFwdOp,
-    DeltaNetFwdOp,
+    DeltaNetChunkBwdOp,
+    DeltaNetChunkFwdOp,
     DeltaNetInferenceFwdOp,
+    DeltaNetRecurrentFwdOp,
 )
-from workloads.linear_attention import (
+from workloads.linear_attention.deltanet import (
     DeltaNetChunkwiseCall,
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,
+    deltanet_autograd_bwd_torch,
+    deltanet_differentiable_fwd_torch,
 )
 
 
@@ -42,18 +47,20 @@ def test_deltanet_inference_bench(call) -> None:
     workload = DeltaNetInferenceCall(call)
     inputs = workload.gen_inputs()
     op = DeltaNetInferenceFwdOp(**workload.arguments())
-    dtype = inputs[0].dtype
-    assert_matches_reference(op, workload.ref_program, *inputs, **reference_tolerance(dtype))
-    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)
+    ManifestBenchmark(op, workload).compare(
+        {"tileops": op, "fla": workload.ref_program},
+        *inputs,
+        evidence={"tileops": Exact(**reference_tolerance(inputs[0].dtype))},
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkFwdOp))
 def test_deltanet_vs_fla_fwd(call) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
     workload = DeltaNetChunkwiseCall(call)
     inputs = workload.gen_inputs()  # q, k, v, beta (BHSD)
-    op = DeltaNetFwdOp(**workload.arguments())
+    op = DeltaNetChunkFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
@@ -62,10 +69,27 @@ def test_deltanet_vs_fla_fwd(call) -> None:
     def fla_fwd():
         return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)
 
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
+    chunked = Partial(
+        outputs=1,
+        reason="S, Aw, Au, w and u are the chunk buffers the backward reads; the "
+        "differentiable reference computes o without materialising them",
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda q, k, v, beta: deltanet_differentiable_fwd_torch(
+            q.float(), k.float(), v.float(), beta.float(), workload.arguments()["chunk_size"]
+        ).to(q.dtype),
+    )
+    fla_layout = dataclasses.replace(
+        chunked, reference=lambda *a, _r=chunked.reference: _r(*a).permute(0, 2, 1, 3).contiguous()
+    )
+    bm.compare(
+        {"tileops": op, "fla": (fla_fwd, ())},
+        *inputs,
+        evidence={"tileops": chunked, "fla": fla_layout},
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetBwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkBwdOp))
 def test_deltanet_vs_fla_bwd(call) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
@@ -73,10 +97,10 @@ def test_deltanet_vs_fla_bwd(call) -> None:
     do, q, k, v, beta, *_saved = workload.gen_inputs()
 
     # The saved buffers are the forward's, so the backward reads what it would in training.
-    fwd_op = DeltaNetFwdOp(workload.arguments()["chunk_size"])
+    fwd_op = DeltaNetChunkFwdOp(workload.arguments()["chunk_size"])
     _o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
 
-    bwd_op = DeltaNetBwdOp(**workload.arguments())
+    bwd_op = DeltaNetChunkBwdOp(**workload.arguments())
     bm = ManifestBenchmark(bwd_op, workload)
 
     q_fla, k_fla, v_fla, beta_fla = (
@@ -90,35 +114,57 @@ def test_deltanet_vs_fla_bwd(call) -> None:
         dq, dk, dv, dbeta = fla_backward(do_fla, None)[:4]
         return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), dbeta.transpose(1, 2)
 
-    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
+    autograd = Exact(
+        rtol=2e-2,
+        atol=2e-2,
+        reference=lambda do, q, k, v, beta, *_saved: tuple(
+            t.to(q.dtype)
+            for t in deltanet_autograd_bwd_torch(
+                do, q, k, v, beta, workload.arguments()["chunk_size"]
+            )
+        ),
+    )
+    bm.compare(
+        {"tileops": bwd_op, "fla": (fla_bwd, ())},
+        do,
+        q,
+        k,
+        v,
+        beta,
+        S,
+        Aw,
+        Au,
+        w,
+        u,
+        evidence={"tileops": autograd, "fla": autograd},
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetAutogradFwdOp))
-def test_deltanet_vs_fla_autograd(call) -> None:
-    from fla.ops.delta_rule import chunk_delta_rule
-
-    workload = DeltaNetChunkwiseCall(call)
-    inputs = workload.gen_inputs()
-    op = DeltaNetAutogradFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-
-    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
-
-    def fla_fwd():
-        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)[0]
-
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
-
-
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetDecodeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetRecurrentFwdOp))
 def test_deltanet_decode_bench(call) -> None:
     workload = DeltaNetDecodeCall(call)
     inputs = workload.gen_inputs()
-    op = DeltaNetDecodeFwdOp(**workload.arguments())
+    op = DeltaNetRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
+    recurrent = fla_op("ops.delta_rule.fused_recurrent_delta_rule")
+
+    def fla_fn(q, k, v, beta, state):
+        out, final_state = recurrent(
+            q.unsqueeze(1),
+            k.unsqueeze(1),
+            v.unsqueeze(1),
+            beta.unsqueeze(1),
+            scale=1.0,
+            initial_state=state.float(),
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=False,
+        )
+        return out.squeeze(1), final_state.to(state.dtype)
+
     bm.compare(
         {
             "tileops": op,
+            FLA_TAG: fla_fn,
             "torch": workload.ref_program,
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },

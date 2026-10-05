@@ -1,5 +1,6 @@
 """Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against cuBLAS, FlagGems and FlashInfer."""
 
+import math
 from typing import Optional
 
 import pytest
@@ -7,17 +8,16 @@ import torch
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
+    QUACK_TAG,
     assert_matches_reference,
     flaggems_op,
+    quack_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops import BmmFp8FwdOp, BmmFwdOp
+from benchmarks.verification import Exact, zeroed_input
+from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFp8Workload, BmmWorkload
-
-# The tolerance tests/ops/test_bmm.py holds the FP8 op to against the same reference.
-_FP8_ATOL = 2e-2
-_FP8_RTOL = 2e-2
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
@@ -67,27 +67,11 @@ def _flashinfer_bmm_fp8_row(workload: BmmFp8Workload, *inputs: torch.Tensor) -> 
     def run(a: torch.Tensor, b: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
         return _flashinfer_bmm_fp8_per_tensor_ref(workload, a, b, sa, sb)
 
-    def reference(a: torch.Tensor, b_kn: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
-        # The reference takes b in the op's layout; flashinfer takes the [B, K, N] view.
-        return workload.ref_program(a, b_kn.transpose(-2, -1) if workload.trans_b else b_kn, sa, sb)
-
     try:
-        assert_matches_reference(
-            run,
-            reference,
-            *inputs,
-            # cuDNN accumulates the fp8 products in another order, so agreement is bounded by
-            # the fp8 inputs, not the output dtype: fp16 output measured 1.04e-3 off at K=1024.
-            atol=_FP8_ATOL,
-            rtol=_FP8_RTOL,
-        )
+        run(*inputs)
     except (ImportError, RuntimeError) as exc:
         print(f"  [skip] flashinfer-bmm-fp8: {str(exc).splitlines()[0]}")
         return None
-    except AssertionError as exc:
-        raise AssertionError(
-            f"flashinfer-bmm-fp8 disagrees with the reference: {str(exc).splitlines()[0]}"
-        ) from exc
     return run, inputs
 
 
@@ -104,10 +88,16 @@ def test_bmm_bench(call) -> None:
         flaggems_bmm, workload.ref_program, a, b, **reference_tolerance(a.dtype)
     )
 
+    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+
+    def quack_fn(a, b):
+        return quack_gemm(a, b)
+
     bm.compare(
         {
             "tileops": op,
             FLAGGEMS_TAG: flaggems_bmm,
+            QUACK_TAG: quack_fn,
             "torch-cublas": workload.ref_program,
         },
         a,
@@ -115,7 +105,7 @@ def test_bmm_bench(call) -> None:
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(BmmFp8FwdOp))
+@pytest.mark.parametrize("call", manifest_calls(BmmFP8FwdOp))
 def test_bmm_fp8_bench(call) -> None:
     """Both orders of ``b``: ``[B, K, N]`` reaches the kernel through a transpose,
     ``[B, N, K]`` (``trans_b``) lies K-innermost already."""
@@ -125,15 +115,29 @@ def test_bmm_fp8_bench(call) -> None:
     # view of the K-innermost one, which is flashinfer's column-major contract.
     b_kn = b.transpose(-2, -1) if workload.trans_b else b
 
-    op = BmmFp8FwdOp(**call.arguments({}), tune=True)
+    op = BmmFP8FwdOp(**call.arguments({}), tune=True)
     bm = ManifestBenchmark(op, workload)
     functors = {
-        "tileops": (op, (a, b, scale_a, scale_b)),
-        "torch-fp32-ref": (workload.ref_program, (a, b, scale_a, scale_b)),
+        "tileops": op,
+        "torch-fp32-ref": workload.ref_program,
     }
 
     row = _flashinfer_bmm_fp8_row(workload, a, b_kn, scale_a, scale_b)
     if row is not None:
         functors["flashinfer-bmm-fp8"] = row
 
-    bm.compare(functors)
+    # Bound absolute FP8 accumulation error by reduction length (K=1024 base);
+    # retain the 2% relative bound and require rejection of a dropped operand.
+    checked = Exact(
+        rtol=2e-2,
+        atol=2e-2 * math.sqrt(max(1.0, workload.k / 1024)),
+        controls=(zeroed_input(0, "left-operand-zeroed"),),
+    )
+    bm.compare(
+        functors,
+        a,
+        b,
+        scale_a,
+        scale_b,
+        evidence=dict.fromkeys(functors, checked),
+    )

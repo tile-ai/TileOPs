@@ -1,4 +1,12 @@
-"""Dense GLA decode with caller-owned FP32 recurrent state."""
+"""Dense GLA decode with caller-owned FP32 recurrent state.
+
+One block owns a warp-wide column tile of one ``(batch, head)`` state and advances it by
+one token; a lane group within the block splits the key dimension for one column.
+
+``has_initial_state`` is a build flag. A build without a starting state reads neither the
+state slice nor the gate, because every term the gate scales is zero, and the step is the
+outer product of the token's key and value alone.
+"""
 
 import functools
 from typing import Optional
@@ -9,12 +17,14 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
-    dense_entry,
+    build_entry,
     serves_dense,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["GLADenseDecodeFwdKernel"]
 
@@ -27,8 +37,31 @@ def _gla_dense_decode_tl(
     dim_v: int,
     dtype: str,
     scale: float,
+    has_initial_state: bool,
+    lane_group: int,
 ):
-    threads = 64 if dim_v == 64 else 128
+    """Build the decode program for one state presence and block shape.
+
+    Args:
+        batch: Sequences in the call.
+        heads: Query, key, value and state heads.
+        dim_k: The key dimension, split across the block's lane groups.
+        dim_v: The value dimension, split into warp-wide column tiles.
+        dtype: TileLang name of the token dtype.
+        scale: Query scale.
+        has_initial_state: Read the caller's state and decay it by the gate; otherwise
+            start the step from zero and read no gate.
+        lane_group: Lanes that split the key dimension for one state column.
+
+    Returns:
+        The built TileLang program.
+    """
+    v_tile = WARP_LANES
+    threads = v_tile * lane_group
+    value_tiles = dim_v // v_tile
+    total_blocks = batch * heads * value_tiles
+    k_chunk = dim_k // lane_group
+    lane_group_stages = lane_group.bit_length() - 1
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -36,42 +69,64 @@ def _gla_dense_decode_tl(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def decode():
+        # A parameter this build leaves unread is declared one element wide, and the kernel
+        # hands it a one-element placeholder.
+        unread = [1]
+        gate_shape = [batch, 1, heads, dim_k] if has_initial_state else unread
+        state_shape = [batch, heads, dim_k, dim_v] if has_initial_state else unread
+
         @T.prim_func
         def main(
             q: T.Tensor([batch, 1, heads, dim_k], dtype),
             k: T.Tensor([batch, 1, heads, dim_k], dtype),
             v: T.Tensor([batch, 1, heads, dim_v], dtype),
-            g: T.Tensor([batch, 1, heads, dim_k], dtype),
-            initial_state: T.Tensor([batch, heads, dim_k, dim_v], "float32"),
+            g: T.Tensor(gate_shape, dtype),
+            initial_state: T.Tensor(state_shape, "float32"),
             o: T.Tensor([batch, 1, heads, dim_v], dtype),
             final_state: T.Tensor([batch, heads, dim_k, dim_v], "float32"),
         ):
-            with T.Kernel(batch, heads, threads=threads) as (bid, hid):
+            with T.Kernel(total_blocks, threads=threads) as (block,):
                 tx = T.get_thread_binding()
-                q_shared = T.alloc_shared([dim_k], dtype)
-                k_shared = T.alloc_shared([dim_k], dtype)
-                g_shared = T.alloc_shared([dim_k], dtype)
-                v_shared = T.alloc_shared([dim_v], dtype)
+                value_tile = block % value_tiles
+                batch_head = block // value_tiles
+                bid = batch_head // heads
+                hid = batch_head - bid * heads
+                value_lane = tx // lane_group
+                k_rank = tx - value_lane * lane_group
+                value_idx = value_tile * v_tile + value_lane
+                k_begin = k_rank * k_chunk
+
+                q_shared = T.alloc_shared([dim_k], "float32")
+                k_shared = T.alloc_shared([dim_k], "float32")
+                decay_shared = T.alloc_shared([dim_k], "float32")
                 acc = T.alloc_var("float32", init=0.0)
 
-                for i in T.Serial(T.ceildiv(dim_k, threads)):
+                for i in T.serial(T.ceildiv(dim_k, threads)):
                     idx = tx + i * threads
                     if idx < dim_k:
-                        q_shared[idx] = q[bid, 0, hid, idx]
-                        k_shared[idx] = k[bid, 0, hid, idx]
-                        g_shared[idx] = g[bid, 0, hid, idx]
-                if tx < dim_v:
-                    v_shared[tx] = v[bid, 0, hid, tx]
+                        q_shared[idx] = T.cast(q[bid, 0, hid, idx], "float32") * scale
+                        k_shared[idx] = T.cast(k[bid, 0, hid, idx], "float32")
+                        if has_initial_state:
+                            decay_shared[idx] = T.exp2(
+                                T.cast(g[bid, 0, hid, idx], "float32") * LOG2E
+                            )
                 T.sync_threads()
 
-                if tx < dim_v:
-                    for kk in T.Serial(dim_k):
-                        state = T.exp2(T.cast(g_shared[kk], "float32") * LOG2E) * initial_state[
-                            bid, hid, kk, tx
-                        ] + T.cast(k_shared[kk], "float32") * T.cast(v_shared[tx], "float32")
-                        final_state[bid, hid, kk, tx] = state
-                        acc += T.cast(q_shared[kk], "float32") * state
-                    o[bid, 0, hid, tx] = T.cast(scale * acc, dtype)
+                value = T.cast(v[bid, 0, hid, value_idx], "float32")
+                for ii in T.serial(k_chunk):
+                    kk = k_begin + ii
+                    step = k_shared[kk] * value
+                    if has_initial_state:
+                        state = decay_shared[kk] * initial_state[bid, hid, kk, value_idx] + step
+                    else:
+                        state = step
+                    final_state[bid, hid, kk, value_idx] = state
+                    acc += q_shared[kk] * state
+
+                for stage in T.unroll(lane_group_stages):
+                    acc += T.shfl_down(acc, 1 << stage, width=lane_group)
+                if k_rank == 0:
+                    o[bid, 0, hid, value_idx] = T.cast(acc, dtype)
 
         return main
 
@@ -84,13 +139,23 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
     supported_archs = [90]
 
     @classmethod
+    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+        return head_count_refusal(call.heads) or super().refusal(call)
+
+    @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
         return serves_dense(call) and call.seq_len == 1
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        return dense_entry(
-            cls, call, batch=call.batch, heads=call.heads, dim_k=call.dim_k, dim_v=call.dim_v
+        return build_entry(
+            cls,
+            call,
+            batch=call.batch,
+            heads=call.heads,
+            dim_k=call.dim_k,
+            dim_v=call.dim_v,
+            has_initial_state=call.has_initial_state,
         )
 
     def __init__(
@@ -101,6 +166,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
         dim_v: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -114,6 +180,8 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
         self.dim_v = dim_v
         self.scale = scale
         self.dtype = dtype
+        self.has_initial_state = has_initial_state
+        self.init_config()
         self._kernel = _gla_dense_decode_tl(
             batch,
             heads,
@@ -121,7 +189,25 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
             dim_v,
             self.dtype_to_str(dtype),
             scale,
+            has_initial_state,
+            self.config["lane_group"],
         )
+        device = (
+            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
+        )
+        self._unread_gate = torch.empty(1, dtype=dtype, device=device)
+        self._unread_state = torch.empty(1, dtype=torch.float32, device=device)
+
+    @property
+    def default_config(self) -> dict:
+        """The lanes that split the key dimension for one state column.
+
+        The state slice is a dependent global read, and a second lane group is what
+        overlaps it; a build that reads no state has nothing to overlap and pays for the
+        extra warp. Re-fit by sweeping ``lane_group`` against the decode workload rows of
+        `benchmarks/ops/bench_gla.py`.
+        """
+        return {"lane_group": 2 if self.has_initial_state else 1}
 
     def forward(
         self,
@@ -135,16 +221,8 @@ class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("GLA dense decode does not support packed varlen inputs")
-        state = (
-            torch.zeros(
-                self.batch,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                dtype=torch.float32,
-                device=q.device,
-            )
-            if initial_state is None
-            else initial_state
-        )
-        return self._kernel(q, k, v, g, state)
+        if self.has_initial_state and initial_state is None:
+            raise ValueError("the build reads initial_state, but the call passed none")
+        if self.has_initial_state:
+            return self._kernel(q, k, v, g, initial_state)
+        return self._kernel(q, k, v, self._unread_gate, self._unread_state)

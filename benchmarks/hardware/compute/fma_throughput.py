@@ -20,9 +20,6 @@ from tileops.perf import load_profile
 
 _CU_SRC = Path(__file__).parent / "fma_saturation.cu"
 
-# One boost bin on sm_90; more clock movement than this is not a locked-clock run.
-_CLOCK_STEADY_MHZ = 15.0
-
 
 def _compile(cu_path, binary_path, arch="sm_90"):
     """Compile the CUDA source. Raises on failure."""
@@ -129,27 +126,25 @@ def _run(binary_path, iters, theo_peak_tflops, gpu_index):
     return result.stdout.strip().splitlines(), sampler
 
 
-# CSV layout emitted by fma_saturation.cu
-_COL_ILP, _COL_STDDEV, _COL_MEDIAN_RATE = 1, 6, 8
-
-
 def _parse_peak(lines, op):
     """Return (median_rate, ilp, stddev_pct) for the best config of one op.
 
     Best config across the ILP sweep, but each config judged by its median of
     five runs — one lucky run is not a sustained rate.
     """
+    # CSV layout emitted by fma_saturation.cu
+    col_ilp, col_stddev, col_median_rate = 1, 6, 8
     best = (0.0, None, None)
     for line in lines:
         if not line.startswith(f"{op},"):
             continue
         parts = line.split(",")
-        if len(parts) <= _COL_MEDIAN_RATE:
+        if len(parts) <= col_median_rate:
             continue
         try:
-            rate = float(parts[_COL_MEDIAN_RATE])
-            ilp = int(parts[_COL_ILP])
-            stddev = float(parts[_COL_STDDEV])
+            rate = float(parts[col_median_rate])
+            ilp = int(parts[col_ilp])
+            stddev = float(parts[col_stddev])
         except ValueError:
             continue
         if rate > best[0]:
@@ -255,6 +250,8 @@ def main():
 
     # An unlocked clock makes the calibration conditional, so the update line is
     # withheld until the caller locks the clock or passes --allow-unlocked-clocks.
+    # One boost bin on sm_90; more clock movement than this is not a locked-clock run.
+    clock_steady_mhz = 15.0
     clocks_steady = False
     if telemetry is None:
         print("\nSM clock:                  not sampled (nvidia-smi unavailable)")
@@ -265,7 +262,7 @@ def main():
             f"  (min / median / max)"
         )
         print(f"Peak power, temperature:   {watts:.0f} W, {temp:.0f} C")
-        clocks_steady = (sm_max - sm_min) <= _CLOCK_STEADY_MHZ
+        clocks_steady = (sm_max - sm_min) <= clock_steady_mhz
 
         # calibration = lane utilisation * clock headroom:
         #   lane utilisation = measured / (2 * lanes * SMs * clock)  — hardware + kernel

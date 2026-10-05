@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import dataclasses
 from abc import abstractmethod
+from typing import Optional
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
-from tileops.kernels.quantization.dequant_call import DequantizeCall
 
 __all__ = [
+    "DequantizeCall",
     "FP8QuantPerBlockFwdInterface",
     "INT4QuantPerGroupFwdInterface",
     "INT8DequantPerBlockFwdInterface",
@@ -23,6 +24,15 @@ __all__ = [
     "QuantizeCall",
     "SmoothQuantFwdInterface",
 ]
+
+
+@dataclasses.dataclass(frozen=True)
+class DequantizeCall(CallSpec):
+    """One INT8 dequantize call, as the op knows it after reading ``q``'s shape."""
+
+    m: int = 0
+    k: int = 0
+    out_dtype: Optional[torch.dtype] = None
 
 
 @dataclasses.dataclass(frozen=True)

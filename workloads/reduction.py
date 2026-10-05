@@ -72,16 +72,8 @@ class LogSumExpWorkload(RandnWorkload):
     """Workload definition for LogSumExpFwdOp (spec interface: shape + dtype)."""
 
 
-class L1NormWorkload(RandnWorkload):
-    """Workload definition for L1NormFwdOp."""
-
-
-class L2NormWorkload(RandnWorkload):
-    """Workload definition for L2NormFwdOp."""
-
-
-class InfNormWorkload(RandnWorkload):
-    """Workload definition for InfNormFwdOp."""
+class VectorNormWorkload(RandnWorkload):
+    """Workload definition for VectorNormFwdOp."""
 
 
 class _LogicalWorkload(WorkloadBase):

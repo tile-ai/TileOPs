@@ -185,7 +185,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
@@ -235,7 +235,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install TileOPs and validator dependencies
         run: pip install -e . -c constraints.txt
@@ -277,7 +277,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       # --noconftest: tests/conftest.py imports torch, which this job has no
       # other reason to install. Nothing in this file uses a fixture from it.
@@ -301,7 +301,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install TileOPs (with dev extras)
         run: pip install -e ".[dev]" -c constraints.txt
@@ -311,6 +311,9 @@ jobs:
           python -m pytest -q tests/test_validate_manifest.py \
             tests/test_check_bench_coverage.py \
             tests/test_target_conformance.py
+
+      - name: Check every op family has a packaging case
+        run: python scripts/ci/check_packaging_coverage.py
 
       # A backend run names another device and target. On this GPU-less runner the suite
       # must collect, must drop every cuda_only and in_tree_kernels test, and the
@@ -349,7 +352,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install packaging tools
         run: pip install build twine
@@ -379,7 +382,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install TileOPs (with dev extras)
         run: pip install -e ".[dev]" -c constraints.txt

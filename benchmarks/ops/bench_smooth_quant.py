@@ -10,18 +10,9 @@ import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import SmoothQuantFwdOp
-from workloads.quantization import SmoothQuantWorkload
-
-
-def _assert_within_one_code(fn, workload, *inputs: torch.Tensor) -> None:
-    """vllm multiplies by ``127 / amax`` and inductor by ``1 / scale`` instead of dividing by
-    the scale, so a value near a rounding tie can take the neighbouring code; the scales
-    agree to float32 rounding."""
-    q, scale = fn(*inputs)
-    q_ref, scale_ref = workload.ref_program(*inputs)
-    torch.testing.assert_close(scale, scale_ref, rtol=1e-6, atol=0.0)
-    assert (q.int() - q_ref.int()).abs().max().item() <= 1
+from workloads.quantization.quantize import SmoothQuantWorkload
 
 
 @pytest.mark.parametrize("call", manifest_calls(SmoothQuantFwdOp))
@@ -41,8 +32,6 @@ def test_smooth_quant_bench(call) -> None:
         return q, scale.view(-1)
 
     compiled = compiled_reference(workload.ref_program)
-    _assert_within_one_code(vllm_unfused, workload, *inputs)
-    _assert_within_one_code(compiled, workload, *inputs)
     bm.compare(
         {
             "tileops": op,
@@ -51,4 +40,10 @@ def test_smooth_quant_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled,
         },
         *inputs,
+        evidence=dict.fromkeys(
+            (VLLM_TAG, TORCH_COMPILE_TAG),
+            Custom(
+                assert_quantized, "one-code rounding at quantization boundaries; matching scales"
+            ),
+        ),
     )

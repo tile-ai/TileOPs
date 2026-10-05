@@ -1,4 +1,4 @@
-"""Rotary Position Embedding (RoPE) kernels — 5 variants x 2 layouts.
+"""Rotary Position Embedding (RoPE) kernels — 4 frequency schemes x 2 input layouts.
 
 All 5 variants share the same core rotation logic applied at the kernel level:
     y = x * cos + rotate(x) * sin
@@ -50,7 +50,7 @@ class RopeCall(CallSpec):
 
     seq_len: int = 0
     head_dim: int = 0
-    layout: str = "1d"
+    input_layout: str = "1d"
     batch: int = 1
     num_heads: int = 1
     dtype: Optional[torch.dtype] = None
@@ -88,7 +88,7 @@ class RopeNeoxFwdInterface(KernelInterface):
         sequence axis. Nothing is written in place, and the output aliases no input.
 
         Args:
-            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+            x: The input, ``(call.seq_len, call.head_dim)`` under input layout ``"1d"``, or
                 ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
                 ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
                 order. The op makes it contiguous before the call.
@@ -116,7 +116,7 @@ class RopeNonNeoxFwdInterface(KernelInterface):
         place, and the output aliases no input.
 
         Args:
-            x: The input, ``(call.seq_len, call.head_dim)`` under layout ``"1d"``, or
+            x: The input, ``(call.seq_len, call.head_dim)`` under input layout ``"1d"``, or
                 ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
                 ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
                 order. The op makes it contiguous before the call.
@@ -506,10 +506,10 @@ class _RopeKernelBase(Kernel):
         seq_len: Sequence length.
         head_dim: Head dimension (must be even).
         dtype: Torch dtype.
-        layout: "1d" for (seq_len, head_dim) or "2d" for
+        input_layout: "1d" for (seq_len, head_dim) or "2d" for
             (batch, seq_len, num_heads, head_dim).
-        batch: Batch size (required for 2d layout).
-        num_heads: Number of heads (required for 2d layout).
+        batch: Batch size (required for the 2d input layout).
+        num_heads: Number of heads (required for the 2d input layout).
         config: Optional config dict.
         tune: Whether to autotune.
     """
@@ -524,7 +524,7 @@ class _RopeKernelBase(Kernel):
             call.seq_len,
             call.head_dim,
             call.dtype,
-            layout=call.layout,
+            input_layout=call.input_layout,
             batch=call.batch,
             num_heads=call.num_heads,
         )
@@ -534,7 +534,7 @@ class _RopeKernelBase(Kernel):
         seq_len: int,
         head_dim: int,
         dtype: torch.dtype,
-        layout: str = "1d",
+        input_layout: str = "1d",
         batch: int = 1,
         num_heads: int = 1,
         config: dict | None = None,
@@ -548,13 +548,13 @@ class _RopeKernelBase(Kernel):
             )
         if head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even, got {head_dim}")
-        if layout not in ("1d", "2d"):
-            raise ValueError(f"layout must be '1d' or '2d', got '{layout}'")
+        if input_layout not in ("1d", "2d"):
+            raise ValueError(f"input_layout must be '1d' or '2d', got '{input_layout}'")
 
         self.seq_len = seq_len
         self.head_dim = head_dim
         self.dtype = dtype
-        self.layout = layout
+        self.input_layout = input_layout
         self.batch = batch
         self.num_heads = num_heads
 
@@ -566,7 +566,7 @@ class _RopeKernelBase(Kernel):
         dtype_str = self.dtype_to_str(self.dtype)
 
         if self.ROTATION_STYLE == "neox":
-            if self.layout == "1d":
+            if self.input_layout == "1d":
                 return _make_rope_neox_1d(
                     self.seq_len,
                     self.head_dim,
@@ -585,7 +585,7 @@ class _RopeKernelBase(Kernel):
                     num_per_thread=cfg["num_per_thread"],
                 )
         elif self.ROTATION_STYLE == "non_neox":
-            if self.layout == "1d":
+            if self.input_layout == "1d":
                 return _make_rope_non_neox_1d(
                     self.seq_len,
                     self.head_dim,
@@ -613,7 +613,7 @@ class _RopeKernelBase(Kernel):
         ``num_per_thread`` counts columns for the non-neox rotation and pairs for the
         neox one, so a caller overriding it states its own units.
         """
-        if self.layout == "1d":
+        if self.input_layout == "1d":
             if self.ROTATION_STYLE == "non_neox":
                 return {"threads": 256, "num_per_thread": 16 // self.dtype.itemsize}
             npt = 2 if self.dtype == torch.float32 else 4
@@ -637,7 +637,7 @@ class _RopeKernelBase(Kernel):
         """
         cfg = self.config
         orig_shape = x.shape
-        if self.layout == "2d":
+        if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
             result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)
             return result.reshape(orig_shape)

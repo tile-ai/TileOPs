@@ -22,7 +22,6 @@ from tileops.ops.norm import (
 from workloads.device import run_device
 
 _DTYPE = torch.float16
-_N = 256
 
 
 def _x(*shape, dtype=_DTYPE):
@@ -38,19 +37,24 @@ def _cases():
     """
 
     def layer_norm():
-        return LayerNormFwdOp(normalized_shape=(_N,)), (_x(8, _N), _x(_N), _x(_N))
+        n = 256
+        return LayerNormFwdOp(normalized_shape=(n,)), (_x(8, n), _x(n), _x(n))
 
     def ada_layer_norm():
-        return AdaLayerNormFwdOp(), (_x(8, _N), _x(8, _N), _x(8, _N))
+        n = 256
+        return AdaLayerNormFwdOp(), (_x(8, n), _x(8, n), _x(8, n))
 
     def ada_layer_norm_zero():
-        return AdaLayerNormZeroFwdOp(), (_x(8, _N), _x(8, _N), _x(8, _N), _x(8, _N))
+        n = 256
+        return AdaLayerNormZeroFwdOp(), (_x(8, n), _x(8, n), _x(8, n), _x(8, n))
 
     def fused_add_layer_norm():
-        return FusedAddLayerNormFwdOp(), (_x(8, _N), _x(8, _N), _x(_N), _x(_N))
+        n = 256
+        return FusedAddLayerNormFwdOp(), (_x(8, n), _x(8, n), _x(n), _x(n))
 
     def fused_add_rms_norm():
-        return FusedAddRMSNormFwdOp(), (_x(8, _N), _x(8, _N), _x(_N))
+        n = 256
+        return FusedAddRMSNormFwdOp(), (_x(8, n), _x(8, n), _x(n))
 
     def group_norm():
         return GroupNormFwdOp(num_groups=2), (_x(2, 4, 8, 8), _x(4), _x(4))

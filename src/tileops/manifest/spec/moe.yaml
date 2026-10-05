@@ -1,4 +1,4 @@
-MoePermuteAlignFwdOp:
+MoEPermuteAlignFwdOp:
   family: moe
   status: implemented
   signature:
@@ -75,9 +75,9 @@ FusedMoEExpertsFwdOp:
     kind: composite
     stages:
     # Built per expert count, on the calls the indexed path does not serve.
-    - {name: pre_permute, op: MoePrePermuteFwdOp, optional: true}
-    - {name: expert_mlp, op: MoeExpertMLPFwdOp}
-    - {name: post_permute, op: MoePostPermuteFwdOp}
+    - {name: pre_permute, op: MoEPrePermuteFwdOp, optional: true}
+    - {name: expert_mlp, op: MoEExpertMLPFwdOp}
+    - {name: post_permute, op: MoEPostPermuteFwdOp}
     # Held for silu_and_mul; serves a call with T * K <= 2 * E, H % 128 == 0 and F % 256 == 0.
     - {name: indexed_small_route, op: IndexedExpertMLPFwdOp, optional: true}
 
@@ -150,7 +150,7 @@ FusedTopKFwdOp:
     # and 2 * top_k to renormalize.
     flops: "T * (top_k * E + (4 * E if scoring_func == 'sigmoid' else 3 * E + (0 if renormalize else E + top_k)) + (E if present(correction_bias) else 0) + (2 * top_k if renormalize else 0))"
 
-FusedMoeFwdOp:
+FusedMoEFwdOp:
   family: moe
   status: implemented
   signature:
@@ -194,7 +194,7 @@ FusedMoeFwdOp:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
 
-MoePrePermuteFwdOp:
+MoEPrePermuteFwdOp:
   family: moe
   status: implemented
   signature:
@@ -233,7 +233,7 @@ MoePrePermuteFwdOp:
     # A gather: no arithmetic.
     flops: "0"
 
-MoeGroupedGemmFwdOp:
+MoEGroupedGemmFwdOp:
   family: moe
   status: implemented
   signature:
@@ -286,7 +286,7 @@ MoeGroupedGemmFwdOp:
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_roofline
 
-MoeExpertMLPFwdOp:
+MoEExpertMLPFwdOp:
   family: moe
   status: implemented
   signature:
@@ -335,10 +335,10 @@ MoeExpertMLPFwdOp:
   composition:
     kind: composite
     stages:
-    - {name: gate_up, op: MoeGroupedGemmFwdOp}
-    - {name: down, op: MoeGroupedGemmFwdOp}
+    - {name: gate_up, op: MoEGroupedGemmFwdOp}
+    - {name: down, op: MoEGroupedGemmFwdOp}
 
-MoePostPermuteFwdOp:
+MoEPostPermuteFwdOp:
   family: moe
   status: implemented
   signature:
@@ -408,7 +408,7 @@ SharedExpertMLPFwdOp:
     # The gate/up and down GEMMs (2 * T * 3 * S * H), then 6 FLOPs per gated element.
     flops: "6 * T * S * H + 6 * T * S"
 
-FusedMoeSharedExpertFwdOp:
+FusedMoESharedExpertFwdOp:
   family: moe
   status: implemented
   signature:
@@ -473,7 +473,7 @@ FusedMoeSharedExpertFwdOp:
   - {T: 4096, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t4096"}
   - {T: 512, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-t512"}
   roofline:
-    # The routed half as FusedMoeFwdOp, plus the shared expert's two GEMMs on this rank's shard.
+    # The routed half as FusedMoEFwdOp, plus the shared expert's two GEMMs on this rank's shard.
     func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_roofline"
   composition:
     kind: composite
@@ -481,3 +481,56 @@ FusedMoeSharedExpertFwdOp:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
+MoEGroupedGemmFP8FwdOp:
+  family: moe
+  status: spec-only
+  signature:
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+          - {when: {contiguous: "_"}, is: "[P, C]"}
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall:
+      P: Dim
+      K: Dim
+      N: Dim
+      E: Dim
+    params:
+      layout: {type: MGroupedLayout}
+    inputs:
+      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, P, K]", contiguous: true}
+      a_scale: {dtype: float32, shape: "Rows[layout, E, P, ceil_div(K, 128)]"}
+      b: {dtype: float8_e4m3fn, shape: "[E, N, K]", contiguous: true}
+      b_scale: {dtype: float32, shape: "[E, ceil_div(N, 128), ceil_div(K, 128)]"}
+      layout_metadata:
+        dtype: int32
+        shape: "LayoutMetadata[layout, E, P]"
+        contiguous: true
+        values: "moe.layout_metadata(layout, R, E)"
+        requires: ["moe.layout_valid(layout, R, E)"]
+    let:
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    shape_rules:
+      - "E > 0"
+      # The scales tile the operands in exact 128-element blocks; a ragged final block has
+      # no representation on either side.
+      - "K % 128 == 0"
+      - "N % 128 == 0"
+    outputs:
+      output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]"}
+  roofline:
+    func: tileops.perf.formulas.moe_grouped_gemm_fp8_roofline
+  workloads:
+    - {P: 1024, N: 4096, K: 7168, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-up}
+    - {P: 1024, N: 7168, K: 2048, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-down}
+    - {N: 4096, K: 7168, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-up-masked}
+    - {N: 7168, K: 2048, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-down-masked}

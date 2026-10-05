@@ -415,11 +415,17 @@ def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
             "the manifest tooling reads YAML where torch is not installed",
         ),
         (
+            "import importlib.metadata as m, sys, tileops;"
+            " assert tileops.__version__ == m.version('tileops');"
+            " print('torch' in sys.modules)",
+            "the version is the distribution's, and reading it imports nothing",
+        ),
+        (
             "import tileops.backend as b; print(b.registry._loaded)",
             "installing a backend costs nothing until something asks for it",
         ),
     ],
-    ids=["no tilelang", "no torch", "no discovery"],
+    ids=["no tilelang", "no torch", "version without torch", "no discovery"],
 )
 def test_importing_costs_nothing(source, why):
     """Run in a fresh interpreter, since pytest has already imported everything."""

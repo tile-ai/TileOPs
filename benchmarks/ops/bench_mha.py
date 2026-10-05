@@ -6,7 +6,7 @@ import torch
 from benchmarks.baselines import FLASHINFER_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.mha import MhaDecodePagedCall
+from workloads.attention.mha import MhaDecodePagedCall
 
 
 def _fa3_mha_decode_paged(workload, k, v):

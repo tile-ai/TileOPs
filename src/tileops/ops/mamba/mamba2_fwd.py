@@ -1,8 +1,8 @@
 """Mamba-2 end-to-end SSD forward operator.
 
 Chains the five sub-ops in order:
-  1. DaCumsumFwdOp        — dt preprocessing + dA cumulative sum
-  2. CBProducerFwdOp      — causal C@B coupling matrix per chunk and group
+  1. SSDChunkCumsumFwdOp        — dt preprocessing + dA cumulative sum
+  2. SSDChunkCouplingFwdOp      — causal C@B coupling matrix per chunk and group
   3. SSDChunkStateFwdOp   — per-chunk SSM state computation
   4. SSDStatePassingFwdOp — inter-chunk recurrent state scan
   5. SSDChunkScanFwdOp    — final output scan
@@ -22,8 +22,8 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.mamba.cb_producer import CBProducerFwdOp
-from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
@@ -43,9 +43,9 @@ class Mamba2FwdOp(Op):
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        "da_cumsum_float16": DaCumsumFwdOp,
-        "da_cumsum_bfloat16": DaCumsumFwdOp,
-        "cb_producer": CBProducerFwdOp,
+        "da_cumsum_float16": SSDChunkCumsumFwdOp,
+        "da_cumsum_bfloat16": SSDChunkCumsumFwdOp,
+        "cb_producer": SSDChunkCouplingFwdOp,
         "chunk_state": SSDChunkStateFwdOp,
         "state_passing": SSDStatePassingFwdOp,
         "chunk_scan": SSDChunkScanFwdOp,
@@ -76,7 +76,7 @@ class Mamba2FwdOp(Op):
         self.tune = tune
         # This composite owns no kernel; the override reaches the sub-ops that do.
         self.dispatch_kernel(kernel_map)
-        # dt_out is stored in x's dtype, a construction parameter of DaCumsumFwdOp.
+        # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
         self._da_cumsum_ops = {
             getattr(torch, name): self.delegate_for(
                 f"da_cumsum_{name}",

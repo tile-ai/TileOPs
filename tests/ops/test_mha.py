@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MHADecodePagedWsKernel
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from workloads.attention.mha import MhaDecodePagedWorkload
 from workloads.device import run_device
-from workloads.mha import MhaDecodePagedWorkload
 
 
 class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):
@@ -41,7 +41,7 @@ class MhaDecodePagedFixture(FixtureBase):
                     False,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="attention")],
                 ),
                 # bfloat16 dispatch: the same signature admits it and the paged
                 # decode kernels are selected on dtype.

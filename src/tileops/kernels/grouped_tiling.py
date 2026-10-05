@@ -18,6 +18,10 @@ __all__ = ["GroupTiling"]
 class GroupTiling:
     """Tiles enumerated per group, for ``num_groups`` groups of ``block_m`` rows.
 
+    ``rows_per_offset`` is how many rows one unit of a packed offset carries, for a caller
+    whose row axis holds more than one row per packed token: a grouped-query attention tile
+    that folds a KV head's query heads into its rows carries ``heads // heads_kv`` of them.
+
     Example:
         ```python linenums="1"
         tiling = GroupTiling(num_groups=16, block_m=64)
@@ -25,9 +29,10 @@ class GroupTiling:
         ```
     """
 
-    def __init__(self, num_groups: int, block_m: int) -> None:
+    def __init__(self, num_groups: int, block_m: int, rows_per_offset: int = 1) -> None:
         self.num_groups = num_groups
         self.block_m = block_m
+        self.rows_per_offset = rows_per_offset
         self._search_steps = max(1, (num_groups - 1).bit_length())
 
     def tile_upper_bound(self, numel: int) -> int:
@@ -59,17 +64,18 @@ class GroupTiling:
     def cumsum_offsets(self):
         """Build the tile-count prefix sum from packed row offsets.
 
-        ``offsets[g + 1] - offsets[g]`` is the row count of group ``g``.
+        ``(offsets[g + 1] - offsets[g]) * rows_per_offset`` is the row count of group ``g``.
         Varlen operators already receive that representation, so they should
         not materialize a second sizes tensor merely to schedule row tiles.
+        The offsets are read at whatever integer width they arrive in.
         """
-        num_groups, block_m = self.num_groups, self.block_m
+        num_groups, block_m, rows = self.num_groups, self.block_m, self.rows_per_offset
 
         @T.macro
         def group_tile_cumsum_offsets(offsets, s_cum):
             s_cum[0] = T.int32(0)
             for g in T.serial(num_groups):
-                size = offsets[g + 1] - offsets[g]
+                size = T.cast(offsets[g + 1] - offsets[g], "int32") * T.int32(rows)
                 s_cum[g + 1] = s_cum[g] + (size + T.int32(block_m - 1)) // T.int32(block_m)
 
         return group_tile_cumsum_offsets

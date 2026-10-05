@@ -15,11 +15,11 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.quantization.call_spec import (
+    DequantizeCall,
     INT8DequantPerBlockFwdInterface,
     INT8DequantPerChannelFwdInterface,
     INT8DequantPerTensorFwdInterface,
 )
-from tileops.kernels.quantization.dequant_call import DequantizeCall
 from tileops.utils import get_sm_version
 
 __all__ = [

@@ -24,8 +24,8 @@ from tileops.ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampFwdOp,
     ClampScalarFwdOp,
+    ClampTensorFwdOp,
     CosFwdOp,
     DivFwdOp,
     EqFwdOp,
@@ -45,7 +45,7 @@ from tileops.ops.elementwise import (
     IsinfFwdOp,
     IsnanFwdOp,
     LeFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     Log1pFwdOp,
     LogFwdOp,
@@ -53,8 +53,8 @@ from tileops.ops.elementwise import (
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillFwdOp,
     MaskedFillScalarFwdOp,
+    MaskedFillTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -362,9 +362,6 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
 # custom_op registration, register_fake, and CUDA codegen all succeed.
 # They are marked "smoke" so CI catches registration regressions early.
 
-_N = 1024 * 1024
-_SHAPE = (1024, 1024)
-_SMALL = (256, 256)
 _DTYPE = torch.float16
 
 
@@ -515,7 +512,7 @@ _register_table(_UNARY_FLOAT_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, input_fn, name", _UNARY_FLOAT_OPS)
 def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
     """Compile-smoke for remaining float unary ops."""
-    n = _N
+    n = 1024 * 1024
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
     x = (
@@ -549,7 +546,7 @@ _register_table(_UNARY_BOOL_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, dtype, name", _UNARY_BOOL_OPS)
 def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
     """Compile-smoke for unary ops with bool output."""
-    n = _N
+    n = 1024 * 1024
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
     if dtype == torch.bool:
@@ -570,7 +567,7 @@ register_compile_contract(BitwiseNotFwdOp)
 @pytest.mark.smoke
 def test_bitwise_not_compile():
     """Compile-smoke for BitwiseNotFwdOp."""
-    n = _N
+    n = 1024 * 1024
     x_int = torch.randint(0, 256, (n,), dtype=torch.uint8, device=run_device())
     op = BitwiseNotFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
@@ -624,7 +621,7 @@ _register_table(_BINARY_ARITH_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BINARY_ARITH_OPS)
 def test_binary_arith_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining binary arithmetic ops."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device()).abs().clamp(min=0.1)
     op = op_cls()
@@ -640,7 +637,7 @@ register_compile_contract(PowFwdOp)
 @pytest.mark.smoke
 def test_pow_compile():
     """Compile-smoke for PowFwdOp with positive inputs to avoid NaN domain issues."""
-    shape = _SMALL
+    shape = (256, 256)
     # Use positive base and small positive exponent to stay in valid domain
     a = torch.rand(shape, dtype=_DTYPE, device=run_device()).clamp(min=0.1) * 5.0
     b = torch.rand(shape, dtype=_DTYPE, device=run_device()) * 2.0
@@ -653,16 +650,16 @@ def test_pow_compile():
 
 # --- Lerp (special binary with weight) ---
 
-register_compile_contract(LerpFwdOp)
+register_compile_contract(LerpScalarFwdOp)
 
 
 @pytest.mark.smoke
 def test_lerp_compile():
-    """Compile-smoke for LerpFwdOp."""
-    shape = _SMALL
+    """Compile-smoke for LerpScalarFwdOp."""
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    op = LerpFwdOp(weight=0.3)
+    op = LerpScalarFwdOp(weight=0.3)
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(a, b)
     ref = torch.lerp(a.float(), b.float(), 0.3).half()
@@ -675,7 +672,7 @@ register_compile_contract(LerpTensorFwdOp)
 @pytest.mark.smoke
 def test_lerp_tensor_compile():
     """Compile-smoke for LerpTensorFwdOp (Tensor-weight overload)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     w = torch.rand(shape, dtype=_DTYPE, device=run_device())
@@ -703,7 +700,7 @@ _register_table(_COMPARISON_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _COMPARISON_OPS)
 def test_comparison_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining comparison ops (bool output)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
@@ -732,7 +729,7 @@ _register_table(_LOGICAL_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _LOGICAL_OPS)
 def test_logical_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for logical binary ops (bool output)."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     op = op_cls()
@@ -758,7 +755,7 @@ _register_table(_BITWISE_BINARY_OPS)
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
 def test_bitwise_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for bitwise binary ops."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     b = torch.randint(0, 256, shape, dtype=torch.uint8, device=run_device())
     op = op_cls()
@@ -771,7 +768,7 @@ def test_bitwise_binary_compile(op_cls, ref_fn, name):
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
 def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for bool bitwise ops using the uint8 storage path."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randint(0, 2, shape, device=run_device()).bool()
     b = torch.randint(0, 2, shape, device=run_device()).bool()
     op = op_cls()
@@ -864,16 +861,16 @@ def test_clamp_scalar_compile():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-# --- Tensor-bound ClampFwdOp (input, min?, max? -> out) ---
+# --- Tensor-bound ClampTensorFwdOp (input, min?, max? -> out) ---
 
-register_compile_contract(ClampFwdOp)
+register_compile_contract(ClampTensorFwdOp)
 
 
 @pytest.mark.smoke
 def test_clamp_tensor_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with both Tensor bounds at same shape.
+    """Compile-smoke for ClampTensorFwdOp with both Tensor bounds at same shape.
 
-    Regression: ensures ClampFwdOp registers a custom_op so
+    Regression: ensures ClampTensorFwdOp registers a custom_op so
     torch.compile(fullgraph=True) does not fail with
     "torch.* op returned non-Tensor".
     """
@@ -881,7 +878,7 @@ def test_clamp_tensor_compile_same_shape():
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo, hi)
     ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
@@ -890,14 +887,14 @@ def test_clamp_tensor_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_tensor_compile_broadcast():
-    """Compile-smoke for ClampFwdOp with broadcasting Tensor bounds."""
+    """Compile-smoke for ClampTensorFwdOp with broadcasting Tensor bounds."""
     input_shape = (4, 8)
     min_shape = (1, 8)
     max_shape = (4, 1)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device=run_device())
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo, hi)
     ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
@@ -910,11 +907,11 @@ def test_clamp_tensor_compile_broadcast():
 
 @pytest.mark.smoke
 def test_clamp_min_only_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with max withheld, at same shape."""
+    """Compile-smoke for ClampTensorFwdOp with max withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo)
     ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
@@ -923,12 +920,12 @@ def test_clamp_min_only_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_min_only_compile_broadcast():
-    """Compile-smoke for ClampFwdOp with max withheld and broadcasting min."""
+    """Compile-smoke for ClampTensorFwdOp with max withheld and broadcasting min."""
     input_shape = (4, 8)
     min_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, lo)
     ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
@@ -938,11 +935,11 @@ def test_clamp_min_only_compile_broadcast():
 
 @pytest.mark.smoke
 def test_clamp_max_only_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with min withheld, at same shape."""
+    """Compile-smoke for ClampTensorFwdOp with min withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, None, hi)
     ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
@@ -951,12 +948,12 @@ def test_clamp_max_only_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_max_only_compile_broadcast():
-    """Compile-smoke for ClampFwdOp with min withheld and broadcasting max."""
+    """Compile-smoke for ClampTensorFwdOp with min withheld and broadcasting max."""
     input_shape = (4, 8)
     max_shape = (4, 1)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
+    op = ClampTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, None, hi)
     ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
@@ -964,16 +961,16 @@ def test_clamp_max_only_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-# --- MaskedFillFwdOp (Tensor value) ---
+# --- MaskedFillTensorFwdOp (Tensor value) ---
 
-register_compile_contract(MaskedFillFwdOp)
+register_compile_contract(MaskedFillTensorFwdOp)
 
 
 @pytest.mark.smoke
 def test_masked_fill_tensor_compile_same_shape():
-    """Compile-smoke for MaskedFillFwdOp (0-dim Tensor value) at same shape.
+    """Compile-smoke for MaskedFillTensorFwdOp (0-dim Tensor value) at same shape.
 
-    Regression: ensures MaskedFillFwdOp registers a custom_op so
+    Regression: ensures MaskedFillTensorFwdOp registers a custom_op so
     torch.compile(fullgraph=True) does not fail with
     "torch.* op returned non-Tensor".
     """
@@ -981,7 +978,7 @@ def test_masked_fill_tensor_compile_same_shape():
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-    op = MaskedFillFwdOp()
+    op = MaskedFillTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, mask, value)
     ref = torch.where(mask, value.expand(shape), x)
@@ -990,13 +987,13 @@ def test_masked_fill_tensor_compile_same_shape():
 
 @pytest.mark.smoke
 def test_masked_fill_tensor_compile_broadcast():
-    """Compile-smoke for MaskedFillFwdOp with broadcasting input/mask."""
+    """Compile-smoke for MaskedFillTensorFwdOp with broadcasting input/mask."""
     input_shape = (4, 8)
     mask_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device=run_device())
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-    op = MaskedFillFwdOp()
+    op = MaskedFillTensorFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x, mask, value)
     ref = torch.where(
@@ -1058,7 +1055,7 @@ _DIV_ROUNDING_COMPILE_MODES = ["trunc", "floor"]
 @pytest.mark.parametrize("dtype", _DIV_ROUNDING_COMPILE_DTYPES)
 def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> None:
     """torch.compile path matches torch.div for trunc and floor rounding modes."""
-    shape = _SMALL
+    shape = (256, 256)
     a = torch.randn(shape, dtype=dtype, device=run_device()) * 5.0
     b = torch.randn(shape, dtype=dtype, device=run_device()) * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
@@ -1191,7 +1188,8 @@ def test_parametric_unary_compile(op_name, kwargs, ref_fn):
     import tileops.ops.elementwise as ew
 
     op = getattr(ew, op_name)(**kwargs)
-    x = torch.randn(_N, dtype=_DTYPE, device=run_device())
+    n = 1024 * 1024
+    x = torch.randn(n, dtype=_DTYPE, device=run_device())
     out = torch.compile(op, fullgraph=True)(x)
     torch.testing.assert_close(out, ref_fn(x), atol=1e-2, rtol=1e-2)
 
@@ -1267,14 +1265,14 @@ def _graph_ownership_cases():
         return LerpTensorFwdOp(), (_x(8, 16), _x(8, 16), _x(8, 16))
 
     def clamp_tensor():
-        return ClampFwdOp(), (_x(8, 16), _x(8, 16), None)
+        return ClampTensorFwdOp(), (_x(8, 16), _x(8, 16), None)
 
     def masked_fill_scalar():
         return MaskedFillScalarFwdOp(value=-1.0), (_x(8, 16), _mask(8, 16))
 
     def masked_fill_tensor():
         value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-        return MaskedFillFwdOp(), (_x(8, 16), _mask(8, 16), value)
+        return MaskedFillTensorFwdOp(), (_x(8, 16), _mask(8, 16), value)
 
     return [
         pytest.param(builder, id=name)

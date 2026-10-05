@@ -104,9 +104,14 @@ def _build_prepare_chunk_offsets_kernel(
 
 @_tensor_cache
 def prepare_chunk_offsets(
-    cu_seqlens: torch.LongTensor,
+    cu_seqlens: torch.Tensor,
     chunk_size: int,
-) -> torch.LongTensor:
+) -> torch.Tensor:
+    """The per-sequence prefix sum of chunk counts, on the device.
+
+    The chunk count itself stays on the device: reading it costs a device-to-host
+    synchronization, and only a caller that allocates a per-chunk buffer needs it.
+    """
     chunk_offsets = torch.empty_like(cu_seqlens)
     prepare_chunk_offsets_kernel = _build_prepare_chunk_offsets_kernel(
         chunk_size=chunk_size,
@@ -114,4 +119,32 @@ def prepare_chunk_offsets(
         dtype=cu_seqlens.dtype,
     )
     prepare_chunk_offsets_kernel(cu_seqlens, chunk_offsets)
-    return chunk_offsets, chunk_offsets[-1].item()
+    return chunk_offsets
+
+
+# What the comparator's L2 normalization adds under the square root before taking the
+# reciprocal, from `fla.modules.l2norm.l2norm_fwd`. The block solve and the forward both
+# form a reciprocal norm and must add the same thing.
+L2NORM_EPS: float = 1e-6
+
+
+def step_size(raw, beta_sigmoid: bool, allow_neg_eigval: bool):
+    """The delta-rule step size, from what the op handed the kernel.
+
+    The sigmoid runs in float32 and the result returns to *raw*'s dtype, which is what a
+    caller transforming ``beta`` itself would hand every stage. Keeping the wider value
+    would give the triangular solve and the recurrence two different step sizes, since the
+    solve stores it at the activation dtype and the recurrence in float32.
+
+    Args:
+        raw: The value read from ``beta``, already indexed.
+        beta_sigmoid: ``beta`` carries raw logits rather than the step size.
+        allow_neg_eigval: The transform is ``2 * sigmoid`` rather than ``sigmoid``.
+
+    Returns:
+        An expression in *raw*'s dtype, which is *raw* itself where no sigmoid applies.
+    """
+    if not beta_sigmoid:
+        return raw
+    scaled = T.sigmoid(T.cast(raw, "float32")) * (2.0 if allow_neg_eigval else 1.0)
+    return T.Cast(raw.dtype, scaled)

@@ -15,36 +15,18 @@ The op computes cos/sin internally from variant parameters; tests call
 independently computes the same frequency tables.
 """
 
-import math
-
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from workloads.device import run_device
-from workloads.rope import RopeWorkload
-
-
-def _compute_freqs_cis_base(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    dtype: torch.dtype = torch.float32,
-    device: str | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute standard RoPE cos/sin tables.
-
-    Returns:
-        (cos, sin) each of shape (seq_len, head_dim // 2).
-    """
-    device = device or run_device()
-    half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    cos_vals = torch.cos(angles).to(dtype)
-    sin_vals = torch.sin(angles).to(dtype)
-    return cos_vals, sin_vals
+from workloads.rope import (
+    RopeWorkload,
+    llama31_frequency_tables,
+    longrope_frequency_tables,
+    rope_frequency_tables,
+    yarn_frequency_tables,
+)
 
 
 def _rotate_half_neox(x: torch.Tensor) -> torch.Tensor:
@@ -121,164 +103,6 @@ def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> 
         raise ValueError(f"Unsupported ndim={x.ndim}")
 
 
-def _compute_llama31_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    scale_factor: float = 8.0,
-    low_freq_factor: float = 1.0,
-    high_freq_factor: float = 4.0,
-    original_max_position: int = 8192,
-    dtype: torch.dtype = torch.float32,
-    device: str | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Llama 3.1 scaled frequency computation."""
-    device = device or run_device()
-    half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
-
-    low_freq_wavelen = original_max_position / low_freq_factor
-    high_freq_wavelen = original_max_position / high_freq_factor
-
-    scaled_freqs = []
-    for freq in freqs:
-        wavelen = 2 * math.pi / freq.item()
-        if wavelen < high_freq_wavelen:
-            scaled_freqs.append(freq)
-        elif wavelen > low_freq_wavelen:
-            scaled_freqs.append(freq / scale_factor)
-        else:
-            smooth = (original_max_position / wavelen - low_freq_factor) / (
-                high_freq_factor - low_freq_factor
-            )
-            scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
-
-    freqs = torch.stack(scaled_freqs)
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    cos_vals = torch.cos(angles).to(dtype)
-    sin_vals = torch.sin(angles).to(dtype)
-    return cos_vals, sin_vals
-
-
-def _yarn_find_correction_dim(
-    num_rotations: float, dim: int, base: float, max_position_embeddings: int
-) -> float:
-    """Canonical yarn_find_correction_dim from TVM position_embedding.py."""
-    return (
-        dim
-        * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))
-        / (2 * math.log(base))
-    )
-
-
-def _yarn_find_correction_range(
-    beta_fast: float, beta_slow: float, dim: int, base: float, max_position_embeddings: int
-) -> tuple[int, int]:
-    """Canonical yarn_find_correction_range from TVM position_embedding.py."""
-    low = math.floor(_yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings))
-    high = math.ceil(_yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings))
-    return max(low, 0), min(high, dim - 1)
-
-
-def _compute_yarn_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    scale: float = 16.0,
-    original_max_position: int = 4096,
-    beta_fast: float = 32.0,
-    beta_slow: float = 1.0,
-    attn_factor: float = 1.0,
-    dtype: torch.dtype = torch.float32,
-    device: str | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Canonical YaRN frequency computation with NTK-aware interpolation.
-
-    Reference: TVM ``rope_freq_yarn`` in position_embedding.py.
-
-    Key formula:
-    - freq_extra = 1 / (base ^ (2k/d))  (original, for extrapolation)
-    - freq_inter = 1 / ((scale * base) ^ (2k/d))  (NTK-aware, for interpolation)
-    - Linear ramp mask between correction dims
-    - inv_freq = freq_inter * (1 - mask) + freq_extra * mask
-    """
-    device = device or run_device()
-    half = head_dim // 2
-    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-
-    freq_extra = 1.0 / (base ** (dim_indices / half))
-    freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
-
-    low, high = _yarn_find_correction_range(
-        beta_fast,
-        beta_slow,
-        half,
-        base,
-        original_max_position,
-    )
-    if low == high:
-        high = high + 1
-
-    inv_freq_mask = 1.0 - torch.clamp(
-        (dim_indices - low) / (high - low),
-        0.0,
-        1.0,
-    )
-    inv_freq = freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
-
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, inv_freq)
-    cos_vals = (torch.cos(angles) * attn_factor).to(dtype)
-    sin_vals = (torch.sin(angles) * attn_factor).to(dtype)
-    return cos_vals, sin_vals
-
-
-def _compute_longrope_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    rescale_factors: torch.Tensor | None = None,
-    max_position_embeddings: int = 4096,
-    original_max_position_embeddings: int = 4096,
-    dtype: torch.dtype = torch.float32,
-    device: str | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Canonical LongRoPE frequency computation with amplitude scaling.
-
-    Reference: TVM ``rope_freq_longrope`` in position_embedding.py.
-
-    Key formula:
-    - divisor = ext_factors[k] * base^(2k/d)  (ext_factors multiply divisor)
-    - scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos)) if scale > 1
-    - cos/sin are multiplied by scaling_factor (amplitude factor)
-    """
-    device = device or run_device()
-    half = head_dim // 2
-    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-    divisor = base ** (dim_indices / half)
-
-    if rescale_factors is not None:
-        rf = rescale_factors.to(device=device, dtype=torch.float32)
-        divisor = rf * divisor
-
-    freqs = 1.0 / divisor
-
-    scale = max_position_embeddings / original_max_position_embeddings
-    if scale > 1.0:
-        scaling_factor = math.sqrt(
-            1.0 + math.log(scale) / math.log(original_max_position_embeddings)
-        )
-    else:
-        scaling_factor = 1.0
-
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    cos_vals = (torch.cos(angles) * scaling_factor).to(dtype)
-    sin_vals = (torch.sin(angles) * scaling_factor).to(dtype)
-    return cos_vals, sin_vals
-
-
 # Test fixtures
 
 
@@ -293,17 +117,17 @@ class RopeTest(RopeWorkload, TestBase):
     def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Independently compute cos/sin for the reference implementation."""
         if self.variant in ("neox", "non_neox"):
-            return _compute_freqs_cis_base(self.head_dim, self.seq_len, dtype=self.dtype)
+            return rope_frequency_tables(self.head_dim, self.seq_len, dtype=self.dtype)
         elif self.variant == "rope_llama31":
-            return _compute_llama31_freqs(
+            return llama31_frequency_tables(
                 self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
             )
         elif self.variant == "yarn_rope":
-            return _compute_yarn_freqs(
+            return yarn_frequency_tables(
                 self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
             )
         elif self.variant == "longrope":
-            return _compute_longrope_freqs(
+            return longrope_frequency_tables(
                 self.head_dim, self.seq_len, dtype=self.dtype, **self.extra_kwargs
             )
         else:
@@ -328,7 +152,12 @@ class RopeBasicFixture(FixtureBase):
             "batch, seq_len, num_heads, head_dim, dtype",
             [
                 pytest.param(
-                    2, 128, 8, 64, torch.float16, marks=[pytest.mark.smoke, pytest.mark.packaging]
+                    2,
+                    128,
+                    8,
+                    64,
+                    torch.float16,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="rope")],
                 ),
                 pytest.param(2, 128, 8, 64, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2, 128, 8, 64, torch.float32, marks=pytest.mark.smoke),
@@ -353,28 +182,42 @@ class RopeEdgeFixture(FixtureBase):
     ]
 
 
-# Neox RoPE tests
+# Base-frequency RoPE tests, both rotation conventions
 
 
+@pytest.mark.parametrize("rope_layout, variant", [("neox", "neox"), ("interleaved", "non_neox")])
 @RopeBasicFixture
-def test_rope_neox_1d(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
+def test_rope_1d(
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    rope_layout: str,
+    variant: str,
 ) -> None:
-    from tileops.ops.rope import RopeNeoxFwdOp
+    from tileops.ops.rope import RopeFwdOp
 
-    test = RopeTest("neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxFwdOp(layout="1d")
+    test = RopeTest(variant, "1d", batch, seq_len, num_heads, head_dim, dtype)
+    op = RopeFwdOp(rope_layout=rope_layout, input_layout="1d")
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
+@pytest.mark.parametrize("rope_layout, variant", [("neox", "neox"), ("interleaved", "non_neox")])
 @RopeBasicFixture
-def test_rope_neox_2d(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
+def test_rope_2d(
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    rope_layout: str,
+    variant: str,
 ) -> None:
-    from tileops.ops.rope import RopeNeoxFwdOp
+    from tileops.ops.rope import RopeFwdOp
 
-    test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxFwdOp(layout="2d")
+    test = RopeTest(variant, "2d", batch, seq_len, num_heads, head_dim, dtype)
+    op = RopeFwdOp(rope_layout=rope_layout, input_layout="2d")
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -397,7 +240,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
     position_ids = (
         torch.arange(num_tokens, device=run_device(), dtype=torch.int32) * 3 + 17
     ) % max_position
-    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device=run_device())
+    cos, sin = rope_frequency_tables(table_dim, max_position, dtype=dtype, device=run_device())
     ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long(), rotary_dim=rotary_dim)
 
     op = RopeNeoxPositionIdsFwdOp(
@@ -436,39 +279,17 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     op = RopeNeoxPositionIdsFwdOp(max_position=max_position, rotary_dim=None)
 
     x1 = torch.randn(8, 2, 16, device=run_device(), dtype=torch.float16)
-    cos1, sin1 = _compute_freqs_cis_base(16, max_position, dtype=x1.dtype, device=run_device())
+    cos1, sin1 = rope_frequency_tables(16, max_position, dtype=x1.dtype, device=run_device())
     ref1 = ref_rope_neox_position_ids(x1, cos1, sin1, position_ids.long(), rotary_dim=None)
     torch.testing.assert_close(op(x1, position_ids), ref1, atol=5e-3, rtol=1e-5)
 
     x2 = torch.randn(8, 2, 32, device=run_device(), dtype=torch.float16)
-    cos2, sin2 = _compute_freqs_cis_base(32, max_position, dtype=x2.dtype, device=run_device())
+    cos2, sin2 = rope_frequency_tables(32, max_position, dtype=x2.dtype, device=run_device())
     ref2 = ref_rope_neox_position_ids(x2, cos2, sin2, position_ids.long(), rotary_dim=None)
     torch.testing.assert_close(op(x2, position_ids), ref2, atol=5e-3, rtol=1e-5)
 
 
 # Non-neox (RoFormer) RoPE tests
-
-
-@RopeBasicFixture
-def test_rope_non_neox_1d(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
-) -> None:
-    from tileops.ops.rope import RopeNonNeoxFwdOp
-
-    test = RopeTest("non_neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxFwdOp(layout="1d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
-
-
-@RopeBasicFixture
-def test_rope_non_neox_2d(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
-) -> None:
-    from tileops.ops.rope import RopeNonNeoxFwdOp
-
-    test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxFwdOp(layout="2d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Llama 3.1 RoPE tests
@@ -489,7 +310,7 @@ def test_rope_llama31_1d(
     test = RopeTest(
         "rope_llama31", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
-    op = RopeLlama31FwdOp(layout="1d", **extra)
+    op = RopeLlama31FwdOp(input_layout="1d", **extra)
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -508,7 +329,7 @@ def test_rope_llama31_2d(
     test = RopeTest(
         "rope_llama31", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
-    op = RopeLlama31FwdOp(layout="2d", **extra)
+    op = RopeLlama31FwdOp(input_layout="2d", **extra)
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -531,7 +352,7 @@ def test_rope_yarn_1d(
     test = RopeTest(
         "yarn_rope", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
-    op = RopeYarnFwdOp(layout="1d", **extra)
+    op = RopeYarnFwdOp(input_layout="1d", **extra)
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -551,7 +372,7 @@ def test_rope_yarn_2d(
     test = RopeTest(
         "yarn_rope", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
-    op = RopeYarnFwdOp(layout="2d", **extra)
+    op = RopeYarnFwdOp(input_layout="2d", **extra)
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -577,7 +398,7 @@ def test_rope_longrope_1d(
         "longrope", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLongRopeFwdOp(
-        layout="1d",
+        input_layout="1d",
         rescale_factors=rescale,
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
@@ -604,7 +425,7 @@ def test_rope_longrope_2d(
         "longrope", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLongRopeFwdOp(
-        layout="2d",
+        input_layout="2d",
         rescale_factors=rescale,
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
@@ -615,27 +436,22 @@ def test_rope_longrope_2d(
 # Edge case tests
 
 
+@pytest.mark.parametrize("rope_layout, variant", [("neox", "neox"), ("interleaved", "non_neox")])
 @RopeEdgeFixture
-def test_rope_neox_edge(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
+def test_rope_edge(
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    rope_layout: str,
+    variant: str,
 ) -> None:
     """Edge cases: seq_len=1 and longer sequences."""
-    from tileops.ops.rope import RopeNeoxFwdOp
+    from tileops.ops.rope import RopeFwdOp
 
-    test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNeoxFwdOp(layout="2d")
-    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
-
-
-@RopeEdgeFixture
-def test_rope_non_neox_edge(
-    batch: int, seq_len: int, num_heads: int, head_dim: int, dtype: torch.dtype
-) -> None:
-    """Edge cases: seq_len=1 and longer sequences."""
-    from tileops.ops.rope import RopeNonNeoxFwdOp
-
-    test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
-    op = RopeNonNeoxFwdOp(layout="2d")
+    test = RopeTest(variant, "2d", batch, seq_len, num_heads, head_dim, dtype)
+    op = RopeFwdOp(rope_layout=rope_layout, input_layout="2d")
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
@@ -645,10 +461,10 @@ def test_rope_non_neox_edge(
 @pytest.mark.smoke
 def test_rope_noncontiguous_1d_works() -> None:
     """A non-contiguous 1D view must produce correct results after contiguity normalization."""
-    from tileops.ops.rope import RopeNeoxFwdOp
+    from tileops.ops.rope import RopeFwdOp
 
     seq_len, head_dim = 4, 8
-    op = RopeNeoxFwdOp(layout="1d")
+    op = RopeFwdOp(input_layout="1d")
 
     # Create a non-contiguous view: transpose makes it non-contiguous
     base = torch.randn(head_dim, seq_len, device=run_device(), dtype=torch.float32)

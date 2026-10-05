@@ -19,6 +19,7 @@ env:
   TILELANG_CACHE_DIR: /ci-cache/tilelang
   TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
   TRITON_CACHE_DIR: /ci-cache/triton
+  TORCHINDUCTOR_CACHE_DIR: /ci-cache/torchinductor
   PIP_CACHE_DIR: /ci-cache/pip
   MAX_JOBS: "64"
 
@@ -33,12 +34,11 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    # Sized for a cold cache: the full sweep takes hours with nothing cached and
-    # minutes once it is. Must exceed --total-budget below so the runner, not
-    # GitHub, ends the sweep.
+    # Six-hour safety ceiling, plus time to retain reports and artifacts.
     timeout-minutes: 380
     runs-on: [self-hosted, tile-ops, bench]
     env:
+      BENCH_WARN_SECONDS: ${{ vars.NIGHTLY_BENCH_WARN_SECONDS || '7200' }}
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
       # before late large MoE input tensors allocate 14-21 GiB weight blocks.
       PYTORCH_ALLOC_CONF: expandable_segments:True
@@ -135,6 +135,7 @@ jobs:
           done
         shell: bash
 
+      # Each case checks its warmup outputs before sampling; there is no second sweep.
       - name: Run benchmark ops
         id: benchmark_tests
         continue-on-error: true
@@ -150,9 +151,7 @@ jobs:
           # One pytest process per bench file: a native hang / segfault / OOM
           # kill costs only that file's results. py-spy captures the stack of
           # a hung child before the runner kills it.
-          # --stall-timeout bounds silence, not runtime. A file killed mid-run
-          # never writes its kernels to the persistent cache, so capping total
-          # runtime would keep the same files cold every night.
+          # Bound stalled cases separately from the total sweep budget.
           set -o pipefail
           # Best-effort: on a network failure the run proceeds without stack
           # dumps (the runner records the absence) instead of dying here.
@@ -161,6 +160,7 @@ jobs:
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
             --stall-timeout 900 \
+            --warn-after "${BENCH_WARN_SECONDS}" \
             --total-budget 21600 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 
@@ -467,41 +467,24 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Install TileOPs (image-baked stack, --no-deps)
-        run: bash scripts/ci/install_tileops.sh
-        shell: bash
-
       - name: Build and test wheel package
         run: |
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
 
-          python3 -m pip install -c constraints.txt build pytest pytest-timeout
-
-          echo "=== Build wheel package ==="
+          python3 -m pip install -c constraints.txt build
           python3 -m build --wheel
-          echo "=== Build artifacts ==="
           ls -lh dist/*.whl
-
-          echo "=== Install built wheel ==="
-          python3 -m pip install dist/*.whl
-
-          # Run outside the checkout so `tileops` resolves to the wheel, not src/.
-          TMP_TEST_DIR="$(mktemp -d "${RUNNER_TEMP}/packaging-test.XXXXXX")"
-          cp -r tests "${TMP_TEST_DIR}/tests"
-          cp -r workloads "${TMP_TEST_DIR}/workloads"
-          cp pyproject.toml "${TMP_TEST_DIR}/"
-          cd "${TMP_TEST_DIR}"
 
           echo "=== Runtime cache env ==="
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-          echo "=== Run pytest packaging ==="
-          python3 -m pytest -q tests/ops -m "packaging" \
-            --timeout=900 --timeout-method=thread \
-            --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
+          # torch and tilelang come from the image; the release workflow runs the same
+          # script with --deps pypi.
+          bash scripts/ci/verify_installed_wheel.sh \
+            --wheel "$(ls dist/*.whl)" --deps image --work-dir packaging-verify
         shell: bash
 
       - name: Upload wheel artifact
@@ -520,6 +503,7 @@ jobs:
           name: packaging-logs-${{ github.sha }}_${{ github.run_attempt }}
           path: |
             packaging.log
-            packaging_smoke.xml
+            packaging-verify/packaging.xml
+            packaging-verify/env.json
           if-no-files-found: warn
           retention-days: 14

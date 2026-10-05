@@ -8,6 +8,7 @@ import torch
 import benchmarks.baselines  # noqa: F401
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
+from benchmarks.verification import set_verifying
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
@@ -56,7 +57,12 @@ def _emit(item, tag: str, entry: dict) -> None:
     here. Hand-listing them is how the report came to publish a quantity the
     benchmark had stopped comparing.
     """
-    measurements = {**entry["result"], "dtype": entry.get("dtype")}
+    measurements = {
+        **entry["result"],
+        "dtype": entry.get("dtype"),
+        "unverified": (entry.get("params") or {}).get("unverified"),
+        "no_ratio": (entry.get("params") or {}).get("no_ratio"),
+    }
     for key, value in measurements.items():
         if key in _NOT_A_MEASUREMENT or value is None:
             continue
@@ -85,6 +91,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Time a case with CUDA events when CUPTI cannot attribute it, instead of "
         "failing it. Off by default: the report would mix two timing methods.",
     )
+    parser.addoption(
+        "--tileops-verify",
+        action="store_true",
+        help="Run correctness warmup only, omitting timing. Normal benchmarks also verify "
+        "before sampling.",
+    )
 
 
 # The events-fallback setting in force before configure, put back at unconfigure.
@@ -103,6 +115,7 @@ def pytest_configure(config):
             "so they run on cuda only"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
+    set_verifying(config.getoption("--tileops-verify"))
     set_events_fallback_allowed(config.getoption("--tileops-allow-events-fallback"))
 
 
@@ -163,6 +176,12 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("baseline_tag", tag))
                 _emit(item, "baseline", be)
             if not tileops_entry:
+                continue
+            # A ratio states that two implementations of one function differ in speed. Where
+            # either side carries an exception, that is not what it would state.
+            if (be.get("params") or {}).get("no_ratio") or (tileops_entry.get("params") or {}).get(
+                "no_ratio"
+            ):
                 continue
             # Ratios compare device_busy_ms: two implementations need not have
             # the same number of gaps between kernels.

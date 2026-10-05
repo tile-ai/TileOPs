@@ -11,6 +11,8 @@ The names below steer dispatch; a *backend* imports `tileops.backend` instead. E
 name here, families included, resolves on first access (PEP 562), so importing this
 package pulls in neither torch nor any backend — the manifest tooling reads YAML where
 neither is installed. Reaching into a family is what imports torch.
+
+`__version__` is the installed distribution's version, read from its metadata.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -32,6 +34,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         rope,
         sampling,
         sequence_modeling,
+        transform,
     )
     from tileops.backend import (
         BUILTIN,
@@ -56,6 +59,7 @@ _FAMILIES = (
     "pool",
     "convolution",
     "fft",
+    "transform",
     "moe",
     "sampling",
     "rope",
@@ -89,7 +93,11 @@ __all__ = sorted({*_LAZY, *_FAMILIES})
 def __getattr__(name: str) -> Any:
     import importlib
 
-    if name in _FAMILIES:
+    if name == "__version__":
+        from importlib.metadata import version
+
+        value = version("tileops")
+    elif name in _FAMILIES:
         # `__package__`, not `__name__`: a tool may load this file as `tileops.__init__`.
         value = importlib.import_module(f".{name}", __package__)
     else:
@@ -102,4 +110,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *_LAZY, *_FAMILIES})
+    return sorted({*globals(), *_LAZY, *_FAMILIES, "__version__"})

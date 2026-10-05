@@ -13,6 +13,7 @@ from tileops.kernels.gemm import (
 from tileops.kernels.gemm.call_spec import GemmCall, GemmFp8Call
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
+    GemmFp8TensorScaleKernel,
     _b_eviction,
     _bandwidth_autotune_grid,
 )
@@ -24,7 +25,7 @@ from tileops.kernels.gemm.heuristics import (
     small_m_splitk_config,
 )
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, _select_config, _stage_meta_per_tile
-from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFp8Workload,
@@ -69,7 +70,7 @@ class GemmFixture(FixtureBase):
                     False,
                     False,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="gemm")],
                     id="smoke-fp16-square",
                 ),
                 pytest.param(
@@ -589,8 +590,17 @@ class GemmW4A16Fixture(FixtureBase):
 
 @GemmFixture
 def test_gemm(
-    m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool, tune: bool
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype,
+    trans_a: bool,
+    trans_b: bool,
+    tune: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
     if dtype == torch.float16:
@@ -615,7 +625,7 @@ def test_gemm_fp8(
     bias: bool,
 ) -> None:
     test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
-    op = GemmFp8FwdOp(out_dtype=out_dtype)
+    op = GemmFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     if dtype != torch.float8_e4m3fn:
         with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
@@ -678,12 +688,13 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
-    op = GemmFp8FwdOp()
+    op = GemmFP8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
     if served_in_tree(op):
         assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     ("shape", "expected"),
@@ -755,16 +766,19 @@ def test_gemm_fp8_block_scale_selection(
         out_dtype=out_dtype,
         has_bias=bias,
     )
-    op = GemmFp8FwdOp(out_dtype=out_dtype)
+    op = GemmFP8FwdOp(out_dtype=out_dtype)
     assert op.kernel_map[op.select_implementation("gemm_fp8", call)].__name__ == expected
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_gemm_fp8_refuses_sm89() -> None:
-    """SM89 has FP8 tensor cores but not the TMA and WGMMA the FP8 kernels are built on."""
+def test_gemm_fp8_serves_sm89_by_scale_grid() -> None:
     m, n, k = 128, 256, 512
-    for scale_a_shape, scale_b_shape in (((1, 1), (1, 1)), ((m, k // 128), (n, k // 128))):
+    for scale_a_shape, scale_b_shape, expected in (
+        ((1, 1), (1, 1), "gemm_fp8_tensor_scale"),
+        ((m, k // 128), (n, k // 128), "gemm_fp8_block_scale"),
+        ((m, k // 128), (n // 128, k // 128), "gemm_fp8_block_scale"),
+    ):
         call = GemmFp8Call(
             arch=89,
             sm_count=1,
@@ -776,8 +790,35 @@ def test_gemm_fp8_refuses_sm89() -> None:
             scale_b_shape=scale_b_shape,
             out_dtype=torch.bfloat16,
         )
-        with pytest.raises(ValueError, match="no implementation serves this call"):
-            GemmFp8FwdOp().select_implementation("gemm_fp8", call)
+        assert GemmFP8FwdOp().select_implementation("gemm_fp8", call) == expected
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("arch", [89, 90])
+def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
+    from tileops.utils import get_sm_version
+
+    device = torch.device(run_device())
+    # Construction still checks the call's device, whatever arch the call states.
+    if get_sm_version(device.index) not in GemmFp8TensorScaleKernel.supported_archs:
+        pytest.skip("the FP8 kernel is built only on SM89 and SM90")
+    call = GemmFp8Call(
+        arch=arch,
+        sm_count=1,
+        m=128,
+        n=256,
+        k=512,
+        dtype=torch.float8_e4m3fn,
+        scale_a_shape=(1, 1),
+        scale_b_shape=(1, 1),
+        out_dtype=torch.bfloat16,
+        device=device,
+    )
+    _identity, build = GemmFp8TensorScaleKernel.entry_for(call)
+    kernel = build()
+    assert (kernel.ws_refusal is None) == (arch == 90)
+    assert kernel.sm_count == 1
 
 
 @pytest.mark.sm90
@@ -948,6 +989,7 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
         GemmTmaKernel(256, 512, 1001, bf, trans_a=False, trans_b=True)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_stages, stage_n", [(3, 0), (4, 128)])
@@ -1101,6 +1143,13 @@ def test_dense_splitk_interfaces_match_reference() -> None:
     actual = GemmCpAsyncKernel(m, n, k, torch.bfloat16, basic_config, trans_b=True)(a, b)
     torch.testing.assert_close(actual.float(), a.float() @ b.float().T, rtol=2e-2, atol=1e-1)
 
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_dense_splitk_gated_tma_matches_reference() -> None:
+    m, n, k = 32, 112, 512
+    a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
     gated_b = torch.randn(2 * n, k, dtype=torch.bfloat16, device="cuda")
     gated_config = {
         "block_m": 64,
@@ -1142,6 +1191,7 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
@@ -1157,6 +1207,7 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
@@ -1179,6 +1230,7 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
@@ -1186,6 +1238,7 @@ def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
     assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("split_k", [2, 8])
@@ -1209,6 +1262,7 @@ def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
     )
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
@@ -1248,6 +1302,7 @@ def test_gemm_w4a16_select_config_streams_only_the_underfilled_grid() -> None:
     assert _select_config(128, 4096, 14336, GROUP_SIZE, sms=132)["stream_ctas"] == 0
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
@@ -1257,6 +1312,7 @@ def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
     kernel.kernel(**kernel.config)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:

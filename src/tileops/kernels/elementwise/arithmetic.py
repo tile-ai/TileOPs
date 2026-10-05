@@ -15,6 +15,7 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
+from tileops.kernels.elementwise._prelude import approx_reciprocal
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
     LerpCall,
@@ -188,11 +189,12 @@ def _floored_quotient(num, den, limit, fast_body):
             over = T.call_extern("float32", "__fmaf_rn", -t, magnitude, T.copysign(num, q)) < zero
             return fast_body(tirx.Select(over, t - one, t), q)
 
-        return bound(T.floor(q), pick)
+        return pick(T.floor(q))
 
     inf = T.cast(float("inf"), "float32")
-    holds = bound(quotient, lambda q: T.And(T.abs(q) < T.cast(limit, "float32"), magnitude < inf))
-    return bound(quotient, value), holds
+    # A tier writes its value out at each mention rather than binding it: see ``bound``.
+    holds = T.And(T.abs(quotient) < T.cast(limit, "float32"), magnitude < inf)
+    return value(quotient), holds
 
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
@@ -211,19 +213,21 @@ def _nudged_floor(num, den, dtype, fast_body):
     exact whole quotient ``q`` left short back onto it, so the floor of the nudged
     quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
     on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
-    or NaN operand, every quotient that underflows and every divisor ``_approx_fdiv``
-    does not cover.
+    or NaN operand, every quotient that underflows and every divisor
+    ``approx_reciprocal`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
-    # One reciprocal serves every element that shares b.
-    quotient = num * _approx_fdiv(T.cast(1.0, "float32"), den)
+    # One reciprocal serves every element that shares b. ``approx_reciprocal`` answers a
+    # zero or an infinity for the divisors it does not cover, and ``holds`` refuses both,
+    # so the operand pairs it declines reach the exact body below instead.
+    quotient = num * approx_reciprocal(den)
 
     def value(q):
         nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
-    holds = bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
-    return bound(quotient, value), holds
+    holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
+    return value(quotient), holds
 
 
 def _floored_tiers(num, den, dtype, limit, fast_body):
@@ -270,7 +274,7 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         def from_quotient(k, q):
             r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
             # A zero remainder is fmod's, which keeps the dividend's sign.
-            return bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+            return tirx.Select(r == zero, T.copysign(zero, num), r)
 
         def signed(mod):
             flip = T.And(mod != zero, (den < zero) != (mod < zero))
@@ -534,7 +538,7 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
 
     ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
     to the output shape and flattens them, so this PrimFunc sees three
-    contiguous 1-D tensors of size ``N``, and computes in the input dtype.
+    contiguous 1-D tensors of size ``N``. Half inputs use FP32 intermediates.
 
     All three inputs move through register fragments so they share one
     vectorized access path; the result is written back into ``a``'s fragment.
@@ -560,7 +564,14 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
                 T.copy(w[bx * block_size : (bx + 1) * block_size], w_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    a_reg[k] = a_reg[k] + w_reg[k] * (b_reg[k] - a_reg[k])
+                    start = T.cast(a_reg[k], "float32")
+                    end = T.cast(b_reg[k], "float32")
+                    weight = T.cast(w_reg[k], "float32")
+                    a_reg[k] = T.if_then_else(
+                        T.abs(weight) < 0.5,
+                        start + weight * (end - start),
+                        end - (end - start) * (1 - weight),
+                    )
                 T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main

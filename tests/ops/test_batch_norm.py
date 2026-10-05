@@ -18,7 +18,7 @@ from tileops.kernels.norm.call_spec import (
 )
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
-from workloads.normalization import (
+from workloads.norm import (
     BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,
@@ -54,6 +54,8 @@ class BatchNormFwdFixture(FixtureBase):
                 pytest.param(4, 64, (64, 64), torch.float16, True, marks=pytest.mark.full),
                 # BatchNorm2d – (N, C, H, W)
                 pytest.param(8, 64, (1024, 1024), torch.float16, True, marks=pytest.mark.full),
+                # N*C*H*W = 2**31, one past INT32_MAX: a flat index over these extents does
+                # not fit a signed 32-bit integer. Costs 60 GiB, the largest case in the suite.
                 pytest.param(8, 64, (2048, 2048), torch.float16, False, marks=pytest.mark.full),
                 pytest.param(4, 128, (32, 32), torch.bfloat16, True, marks=pytest.mark.full),
                 # Non-aligned spatial: H*W=900, exercises partial-tile path

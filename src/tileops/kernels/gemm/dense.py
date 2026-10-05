@@ -21,7 +21,7 @@ from tileops.kernels.gemm.heuristics import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.trace import trace
-from tileops.utils import get_sm_count, str2dtype
+from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
 __all__ = [
     "GemmCpAsyncKernel",
@@ -117,18 +117,20 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
     :meth:`_ws_refusal` rejects.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
 
     # Whether this kernel reads block128 scale grids rather than per-tensor scalars.
     BLOCK_SCALED = False
 
     @staticmethod
-    def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype) -> Optional[str]:
+    def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype, arch: int) -> Optional[str]:
         """Why the warp-specialized variant cannot serve this call, or ``None``.
 
         It loads through TMA, and its epilogue releases a ring slot the mainloop
         named, so it needs at least one K-tile. The fallback carries neither.
         """
+        if arch != 90:
+            return f"TMA and WGMMA are SM90 instructions, the device is sm{arch}"
         if dtype != torch.float8_e4m3fn:
             return f"the warp-specialized FP8 kernel is e4m3-only, got {dtype}"
         if k == 0:
@@ -156,6 +158,8 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
             call.out_dtype,
             device_index=index,
             b_scale_rows=128 if cls.block_scale_grid(call) == "1d2d" else 1,
+            arch=call.arch,
+            sm_count=call.sm_count,
         )
 
     def __init__(
@@ -169,6 +173,8 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         tune: bool = False,
         device_index: Optional[int] = None,
         b_scale_rows: int = 1,
+        arch: Optional[int] = None,
+        sm_count: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.b_scale_rows = b_scale_rows
@@ -177,8 +183,9 @@ class _GemmFp8Kernel(Kernel, GemmFp8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.sm_count = get_sm_count(self.device_index)
-        self.ws_refusal = self._ws_refusal(m, n, k, dtype)
+        self.sm_count = get_sm_count(self.device_index) if sm_count is None else sm_count
+        arch = get_sm_version(self.device_index) if arch is None else arch
+        self.ws_refusal = self._ws_refusal(m, n, k, dtype, arch)
         self.kernel = self._builder()
         self.init_config(config, tune)
         self._unused_bias: Optional[torch.Tensor] = None
@@ -377,6 +384,7 @@ def _gemm_fp8_kernel(
     has_bias: bool = False,
     b_scale_rows: int = 1,
 ) -> Callable:
+    """Each K tile's product is added into ``c_local`` in fp32, as the block-scaled path does."""
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -417,8 +425,8 @@ def _gemm_fp8_kernel(
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
-                    partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                     # Reuse each row/column scale across the complete output tile instead
                     # of reloading it for every scaled partial element.
                     scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
@@ -463,25 +471,21 @@ def _gemm_fp8_kernel(
                                 scale_b[(n_start + j) // b_scale_rows, scale_idx],
                                 0.0,
                             )
-                        T.clear(partial)
-                        T.gemm(
-                            a_shared,
-                            b_shared,
-                            partial,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
+                    T.clear(partial)
+                    T.gemm(
+                        a_shared,
+                        b_shared,
+                        partial,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+                    if block_scaled:
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += partial[i, j] * scale_a_local[i] * scale_b_local[j]
                     else:
-                        T.gemm(
-                            a_shared,
-                            b_shared,
-                            c_local,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
+                        for i, j in T.Parallel(block_m, block_n):
+                            c_local[i, j] += partial[i, j]
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
@@ -508,8 +512,8 @@ def _gemm_fp8_kernel(
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                 if block_scaled:
-                    partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                     # Reuse each row/column scale across the complete output tile instead
                     # of reloading it for every scaled partial element.
                     scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
@@ -554,25 +558,21 @@ def _gemm_fp8_kernel(
                                 scale_b[(n_start + j) // b_scale_rows, scale_idx],
                                 0.0,
                             )
-                        T.clear(partial)
-                        T.gemm(
-                            a_shared,
-                            b_shared,
-                            partial,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
+                    T.clear(partial)
+                    T.gemm(
+                        a_shared,
+                        b_shared,
+                        partial,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+                    if block_scaled:
                         for i, j in T.Parallel(block_m, block_n):
                             if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += partial[i, j] * scale_a_local[i] * scale_b_local[j]
                     else:
-                        T.gemm(
-                            a_shared,
-                            b_shared,
-                            c_local,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
+                        for i, j in T.Parallel(block_m, block_n):
+                            c_local[i, j] += partial[i, j]
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
@@ -2851,7 +2851,7 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
         reduce_threads: int = 128,
         num_stages: int = 4,
     ) -> Callable:
-        tile_k = 128 // (str2dtype[dtype].itemsize * 8)
+        tile_k = 128 // (STR_TO_DTYPE[dtype].itemsize * 8)
         block_k = reduce_threads * tile_k
         b_evict = "evict_first"  # one N range per CTA, so B is read once
 
@@ -3061,8 +3061,6 @@ def _gemm_basic_kernel(
     (K, N) contraction (cf. the WGMMA version, which forwards them to WGMMA).
     """
     accum_dtype = "float"
-    a_shape = (k, m) if trans_a else (m, k)
-    b_shape = (n, k) if trans_b else (k, n)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -3077,6 +3075,9 @@ def _gemm_basic_kernel(
         threads: int = 128,
         split_k: int = 1,
     ) -> Callable:
+        # Built here, not closed over: the autotuner refuses a closure that holds a tuple.
+        a_shape = (k, m) if trans_a else (m, k)
+        b_shape = (n, k) if trans_b else (k, n)
         # SMEM tile shapes follow the storage layout; the T.gemm transpose
         # flags reconcile them with the logical (M,K) x (K,N) contraction.
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)

@@ -49,7 +49,7 @@ class Conv1dFixture(FixtureBase):
                     1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="convolution")],
                     id="smoke-tcn-k3-s1-fp16",
                 ),
                 pytest.param(

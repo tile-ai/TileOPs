@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 
-from tileops.kernels.linear_attention.gla.gla_fwd import GLAChunkedFwdKernel
+from tileops.kernels.linear_attention.gla.chunk_fwd import GLAChunkedFwdKernel
 
 __all__ = ["GLADensePrefillFwdKernel"]
 

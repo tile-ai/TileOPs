@@ -1,26 +1,24 @@
-from tileops.ops.linear_attention.deltanet import (
-    DeltaNetAutogradFwdOp,
-    DeltaNetBwdOp,
-    DeltaNetFwdOp,
+from tileops.ops.linear_attention.deltanet.chunk import (
+    DeltaNetChunkBwdOp,
+    DeltaNetChunkFwdOp,
 )
-from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
+from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
-from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
-from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
+from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.linear_attention.kimi_delta_attention import KimiDeltaAttentionFwdOp
 
 __all__: list[str] = [
-    "DeltaNetBwdOp",
-    "DeltaNetDecodeFwdOp",
-    "DeltaNetFwdOp",
+    "DeltaNetChunkBwdOp",
+    "DeltaNetChunkFwdOp",
     "DeltaNetInferenceFwdOp",
-    "DeltaNetAutogradFwdOp",
-    "GatedDeltaNetFwdOp",
-    "GLABwdOp",
-    "GLADecodeFwdOp",
-    "GLAFwdOp",
+    "DeltaNetRecurrentFwdOp",
+    "GLAChunkBwdOp",
+    "GLAChunkFwdOp",
     "GLAInferenceFwdOp",
+    "GLARecurrentFwdOp",
+    "GatedDeltaNetFwdOp",
     "KimiDeltaAttentionFwdOp",
 ]

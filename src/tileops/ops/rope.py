@@ -1,17 +1,16 @@
-"""Rotary Position Embedding (RoPE) ops — 5 variants x 2 layouts.
+"""Rotary Position Embedding (RoPE) ops — 4 frequency schemes x 2 input layouts.
 
 Each Op computes variant-specific frequency tables (cos, sin) lazily at
 forward time (on the same device as the input tensor) and delegates the
 actual rotation to the corresponding kernel.
 
 Variants and frequency computation:
-- **RopeNeoxFwdOp**: standard theta = 10000^(-2k/d) frequencies
-- **RopeNonNeoxFwdOp**: same frequencies, different rotation pattern (adjacent pairs)
+- **RopeFwdOp**: standard theta = 10000^(-2k/d) frequencies, either rotation convention
 - **RopeLlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
 - **RopeYarnFwdOp**: YaRN linear-ramp interpolated frequencies
 - **RopeLongRopeFwdOp**: per-dimension rescaled frequencies
 
-Layouts:
+Input layouts:
 - ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
 - ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
 
@@ -39,11 +38,10 @@ from tileops.kernels.rope import (
 from tileops.ops.op_base import Op
 
 __all__ = [
+    "RopeFwdOp",
     "RopeLlama31FwdOp",
     "RopeLongRopeFwdOp",
-    "RopeNeoxFwdOp",
     "RopeNeoxPositionIdsFwdOp",
-    "RopeNonNeoxFwdOp",
     "RopeYarnFwdOp",
     "base_freqs",
 ]
@@ -102,7 +100,7 @@ def _yarn_find_correction_range(
 
 
 class _RopeOpBase(Op):
-    """Base class for the five 1d/2d RoPE variants.
+    """Base class for the four frequency-scheme RoPE ops.
 
     Subclass sets ``kernel_types`` and ``interfaces`` and implements ``_compute_cos_sin``
     to generate its variant-specific frequency tables.
@@ -112,10 +110,12 @@ class _RopeOpBase(Op):
     """
 
     compile_boundary = True
+    # The rotation convention keys the interface; the scheme variants serve NeoX only.
+    rope_layout: str = "neox"
 
     def __init__(
         self,
-        layout: str = "1d",
+        input_layout: str = "1d",
         base: float = 10000.0,
         *,
         target: Target = None,
@@ -125,7 +125,7 @@ class _RopeOpBase(Op):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            layout: "1d" for ``[seq_len, head_dim]`` or "2d" for
+            input_layout: "1d" for ``[seq_len, head_dim]`` or "2d" for
                 ``[batch, seq_len, num_heads, head_dim]``.
             base: Frequency base (default 10000).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
@@ -133,7 +133,7 @@ class _RopeOpBase(Op):
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
         """
-        self.layout = layout
+        self.input_layout = input_layout
         self.base = base
         self.target = target
         self.tune = tune
@@ -160,7 +160,7 @@ class _RopeOpBase(Op):
         """Apply RoPE rotation using internally computed cos/sin tables.
 
         Args:
-            x: Input tensor. Shape depends on layout:
+            x: Input tensor. Shape depends on the input layout:
                 - 1D: ``(seq_len, head_dim)``
                 - 2D: ``(batch, seq_len, num_heads, head_dim)``
 
@@ -171,14 +171,14 @@ class _RopeOpBase(Op):
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator."""
-        if self.layout == "1d":
+        if self.input_layout == "1d":
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
             batch, seq_len, num_heads, head_dim = x.shape
         call = RopeCall(
             seq_len=seq_len,
             head_dim=head_dim,
-            layout=self.layout,
+            input_layout=self.input_layout,
             batch=batch,
             num_heads=num_heads,
             dtype=x.dtype,
@@ -186,24 +186,60 @@ class _RopeOpBase(Op):
         )
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         x = x.contiguous()
-        self.kernel = self.kernel_for("rope", call)
+        self.kernel = self.kernel_for(self.rope_layout, call)
         return self.kernel(x, cos, sin)
 
 
-# Concrete Op classes (5 variants)
+# Concrete Op classes (4 frequency schemes)
 
 
-class RopeNeoxFwdOp(_RopeOpBase):
-    """GPT-NeoX style RoPE op with standard theta frequencies.
+class RopeFwdOp(_RopeOpBase):
+    """RoPE with standard theta frequencies, in either rotation convention.
 
-    Computes cos/sin tables using standard theta = base^(-2k/d).
+    ``rope_layout="neox"`` splits a head at its midpoint and rotates the halves against
+    each other; ``"interleaved"`` rotates each adjacent pair. The frequency table is the
+    same either way, so the two differ only in which elements pair up.
 
-    Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
-
+    References: GPT-NeoX / HuggingFace transformers RotaryEmbedding (NeoX); Su et al.,
+    "RoFormer: Enhanced Transformer with Rotary Position Embedding" (interleaved).
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_neox": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "rope_neox": RopeNeoxKernel,
+        "rope_non_neox": RopeNonNeoxKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "neox": RopeNeoxFwdInterface,
+        "interleaved": RopeNonNeoxFwdInterface,
+    }
+
+    def __init__(
+        self,
+        rope_layout: str = "neox",
+        input_layout: str = "1d",
+        base: float = 10000.0,
+        *,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            rope_layout: "neox" to rotate the two halves of a head against each other,
+                "interleaved" to rotate each adjacent pair.
+            input_layout: "1d" for ``[seq_len, head_dim]`` or "2d" for
+                ``[batch, seq_len, num_heads, head_dim]``.
+            base: Frequency base (default 10000).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune.
+        """
+        if rope_layout not in ("neox", "interleaved"):
+            raise ValueError(f"rope_layout must be 'neox' or 'interleaved', got '{rope_layout}'")
+        self.rope_layout = rope_layout
+        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -305,24 +341,6 @@ class RopeNeoxPositionIdsFwdOp(Op):
         return output
 
 
-class RopeNonNeoxFwdOp(_RopeOpBase):
-    """Original RoFormer RoPE op with adjacent-pair rotation.
-
-    Computes cos/sin tables using standard theta = base^(-2k/d).
-
-    Reference: Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding".
-
-    """
-
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_non_neox": RopeNonNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNonNeoxFwdInterface}
-
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return base_freqs(head_dim, seq_len, base=self.base, dtype=dtype, device=device)
-
-
 class RopeLlama31FwdOp(_RopeOpBase):
     """Llama 3.1 RoPE op with piecewise frequency scaling.
 
@@ -334,7 +352,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
 
     @staticmethod
     def _llama31_freqs(
@@ -390,7 +408,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
 
     def __init__(
         self,
-        layout: str = "1d",
+        input_layout: str = "1d",
         base: float = 10000.0,
         scale_factor: float = 8.0,
         low_freq_factor: float = 1.0,
@@ -404,7 +422,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            layout: "1d" or "2d".
+            input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
             scale_factor: Scaling factor for low frequencies (default 8.0).
             low_freq_factor: Low-frequency wavelen threshold (default 1.0).
@@ -419,7 +437,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.original_max_position = original_max_position
-        super().__init__(layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -448,7 +466,7 @@ class RopeYarnFwdOp(_RopeOpBase):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_yarn": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
 
     @staticmethod
     def _yarn_freqs(
@@ -530,7 +548,7 @@ class RopeYarnFwdOp(_RopeOpBase):
 
     def __init__(
         self,
-        layout: str = "1d",
+        input_layout: str = "1d",
         base: float = 10000.0,
         scale: float = 16.0,
         original_max_position: int = 4096,
@@ -545,7 +563,7 @@ class RopeYarnFwdOp(_RopeOpBase):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            layout: "1d" or "2d".
+            input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
             scale: Context extension scale (default 16.0).
             original_max_position: Original max position (default 4096).
@@ -562,7 +580,7 @@ class RopeYarnFwdOp(_RopeOpBase):
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
         self.attn_factor = attn_factor
-        super().__init__(layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -595,7 +613,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RopeNeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rope": RopeNeoxFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RopeNeoxFwdInterface}
 
     @staticmethod
     def _longrope_freqs(
@@ -664,7 +682,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     def __init__(
         self,
-        layout: str = "1d",
+        input_layout: str = "1d",
         base: float = 10000.0,
         rescale_factors: Optional[torch.Tensor] = None,
         max_position_embeddings: int = 4096,
@@ -677,7 +695,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            layout: "1d" or "2d".
+            input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
             rescale_factors: Per-dimension rescale factors (ext_factors) of shape
                 (head_dim // 2,). These multiply the divisor.
@@ -700,7 +718,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings
-        super().__init__(layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device

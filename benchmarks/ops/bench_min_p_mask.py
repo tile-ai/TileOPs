@@ -11,25 +11,19 @@ import torch
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_output_spec,
     compiled_reference,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, logit_mask_validator
 from tileops.sampling import MinPMaskFwdOp
 from workloads.sampling import MinPMaskWorkload
-
-# Disagreement with the reference is allowed only this close to the threshold, as a
-# relative probability: vLLM softmaxes and compares in the logits' dtype, so a token
-# whose probability sits within one rounding of ``min_p`` may fall either way.
-_MARGIN = 2e-2
 
 
 @pytest.mark.parametrize("call", manifest_calls(MinPMaskFwdOp))
 def test_min_p_mask_bench(call) -> None:
     workload = MinPMaskWorkload(call)
     logits, min_p = workload.gen_inputs()
-    spec = call.specs["masked_logits"]
 
     op = MinPMaskFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, workload)
@@ -48,19 +42,13 @@ def test_min_p_mask_bench(call) -> None:
     def vllm_mask(logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
         return vllm_min_p.apply(vllm_logits.copy_(logits))
 
-    ref = workload.ref_program(logits, min_p)
     relative = logits.float().softmax(-1)
     relative = relative / relative.amax(-1, keepdim=True) - min_p[:, None]
-    near = relative.abs() <= _MARGIN
-    # Hand-written rather than ``assert_matches_reference``: the helper compares every
-    # entry, and the two legitimately disagree within ``_MARGIN`` of the threshold. The
-    # mask is checked away from that band and the surviving logits entry for entry, so a
-    # comparator masking another set, or returning other values under the same mask, fails.
-    got = vllm_mask(logits, min_p)
-    kept, taken = ref != -float("inf"), got != -float("inf")
-    assert not ((taken ^ kept) & ~near).any()
-    assert torch.equal(got[taken & kept], ref[taken & kept])
-
+    # Disagreement with the reference is allowed only this close to the threshold, as a
+    # relative probability: vLLM softmaxes and compares in the logits' dtype, so a token
+    # whose probability sits within one rounding of ``min_p`` may fall either way.
+    margin = 2e-2
+    near = relative.abs() <= margin
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
@@ -68,7 +56,13 @@ def test_min_p_mask_bench(call) -> None:
         VLLM_TAG: vllm_mask,
     }
 
-    for tag, functor in functors.items():
-        assert_output_spec(functor(logits, min_p), spec, tag)
-
-    bm.compare(functors, logits, min_p)
+    bm.compare(
+        functors,
+        logits,
+        min_p,
+        evidence={
+            VLLM_TAG: Custom(
+                logit_mask_validator(logits, near), "mask ties within min-p rounding boundary"
+            )
+        },
+    )

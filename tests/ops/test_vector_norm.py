@@ -1,6 +1,6 @@
 """Correctness tests for vector norm ops (l1_norm, l2_norm, inf_norm).
 
-Covers: L1NormFwdOp, L2NormFwdOp, InfNormFwdOp.
+Covers VectorNormFwdOp at ord 1, 2 and inf.
 All norms reduce along a configurable dim and return the same dtype as input.
 Uses torch.linalg.vector_norm as the reference implementation.
 """
@@ -12,7 +12,7 @@ from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_t
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.device import run_device
-from workloads.reduction import L1NormWorkload
+from workloads.reduction import VectorNormWorkload
 
 
 class VectorNormBasicFixture(FixtureBase):
@@ -89,7 +89,7 @@ class VectorNorm1DFixture(FixtureBase):
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
 
-class VectorNormTest(L1NormWorkload, TestBase):
+class VectorNormTest(VectorNormWorkload, TestBase):
     """Parameterized test helper for vector norm ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
@@ -150,16 +150,15 @@ def _make_op(
     tune: bool = False,
     target=None,
 ):
-    """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
+    """Build VectorNormFwdOp at the ``ord`` this op_kind names."""
+    from math import inf
 
-    op_map = {
-        "l1": L1NormFwdOp,
-        "l2": L2NormFwdOp,
-        "inf": InfNormFwdOp,
-    }
-    cls = op_map[op_kind]
-    return cls(dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune, target=target)
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+
+    order = {"l1": 1, "l2": 2, "inf": inf}[op_kind]
+    return VectorNormFwdOp(
+        order, dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune, target=target
+    )
 
 
 @VectorNormBasicFixture
@@ -328,7 +327,7 @@ class VectorNormNaNFixture(FixtureBase):
 
 @VectorNormNaNFixture
 def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
-    """InfNormFwdOp must return NaN for rows containing NaN, matching PyTorch."""
+    """``ord=inf`` must return NaN for rows containing NaN, matching PyTorch."""
     x = torch.randn(m, n, dtype=dtype, device=run_device())
     # Inject NaN into the first row
     x[0, 0] = float("nan")
@@ -417,18 +416,17 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
-_DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
-
-
 def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
     """Create a single-param smoke fixture for the given dtype."""
+    m = 64
+    n = 512
     dt_name = str(dt).split(".")[-1]
 
     class _Fixture(FixtureBase):
         PARAMS = [
             (
                 "m, n, dtype",
-                [pytest.param(_DTYPE_SMOKE_M, _DTYPE_SMOKE_N, dt, marks=pytest.mark.smoke)],
+                [pytest.param(m, n, dt, marks=pytest.mark.smoke)],
             )
         ]
 

@@ -1,7 +1,7 @@
 """Structural gates for the workloads layer.
 
 Input construction and the op's reference computation live in
-``workloads/<family>.py`` so both the test stage and the benchmark stage read one
+``workloads/<family>.py`` or its family package so tests and benchmarks read one
 definition. Tolerances, checks and roofline numbers do not: those are decisions,
 and a decision placed there reaches the other stage.
 

@@ -75,11 +75,11 @@ def test_roofline_reports_the_most_recent_forward():
 
 @pytest.mark.smoke
 def test_moe_post_permute_serves_two_dtypes_from_one_instance():
-    from tileops.ops.moe import ContiguousLayoutSpec, MoePostPermuteFwdOp
+    from tileops.ops.moe import ContiguousLayoutSpec, MoEPostPermuteFwdOp
 
     total_tokens, top_k, hidden = 16, 2, 128
     numel = total_tokens * top_k
-    op = MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoEPostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     fwd_idx = torch.arange(numel, device=run_device(), dtype=torch.int32)
     for dtype in _DTYPES:
         mm2_pad = torch.randn(numel, hidden, dtype=dtype, device=run_device())
@@ -90,10 +90,10 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
 
 @pytest.mark.smoke
 def test_cb_producer_serves_two_dtypes_from_one_instance():
-    from tileops.ops.mamba.cb_producer import CBProducerFwdOp
+    from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
-    op = CBProducerFwdOp(chunk_len)
+    op = SSDChunkCouplingFwdOp(chunk_len)
     s = chunks * chunk_len
     for dtype in _DTYPES:
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device=run_device())

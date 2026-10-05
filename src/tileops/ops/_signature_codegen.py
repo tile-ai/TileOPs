@@ -54,11 +54,49 @@ __all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
 _SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
 
 
+# An abbreviation is one word: splitting on its internal case boundary turns `MoE` into
+# `mo_e` and `W4A16` into `w4_a16`, which is what the caller reads in a graph dump.
+_ABBREVIATIONS = (
+    "W4A16",
+    "W4A8",
+    "W8A8",
+    "FP8",
+    "INT8",
+    "INT4",
+    "C2C",
+    "TopK",
+    "TopP",
+    "MinP",
+    "MoE",
+    "MLP",
+    "FFT",
+    "RMS",
+    "NSA",
+    "MLA",
+    "GQA",
+    "SSD",
+    "MHC",
+)
+
+
 def operator_name(family: str, class_name: str) -> str:
     """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
-    opens with the family, such as ``MoePrePermuteFwdOp``, names it once."""
-    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", class_name)
+    opens with the family, such as ``MoEPrePermuteFwdOp``, names it once.
+
+    An abbreviation in `_ABBREVIATIONS` stays one word.
+    """
+    held: dict[str, str] = {}
+    name = class_name
+    for i, abbreviation in enumerate(_ABBREVIATIONS):
+        if abbreviation in name:
+            # A placeholder the case-split rules leave alone: one capital, then lowercase.
+            holder = f"Zz{i:02d}zz"
+            held[holder.lower()] = abbreviation.lower()
+            name = name.replace(abbreviation, holder)
+    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     stem = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", spaced).lower().removesuffix("_op")
+    for holder, abbreviation in held.items():
+        stem = stem.replace(holder, abbreviation)
     if stem == family or stem.startswith(f"{family}_"):
         return stem
     return f"{family}_{stem}"
@@ -252,6 +290,15 @@ class SignatureCall(CallView):
     metadata: dict = None
     # The checked calls the op's sub-ops completed during this call, by stage.
     stages: dict = None
+
+    def with_stages(self, stages) -> "SignatureCall":
+        """Settle which checked calls this one's sub-ops completed, and return it.
+
+        Written once, by the op that completed the call, on the object its own check just
+        built and nothing else holds yet.
+        """
+        object.__setattr__(self, "stages", stages)
+        return self
 
     def values(self, name: str) -> list:
         """The contents of metadata tensor *name*.
@@ -858,6 +905,9 @@ class _Plan:
             a: v for a, v in self.axes.items() if a in sig.params or a in sig.ctor_tensors
         }
         self.keys, self.built_keys = self._keys(self.axes), self._keys(self.built_axes)
+        # The call tensors whose presence an axis reads. The rest of a point is the op's
+        # params and constructor tensors, which construction settles once per instance.
+        self.tensor_axes = tuple(a for a in self.axes if a not in self.built_axes)
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
         # Per construction key not yet emitted: its construction and its call points. A key
         # leaves it only once its tables are filled, under the lock.
@@ -992,9 +1042,22 @@ class _Plan:
         """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
         return self._lookup(self.shapes, op, shapes)(op, shapes, dtypes)
 
-    def effect(self, op, tensors: dict) -> tuple:
-        """The inputs this call writes, whether it passes `out`, and the outputs it emits."""
-        return self._lookup(self.effects, op, tensors)
+    def effect(self, op, present: tuple) -> tuple:
+        """The inputs this call writes, whether it passes `out`, and the outputs it emits.
+
+        *present* is the presence of :attr:`tensor_axes`, in order. Every other coordinate of
+        the discriminant point is a param or a constructor tensor of *op*, which construction
+        reads once and keeps as ``_construction_ix``, so the branch is settled by *present*
+        alone and is looked up once per instance and presence.
+        """
+        cache = getattr(op, "_effect_branches", None)
+        if cache is None:
+            cache = op._effect_branches = {}
+        branch = cache.get(present)
+        if branch is None:
+            tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
+            branch = cache[present] = self._lookup(self.effects, op, tensors)
+        return branch
 
     def roofline(self, call: SignatureCall) -> tuple[int, int]:
         """`(flops, bytes)` of a checked call (docs/design/roofline.md)."""
@@ -1030,6 +1093,8 @@ def check_result(
     # Storage a fresh output may not share: every tensor passed or held, and each output before it.
     taken = [v for v in tensors.values() if isinstance(v, torch.Tensor)]
     taken += [v for v in held if isinstance(v, torch.Tensor)]
+    # Fake tensors carry no storage to compare, and the loop below enters no tracing region.
+    traced = detect_fake_mode() is not None or torch.compiler.is_compiling()
     for name, item in zip(outputs, items, strict=True):
         decl = sig.outputs[name]
         if name not in call.tensors:
@@ -1053,15 +1118,14 @@ def check_result(
             _require(item.is_contiguous(), f"{sig.name}: {name} must be contiguous")
         fresh = not (decl.buffer and call.out) and decl.alias not in call.written
         _require(
-            not fresh or not any(_shares_storage(item, other) for other in taken),
+            not fresh or traced or not any(_shares_storage(item, other) for other in taken),
             f"{sig.name}: {name} shares storage with a tensor it does not declare as its alias",
         )
         taken.append(item)
 
 
 def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
-    if detect_fake_mode() is not None or torch.compiler.is_compiling():
-        return False
+    """Whether two real tensors share storage; the caller settles that neither is traced."""
     if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
     return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
@@ -1110,6 +1174,10 @@ def _last_call(op) -> SignatureCall:
 # ---------------------------------------------------------------- compile boundary
 
 
+# Where one output of `forward` comes from on a given effect branch.
+_ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
+
+
 class _Boundary:
     """The compile-boundary operators of one class: one per effect branch.
 
@@ -1123,7 +1191,7 @@ class _Boundary:
         `forward`'s code-defined execution parameters follow the signature's arguments in every
         schema, typed by their annotations.
         """
-        self.plan, self.operators = plan, {}
+        self.plan, self.branches = plan, {}
         prefix = {"self", "out", *plan.sig.inputs}
         parameters = [
             p for p in inspect.signature(cls.forward).parameters.values() if p.name not in prefix
@@ -1139,9 +1207,15 @@ class _Boundary:
                 + ("_out" if out else "")
                 + "".join(f"_without_{o}" for o in plan.sig.outputs if o not in emitted)
             )
-            self.operators[effect] = self._register(f"{stem}{suffix}", *effect)
+            self.branches[effect] = self._branch(
+                self._register(f"{stem}{suffix}", *effect), *effect
+            )
             registered.append(f"{stem}{suffix}")
         cls.compile_op_names = tuple(registered)
+        # Where each presence-keyed axis sits among the operator's tensor arguments: its
+        # index in the signature's inputs, or None for `out`.
+        order = list(plan.sig.inputs)
+        self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
 
     def _schema(self, written: frozenset, out: bool, emitted: frozenset) -> str:
         sig, aliases = self.plan.sig, iter(string.ascii_lowercase)
@@ -1215,36 +1289,55 @@ class _Boundary:
         registered.register_fake(fake)
         return registered
 
+    def _branch(self, operator, written: frozenset, out: bool, emitted: frozenset) -> tuple:
+        """What a call on this effect branch needs beyond its arguments.
+
+        `(operator, out, returns, picks)`. *picks* says where each output of `forward` comes
+        from, in declaration order: `(_ABSENT,)`, `(_FROM_INPUT, index into inputs)`,
+        `(_FROM_OUT,)`, or `(_FROM_RESULT, index into what the operator returned)`. The branch
+        fixes every one of them, so a call reads them instead of deriving them.
+        """
+        sig, order = self.plan.sig, list(self.plan.sig.inputs)
+        returned = self._returned(written, out, emitted)
+        picks = []
+        for o, t in sig.outputs.items():
+            if o not in emitted:
+                picks.append((_ABSENT,))
+            elif t.alias in written:
+                picks.append((_FROM_INPUT, order.index(t.alias)))
+            elif out and t.buffer:
+                picks.append((_FROM_OUT,))
+            else:
+                picks.append((_FROM_RESULT, returned.index(o)))
+        return operator, out, len(returned), tuple(picks)
+
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
         """Call the operator of this call's effect branch, and return what `forward` returns."""
-        sig = self.plan.sig
         _require(
             all(isinstance(v, torch.Tensor) for v in writes.values()),
-            f"{sig.name}: 'out' is not a tensor",
+            f"{self.plan.sig.name}: 'out' is not a tensor",
         )
-        tensors = {**dict(zip(sig.inputs, inputs, strict=True)), **writes}
-        written, out, emitted = self.plan.effect(op, tensors)
-        result = self.operators[(written, out, emitted)](
+        present = tuple(
+            writes.get("out") is not None if i is None else inputs[i] is not None
+            for i in self.presence
+        )
+        operator, out, returns, picks = self.branches[self.plan.effect(op, present)]
+        result = operator(
             *inputs,
             *([writes["out"]] if out else []),
             *(execution[n] for n, _ in self.execution),
             op._instance_key,
         )
-        returned = self._returned(written, out, emitted)
-        items = (
-            dict(zip(returned, result if len(returned) > 1 else (result,), strict=True))
-            if returned
-            else {}
-        )
+        items = result if returns > 1 else (result,)
         values = [
             None
-            if o not in emitted
-            else tensors[t.alias]
-            if t.alias in written
+            if pick[0] == _ABSENT
+            else inputs[pick[1]]
+            if pick[0] == _FROM_INPUT
             else writes["out"]
-            if out and t.buffer
-            else items[o]
-            for o, t in sig.outputs.items()
+            if pick[0] == _FROM_OUT
+            else items[pick[1]]
+            for pick in picks
         ]
         return None if not values else values[0] if len(values) == 1 else tuple(values)
 

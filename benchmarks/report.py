@@ -100,7 +100,14 @@ class BenchmarkReport:
     _records: dict = {}
 
     @staticmethod
-    def record(op, params: dict, result: dict, tag: str = "tileops") -> None:
+    def record(
+        op,
+        params: dict,
+        result: dict,
+        tag: str = "tileops",
+        unverified: str = "",
+        ratio: bool = True,
+    ) -> None:
         """Record a benchmark result.
 
         Args:
@@ -115,6 +122,11 @@ class BenchmarkReport:
                 manifest declares for the op.
             result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
+            unverified: what the row's check left unestablished, empty where it left
+                nothing. It rides with the row because a reader comparing two numbers has
+                to know what stands behind them.
+            ratio: whether this row may be divided against another. False where the two
+                implement different functions, which no tolerance reconciles.
         """
         if isinstance(op, str):
             raise TypeError(
@@ -140,6 +152,10 @@ class BenchmarkReport:
         # The workload's own fields, kept where the log can print them. No name
         # list to maintain: the caller no longer hands over a frame's locals.
         filtered_params = {k: v for k, v in params.items() if _is_serializable(v)}
+        if unverified:
+            filtered_params["unverified"] = unverified
+        if not ratio:
+            filtered_params["no_ratio"] = True
         record_entry = {
             "op": name,
             "tag": tag,
@@ -225,7 +241,9 @@ class BenchmarkReport:
                 lines.append(f"### {tag}")
                 lines.append("")
 
-                param_keys = list(tag_group[0]["params"].keys())
+                # Union, not the first row's keys: a tag whose later cases carry evidence
+                # the first does not would otherwise publish them without it.
+                param_keys = list(dict.fromkeys(k for e in tag_group for k in e["params"]))
                 has_config = any("run_config" in e for e in tag_group)
                 header_parts = param_keys + result_keys
                 if has_config:

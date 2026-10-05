@@ -16,7 +16,7 @@ from tileops.backend.errors import BackendError
 from tileops.backend.protocol import BuildKernel, DetectFn, Target
 
 # The value names a *module*; importing it must perform the registration.
-ENTRY_POINT_GROUP = "tileops.backends"
+_ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
@@ -34,7 +34,7 @@ default_target: Target = None
 _loaded = False
 
 # Reentrant: discovery holds it while importing backends, whose top level registers.
-LOCK = threading.RLock()
+_LOCK = threading.RLock()
 
 # Set on the discovery thread, which reads the partial registry it is building while the
 # others wait for the finished one.
@@ -52,7 +52,7 @@ def register_detector(target: str, detect: DetectFn) -> None:
     Raises:
         BackendError: *target* already has a detector.
     """
-    with LOCK:
+    with _LOCK:
         existing = DETECTORS.get(target)
         if existing is not None:
             raise BackendError(
@@ -75,7 +75,7 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
         BackendError: ``(op, target)`` is already claimed — two installed packages both say
             they are this target, which is a misinstall, not a race to arbitrate.
     """
-    with LOCK:
+    with _LOCK:
         existing = BUILDERS.get((op, target))
         if existing is not None:
             raise BackendError(
@@ -104,7 +104,7 @@ def register_implementation(op: str, key: str, implementation: type) -> None:
     Raises:
         BackendError: *key* is already registered for *op*.
     """
-    with LOCK:
+    with _LOCK:
         added = IMPLEMENTATIONS.setdefault(op, {})
         existing = added.get(key)
         if existing is not None:
@@ -138,7 +138,7 @@ def ensure_loaded() -> None:
         return
     if getattr(_LOADING, "active", False):
         return  # this thread is mid-discovery and may read what it has registered
-    with LOCK:
+    with _LOCK:
         if _loaded:
             return
         _LOADING.active = True
@@ -163,7 +163,7 @@ def _load_all() -> list[str]:
     Fixed order, so the failure records and warnings come out the same way every run.
     """
     failed = []
-    for ep in sorted(entry_points(group=ENTRY_POINT_GROUP), key=lambda e: (e.name, e.value)):
+    for ep in sorted(entry_points(group=_ENTRY_POINT_GROUP), key=lambda e: (e.name, e.value)):
         # All-or-nothing: a partial registration advertises ops the backend never finished.
         checkpoint = snapshot()
         try:
@@ -203,7 +203,7 @@ def snapshot() -> RegistryState:
 
     Not exported: a public save/restore invites swapping registries at runtime.
     """
-    with LOCK:
+    with _LOCK:
         return RegistryState(
             detectors=dict(DETECTORS),
             builders=dict(BUILDERS),
@@ -217,7 +217,7 @@ def snapshot() -> RegistryState:
 def restore(state: RegistryState) -> None:
     """Undo everything since the matching `snapshot`."""
     global default_target, _loaded
-    with LOCK:
+    with _LOCK:
         DETECTORS.clear()
         DETECTORS.update(state.detectors)
         BUILDERS.clear()

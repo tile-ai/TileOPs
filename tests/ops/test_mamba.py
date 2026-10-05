@@ -3,12 +3,12 @@ import torch
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.backend import BUILTIN
-from tileops.ops.mamba.cb_producer import CBProducerFwdOp
-from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.device import run_device
 from workloads.mamba import (
@@ -32,7 +32,16 @@ from workloads.mamba import (
 @pytest.mark.parametrize(
     "batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune",
     [
-        pytest.param(1, 2, 64, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
+        pytest.param(
+            1,
+            2,
+            64,
+            1,
+            64,
+            torch.float16,
+            False,
+            marks=[pytest.mark.smoke, pytest.mark.packaging(family="mamba")],
+        ),
         pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
         pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.smoke),
         pytest.param(1, 2, 64, 1, 64, torch.float16, True, marks=pytest.mark.full),
@@ -43,7 +52,7 @@ from workloads.mamba import (
     ],
 )
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
-    op = CBProducerFwdOp(chunk_len, tune=tune)
+    op = SSDChunkCouplingFwdOp(chunk_len, tune=tune)
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
@@ -54,7 +63,7 @@ def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype,
 
 @pytest.mark.smoke
 def test_cb_producer_fwd_noncontiguous():
-    """CBProducerFwdOp must handle non-contiguous inputs."""
+    """SSDChunkCouplingFwdOp must handle non-contiguous inputs."""
     batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
     dtype = torch.float16
     seq_len = num_chunks * chunk_len
@@ -65,7 +74,7 @@ def test_cb_producer_fwd_noncontiguous():
     assert not C_mat.is_contiguous()
     assert not B_mat.is_contiguous()
     ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
-    out = CBProducerFwdOp(chunk_len)(C_mat, B_mat)
+    out = SSDChunkCouplingFwdOp(chunk_len)(C_mat, B_mat)
     allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -86,7 +95,7 @@ def test_da_cumsum_fwd(
         dt_softplus=dt_softplus,
         dtype=dtype,
     )
-    op = DaCumsumFwdOp(
+    op = SSDChunkCumsumFwdOp(
         chunk_len=chunk_len,
         dt_softplus=dt_softplus,
         out_dtype=dtype,
@@ -121,7 +130,7 @@ def test_da_cumsum_fwd_padded_head_tile():
     """Five heads against block_h=4 is the only shape reaching the masked tail."""
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
-    op = DaCumsumFwdOp(chunk_len=chunk_len, out_dtype=torch.float32)
+    op = SSDChunkCumsumFwdOp(chunk_len=chunk_len, out_dtype=torch.float32)
     dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device=run_device())
     A = -torch.rand(n_heads, dtype=torch.float32, device=run_device())
 
@@ -278,7 +287,7 @@ class SSDDecodeTest(SSDDecodeWorkload, TestBase):
 @SSDDecodeFixture
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    op = SSDDecodeFwdOp(tune=tune)
+    op = SSDRecurrentFwdOp(tune=tune)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Run reference on a clone of state so the two runs start from the same point.

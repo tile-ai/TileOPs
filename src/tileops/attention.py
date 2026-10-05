@@ -2,6 +2,7 @@
 
 from tileops.ops.attention import (
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
+    FP8LightningIndexerFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
@@ -9,25 +10,24 @@ from tileops.ops.attention import (
     GroupedQueryAttentionVarlenFwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
-    NSACmpVarlenFwdOp,
-    NSATopkVarlenFwdOp,
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
+    TopKSelectFwdOp,
 )
-from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.topk_selector import TopkSelectorFwdOp
 
 __all__ = [
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
+    "FP8LightningIndexerFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "NSACmpVarlenFwdOp",
-    "NSATopkVarlenFwdOp",
+    "NSACompressedVarlenFwdOp",
+    "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
-    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-    "FP8LightningIndexerFwdOp",
-    "TopkSelectorFwdOp",
+    "TopKSelectFwdOp",
 ]

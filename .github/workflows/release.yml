@@ -1,0 +1,274 @@
+name: Release
+
+# A version tag on main publishes to PyPI, a manual dispatch publishes to TestPyPI. Both
+# build the commit twice, fail unless the builds match, test one, and upload what was
+# tested. The steps around a release are in CONTRIBUTING.md, section Releasing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "PEP 440 version for TestPyPI, for example 0.1.0rc1 or 0.1.0.dev3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # scripts/ci/release-build-constraints.txt is resolved for this interpreter.
+  BUILD_PYTHON: "3.12.13"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Reads the workflow runs of the tagged commit.
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+      wheel: ${{ steps.hashes.outputs.wheel }}
+      wheel_sha256: ${{ steps.hashes.outputs.wheel_sha256 }}
+      sdist: ${{ steps.hashes.outputs.sdist }}
+      sdist_sha256: ${{ steps.hashes.outputs.sdist_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.BUILD_PYTHON }}
+
+      - name: Install the pinned build frontend
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            -c scripts/ci/release-build-constraints.txt pip build twine packaging
+
+      - name: Resolve and check the version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [ "${EVENT_NAME}" = "push" ]; then
+            if ! [[ "${REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(rc(0|[1-9][0-9]*))?$ ]]; then
+              echo "::error::tag ${REF_NAME} is not v<X.Y.Z> or v<X.Y.Z>rc<N>"
+              exit 1
+            fi
+            version="${REF_NAME#v}"
+            tagged="$(git rev-parse "refs/tags/${REF_NAME}^{commit}")"
+            if [ "${tagged}" != "${sha}" ]; then
+              echo "::error::tag ${REF_NAME} points at ${tagged}, the checkout is ${sha}"
+              exit 1
+            fi
+            git fetch --quiet --no-tags origin main
+            if ! git merge-base --is-ancestor "${sha}" FETCH_HEAD; then
+              echo "::error::${sha} is not on main"
+              exit 1
+            fi
+            # The tagged commit itself must be green on main: preflight and gpu-smoke from
+            # their push run, nightly from a dispatch on main. A pull-request run of the same
+            # SHA does not count, and an administrator can push past branch protection.
+            for check in preflight.yml:push gpu-smoke.yml:push nightly.yml:workflow_dispatch; do
+              workflow="${check%%:*}"
+              event="${check#*:}"
+              green="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${sha}&branch=main&event=${event}&status=success&per_page=1" --jq '.total_count')"
+              if [ "${green}" -lt 1 ]; then
+                echo "::error::no successful ${event} run of ${workflow} on main at ${sha}"
+                exit 1
+              fi
+            done
+          else
+            version="${INPUT_VERSION}"
+            # Canonical PEP 440 and no local segment: PyPI and TestPyPI refuse a local version.
+            python - "${version}" <<'PY'
+          import sys
+
+          from packaging.version import InvalidVersion, Version
+
+          raw = sys.argv[1]
+          try:
+              parsed = Version(raw)
+          except InvalidVersion:
+              sys.exit(f"::error::{raw!r} is not a PEP 440 version")
+          if str(parsed) != raw:
+              sys.exit(f"::error::{raw!r} is not canonical; write {parsed}")
+          if parsed.local is not None:
+              sys.exit(f"::error::{raw!r} has a local segment")
+          PY
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build twice from separate clones and compare
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "${SHA}")"
+          export SOURCE_DATE_EPOCH
+          # The isolated build environment installs its backend under these pins.
+          export PIP_CONSTRAINT="${GITHUB_WORKSPACE}/scripts/ci/release-build-constraints.txt"
+          # A tag build derives the version from the tag in each clone; a dispatch has no tag.
+          pretend=()
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            pretend=(--pretend-version)
+          fi
+          for i in 1 2; do
+            git clone --quiet --no-local "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}/src-${i}"
+            git -C "${RUNNER_TEMP}/src-${i}" checkout --quiet --detach "${SHA}"
+            python scripts/ci/build_release.py \
+              --source-dir "${RUNNER_TEMP}/src-${i}" \
+              --out-dir "${RUNNER_TEMP}/dist-${i}" \
+              --version "${VERSION}" "${pretend[@]}"
+          done
+          (cd "${RUNNER_TEMP}/dist-1" && sha256sum -- *) > "${RUNNER_TEMP}/first.sha256"
+          (cd "${RUNNER_TEMP}/dist-2" && sha256sum -- *) > "${RUNNER_TEMP}/second.sha256"
+          if ! diff "${RUNNER_TEMP}/first.sha256" "${RUNNER_TEMP}/second.sha256"; then
+            echo "::error::two builds of ${SHA} differ"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${RUNNER_TEMP}/dist-1/"* dist/
+
+      - name: Check the distributions
+        run: |
+          set -euo pipefail
+          python -m twine check --strict dist/*
+          python scripts/ci/check_dist_contents.py --dist-dir dist
+
+      - name: Record SHA-256
+        id: hashes
+        run: |
+          set -euo pipefail
+          wheel="$(cd dist && ls -- *.whl)"
+          sdist="$(cd dist && ls -- *.tar.gz)"
+          {
+            echo "wheel=${wheel}"
+            echo "wheel_sha256=$(sha256sum "dist/${wheel}" | cut -d' ' -f1)"
+            echo "sdist=${sdist}"
+            echo "sdist_sha256=$(sha256sum "dist/${sdist}" | cut -d' ' -f1)"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "### Release distributions"
+            echo
+            echo '```'
+            (cd dist && sha256sum -- *)
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dists
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  verify:
+    needs: build
+    runs-on: [self-hosted, tile-ops, shared]
+    timeout-minutes: 120
+    steps:
+      # The tests and workloads come from the commit the wheel was built from.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dists
+          path: dist
+
+      - name: Check SHA-256 against the build job
+        env:
+          WHEEL: ${{ needs.build.outputs.wheel }}
+          WHEEL_SHA256: ${{ needs.build.outputs.wheel_sha256 }}
+          SDIST: ${{ needs.build.outputs.sdist }}
+          SDIST_SHA256: ${{ needs.build.outputs.sdist_sha256 }}
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "${WHEEL_SHA256}" "dist/${WHEEL}" "${SDIST_SHA256}" "dist/${SDIST}" | sha256sum --check --strict
+
+      # The script asserts the machine is the combination pyproject.toml declares.
+      - name: Verify the wheel installed from PyPI
+        env:
+          WHEEL: ${{ needs.build.outputs.wheel }}
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          bash scripts/ci/verify_installed_wheel.sh \
+            --wheel "dist/${WHEEL}" --deps pypi --work-dir verify 2>&1 | tee verify/run.log
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: verify
+          path: |
+            verify/run.log
+            verify/freeze.txt
+            verify/env.json
+            verify/packaging.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    needs: [build, verify]
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
+      url: ${{ github.event_name == 'push' && format('https://pypi.org/project/tileops/{0}/', needs.build.outputs.version) || format('https://test.pypi.org/project/tileops/{0}/', needs.build.outputs.version) }}
+    permissions:
+      contents: read
+      # Trusted Publishing: exchanged for a short-lived upload token, and signs the attestations.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dists
+          path: dist
+
+      - name: Check SHA-256 against the build job
+        env:
+          WHEEL: ${{ needs.build.outputs.wheel }}
+          WHEEL_SHA256: ${{ needs.build.outputs.wheel_sha256 }}
+          SDIST: ${{ needs.build.outputs.sdist }}
+          SDIST_SHA256: ${{ needs.build.outputs.sdist_sha256 }}
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "${WHEEL_SHA256}" "dist/${WHEEL}" "${SDIST_SHA256}" "dist/${SDIST}" | sha256sum --check --strict
+          [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq 2 ] || { ls -l dist; echo "::error::dist/ holds more than the two built files"; exit 1; }
+
+      - name: Publish to TestPyPI
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name == 'push' }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          attestations: true

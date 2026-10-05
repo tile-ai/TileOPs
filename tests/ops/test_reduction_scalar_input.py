@@ -284,7 +284,7 @@ def test_var_mean_scalar_requires_grad_preserves_grad_fn() -> None:
         ("LogSoftmaxFwdOp", lambda x: torch.log_softmax(x, 0)),
         ("LogSumExpFwdOp", lambda x: torch.logsumexp(x, 0)),
         ("ArgmaxFwdOp", lambda x: torch.argmax(x, 0)),
-        ("L2NormFwdOp", lambda x: torch.linalg.vector_norm(x, 2, 0)),
+        ("VectorNormFwdOp", lambda x: torch.linalg.vector_norm(x, 2, 0)),
     ],
 )
 def test_a_scalar_input_to_an_axis_op_matches_torch(name: str, ref) -> None:

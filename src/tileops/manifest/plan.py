@@ -60,7 +60,7 @@ __all__ = [
 ]
 
 # Discriminant combinations above this count draw an advisory diagnostic.
-DISCRIMINANT_LIMIT = 256
+_DISCRIMINANT_LIMIT = 256
 
 _SIGNATURE_KEYS = frozenset(
     {"forall", "params", "inputs", "outputs", "types", "let", "shape_rules", "dtype_combos"}
@@ -391,7 +391,27 @@ def signature_schema_errors(sig: dict) -> list[str]:
         for key, (ok, what) in _TENSOR_FIELDS.items():
             if isinstance(d, dict) and key in d and not ok(d[key]):
                 errors.append(f"{where}.{key}: {d[key]!r} is not {what}")
+    errors += _input_order_errors(sig.get("inputs") or {})
     return errors
+
+
+def _input_order_errors(inputs: dict) -> list[str]:
+    """An optional input may not precede a required one.
+
+    Input order is the generated signature's parameter order, and an optional input becomes a
+    parameter with a default, so a required input after one emits `parameter without a default
+    follows parameter with a default` and the generated validator does not compile.
+    """
+    optional = [n for n, d in inputs.items() if isinstance(d, dict) and d.get("optional")]
+    if not optional:
+        return []
+    first = next(n for n in inputs if n in optional)
+    after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in optional]
+    return [
+        f"inputs.{n}: a required input may not follow the optional {first!r}; "
+        "order every optional input last"
+        for n in after
+    ]
 
 
 # ---------------------------------------------------------------- type families
@@ -815,9 +835,9 @@ def _point_errors(plan: EntryPlan, env: KindEnv) -> tuple[list[str], list[str]]:
         held.update(next((p for p in group if accepted(p)), group[0]))
     warnings = []
     combinations = sum(len(group) for group in groups)
-    if combinations > DISCRIMINANT_LIMIT:
+    if combinations > _DISCRIMINANT_LIMIT:
         warnings.append(
-            f"{sig.name}: {combinations} discriminant combinations exceed {DISCRIMINANT_LIMIT}"
+            f"{sig.name}: {combinations} discriminant combinations exceed {_DISCRIMINANT_LIMIT}"
         )
     errors: list[str] = []
     for part in [p for group in groups for p in group] or [{}]:

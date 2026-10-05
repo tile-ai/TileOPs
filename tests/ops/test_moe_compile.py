@@ -29,20 +29,15 @@ from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
-    MoeGroupedGemmFwdOp,
-    MoePermuteAlignFwdOp,
-    MoePostPermuteFwdOp,
-    MoePrePermuteFwdOp,
+    MoEGroupedGemmFwdOp,
+    MoEPermuteAlignFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEPrePermuteFwdOp,
     SharedExpertMLPFwdOp,
 )
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
+from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
-
-_NUM_EXPERTS = 4
-_TOP_K = 2
-_TOKENS = 4
-_HIDDEN = 64
 
 
 def _compile_cold(op, *inputs) -> tuple:
@@ -68,11 +63,15 @@ def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
 
 
 def _permute_align_case():
+    num_experts = 4
+    top_k = 2
+    num_tokens = 4
+
     def make():
-        return MoePermuteAlignFwdOp(_NUM_EXPERTS, block_size=4)
+        return MoEPermuteAlignFwdOp(num_experts, block_size=4)
 
     topk_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=run_device()
+        0, num_experts, (num_tokens, top_k), dtype=torch.int32, device=run_device()
     )
     # Only the padded token count is reproducible: a slot inside an expert is claimed
     # by ``atomic_add``, so two runs order the same tokens differently.
@@ -80,70 +79,86 @@ def _permute_align_case():
 
 
 def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
+    num_experts = 4
+    top_k = 2
+    num_tokens = 4
+    hidden_size = 64
+
     def make():
-        return MoePrePermuteFwdOp(
+        return MoEPrePermuteFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(),
-            num_local_experts=_NUM_EXPERTS,
+            num_local_experts=num_experts,
         )
 
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=dtype, device=run_device())
+    hidden_states = torch.randn(num_tokens, hidden_size, dtype=dtype, device=run_device())
     local_expert_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=run_device()
+        0, num_experts, (num_tokens, top_k), dtype=torch.int32, device=run_device()
     )
     # Atomic slot assignment makes expert_input and inverse_indices non-deterministic.
     return make, (hidden_states, local_expert_ids), (1,)
 
 
 def _aligned_pre_permute_case():
+    num_experts = 4
+    top_k = 2
+    num_tokens = 4
+    hidden_size = 64
+
     def make():
-        return MoePrePermuteFwdOp(
+        return MoEPrePermuteFwdOp(
             ContiguousLayoutSpec.aligned_per_row(8),
-            num_local_experts=_NUM_EXPERTS,
+            num_local_experts=num_experts,
         )
 
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device=run_device())
+    hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=run_device())
     local_expert_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=run_device()
+        0, num_experts, (num_tokens, top_k), dtype=torch.int32, device=run_device()
     )
     # Per-row metadata is reproducible; atomic slot assignment is not.
     return make, (hidden_states, local_expert_ids), (1,)
 
 
 def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: str | None = None):
+    num_experts = 4
     numel, n, k = 64, 128, 128
 
     def make():
-        return MoeGroupedGemmFwdOp(
+        return MoEGroupedGemmFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(), activation=activation
         )
 
-    a, b, ends = _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k)
+    a, b, ends = _grouped_gemm_inputs(numel, num_experts, n, k)
     return make, (a.to(dtype), b.to(dtype), ends), "all"
 
 
 def _staged_grouped_gemm_masked_case():
+    num_experts = 4
     max_m, n, k = 32, 128, 128
 
     def make():
-        return MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
 
-    a = torch.randn(_NUM_EXPERTS, max_m, k, dtype=torch.bfloat16, device=run_device())
-    b = torch.randn(_NUM_EXPERTS, n, k, dtype=torch.bfloat16, device=run_device())
+    a = torch.randn(num_experts, max_m, k, dtype=torch.bfloat16, device=run_device())
+    b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device=run_device())
     masked_m = torch.tensor([32, 0, 17, 32], dtype=torch.int32, device=run_device())
     # Rows past an expert's valid count hold unspecified values.
     return make, (a, b, masked_m), ()
 
 
 def _fused_topk_case(with_bias: bool = False):
-    def make():
-        return FusedTopKFwdOp(_TOP_K, scoring_func="sigmoid", renormalize=True)
+    num_experts = 4
+    top_k = 2
+    num_tokens = 4
 
-    gating = torch.randn(_TOKENS, _NUM_EXPERTS, dtype=torch.bfloat16, device=run_device())
-    bias = torch.randn(_NUM_EXPERTS, dtype=torch.float32, device=run_device())
+    def make():
+        return FusedTopKFwdOp(top_k, scoring_func="sigmoid", renormalize=True)
+
+    gating = torch.randn(num_tokens, num_experts, dtype=torch.bfloat16, device=run_device())
+    bias = torch.randn(num_experts, dtype=torch.float32, device=run_device())
     return make, (gating, bias) if with_bias else (gating,), "all"
 
 
-def _shared_expert_case(tokens: int = _TOKENS):
+def _shared_expert_case(tokens: int = 4):
     hidden, ffn = 128, 128
     x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1
     w_gate_up = torch.randn(2 * ffn, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02
@@ -189,14 +204,17 @@ def test_leaf_op_owns_its_graph_nodes(case) -> None:
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
     """The staged allocating and in-place registrations own their graph nodes."""
-    numel = _TOKENS * _TOP_K
-    expert_output = torch.randn(numel, _HIDDEN, dtype=dtype, device=run_device())
+    top_k = 2
+    num_tokens = 4
+    hidden_size = 64
+    numel = num_tokens * top_k
+    expert_output = torch.randn(numel, hidden_size, dtype=dtype, device=run_device())
     inverse_indices = torch.arange(numel, dtype=torch.int32, device=run_device())
-    topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device=run_device())
-    out = torch.empty(_TOKENS, _HIDDEN, dtype=dtype, device=run_device())
+    topk_weights = torch.rand(num_tokens, top_k, dtype=torch.float32, device=run_device())
+    out = torch.empty(num_tokens, hidden_size, dtype=dtype, device=run_device())
 
     def make():
-        return MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+        return MoEPostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
 
     assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices)
     assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices, out)
@@ -256,23 +274,25 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 def test_the_shared_expert_composite_compiles_cold_to_its_leaves() -> None:
     """The shared expert is a sub-op, so a cold small-route call traces to the router, the
     indexed experts and the shared expert, and matches eager."""
+    top_k = 2
+    num_tokens = 4
     hidden, ffn, experts, shared = 128, 256, 8, 128
     args = (
-        torch.randn(_TOKENS, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1,
-        torch.randn(_TOKENS, experts, dtype=torch.float32, device=run_device()),
+        torch.randn(num_tokens, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1,
+        torch.randn(num_tokens, experts, dtype=torch.float32, device=run_device()),
         torch.randn(experts, 2 * ffn, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02,
         torch.randn(experts, hidden, ffn, dtype=torch.bfloat16, device=run_device()) * 0.02,
         None,
         torch.randn(2 * shared, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02,
         torch.randn(hidden, shared, dtype=torch.bfloat16, device=run_device()) * 0.02,
     )
-    calls = traced_call_targets(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
+    calls = traced_call_targets(FusedMoESharedExpertFwdOp(top_k), *args)
     leaves = (FusedTopKFwdOp, IndexedExpertMLPFwdOp, SharedExpertMLPFwdOp)
     owners = {operator_overload(n): cls for cls in leaves for n in cls.compile_op_names}
     assert calls <= set(owners), sorted(str(c) for c in calls - set(owners))
     assert {owners[c] for c in calls} == set(leaves)
-    compiled = _compile_cold(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
-    for got, want in zip(compiled, FusedMoeSharedExpertFwdOp(_TOP_K)(*args), strict=True):
+    compiled = _compile_cold(FusedMoESharedExpertFwdOp(top_k), *args)
+    for got, want in zip(compiled, FusedMoESharedExpertFwdOp(top_k)(*args), strict=True):
         torch.testing.assert_close(got, want)
 
 
@@ -299,10 +319,10 @@ def test_the_indexed_op_compiles_cold_to_its_operator() -> None:
 for _op_cls in (
     FusedTopKFwdOp,
     IndexedExpertMLPFwdOp,
-    MoePermuteAlignFwdOp,
-    MoePrePermuteFwdOp,
-    MoePostPermuteFwdOp,
-    MoeGroupedGemmFwdOp,
+    MoEPermuteAlignFwdOp,
+    MoEPrePermuteFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEGroupedGemmFwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

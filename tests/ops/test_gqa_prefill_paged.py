@@ -5,20 +5,24 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
-from workloads.device import run_device
-from workloads.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
-from workloads.paged_kv_cache import (
+from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
+from workloads.attention.paged_kv_cache import (
     fill_paged_cache_from_logical,
     make_fragmented_block_table,
     make_interleaved_block_table,
     make_unit_cache_scales,
     paged_cache_row,
 )
+from workloads.device import run_device
+from workloads.sequence_metadata import make_cu_seqlens
 
-_PREFILL_PAGED_TOLERANCE = {
-    torch.float16: (5e-3, 1e-5),
-    torch.bfloat16: (8e-2, 1e-2),
-}
+
+def _prefill_paged_tolerance(dtype: torch.dtype) -> tuple[float, float]:
+    """Return this kernel family's reference tolerances without shared mutable defaults."""
+    return {
+        torch.float16: (5e-3, 1e-5),
+        torch.bfloat16: (8e-2, 1e-2),
+    }[dtype]
 
 
 @pytest.mark.parametrize(
@@ -184,7 +188,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         block_table,
     )
     assert isinstance(output, torch.Tensor)
-    atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
+    atol, rtol = _prefill_paged_tolerance(dtype)
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
     for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
@@ -480,7 +484,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         cache_seqlens,
         block_table,
     )
-    atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
+    atol, rtol = _prefill_paged_tolerance(dtype)
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
     for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
@@ -648,7 +652,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
             block_table,
         )
         assert output.dtype == dtype
-        atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
+        atol, rtol = _prefill_paged_tolerance(dtype)
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
     if served_in_tree(op):

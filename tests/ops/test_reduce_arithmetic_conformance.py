@@ -35,8 +35,6 @@ _OP_CASES: list[tuple[type, Callable]] = [
     (AminFwdOp, torch.amin),
 ]
 
-_SHAPE = (4, 8, 256)
-
 
 def _tol(dtype: torch.dtype) -> dict:
     # Reduce kernels accumulate in fp32 and only narrow at the boundary, so
@@ -84,8 +82,9 @@ def test_arithmetic_reduce_conformance(
     dtype: torch.dtype,
 ) -> None:
     """Each (op, dim-shape, keepdim, dtype) cell must match PyTorch."""
+    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device=run_device())
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = op_cls(dim=dim, keepdim=keepdim)
     y = op(x)
     ref = _ref(torch_fn, x, dim, keepdim)
@@ -100,7 +99,8 @@ def test_arithmetic_reduce_conformance(
 @pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES])
 def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> None:
     """``dim=None, keepdim=False`` must return a 0-D tensor matching PyTorch."""
-    x = torch.randn(*_SHAPE, dtype=torch.float32, device=run_device())
+    shape = (4, 8, 256)
+    x = torch.randn(*shape, dtype=torch.float32, device=run_device())
     op = op_cls(dim=None, keepdim=False)
     y = op(x)
     ref = _ref(torch_fn, x, None, False)
@@ -130,7 +130,7 @@ def test_arithmetic_reduce_unaligned_innermost(
 ) -> None:
     """Unaligned innermost dim must still match PyTorch.
 
-    The aligned ``_SHAPE`` (innermost = 256, a kernel-tile multiple) bypasses
+    An aligned innermost extent of 256 (a kernel-tile multiple) bypasses
     the simple-reduce kernel's masked-load boundary path. Use 255 to flush
     the pad branch on every (op, dim-mode) cell.
     """

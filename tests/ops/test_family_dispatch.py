@@ -12,19 +12,23 @@ import torch
 from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.call_spec import BmmFp8Call, GemmCall
 from tileops.kernels.linear_attention import (
+    DeltaNetChunkCall,
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,
     GatedDeltaNetCall,
     GLAChunkCall,
     GLADecodeCall,
 )
-from tileops.ops.gemm.bmm import BmmFp8FwdOp
+from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
+from tileops.ops.gemm.bmm import BmmFP8FwdOp
 from tileops.ops.gemm.gemm import GemmFwdOp
-from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
+from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
+from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
-from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
+from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from workloads.device import run_device_available
 
 pytestmark = pytest.mark.skipif(
@@ -159,7 +163,7 @@ _DELTANET_ROWS = [
 def test_deltanet_decode_dispatch(
     dtype: torch.dtype, dim_k: int, dim_v: int, arch: int, expected: str
 ) -> None:
-    op = DeltaNetDecodeFwdOp()
+    op = DeltaNetRecurrentFwdOp()
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
     assert op.select_implementation("deltanet_decode", call) == expected
@@ -174,7 +178,7 @@ def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
     )
 
     with pytest.raises(ValueError, match="multiple of 16"):
-        DeltaNetDecodeFwdOp().select_implementation("deltanet_decode", call)
+        DeltaNetRecurrentFwdOp().select_implementation("deltanet_decode", call)
 
 
 # --- Chunked GLA: the extents the three-pass forward and the two-pass backward tile, the
@@ -211,8 +215,8 @@ def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64)
 )
 def test_gla_chunked_dispatch(call: GLAChunkCall, serves_fwd: bool, serves_bwd: bool) -> None:
     for op, interface, serves in (
-        (GLAFwdOp(chunk_size=call.chunk_size), "gla_fwd", serves_fwd),
-        (GLABwdOp(chunk_size=call.chunk_size), "gla_bwd", serves_bwd),
+        (GLAChunkFwdOp(chunk_size=call.chunk_size), "gla_fwd", serves_fwd),
+        (GLAChunkBwdOp(chunk_size=call.chunk_size), "gla_bwd", serves_bwd),
     ):
         if serves:
             assert op.select_implementation(interface, call) == interface
@@ -235,10 +239,62 @@ def test_gla_chunked_dispatch(call: GLAChunkCall, serves_fwd: bool, serves_bwd: 
     ],
 )
 def test_gla_decode_dispatch(dtype: torch.dtype, expected: str) -> None:
-    op = GLADecodeFwdOp()
+    op = GLARecurrentFwdOp()
     call = GLADecodeCall(arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128, dtype=dtype)
 
     assert op.select_implementation("gla_decode", call) == expected
+
+
+# --- GLA inference: one token is decode, whole 64-token rows are chunk-parallel prefill,
+# and a packed call or a row that is not a whole chunk is the packed kernel, whose state
+# walk is partitioned where a per-sequence walk serves the call badly. The dense partitioned
+# kernel's region reads a device calibration, which a spec built without a device does not
+# carry, so no row here selects it.
+
+
+def _gla_inference_call(
+    seq_len: int, varlen: bool = False, dim: int = 64, heads: int = 4, sequences: int = 1
+) -> GLAInferenceCallSpec:
+    # Multiprocessors of the board the GLA inference regions are read against.
+    sm_count = 132
+    return GLAInferenceCallSpec(
+        arch=_SM90,
+        sm_count=sm_count,
+        batch=1,
+        seq_len=seq_len,
+        heads=heads,
+        dim_k=dim,
+        dim_v=dim,
+        dtype=torch.bfloat16,
+        scale=dim**-0.5,
+        varlen=varlen,
+        num_sequences=sequences,
+    )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(_gla_inference_call(1), "gla_dense_decode", id="decode"),
+        pytest.param(_gla_inference_call(2048), "gla_dense_prefill_subchunk", id="whole-chunks"),
+        pytest.param(_gla_inference_call(100), "gla_varlen_prefill", id="part-chunk-row"),
+        pytest.param(_gla_inference_call(4096, varlen=True), "gla_varlen_prefill", id="packed"),
+        pytest.param(
+            _gla_inference_call(4096, varlen=True, dim=128, heads=16, sequences=4),
+            "gla_varlen_prefill_partitioned",
+            id="packed-wide",
+        ),
+        pytest.param(
+            _gla_inference_call(3000),
+            "gla_varlen_prefill_partitioned",
+            id="part-chunk-long-row",
+        ),
+    ],
+)
+def test_gla_inference_dispatch(call: GLAInferenceCallSpec, expected: str) -> None:
+    assert GLAInferenceFwdOp().select_implementation("gla_inference", call) == expected
 
 
 # --- Gated DeltaNet: one token continuing a state is decode, whole chunks of 64 from
@@ -250,8 +306,8 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
         arch=_SM90,
         batch=1,
         seq_len=seq_len,
-        heads=16,
-        value_heads=16,
+        heads=facts.pop("heads", 16),
+        value_heads=facts.pop("value_heads", 16),
         dim_k=facts.pop("dim_k", 128),
         dim_v=facts.pop("dim_v", 128),
         dtype=torch.bfloat16,
@@ -267,12 +323,38 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
     ("call", "expected"),
     [
         pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
+        pytest.param(
+            _gated_call(1, False, dim_k=64, dim_v=64, value_heads=64, state_v_first=True),
+            "gated_deltanet_dense_decode",
+            id="decode-every-variant",
+        ),
         pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
         pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
         pytest.param(
             _gated_call(64, True, dim_k=64, dim_v=64),
             "gated_deltanet_dense_prefill",
             id="prefill-narrow-state",
+        ),
+        pytest.param(
+            _gated_call(4096, False, varlen=True, num_sequences=4),
+            "gated_deltanet_dense_prefill",
+            id="prefill-varlen",
+        ),
+        pytest.param(_gated_call(63, False), "gated_deltanet_dense_prefill", id="prefill-ragged"),
+        pytest.param(
+            _gated_call(64, False, value_heads=64),
+            "gated_deltanet_dense_prefill",
+            id="prefill-grouped-value-heads",
+        ),
+        pytest.param(
+            _gated_call(64, False, l2norm=True, gate_in_kernel=True, beta_sigmoid=True),
+            "gated_deltanet_dense_prefill",
+            id="prefill-input-transforms",
+        ),
+        pytest.param(
+            _gated_call(64, True, state_v_first=True),
+            "gated_deltanet_dense_prefill",
+            id="prefill-value-major-state",
         ),
     ],
 )
@@ -285,15 +367,11 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_gated_call(1, False), "decode without initial_state", id="decode-no-state"),
         pytest.param(
-            _gated_call(1, True, dim_k=64, dim_v=64),
-            "K and V other than 128",
-            id="decode-narrow-state",
+            _gated_call(1, True, dim_k=256, dim_v=256),
+            "K and V other than matching 64 or 128",
+            id="decode-wide-state",
         ),
-        pytest.param(_gated_call(63, False), "positive multiple of 64", id="prefill-ragged"),
-        pytest.param(_gated_call(64, False, varlen=True), "packed varlen", id="varlen"),
-        pytest.param(_gated_call(64, False, l2norm=True), "l2norm", id="l2norm"),
     ],
 )
 def test_gated_deltanet_refuses_what_no_kernel_serves(call: GatedDeltaNetCall, reason: str) -> None:
@@ -310,7 +388,7 @@ def _inference_call(**facts: object) -> DeltaNetInferenceCall:
         arch=_SM90,
         batch=1,
         seq_len=facts.pop("seq_len", 128),
-        heads=16,
+        heads=facts.pop("heads", 16),
         dim_k=facts.pop("dim_k", 128),
         dim_v=facts.pop("dim_v", 128),
         dtype=facts.pop("dtype", torch.bfloat16),
@@ -330,6 +408,19 @@ def test_deltanet_inference_dispatch() -> None:
     assert op.select_implementation("deltanet_inference", _inference_call(seq_len=1)) == (
         "deltanet_dense_decode"
     )
+    packed = _inference_call(seq_len=4096, varlen=True, num_sequences=4)
+    assert op.select_implementation("deltanet_inference", packed) == "deltanet_dense_prefill"
+    assert op.select_implementation("deltanet_inference", _inference_call(seq_len=63)) == (
+        "deltanet_dense_prefill"
+    )
+    assert op.select_implementation("deltanet_inference", _inference_call(l2norm=True)) == (
+        "deltanet_dense_prefill"
+    )
+    # Decode claims the state width and the in-kernel normalization it used to refuse.
+    narrow = _inference_call(seq_len=1, dim_k=64, dim_v=64)
+    assert op.select_implementation("deltanet_inference", narrow) == "deltanet_dense_decode"
+    normalized = _inference_call(seq_len=1, l2norm=True)
+    assert op.select_implementation("deltanet_inference", normalized) == "deltanet_dense_decode"
 
 
 @pytest.mark.cuda_only
@@ -337,9 +428,6 @@ def test_deltanet_inference_dispatch() -> None:
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_inference_call(l2norm=True), "L2 normalization", id="l2norm"),
-        pytest.param(_inference_call(varlen=True), "packed varlen", id="varlen"),
-        pytest.param(_inference_call(seq_len=63), "divisible by 64", id="ragged"),
         pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
         pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],
@@ -349,6 +437,112 @@ def test_deltanet_inference_refuses_what_the_kernel_does_not_serve(
 ) -> None:
     with pytest.raises(ValueError, match=reason):
         DeltaNetInferenceFwdOp().select_implementation("deltanet_inference", call)
+
+
+# --- Head axis: every linear-attention kernel tiles it, and no model that runs a gated
+# delta rule, a delta rule or GLA splits its state into an odd number of heads above one.
+
+
+def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
+    """One ``(op, interface, call)`` per linear-attention implementation, at *heads* heads."""
+    chunk = DeltaNetChunkCall(
+        arch=_SM90,
+        batch=1,
+        heads=heads,
+        seq_len=512,
+        chunk_size=64,
+        dim_k=128,
+        dim_v=128,
+        dtype=torch.bfloat16,
+    )
+    gla_chunk = GLAChunkCall(
+        arch=_SM90,
+        batch=1,
+        seq_len=512,
+        heads=heads,
+        dim_k=128,
+        dim_v=128,
+        chunk_size=64,
+        scale=-1.0,
+        dtype=torch.bfloat16,
+    )
+    decode = {"arch": _SM90, "batch": 1, "heads": heads, "dim_k": 128, "dim_v": 128}
+    return [
+        (DeltaNetChunkFwdOp(), "deltanet_fwd", chunk),
+        (DeltaNetChunkBwdOp(), "deltanet_bwd", chunk),
+        (DeltaNetInferenceFwdOp(), "deltanet_inference", _inference_call(heads=heads)),
+        (DeltaNetInferenceFwdOp(), "deltanet_inference", _inference_call(seq_len=1, heads=heads)),
+        (
+            DeltaNetRecurrentFwdOp(),
+            "deltanet_decode",
+            DeltaNetDecodeCall(dtype=torch.bfloat16, **decode),
+        ),
+        (
+            DeltaNetRecurrentFwdOp(),
+            "deltanet_decode",
+            DeltaNetDecodeCall(dtype=torch.float32, **decode),
+        ),
+        (
+            GatedDeltaNetFwdOp(),
+            "gated_deltanet",
+            _gated_call(2048, False, heads=heads, value_heads=2 * heads),
+        ),
+        (
+            GatedDeltaNetFwdOp(),
+            "gated_deltanet",
+            _gated_call(1, True, heads=heads, value_heads=2 * heads),
+        ),
+        (GLAChunkFwdOp(), "gla_fwd", gla_chunk),
+        (GLAChunkBwdOp(), "gla_bwd", gla_chunk),
+        *(
+            (GLAInferenceFwdOp(), "gla_inference", call)
+            for call in (
+                _gla_inference_call(1, heads=heads),
+                _gla_inference_call(2048, heads=heads),
+                _gla_inference_call(100, heads=heads),
+                _gla_inference_call(4096, varlen=True, heads=heads),
+                _gla_inference_call(4096, varlen=True, dim=128, heads=heads, sequences=4),
+            )
+        ),
+        (
+            GLARecurrentFwdOp(),
+            "gla_decode",
+            GLADecodeCall(scale=0.088, dtype=torch.bfloat16, **decode),
+        ),
+        (
+            GLARecurrentFwdOp(),
+            "gla_decode",
+            GLADecodeCall(scale=0.088, dtype=torch.float32, **decode),
+        ),
+    ]
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_linear_attention_refuses_an_odd_head_count() -> None:
+    for op, interface, call in _head_axis_cases(3):
+        with pytest.raises(ValueError, match="even head count or a single head"):
+            op.select_implementation(interface, call)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("heads", [1, 4])
+def test_linear_attention_serves_a_single_head_and_even_counts(heads: int) -> None:
+    """A single head is the one odd count a model produces, and it stays served."""
+    for op, interface, call in _head_axis_cases(heads):
+        assert op.select_implementation(interface, call) in op.kernel_map
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("seq_len", [2048, 1])
+def test_gated_deltanet_refuses_an_odd_value_head_count(seq_len: int) -> None:
+    """The value heads are their own axis: one key head can group an odd number of them."""
+    call = _gated_call(seq_len, seq_len == 1, heads=1, value_heads=3)
+
+    with pytest.raises(ValueError, match="even head count or a single head"):
+        GatedDeltaNetFwdOp().select_implementation("gated_deltanet", call)
 
 
 @pytest.mark.cuda_only
@@ -411,7 +605,7 @@ def test_bmm_fp8_dispatch(batch: int, m: int, n: int, k: int, expected: str) -> 
         out_dtype=torch.bfloat16,
     )
 
-    op = BmmFp8FwdOp()
+    op = BmmFP8FwdOp()
     assert op.kernel_map[op.select_implementation("bmm_fp8", call)].__name__ == expected
 
 
@@ -476,7 +670,7 @@ _GQA_DENSE_ROWS = [
 def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
     """Each region, and the boundary that separates it from the next."""
     from tileops.kernels.attention.call_spec import AttentionCall
-    from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+    from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
 
     dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}

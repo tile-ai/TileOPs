@@ -9,7 +9,7 @@ from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.device import run_device
-from workloads.normalization import (
+from workloads.norm import (
     FusedAddLayerNormWorkload,
     LayerNormWorkload,
 )

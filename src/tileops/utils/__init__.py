@@ -1,4 +1,5 @@
 from tileops.utils.utils import (
+    STR_TO_DTYPE,
     WARP_LANES,
     WARP_SHUFFLE_STAGES,
     calibration_key,
@@ -9,10 +10,10 @@ from tileops.utils.utils import (
     get_shared_memory_optin,
     get_sm_count,
     get_sm_version,
-    str2dtype,
 )
 
 __all__ = [
+    "STR_TO_DTYPE",
     "WARP_LANES",
     "WARP_SHUFFLE_STAGES",
     "calibration_key",
@@ -23,5 +24,4 @@ __all__ = [
     "get_shared_memory_optin",
     "get_sm_count",
     "get_sm_version",
-    "str2dtype",
 ]

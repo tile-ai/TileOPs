@@ -72,7 +72,7 @@ class GemmFp8Workload(WorkloadBase):
 
     @classmethod
     def from_call(cls, call: Any) -> "GemmFp8Workload":
-        """The workload of one manifest call of ``GemmFp8FwdOp``."""
+        """The workload of one manifest call of ``GemmFP8FwdOp``."""
         ix = call.ix
         if tuple(ix["SA"]) == (1, 1):
             scale_mode = "per_tensor"
@@ -363,7 +363,7 @@ class BmmFp8Workload(WorkloadBase):
 
     @classmethod
     def from_call(cls, call: Any) -> "BmmFp8Workload":
-        """The workload of one manifest call of ``BmmFp8FwdOp``."""
+        """The workload of one manifest call of ``BmmFP8FwdOp``."""
         ix = call.ix
         return cls(
             ix["B"],

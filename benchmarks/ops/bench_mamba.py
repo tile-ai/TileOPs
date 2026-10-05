@@ -6,14 +6,20 @@ mamba_chunk_scan_combined.
 import pytest
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    TORCH_COMPILE_TAG,
+    compiled_reference,
+    flashinfer_op,
+)
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.mamba.cb_producer import CBProducerFwdOp
-from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from benchmarks.verification import Exact
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     CBProducerFwdCall,
@@ -61,21 +67,26 @@ def _torch_baselines(functors: dict, ref_program) -> None:
     functors[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
 
 
-@pytest.mark.parametrize("call", manifest_calls(CBProducerFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDChunkCouplingFwdOp))
 def test_cb_producer_fwd_bench(call) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
     workload = CBProducerFwdCall(call)
     inputs = workload.gen_inputs()
-    op = CBProducerFwdOp(**workload.arguments())
+    op = SSDChunkCouplingFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
-    bm.compare({"tileops": op, "torch": (workload.ref_program, inputs)}, *inputs)
+    from mamba_ssm.ops.triton.ssd_bmm import _bmm_chunk_fwd
+
+    def mamba_fn(c, b):
+        return _bmm_chunk_fwd(c, b, call.ix["chunk_len"], causal=True, output_dtype=c.dtype).tril()
+
+    bm.compare({"tileops": op, "mamba": mamba_fn, "torch": workload.ref_program}, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DaCumsumFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDChunkCumsumFwdOp))
 def test_da_cumsum_fwd_bench(call) -> None:
     workload = DaCumsumFwdCall(call)
     dt, A, dt_bias = inputs = workload.gen_inputs()
-    op = DaCumsumFwdOp(**workload.arguments())
+    op = SSDChunkCumsumFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
@@ -106,12 +117,20 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
     if _mamba_chunk_scan_fwd is not None:
         # mamba signature: _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
         def mamba_fwd():
-            return _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
+            # Match the op's FP32 output; the cast is part of this baseline's timing.
+            out, _ = _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
+            return out.float()
 
         functors["mamba"] = (mamba_fwd, ())
 
     _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 2e-3, rtol=1e-5)
+        ),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkStateFwdOp))
@@ -130,7 +149,13 @@ def test_ssd_chunk_state_fwd_bench(call) -> None:
         functors["mamba"] = (mamba_fwd, ())
 
     _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-3 if x.dtype == torch.float16 else 1.6e-2, rtol=1e-3)
+        ),
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDStatePassingFwdOp))
@@ -148,34 +173,53 @@ def test_ssd_state_passing_fwd_bench(call) -> None:
                 states, dA_chunk_cumsum, initial_states=initial_states, out_dtype=torch.float32
             )
 
-        # Pre-warm: run once outside bm.profile so the Triton autotuner
-        # selects its best config before the CUPTI window opens.
-        mamba_fwd()
-        torch.cuda.synchronize()
-
         functors["mamba"] = (mamba_fwd, ())
 
     _torch_baselines(functors, workload.ref_program)
     bm.compare(functors, *inputs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDDecodeFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(SSDRecurrentFwdOp))
 def test_ssd_decode_bench(call) -> None:
     workload = SSDDecodeFwdCall(call)
     A, dt, x, B_in, C_in, state = workload.gen_inputs()
-    op = SSDDecodeFwdOp(**workload.arguments())
+    op = SSDRecurrentFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
 
-    # Each implementation updates its own copy of the state in place.
+    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+
+    skip = torch.zeros(x.shape[1:], dtype=torch.float32, device=x.device)
+
+    def mamba_fn(A, dt, x, B, C, state):
+        # FP32 x preserves the contract's output; explicit zero bias avoids an upstream None-stride bug.
+        return selective_state_update(state, x.float(), dt, A, B, C, D=skip, dt_bias=skip)
+
+    flashinfer_update = flashinfer_op("mamba.selective_state_update")
+
+    skip_tied = torch.zeros(x.shape[1], 1, dtype=torch.float32, device=x.device).expand(x.shape[1:])
+
+    def flashinfer_fn(A, dt, x, B, C, state):
+        rates = A[:, :1, :1].contiguous().expand_as(A)
+        steps = dt[:, :, :1].contiguous().expand_as(dt)
+        return flashinfer_update(state, x.float(), steps, rates, B.float(), C.float(), skip_tied)
+
+    def reset_state(fn):
+        private = state.clone()
+
+        def run(A, dt, x, B, C, source_state):
+            private.copy_(source_state)
+            return fn(A, dt, x, B, C, private)
+
+        return run
+
     functors = {
-        "tileops": op,
-        "torch-ref": (workload.ref_program, (A, dt, x, B_in, C_in, state.clone())),
-        TORCH_COMPILE_TAG: (
-            compiled_reference(workload.ref_program),
-            (A, dt, x, B_in, C_in, state.clone()),
-        ),
+        "tileops": reset_state(op),
+        "mamba": reset_state(mamba_fn),
+        FLASHINFER_TAG: reset_state(flashinfer_fn),
+        "torch-ref": reset_state(workload.ref_program),
+        TORCH_COMPILE_TAG: reset_state(compiled_reference(workload.ref_program)),
     }
-    bm.compare(functors, A, dt, x, B_in, C_in, state.clone())
+    bm.compare(functors, A, dt, x, B_in, C_in, state)
 
 
 @pytest.mark.parametrize("call", manifest_calls(Mamba2FwdOp))
@@ -193,7 +237,7 @@ def test_mamba2_fwd_bench(call):
     if _mamba_chunk_scan_combined is not None:
 
         def _mamba_wrapper(x, dt, A, B, C):
-            return _mamba_chunk_scan_combined(
+            out, final_states = _mamba_chunk_scan_combined(
                 x,
                 dt,
                 A,
@@ -205,6 +249,7 @@ def test_mamba2_fwd_bench(call):
                 initial_states=initial_states,
                 return_final_states=True,
             )
+            return out.float(), final_states.float()
 
         functors["mamba"] = (_mamba_wrapper, reference_args)
 
@@ -214,4 +259,10 @@ def test_mamba2_fwd_bench(call):
     functors["torch-ref"] = (_torch_wrapper, reference_args)
     functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Exact(atol=1e-2 if x.dtype == torch.float16 else 2e-2, rtol=1e-3)
+        ),
+    )

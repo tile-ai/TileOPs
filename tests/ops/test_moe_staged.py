@@ -7,12 +7,12 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.backend import BUILTIN
-from tileops.kernels.grouped_gemm import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
     MoeGroupedGemmKernel,
+    MoeGroupedGemmMmaKernel,
     PostPermuteCall,
     PrePermuteCall,
 )
@@ -20,12 +20,13 @@ from tileops.ops import moe as public_moe
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
-    MoeExpertMLPFwdOp,
-    MoeGroupedGemmFwdOp,
-    MoePostPermuteFwdOp,
-    MoePrePermuteFwdOp,
+    MoEExpertMLPFwdOp,
+    MoEGroupedGemmFwdOp,
+    MoEPostPermuteFwdOp,
+    MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
+from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
 from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
 
@@ -61,7 +62,7 @@ def test_layout_presets_expose_only_supported_semantics() -> None:
 def test_aligned_pre_permute_capacity_is_a_gemm_legal_row_extent() -> None:
     """Worst-case padding capacity still satisfies the aligned GEMM contract."""
     alignment = 128
-    op = MoePrePermuteFwdOp(ContiguousLayoutSpec.aligned_per_row(alignment), num_local_experts=16)
+    op = MoEPrePermuteFwdOp(ContiguousLayoutSpec.aligned_per_row(alignment), num_local_experts=16)
     shapes = op._infer_output_shapes(
         (256, 2048), (256, 2), dtypes={"hidden_states": torch.bfloat16}
     )
@@ -148,7 +149,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     a = torch.ones(1, 8, dtype=torch.bfloat16, device=device)
     b = torch.ones(1, 8, 8, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
-    op = MoeGroupedGemmFwdOp(
+    op = MoEGroupedGemmFwdOp(
         _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN, tune=True
     )
 
@@ -173,10 +174,10 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
 
 @pytest.mark.smoke
 def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
-    mlp = MoeExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
+    mlp = MoEExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
     assert mlp.gate_up.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
     assert mlp.down.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
-    assert MoeExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
+    assert MoEExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
 
 
 @pytest.mark.cuda_only
@@ -191,7 +192,7 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
 def test_pre_permute_ships_one_contiguous_candidate(
     layout: ContiguousLayoutSpec,
 ) -> None:
-    op = MoePrePermuteFwdOp(layout, num_local_experts=1)
+    op = MoEPrePermuteFwdOp(layout, num_local_experts=1)
     call = PrePermuteCall(arch=90, layout=layout, input_dtype=torch.bfloat16)
     assert op.select_implementation("pre_permute", call) == "pre_permute_contiguous"
 
@@ -209,7 +210,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
     layout = ContiguousLayoutSpec.tight_physical_psum()
 
-    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+    pre = MoEPrePermuteFwdOp(layout, num_local_experts=experts)
     expert_input, metadata, inverse = pre(x, local_ids)
     assert expert_input.shape == (tokens * top_k, hidden)
     assert metadata.shape == (experts,)
@@ -218,7 +219,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
 
-    post = MoePostPermuteFwdOp(layout)
+    post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
@@ -226,7 +227,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert post.eval_roofline() == (1024, 1600)
 
     # A routing scale other than one multiplies every output element once more.
-    scaled = MoePostPermuteFwdOp(layout, RoutingEpilogueSpec(routed_scaling_factor=2.0))
+    scaled = MoEPostPermuteFwdOp(layout, RoutingEpilogueSpec(routed_scaling_factor=2.0))
     output = scaled(expert_input, weights, inverse)
     torch.testing.assert_close(output.float(), 2 * expected, rtol=2e-2, atol=4e-2)
     assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
@@ -249,7 +250,7 @@ def test_staged_tight_optimized_shapes_round_trip(
     )
     weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
     layout = ContiguousLayoutSpec.tight_physical_psum()
-    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+    pre = MoEPrePermuteFwdOp(layout, num_local_experts=experts)
 
     expert_input, physical_ends, inverse = pre(x, local_ids)
 
@@ -257,7 +258,7 @@ def test_staged_tight_optimized_shapes_round_trip(
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
     torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
-    output = MoePostPermuteFwdOp(layout)(expert_input, weights, inverse)
+    output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
 
@@ -275,7 +276,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     layout = ContiguousLayoutSpec.aligned_per_row(alignment)
     capacity = tokens * top_k + experts * (alignment - 1)
 
-    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+    pre = MoEPrePermuteFwdOp(layout, num_local_experts=experts)
     expert_input, row_expert_ids, inverse = pre(x, local_ids)
     assert expert_input.shape == (capacity, hidden)
     assert row_expert_ids.shape == (capacity,)
@@ -286,7 +287,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
     torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
 
-    post = MoePostPermuteFwdOp(layout)
+    post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
@@ -298,8 +299,8 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
     """A call outside every shipped candidate's region says so, rather than crashing."""
     device = torch.device("cuda")
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
-    assert set(op.kernel_map) == {"grouped_gemm"}
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
+    assert set(op.kernel_map) == {"grouped_gemm", "grouped_gemm_mma"}
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(
             torch.empty(2, 8, dtype=torch.bfloat16, device=device),
@@ -308,10 +309,9 @@ def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> No
         )
 
 
-# MoeGroupedGemmFwdOp selects MoeGroupedGemmKernel, the adapter over the shared template, through the
+# MoEGroupedGemmFwdOp selects MoeGroupedGemmKernel, the adapter over the shared template, through the
 # staged candidate protocol; these tests route every layout it claims through the op and check the
 # rows the layout defines against the workload's per-expert reference.
-_E = 6
 
 
 _TIGHT_MOE_GROUPED_GEMM = {
@@ -325,14 +325,14 @@ def _aligned(metadata_kind: str) -> dict:
 
 def _gemm_call(dtype: torch.dtype, layout: dict, **row):
     return moe_call(
-        "MoeGroupedGemmFwdOp", {"D": str(dtype).removeprefix("torch.")}, layout=layout, **row
+        "MoEGroupedGemmFwdOp", {"D": str(dtype).removeprefix("torch.")}, layout=layout, **row
     )
 
 
 def _run(workload) -> tuple:
     """The op built from the call, its output on the call's inputs, and the reference."""
     inputs = workload.gen_inputs()
-    cls = MoeGroupedGemmFwdOp if len(inputs) == 3 else MoeExpertMLPFwdOp
+    cls = MoEGroupedGemmFwdOp if len(inputs) == 3 else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments({}))
     out = op(*inputs)
     rows = inputs[0].numel() // inputs[0].shape[-1]
@@ -347,7 +347,6 @@ def _run(workload) -> tuple:
     return op, out
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "layout,rows,dtype",
     [
@@ -378,93 +377,107 @@ def _run(workload) -> tuple:
     ],
 )
 def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
-    """Each claimed layout: the op selects the template, builds it once, matches the reference."""
-    op, out = _run(MoeGroupedGemmWorkload(_gemm_call(dtype, layout, K=512, E=_E, N=256, **rows)))
+    """Each claimed layout: the op builds the device's kernel once and matches the reference."""
+    num_experts = 6
+    op, out = _run(
+        MoeGroupedGemmWorkload(_gemm_call(dtype, layout, K=512, E=num_experts, N=256, **rows))
+    )
     assert out.dtype is dtype and out.shape[-1] == 256
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
-        assert isinstance(kernel, MoeGroupedGemmKernel)
-        assert isinstance(kernel.inner, GemmTemplate)
+        arch = get_sm_version(out.device.index)
+        expected = MoeGroupedGemmKernel if arch == 90 else MoeGroupedGemmMmaKernel
+        assert type(kernel) is expected
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_reuses_its_kernel_across_row_counts():
     """The materialized row count is not in the build identity: a second M reuses the kernel."""
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    num_experts = 6
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     for rows in (600, 300):
         workload = MoeGroupedGemmWorkload(
-            _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=512, E=_E, N=256)
+            _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=512, E=num_experts, N=256)
         )
         op(*workload.gen_inputs())
     if served_in_tree(op):
         assert len(op.built_kernels("grouped_gemm")) == 1
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 def test_grouped_gemm_fuses_the_gated_activation(activation):
-    """With ``activation`` the op hands the template a gate||up ``b`` and gets ffn columns back."""
+    """With ``activation`` the op hands the kernel a gate||up ``b`` and gets ffn columns back."""
+    num_experts = 6
     call = _gemm_call(
-        torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=600, K=512, E=_E, N=192, activation=activation
+        torch.bfloat16,
+        _TIGHT_MOE_GROUPED_GEMM,
+        P=600,
+        K=512,
+        E=num_experts,
+        N=192,
+        activation=activation,
     )
     op, out = _run(MoeGroupedGemmWorkload(call))
     assert out.shape == (600, 192)
     if served_in_tree(op):
         (kernel,) = op.built_kernels("grouped_gemm").values()
-        assert kernel.inner.activation == activation
+        assert kernel.call.activation == activation
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_dims_off_the_tile_grid():
     """Cover non-tile-aligned K and N."""
+    num_experts = 6
     _run(
         MoeGroupedGemmWorkload(
-            _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=200, K=96, E=_E, N=192)
+            _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=200, K=96, E=num_experts, N=192)
         )
     )
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_fp32_output_and_preallocated_out():
+    num_experts = 6
     call = _gemm_call(
-        torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=600, K=512, E=_E, N=256, out_dtype="float32"
+        torch.bfloat16,
+        _TIGHT_MOE_GROUPED_GEMM,
+        P=600,
+        K=512,
+        E=num_experts,
+        N=256,
+        out_dtype="float32",
     )
     workload = MoeGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
-    op = MoeGroupedGemmFwdOp(**call.arguments({}))
+    op = MoEGroupedGemmFwdOp(**call.arguments({}))
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
     torch.testing.assert_close(out, workload.ref_program(a, b, metadata), rtol=1e-3, atol=1e-2)
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_a_strided_out():
     """The output buffer is declared contiguous; a strided one is refused before the kernel."""
     workload = MoeGroupedGemmWorkload(
         _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
     )
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     out = torch.empty(64, 128, dtype=torch.bfloat16, device=run_device())[:, ::2]
     with pytest.raises(ValueError, match="out must be contiguous"):
         op(*workload.gen_inputs(), out=out)
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     """Calls outside the adapter's region are refused by selection, naming the reason."""
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a = torch.randn(8, 60, dtype=torch.bfloat16, device=run_device())
     b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device=run_device())
     ends = torch.tensor([4, 8], dtype=torch.int32, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ends)  # K not a multiple of 8
-    fused = MoeGroupedGemmFwdOp(
+    fused = MoEGroupedGemmFwdOp(
         ContiguousLayoutSpec.tight_physical_psum(), activation="silu_and_mul"
     )
     a = torch.randn(8, 64, dtype=torch.bfloat16, device=run_device())
@@ -472,12 +485,71 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     with pytest.raises(ValueError, match="no implementation serves this call"):
         fused(a, b, ends)  # fused N must be a multiple of 16
     # An aligned layout whose alignment is not a tile height has no instantiation either.
-    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(8))
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(8))
     a = torch.randn(16, 64, dtype=torch.bfloat16, device=run_device())
     b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device=run_device())
     ids = torch.tensor([0] * 8 + [1] * 8, dtype=torch.int32, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ids)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "kind, packing, metadata_kind, alignment, max_m, rows, num_groups",
+    [
+        pytest.param("contiguous", "tight", "physical_psum", 1, None, 600, 6, id="tight-psum"),
+        pytest.param(
+            "contiguous", "aligned", "physical_psum", 128, None, 1152, 6, id="aligned-psum"
+        ),
+        pytest.param("contiguous", "aligned", "per_row", 128, None, 1152, 6, id="aligned-per-row"),
+        pytest.param("masked", None, None, 1, 128, 6 * 128, 6, id="masked"),
+    ],
+)
+def test_mma_grouped_gemm_tunes_on_a_layout_its_call_could_carry(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    packing: "str | None",
+    metadata_kind: "str | None",
+    alignment: int,
+    max_m: "int | None",
+    rows: int,
+    num_groups: int,
+):
+    """The metadata is an int32 input that sets which tiles run, so tuning cannot take it
+    random: the supply builds the call's own rows in its layout."""
+    call = MGroupedGemmCall(
+        kind=kind,
+        packing=packing,
+        metadata_kind=metadata_kind,
+        alignment=alignment,
+        max_m=max_m,
+        ab_dtype=torch.bfloat16,
+        cd_dtype=torch.bfloat16,
+        num_groups=num_groups,
+        m=rows,
+        n=256,
+        k=512,
+    )
+    monkeypatch.setattr(MoeGroupedGemmMmaKernel, "_check_arch", lambda self: None)
+    supply = MoeGroupedGemmMmaKernel(call).autotune_supply_prog
+    a, b, layout, c = supply([None] * 4)
+
+    lead = [num_groups, max_m] if kind == "masked" else [rows]
+    assert [list(t.shape) for t in (a, b, c)] == [
+        [*lead, 512],
+        [num_groups, 256, 512],
+        [*lead, 256],
+    ]
+    if kind == "masked":
+        assert layout.shape == (num_groups,) and 0 < int(layout.max()) <= max_m
+    elif metadata_kind == "per_row":
+        assert layout.shape == (rows,) and int(layout.min()) >= 0 and int(layout.max()) < num_groups
+    else:
+        assert layout.shape == (num_groups,) and bool((layout.diff() > 0).all())
+        assert int(layout[-1]) <= rows
+    with pytest.raises(RuntimeError, match="expects 4 parameters"):
+        supply([None] * 5)
 
 
 @pytest.mark.sm90
@@ -491,14 +563,15 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
 )
 def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     """The MLP is two template GEMMs; the first carries the activation and halves its width."""
+    num_experts = 6
     call = moe_call(
-        "MoeExpertMLPFwdOp",
+        "MoEExpertMLPFwdOp",
         {"D": str(dtype).removeprefix("torch.")},
         layout=_TIGHT_MOE_GROUPED_GEMM,
         activation=activation,
         P=600,
         H=256,
-        E=_E,
+        E=num_experts,
         F=192,
     )
     op, out = _run(MoeExpertMLPWorkload(call))

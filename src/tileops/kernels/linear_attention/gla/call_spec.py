@@ -9,8 +9,15 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, KernelInterface
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 
-__all__ = ["GLAInferenceCallSpec", "GLAInferenceFwdInterface", "dense_entry", "serves_dense"]
+__all__ = [
+    "GLAInferenceCallSpec",
+    "GLAInferenceFwdInterface",
+    "build_entry",
+    "serves_dense",
+    "serves_extents",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -25,6 +32,9 @@ class GLAInferenceCallSpec(CallSpec):
     dtype: Optional[torch.dtype] = None
     scale: float = 0.0
     varlen: bool = False
+    # Whether the call supplies initial_state, rather than starting the recurrence from zero.
+    has_initial_state: bool = False
+    num_sequences: int = 0
 
 
 class GLAInferenceFwdInterface(KernelInterface):
@@ -65,16 +75,21 @@ class GLAInferenceFwdInterface(KernelInterface):
 
 def serves_dense(call: GLAInferenceCallSpec) -> bool:
     """Whether *call* is a dense (not packed) call with K = V in {64, 128} in fp16 or bf16."""
+    return not call.varlen and serves_extents(call)
+
+
+def serves_extents(call: GLAInferenceCallSpec) -> bool:
+    """Whether the in-tree GLA kernels compile *call*'s head count, widths and dtype."""
     return (
-        not call.varlen
+        head_count_refusal(call.heads) is None
         and call.dim_k == call.dim_v
         and call.dim_k in (64, 128)
         and call.dtype in (torch.float16, torch.bfloat16)
     )
 
 
-def dense_entry(cls: type, call: GLAInferenceCallSpec, **extents: int) -> Entry:
-    """Build *cls* from the call's scale, dtype and device plus the *extents* it compiles."""
+def build_entry(cls: type, call: GLAInferenceCallSpec, **build_arguments: int | bool) -> Entry:
+    """Build *cls* from the call's scale, dtype and device plus the *build_arguments* it compiles."""
     device_index = call.device.index if call.device is not None else None
-    arguments = dict(extents, scale=call.scale, dtype=call.dtype, device_index=device_index)
+    arguments = dict(build_arguments, scale=call.scale, dtype=call.dtype, device_index=device_index)
     return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)

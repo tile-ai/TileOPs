@@ -4,9 +4,9 @@ Kimi Delta Attention lives in the ``kda`` subpackage: the gated delta rule whose
 decay is one log-space value per key channel.
 
 The DeltaNet and GLA chunked kernels share the V-tile width rule (``v_tile``); the
-DeltaNet forward also tunes through ``autotune``. The chunkwise kernels live in the
-per-variant subpackages; the DeltaNet and GLA single-token decode kernels are the
-``*_recurrence`` modules.
+DeltaNet forward also tunes through ``deltanet.autotune``. Each algorithm's chunk,
+recurrent and inference implementations live together in its subpackage. The
+gated and ungated DeltaNet inference kernels share ``delta_decode``.
 """
 
 from tileops.kernels.linear_attention.call_spec import (
@@ -33,7 +33,7 @@ from tileops.kernels.linear_attention.deltanet import (
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdKernel,
 )
-from tileops.kernels.linear_attention.deltanet_recurrence import (
+from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
@@ -48,7 +48,7 @@ from tileops.kernels.linear_attention.gla import (
     GLADensePrefillSubchunkKernel,
     GLAFwdKernel,
 )
-from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
+from tileops.kernels.linear_attention.gla.recurrent import GLADecodeFP32Kernel, GLADecodeKernel
 from tileops.kernels.linear_attention.kda import (
     KimiDeltaAttentionChunkPrefillFwdKernel,
     KimiDeltaAttentionFusedPrefillFwdKernel,

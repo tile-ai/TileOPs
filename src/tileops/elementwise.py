@@ -1,6 +1,5 @@
 """The elementwise ops, at the public path ``tileops.elementwise``."""
 
-from tileops.ops.dropout import DropoutFwdOp
 from tileops.ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -10,10 +9,11 @@ from tileops.ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampFwdOp,
     ClampScalarFwdOp,
+    ClampTensorFwdOp,
     CosFwdOp,
     DivFwdOp,
+    DropoutFwdOp,
     EluFwdOp,
     EqFwdOp,
     ErfFwdOp,
@@ -34,7 +34,7 @@ from tileops.ops.elementwise import (
     IsnanFwdOp,
     LeakyReluFwdOp,
     LeFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     Log1pFwdOp,
     LogFwdOp,
@@ -42,8 +42,8 @@ from tileops.ops.elementwise import (
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillFwdOp,
     MaskedFillScalarFwdOp,
+    MaskedFillTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -74,7 +74,6 @@ from tileops.ops.elementwise import (
 )
 
 __all__ = [
-    "DropoutFwdOp",
     "AbsFwdOp",
     "AddFwdOp",
     "AlibiFwdOp",
@@ -83,10 +82,11 @@ __all__ = [
     "BitwiseOrFwdOp",
     "BitwiseXorFwdOp",
     "CeilFwdOp",
-    "ClampFwdOp",
     "ClampScalarFwdOp",
+    "ClampTensorFwdOp",
     "CosFwdOp",
     "DivFwdOp",
+    "DropoutFwdOp",
     "EluFwdOp",
     "EqFwdOp",
     "ErfFwdOp",
@@ -107,7 +107,7 @@ __all__ = [
     "IsnanFwdOp",
     "LeFwdOp",
     "LeakyReluFwdOp",
-    "LerpFwdOp",
+    "LerpScalarFwdOp",
     "LerpTensorFwdOp",
     "Log1pFwdOp",
     "LogFwdOp",
@@ -115,8 +115,8 @@ __all__ = [
     "LogicalNotFwdOp",
     "LogicalOrFwdOp",
     "LtFwdOp",
-    "MaskedFillFwdOp",
     "MaskedFillScalarFwdOp",
+    "MaskedFillTensorFwdOp",
     "MaximumFwdOp",
     "MinimumFwdOp",
     "MishFwdOp",

@@ -41,7 +41,7 @@ class SoftmaxFixture(FixtureBase):
                     -1,
                     torch.float32,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -182,7 +182,7 @@ class LogSoftmaxFixture(FixtureBase):
                     -1,
                     torch.float32,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -281,7 +281,7 @@ class LogSumExpFixture(FixtureBase):
                     -1,
                     torch.float32,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -770,6 +770,63 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     x[0, :] = float("-inf")
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
     torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+
+
+@pytest.mark.smoke
+def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
+    """A row of large values still shifts its maximum to exactly 1 before the sum.
+
+    The shift is applied in base 2. Scaling the value and the shift separately and
+    subtracting inside the product lets the pair contract into one ``FFMA``, which keeps
+    the value's product exact against an already-rounded shift: equal operands stop
+    cancelling, and the error grows with the row's magnitude. Every manifest row draws
+    from ``randn``, which holds ``|x|`` under about 5 and cannot show it, so the rows
+    here are scaled up and the second one repeats its maximum.
+
+    ``log_softmax`` is the whole guard for the shared ``exp_shifted`` helper. The other
+    two ops cannot show the fault at any tolerance: ``softmax`` divides every term by
+    their sum, which takes the error out with it, and ``logsumexp`` returns a value of
+    the row's own magnitude, whose fp32 spacing against a float64 reference is two
+    orders larger than the fault and identical with or without it.
+    """
+    device = run_device()
+    torch.manual_seed(1235)
+    x = torch.randn((2, 4096), dtype=torch.float32, device=device) * 1e5
+    x[1, ::512] = x[1].max()
+
+    expected = F.log_softmax(x.double(), dim=-1).to(torch.float32)
+    torch.testing.assert_close(
+        LogSoftmaxFwdOp(dim=-1)(x), expected, **standard_tolerance(torch.float32)
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op, reference",
+    [
+        pytest.param(SoftmaxFwdOp, lambda t: F.softmax(t, dim=-1), id="softmax"),
+        pytest.param(LogSoftmaxFwdOp, lambda t: F.log_softmax(t, dim=-1), id="log_softmax"),
+    ],
+)
+def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) -> None:
+    """A row whose first tiles hold only ``-inf`` still reduces its finite tail.
+
+    The tiled path folds one tile at a time and rescales the running sum by the change
+    in the row maximum. While that maximum is still ``-inf`` the rescale subtracts one
+    infinity from another, and the ``NaN`` reaches every later tile. The row below is
+    wide enough to tile, so its leading tiles are entirely ``-inf``; the second row is
+    ``-inf`` throughout and must still come back as torch returns it.
+    """
+    device = run_device()
+    torch.manual_seed(1235)
+    # The shape has to reach the tiled body and fold more than one tile: too few rows
+    # dispatch to the split kernel instead, and a row that fits one tile never rescales.
+    # 264x40960 folds two tiles of 20480, so the first tile is exactly the -inf prefix.
+    x = torch.randn((264, 40960), dtype=torch.float32, device=device)
+    x[0, :20480] = float("-inf")
+    x[1, :] = float("-inf")
+
+    torch.testing.assert_close(op(dim=-1)(x), reference(x), equal_nan=True)
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}

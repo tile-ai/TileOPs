@@ -16,6 +16,10 @@ WARPGROUP_THREADS: int = 128
 # Rows one WGMMA instruction computes: its M extent.
 WGMMA_ROWS: int = 64
 
+# Rows one warp-level MMA instruction computes: the M extent TileLang lowers to below
+# WGMMA_ROWS, and so the narrowest a matrix operand may be.
+WARP_MMA_ROWS: int = 16
+
 # Shared memory one block may take without opting in to the dynamic allocation.
 STATIC_SHARED_BYTES: int = 48 * 1024
 
@@ -44,6 +48,11 @@ SM_RESIDENT_BLOCKS: dict[int, int] = {
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 
+# Widest exponent gap a pair of bfloat16 factors can carry between them. A product written
+# as exp(a) * exp(-a) holds only while both factors are representable, and bfloat16 runs to
+# 2**127; the margin leaves room for the operands the factors scale.
+BF16_SPLIT_EXP2_SPAN: float = 120.0
+
 # 1/sqrt(2), for the erf form of GELU: 0.5 * x * (1 + erf(x / sqrt(2))).
 INV_SQRT2: float = 0.7071067811865476
 
@@ -58,3 +67,15 @@ FP8_E4M3_MAX: float = 448.0
 # a run along K for the INT8 and FP8 activation forms, both axes of a tile for the FP8
 # weight form.
 QUANT_SCALE_BLOCK: int = 128
+
+
+# Fields of the CUDA tensor-map descriptor, as ``cuTensorMapEncodeTiled`` encodes them:
+# the element type, the interleave, swizzle and L2-promotion modes, and the fill an
+# out-of-bounds read returns.
+TMA_DTYPE_UINT8: int = 0
+TMA_DTYPE_BFLOAT16: int = 9
+TMA_INTERLEAVE_NONE: int = 0
+TMA_SWIZZLE_NONE: int = 0
+TMA_SWIZZLE_128B: int = 3
+TMA_L2_PROMOTION_128B: int = 2
+TMA_OOB_FILL_NONE: int = 0

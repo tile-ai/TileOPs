@@ -448,7 +448,9 @@ _NAN_CASES = [
     pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": 1.0}, id="clamp-scalar-nan-input"),
     pytest.param("ClampScalarFwdOp", {"min": _NAN}, id="clamp-scalar-nan-min"),
     pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-scalar-nan-max"),
-    pytest.param("ClampFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-tensor-nan-input-and-bound"),
+    pytest.param(
+        "ClampTensorFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-tensor-nan-input-and-bound"
+    ),
     pytest.param("HardtanhFwdOp", {}, id="hardtanh-nan-input"),
     pytest.param("HardsigmoidFwdOp", {}, id="hardsigmoid-nan-input"),
 ]
@@ -464,10 +466,10 @@ def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> N
 
     dtype = torch.float16
     x = _nan_row(dtype)
-    if op_name == "ClampFwdOp":
+    if op_name == "ClampTensorFwdOp":
         lo = torch.full_like(x, kwargs["min"])
         hi = torch.full_like(x, kwargs["max"])
-        out, ref = ew.ClampFwdOp()(x, lo, hi), torch.clamp(x, lo, hi)
+        out, ref = ew.ClampTensorFwdOp()(x, lo, hi), torch.clamp(x, lo, hi)
     elif op_name == "ClampScalarFwdOp":
         out, ref = ew.ClampScalarFwdOp(**kwargs)(x), torch.clamp(x, **kwargs)
     elif op_name == "HardtanhFwdOp":
@@ -569,7 +571,7 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
-    """MaskedFillFwdOp forward() must raise ValueError when mask is not on CUDA."""
+    """MaskedFillTensorFwdOp forward() must raise ValueError when mask is not on CUDA."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     op = MaskedFillScalarFwdOp(value=-100.0)
@@ -581,7 +583,7 @@ def test_masked_fill_forward_rejects_cpu_mask() -> None:
 
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_non_bool_mask() -> None:
-    """MaskedFillFwdOp forward() must raise ValueError when mask dtype is not bool."""
+    """MaskedFillTensorFwdOp forward() must raise ValueError when mask dtype is not bool."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     op = MaskedFillScalarFwdOp(value=-100.0)

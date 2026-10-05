@@ -37,6 +37,7 @@ __all__ = [
     "gqa_prefill_paged_cache_rows",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_varlen_fwd_roofline",
+    "hadamard_roofline",
     "lightning_indexer_scored_keys",
     "mla_kv_cache_write_roofline",
     "mla_paged_fwd_roofline",
@@ -128,7 +129,7 @@ def _routing_flops(call) -> int:
 def _routed_flops(tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
     """The routed experts over ``routes`` (token, expert) pairs: the gate/up and down GEMMs,
     the gated activation, the weighted combine into each token (a multiply and an add per
-    route and hidden element, as MoePostPermuteFwdOp prices it) and the scale per output
+    route and hidden element, as MoEPostPermuteFwdOp prices it) and the scale per output
     element when the scaling factor is not one."""
     flops = routes * (6 * ffn * hidden + _GATED_ACTIVATION * ffn + 2 * hidden)
     return flops + (tokens * hidden if scaled else 0)
@@ -242,12 +243,35 @@ def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _active_weight_bytes(call, "b")
 
 
+def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
+    """Grouped expert GEMM over the valid rows, with no fused activation; an expert with no
+    valid row reads neither its weight nor that weight's scale."""
+    ix = call.ix
+    flops = 2 * moe_layout_rows(call) * ix["N"] * ix["K"]
+    return flops, _active_weight_bytes(call, "b", "b_scale")
+
+
 def moe_expert_mlp_roofline(call: "CallView") -> tuple[int, int]:
     """Expert MLP over the valid rows: the gate/up and down GEMMs and the gated activation; an
     expert with no valid row reads no weight, every other tensor moves once."""
     f, h = call.ix["F"], call.ix["H"]
     flops = moe_layout_rows(call) * (6 * f * h + _GATED_ACTIVATION * f)
     return flops, _active_weight_bytes(call, "w_gate_up", "w_down")
+
+
+def hadamard_roofline(call: "CallView") -> tuple[int, int]:
+    """Fast Walsh-Hadamard transform along the last axis.
+
+    The radix-2 stages are one add or subtract per element each, and there are
+    ``log2(n // base_order)`` of them. A ``base_order`` above 1 ends with one dense
+    ``base_order x base_order`` Hadamard product per group, two FLOPs per element-column.
+    The ``1 / sqrt(n)`` scaling is one multiply per element. Each tensor moves once.
+    """
+    ix = call.ix
+    n, order = ix["n"], ix["base_order"]
+    radix2 = (n // order).bit_length() - 1
+    flops = prod(ix["B"]) * n * (radix2 + 1 + (2 * order if order > 1 else 0))
+    return flops, sum(call.bytes(t) for t in call.tensors)
 
 
 def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:

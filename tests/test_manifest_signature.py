@@ -56,7 +56,7 @@ _UNUSED = {
 
 _EDITS = [
     (
-        _edit("ClampFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
+        _edit("ClampTensorFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
         "outside the expression language",
     ),
     (_edit("GemmFwdOp", _set(("shape_rules",), ["a.shape == (M, K)"])), "read as a value"),
@@ -69,10 +69,10 @@ _EDITS = [
     (_edit("GemmFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
     (_edit("GemmFwdOp", _set(("let", "L"), "(")), "cannot parse"),
     (_edit("MaxPool2dFwdOp", _set(("let", "kH"), "sH + 1")), "let cycle"),
-    (_edit("ClampFwdOp", _set(("shape_rules",), [])), "0 cases match"),
+    (_edit("ClampTensorFwdOp", _set(("shape_rules",), [])), "0 cases match"),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _without_masked,
             _set(("shape_rules",), ["K > 0 and layout.kind == 'contiguous'"]),
         ),
@@ -80,7 +80,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _without_masked,
             _set(("shape_rules",), ["layout.kind == 'contiguous'"]),
         ),
@@ -100,7 +100,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "FusedMoeSharedExpertFwdOp",
+            "FusedMoESharedExpertFwdOp",
             _set(("outputs", "routed_output", "shape"), "[shared_ffn_size.value, hidden_size]"),
         ),
         "present(shared_ffn_size) is false",
@@ -126,16 +126,19 @@ _EDITS = [
     (_edit("GemmFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
     (_edit("GemmFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
     (_edit("GemmFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
+    # Input order is the generated signature's parameter order, so a required input after an
+    # optional one emits a parameter without a default after one with a default.
+    (_edit("GemmFwdOp", _set(("inputs", "a", "optional"), True)), "may not follow the optional"),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _set(("types", "ExpertRows", "cases", 0, "when"), {"masked": {"max_m": 1}}),
         ),
         "not a finite field",
     ),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _set(("types", "ExpertRows", "cases", 1, "when"), {"contiguous": {"bogus": 1}}),
         ),
         "has no field 'bogus'",
@@ -144,14 +147,14 @@ _EDITS = [
     (_edit("GemmFwdOp", _set(("dtype_combos",), [{"T": "float32"}])), "not in the set of 'T'"),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _set(("types", "ExpertRows", "cases", 1, "is"), "[P, layout.max_m]"),
         ),
         "constructor 'contiguous' lacks",
     ),
     (
         _edit(
-            "FusedMoeSharedExpertFwdOp",
+            "FusedMoESharedExpertFwdOp",
             _set(
                 ("outputs", "routed_output", "shape"),
                 "[shared_ffn_size.value if present(shared_ffn_size) else num_tokens, hidden_size]",
@@ -179,7 +182,7 @@ _EDITS = [
     (_edit("GemmFwdOp", _set(("let", "z"), "1 if trans_a else 'x'")), "has arms of kinds"),
     (
         _edit(
-            "MoePrePermuteFwdOp",
+            "MoEPrePermuteFwdOp",
             _set(("params", "q"), {"type": "MGroupedLayout | None"}),
             _set(("let", "z"), "q.value.max_m if present(q) else 0"),
         ),

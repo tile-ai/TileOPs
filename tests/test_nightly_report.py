@@ -159,6 +159,21 @@ def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(repor
     assert report.detect_regressions(_bench_ops(0.40, flops=5e9, bytes=1e6), runs) == []
 
 
+def test_variant_added_beside_its_sibling_is_not_a_rename(report):
+    """A row new in this run does not inherit a sibling that is still running.
+
+    The sibling is absent from no historical run, so only the current run's own row
+    set tells the two apart, and a new row with no history of its own has no verdict.
+    """
+    sibling = "test_foo_bench[sibling-bfloat16]"
+    runs = [_history_run(0.1, name="sibling-bfloat16", flops=5e9, bytes=1e6)]
+    bench_ops = _bench_ops(0.4, flops=5e9, bytes=1e6)
+    bench_ops[_OP]["configs"].append(
+        {"name": sibling, "tileops_device_busy_ms": 0.1, "tileops_flops": 5e9, "tileops_bytes": 1e6}
+    )
+    assert [r["config"] for r in report.detect_regressions(bench_ops, runs)] == []
+
+
 def test_history_is_keyed_by_case_id(report):
     """A renamed test function keeps its history key."""
     row = {
@@ -169,6 +184,28 @@ def test_history_is_keyed_by_case_id(report):
     }
     ops = report.aggregate_bench_results([row])
     assert set(report.build_history_entry(ops, _RUN)["ops"][_OP]) == {"row-bfloat16"}
+
+
+def test_every_unchecked_tag_is_counted(report):
+    """A case timing five implementations publishes five rows, not two.
+
+    The first baseline is written twice, under its own tag and under the unprefixed alias
+    the perf keys read; counting both would double it.
+    """
+    row = {
+        "name": "test_foo_bench[row-bfloat16]",
+        "op": _OP,
+        "outcome": "passed",
+        "tileops_device_busy_ms": 0.1,
+        "tileops_no_ratio": "True",
+        "tileops_unverified": "unestablished: the workload carries no reference",
+        "baseline_tag": "torch",
+        "baseline_no_ratio": "True",
+        "torch_no_ratio": "True",
+        "torch-compile_no_ratio": "True",
+    }
+    ops = report.aggregate_bench_results([row])
+    assert len(report._unverified_rows(ops)) == 3
 
 
 def test_history_entry_records_the_percentiles(report):
@@ -183,14 +220,16 @@ def test_history_entry_records_the_percentiles(report):
 # Speed-of-Light (M5)
 # ---------------------------------------------------------------------------
 
-# A fixed synthetic profile keeps the expected efficiencies exact; the real
-# h200.yaml numbers are calibration data, not arithmetic under test.
-_PROFILE = {
-    "gpu": "TestGPU",
-    "hbm": {"theoretical": 5e12, "effective": 4e12},
-    "cuda_core": {"fp32": {"theoretical": 6e13, "effective": 5e13}},
-    "tensor_core": {"bf16": {"theoretical": 1e15, "effective": 7e14}},
-}
+
+@pytest.fixture
+def profile():
+    """Each test owns a synthetic profile whose expected efficiencies are exact."""
+    return {
+        "gpu": "TestGPU",
+        "hbm": {"theoretical": 5e12, "effective": 4e12},
+        "cuda_core": {"fp32": {"theoretical": 6e13, "effective": 5e13}},
+        "tensor_core": {"bf16": {"theoretical": 1e15, "effective": 7e14}},
+    }
 
 
 def _sol_row(**overrides):
@@ -206,14 +245,14 @@ def _sol_row(**overrides):
     return row
 
 
-def test_sol_efficiency_is_one_at_the_effective_ceiling(report):
-    sol = report._compute_sol(_sol_row(), _PROFILE)
+def test_sol_efficiency_is_one_at_the_effective_ceiling(report, profile):
+    sol = report._compute_sol(_sol_row(), profile)
     assert sol["bound"] == "memory"
     assert sol["efficiency"] == pytest.approx(1.0)
     assert not sol["impossible"] and not sol["latency_bound"]
 
 
-def test_sol_compute_bound_uses_the_declared_roof(report):
+def test_sol_compute_bound_uses_the_declared_roof(report, profile):
     # 7e11 FLOPs on the bf16 tensor-core roof: sol_time = 1 ms; measured 2 ms.
     sol = report._compute_sol(
         _sol_row(
@@ -222,54 +261,54 @@ def test_sol_compute_bound_uses_the_declared_roof(report):
             tileops_device_busy_ms=2.0,
             tileops_compute_roof="tensor_core.bf16",
         ),
-        _PROFILE,
+        profile,
     )
     assert sol["bound"] == "compute"
     assert sol["efficiency"] == pytest.approx(0.5)
 
 
-def test_sol_rate_above_theoretical_is_impossible_not_fast(report):
-    sol = report._compute_sol(_sol_row(tileops_device_busy_ms=0.5), _PROFILE)
+def test_sol_rate_above_theoretical_is_impossible_not_fast(report, profile):
+    sol = report._compute_sol(_sol_row(tileops_device_busy_ms=0.5), profile)
     assert sol["impossible"] == ["bytes/s over HBM theoretical"]
 
 
-def test_sol_uncounted_copies_enter_the_denominator(report):
-    sol = report._compute_sol(_sol_row(tileops_uncounted_copy_ms=1.0), _PROFILE)
+def test_sol_uncounted_copies_enter_the_denominator(report, profile):
+    sol = report._compute_sol(_sol_row(tileops_uncounted_copy_ms=1.0), profile)
     assert sol["efficiency"] == pytest.approx(0.5)
 
 
-def test_sol_skips_rows_the_model_cannot_judge(report):
-    assert report._compute_sol(_sol_row(tileops_timing="cuda-events"), _PROFILE) is None
+def test_sol_skips_rows_the_model_cannot_judge(report, profile):
+    assert report._compute_sol(_sol_row(tileops_timing="cuda-events"), profile) is None
     no_timing = _sol_row()
     del no_timing["tileops_timing"]
-    assert report._compute_sol(no_timing, _PROFILE) is None
-    assert report._compute_sol(_sol_row(tileops_bytes=0), _PROFILE) is None
-    assert report._compute_sol(_sol_row(tileops_compute_roof="tensor_core.fp8"), _PROFILE) is None
+    assert report._compute_sol(no_timing, profile) is None
+    assert report._compute_sol(_sol_row(tileops_bytes=0), profile) is None
+    assert report._compute_sol(_sol_row(tileops_compute_roof="tensor_core.fp8"), profile) is None
 
 
-def test_sol_latency_bound_needs_both_floors(report):
+def test_sol_latency_bound_needs_both_floors(report, profile):
     tiny = _sol_row(tileops_flops=1e3, tileops_bytes=1e3, tileops_device_busy_ms=0.004)
-    assert report._compute_sol(tiny, _PROFILE)["latency_bound"]
+    assert report._compute_sol(tiny, profile)["latency_bound"]
     # A tiny lower bound with a large measured time is a slow kernel, not noise.
     slow = _sol_row(tileops_flops=1e3, tileops_bytes=1e3, tileops_device_busy_ms=0.5)
-    assert not report._compute_sol(slow, _PROFILE)["latency_bound"]
+    assert not report._compute_sol(slow, profile)["latency_bound"]
 
 
-def test_annotate_sol_reports_anomalies_and_tags_rows(report):
+def test_annotate_sol_reports_anomalies_and_tags_rows(report, profile):
     bench_ops = {
         _OP: {
             "module": "m",
             "configs": [_sol_row(), _sol_row(name="impossible", tileops_device_busy_ms=0.5)],
         }
     }
-    anomalies = report.annotate_sol(bench_ops, _PROFILE)
+    anomalies = report.annotate_sol(bench_ops, profile)
     assert [a["level"] for a in anomalies] == ["FAIL"]
     assert bench_ops[_OP]["configs"][0]["sol"]["efficiency"] == pytest.approx(1.0)
 
 
-def test_history_entry_records_the_sol_reading(report):
+def test_history_entry_records_the_sol_reading(report, profile):
     bench_ops = {_OP: {"module": "m", "configs": [_sol_row()]}}
-    report.annotate_sol(bench_ops, _PROFILE)
+    report.annotate_sol(bench_ops, profile)
     entry = report.build_history_entry(bench_ops, _RUN)
     tileops = entry["ops"][_OP][_KEY]["tileops"]
     assert tileops["compute_roof"] == "cuda_core.fp32"

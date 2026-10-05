@@ -13,6 +13,13 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
+from tileops.kernels.constants import (
+    TMA_DTYPE_BFLOAT16,
+    TMA_INTERLEAVE_NONE,
+    TMA_L2_PROMOTION_128B,
+    TMA_OOB_FILL_NONE,
+    TMA_SWIZZLE_NONE,
+)
 from tileops.kernels.gemm.call_spec import GemmFp8Call, GemmFp8FwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
@@ -27,11 +34,6 @@ _SCALE_A_GROUPS = (16, 8, 4)
 # Buffers of the A-scale ring, so one group is written while the other is read.
 _SCALE_A_BUFFERS = 2
 
-_TMA_BFLOAT16 = 9
-_TMA_INTERLEAVE_NONE = 0
-_TMA_SWIZZLE_NONE = 0
-_TMA_L2_128B = 2
-_TMA_OOB_NONE = 0
 
 # Schedules measured per (m, n, k), by calibrated board (``tileops.utils.calibration_key``);
 # any other board or shape takes the analytic ``block_n`` band of ``default_config``.
@@ -344,7 +346,7 @@ def _gemm_fp8_1d2d_kernel(
                                 T.sync_threads(barrier_id=14, arrive_count=256)
                                 if tx == 128:
                                     output_desc = T.create_tma_descriptor(
-                                        _TMA_BFLOAT16,
+                                        TMA_DTYPE_BFLOAT16,
                                         2,
                                         c.data,
                                         n,
@@ -355,10 +357,10 @@ def _gemm_fp8_1d2d_kernel(
                                         block_m,
                                         1,
                                         1,
-                                        _TMA_INTERLEAVE_NONE,
-                                        _TMA_SWIZZLE_NONE,
-                                        _TMA_L2_128B,
-                                        _TMA_OOB_NONE,
+                                        TMA_INTERLEAVE_NONE,
+                                        TMA_SWIZZLE_NONE,
+                                        TMA_L2_PROMOTION_128B,
+                                        TMA_OOB_FILL_NONE,
                                     )
                                     T.call_extern(
                                         "handle",

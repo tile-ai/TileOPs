@@ -4,7 +4,7 @@ Input construction and the reference belong in ``workloads/`` once an entry has
 workload rows, so that a benchmark reads the same definition. This entry is
 still ``spec-only`` and has neither, so they are module-level helpers here:
 there is no second consumer to drift from yet, and promoting the entry moves
-them to ``workloads/deepseek_attention.py`` along with the benchmark that will
+them to ``workloads/attention/mla.py`` along with the benchmark that will
 read them. The reference itself is the semantics
 ``tests/test_spec_reference.py`` already states for the entry -- expand ``k_pe``
 to every head, then attend per request in float32.
@@ -18,11 +18,25 @@ from tileops.kernels.attention import (
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
+from tileops.kernels.attention.mla import prefill_varlen
 from tileops.ops import MultiHeadLatentAttentionVarlenFwdOp
 from workloads.device import run_device
 
-_REF_HEADS = 8
-_REF_ROWS = 1024
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mla_varlen_default_config_is_owned_by_each_kernel(monkeypatch) -> None:
+    """Changing one kernel's config must not change another kernel or future defaults."""
+    monkeypatch.setattr(MLAVarlenPrefillFwdKernel, "_check_arch", lambda self: None)
+    monkeypatch.setattr(prefill_varlen, "get_shared_memory_optin", lambda index=None: 101376)
+    first = MLAVarlenPrefillFwdKernel(1, 4, 128, 64, 128, True, torch.float16)
+    second = MLAVarlenPrefillFwdKernel(2, 8, 128, 64, 128, True, torch.float16)
+    expected = second.config.copy()
+
+    monkeypatch.setitem(first.config, "block_n", 32)
+
+    assert second.config == expected
+    assert first.default_config == expected
 
 
 def _gen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):
@@ -49,6 +63,9 @@ def _ref_program(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm_scale=N
     and heads are taken a slab at a time; each row still sees its whole key
     axis, so the numbers are those of the unsplit form.
     """
+    # Bound the temporary score tensor's memory without changing the reference result.
+    heads_per_chunk = 8
+    rows_per_chunk = 1024
     heads = q.shape[1]
     scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
     bounds = cu_seqlens.tolist()
@@ -61,10 +78,10 @@ def _ref_program(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm_scale=N
         ).float()
         value = v[start:end].float()
         rows = torch.arange(span, device=q.device)
-        for h0 in range(0, heads, _REF_HEADS):
-            h1 = min(h0 + _REF_HEADS, heads)
-            for r0 in range(0, span, _REF_ROWS):
-                r1 = min(r0 + _REF_ROWS, span)
+        for h0 in range(0, heads, heads_per_chunk):
+            h1 = min(h0 + heads_per_chunk, heads)
+            for r0 in range(0, span, rows_per_chunk):
+                r1 = min(r0 + rows_per_chunk, span)
                 scores = (
                     torch.einsum(
                         "shd,nhd->hsn",

@@ -18,6 +18,7 @@ from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = [
     "BRACKET_SIGMAS",
     "BRACKET_SLACK",
+    "cluster_limit",
     "cluster_plan",
     "merge_counts",
     "rank_in_bins",
@@ -87,11 +88,14 @@ def rank_in_bins(total, target, acc, tx, span: int):
             acc[2] = acc[2] + count
 
 
-def widest_row(dtype: torch.dtype, threads: int, max_slots: int) -> int:
+def cluster_limit(arch: int) -> int:
+    """CTAs one row may span: thread-block clusters start at SM90."""
+    return MAX_PORTABLE_CLUSTER_BLOCKS if arch >= 90 else 1
+
+
+def widest_row(dtype: torch.dtype, threads: int, max_slots: int, arch: int) -> int:
     """The longest row the launch policy holds without spilling a thread's registers."""
-    return (
-        MAX_PORTABLE_CLUSTER_BLOCKS * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * max_slots
-    )
+    return cluster_limit(arch) * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * max_slots
 
 
 def cluster_plan(call, threads: int, max_slots: int) -> dict:
@@ -104,11 +108,12 @@ def cluster_plan(call, threads: int, max_slots: int) -> dict:
     nothing.
     """
     vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
+    limit = cluster_limit(call.arch)
     cluster = 1
-    while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and 2 * cluster * call.batch <= call.sm_count:
+    while cluster < limit and 2 * cluster * call.batch <= call.sm_count:
         cluster *= 2
     slots = -(-call.vocab // (cluster * threads * vec))
-    while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and slots > max_slots:
+    while cluster < limit and slots > max_slots:
         cluster *= 2
         slots = -(-call.vocab // (cluster * threads * vec))
     return {"threads": threads, "cluster": cluster, "slots": slots}

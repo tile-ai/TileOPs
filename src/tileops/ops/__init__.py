@@ -11,51 +11,50 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
         MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
         MultiHeadLatentAttentionVarlenFwdOp,
-        NSACmpVarlenFwdOp,
-        NSATopkVarlenFwdOp,
+        NSACompressedVarlenFwdOp,
+        NSATopKVarlenFwdOp,
         NSAVarlenFwdOp,
     )
+    from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+    from tileops.ops.attention.topk_select import TopKSelectFwdOp
     from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
-    from tileops.ops.dropout import DropoutFwdOp
     from tileops.ops.elementwise import BinaryOp, FusedGatedOp, UnaryOp
+    from tileops.ops.elementwise.dropout import DropoutFwdOp
     from tileops.ops.fft import FFTC2CFwdOp
-    from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-    from tileops.ops.fp8_quant import FP8QuantFwdOp
     from tileops.ops.gemm import (
-        BmmFp8FwdOp,
+        BmmFP8FwdOp,
         BmmFwdOp,
-        GemmFp8FwdOp,
+        GemmFP8FwdOp,
         GemmFwdOp,
         GemmW4A16FwdOp,
         GroupedGemmFwdOp,
     )
     from tileops.ops.linear_attention import (
-        DeltaNetAutogradFwdOp,
-        DeltaNetBwdOp,
-        DeltaNetDecodeFwdOp,
-        DeltaNetFwdOp,
+        DeltaNetChunkBwdOp,
+        DeltaNetChunkFwdOp,
         DeltaNetInferenceFwdOp,
+        DeltaNetRecurrentFwdOp,
         GatedDeltaNetFwdOp,
-        GLABwdOp,
-        GLADecodeFwdOp,
-        GLAFwdOp,
+        GLAChunkBwdOp,
+        GLAChunkFwdOp,
         GLAInferenceFwdOp,
+        GLARecurrentFwdOp,
         KimiDeltaAttentionFwdOp,
     )
     from tileops.ops.mamba import (
-        DaCumsumFwdOp,
         Mamba2FwdOp,
+        SSDChunkCumsumFwdOp,
         SSDChunkScanFwdOp,
         SSDChunkStateFwdOp,
-        SSDDecodeFwdOp,
+        SSDRecurrentFwdOp,
         SSDStatePassingFwdOp,
     )
     from tileops.ops.moe import (
-        MoeExpertMLPFwdOp,
-        MoeGroupedGemmFwdOp,
-        MoePermuteAlignFwdOp,
-        MoePostPermuteFwdOp,
-        MoePrePermuteFwdOp,
+        MoEExpertMLPFwdOp,
+        MoEGroupedGemmFwdOp,
+        MoEPermuteAlignFwdOp,
+        MoEPostPermuteFwdOp,
+        MoEPrePermuteFwdOp,
     )
     from tileops.ops.norm import (
         AdaLayerNormFwdOp,
@@ -70,21 +69,21 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         RMSNormFwdOp,
     )
     from tileops.ops.op_base import Op
-    from tileops.ops.pool import (
+    from tileops.ops.pool.adaptive_pool import (
         AdaptiveAvgPool2dFwdOp,
         AdaptiveMaxPool2dFwdOp,
         AdaptiveMaxPool2dIndicesFwdOp,
-        AvgPool1dFwdOp,
-        AvgPool2dFwdOp,
-        AvgPool3dFwdOp,
+    )
+    from tileops.ops.pool.avg_pool import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
+    from tileops.ops.pool.max_pool import (
         MaxPool1dFwdOp,
         MaxPool1dIndicesFwdOp,
         MaxPool2dFwdOp,
         MaxPool2dIndicesFwdOp,
         MaxPool3dFwdOp,
         MaxPool3dIndicesFwdOp,
-        MeanPoolingFwdOp,
     )
+    from tileops.ops.pool.mean_pooling import MeanPoolingFwdOp
     from tileops.ops.quantization import (
         FP8QuantPerBlockFwdOp,
         INT4QuantPerGroupFwdOp,
@@ -96,6 +95,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         INT8QuantPerTensorFwdOp,
         SmoothQuantFwdOp,
     )
+    from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
     from tileops.ops.reduction import (
         AllFwdOp,
         AmaxFwdOp,
@@ -106,9 +106,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         CountNonzeroFwdOp,
         CumprodFwdOp,
         CumsumFwdOp,
-        InfNormFwdOp,
-        L1NormFwdOp,
-        L2NormFwdOp,
         LogSoftmaxFwdOp,
         LogSumExpFwdOp,
         MeanFwdOp,
@@ -118,13 +115,13 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         SumFwdOp,
         VarFwdOp,
         VarMeanFwdOp,
+        VectorNormFwdOp,
     )
     from tileops.ops.rope import (
+        RopeFwdOp,
         RopeLlama31FwdOp,
         RopeLongRopeFwdOp,
-        RopeNeoxFwdOp,
         RopeNeoxPositionIdsFwdOp,
-        RopeNonNeoxFwdOp,
         RopeYarnFwdOp,
     )
     from tileops.ops.sampling import (
@@ -136,7 +133,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         TopPMaskFwdOp,
     )
     from tileops.ops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
-    from tileops.ops.topk_selector import TopkSelectorFwdOp
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 # Grouped by op family, simple to composite; within a group, base case before variants.
@@ -147,7 +143,7 @@ _LAZY = {
     "UnaryOp": ".elementwise",
     "BinaryOp": ".elementwise",
     "FusedGatedOp": ".elementwise",
-    "DropoutFwdOp": ".dropout",
+    "DropoutFwdOp": ".elementwise.dropout",
     # Reduction
     "SumFwdOp": ".reduction",
     "MeanFwdOp": ".reduction",
@@ -162,9 +158,7 @@ _LAZY = {
     "SoftmaxFwdOp": ".reduction",
     "LogSoftmaxFwdOp": ".reduction",
     "LogSumExpFwdOp": ".reduction",
-    "L1NormFwdOp": ".reduction",
-    "L2NormFwdOp": ".reduction",
-    "InfNormFwdOp": ".reduction",
+    "VectorNormFwdOp": ".reduction",
     "CumsumFwdOp": ".reduction",
     "CumprodFwdOp": ".reduction",
     "AllFwdOp": ".reduction",
@@ -182,7 +176,7 @@ _LAZY = {
     "GroupNormFwdOp": ".norm",
     "InstanceNormFwdOp": ".norm",
     # Quantization
-    "FP8QuantFwdOp": ".fp8_quant",
+    "FP8QuantFwdOp": ".quantization.fp8_quant",
     "INT8DequantPerTensorFwdOp": ".quantization",
     "INT8DequantPerChannelFwdOp": ".quantization",
     "INT8DequantPerBlockFwdOp": ".quantization",
@@ -194,10 +188,10 @@ _LAZY = {
     "SmoothQuantFwdOp": ".quantization",
     # GEMM
     "GemmFwdOp": ".gemm",
-    "GemmFp8FwdOp": ".gemm",
+    "GemmFP8FwdOp": ".gemm",
     "GemmW4A16FwdOp": ".gemm",
     "BmmFwdOp": ".gemm",
-    "BmmFp8FwdOp": ".gemm",
+    "BmmFP8FwdOp": ".gemm",
     "GroupedGemmFwdOp": ".gemm",
     # Pooling
     "AvgPool1dFwdOp": ".pool",
@@ -220,11 +214,11 @@ _LAZY = {
     # FFT
     "FFTC2CFwdOp": ".fft",
     # Mixture of experts
-    "MoePrePermuteFwdOp": ".moe",
-    "MoePermuteAlignFwdOp": ".moe",
-    "MoeGroupedGemmFwdOp": ".moe",
-    "MoeExpertMLPFwdOp": ".moe",
-    "MoePostPermuteFwdOp": ".moe",
+    "MoEPrePermuteFwdOp": ".moe",
+    "MoEPermuteAlignFwdOp": ".moe",
+    "MoEGroupedGemmFwdOp": ".moe",
+    "MoEExpertMLPFwdOp": ".moe",
+    "MoEPostPermuteFwdOp": ".moe",
     # Sampling
     "TopKMaskFwdOp": ".sampling",
     "MinPMaskFwdOp": ".sampling",
@@ -233,9 +227,8 @@ _LAZY = {
     "SamplingFromProbsFwdOp": ".sampling",
     "ChainSpeculativeSamplingFwdOp": ".sampling",
     # Rotary position embedding
-    "RopeNeoxFwdOp": ".rope",
+    "RopeFwdOp": ".rope",
     "RopeNeoxPositionIdsFwdOp": ".rope",
-    "RopeNonNeoxFwdOp": ".rope",
     "RopeLlama31FwdOp": ".rope",
     "RopeYarnFwdOp": ".rope",
     "RopeLongRopeFwdOp": ".rope",
@@ -248,31 +241,30 @@ _LAZY = {
     "GroupedQueryAttentionVarlenFwdOp": ".attention",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp": ".attention",
     "MultiHeadLatentAttentionVarlenFwdOp": ".attention",
-    "NSACmpVarlenFwdOp": ".attention",
-    "NSATopkVarlenFwdOp": ".attention",
+    "NSACompressedVarlenFwdOp": ".attention",
+    "NSATopKVarlenFwdOp": ".attention",
     "NSAVarlenFwdOp": ".attention",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": ".attention",
-    "FP8LightningIndexerFwdOp": ".fp8_lightning_indexer",
-    "TopkSelectorFwdOp": ".topk_selector",
+    "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
+    "TopKSelectFwdOp": ".attention.topk_select",
     # Linear attention
-    "DeltaNetAutogradFwdOp": ".linear_attention",
-    "DeltaNetFwdOp": ".linear_attention",
-    "DeltaNetBwdOp": ".linear_attention",
+    "DeltaNetChunkFwdOp": ".linear_attention",
+    "DeltaNetChunkBwdOp": ".linear_attention",
     "DeltaNetInferenceFwdOp": ".linear_attention",
-    "DeltaNetDecodeFwdOp": ".linear_attention",
+    "DeltaNetRecurrentFwdOp": ".linear_attention",
     "GatedDeltaNetFwdOp": ".linear_attention",
-    "GLAFwdOp": ".linear_attention",
+    "GLAChunkFwdOp": ".linear_attention",
     "GLAInferenceFwdOp": ".linear_attention",
-    "GLABwdOp": ".linear_attention",
-    "GLADecodeFwdOp": ".linear_attention",
+    "GLAChunkBwdOp": ".linear_attention",
+    "GLARecurrentFwdOp": ".linear_attention",
     "KimiDeltaAttentionFwdOp": ".linear_attention",
     # Mamba
     "Mamba2FwdOp": ".mamba",
-    "DaCumsumFwdOp": ".mamba",
+    "SSDChunkCumsumFwdOp": ".mamba",
     "SSDChunkStateFwdOp": ".mamba",
     "SSDStatePassingFwdOp": ".mamba",
     "SSDChunkScanFwdOp": ".mamba",
-    "SSDDecodeFwdOp": ".mamba",
+    "SSDRecurrentFwdOp": ".mamba",
     # mHC (Manifold-Constrained Hyper-Connections)
     "MHCPreFwdOp": ".sequence_modeling",
     "MHCPostFwdOp": ".sequence_modeling",

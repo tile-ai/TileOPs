@@ -7,12 +7,14 @@ flashinfer's kernels.
 """
 
 import pytest
+import torch
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom
 from tileops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -22,8 +24,8 @@ from tileops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampFwdOp,
     ClampScalarFwdOp,
+    ClampTensorFwdOp,
     CosFwdOp,
     DivFwdOp,
     DropoutFwdOp,
@@ -45,7 +47,7 @@ from tileops.elementwise import (
     IsnanFwdOp,
     LeakyReluFwdOp,
     LeFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     Log1pFwdOp,
     LogFwdOp,
@@ -53,8 +55,8 @@ from tileops.elementwise import (
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillFwdOp,
     MaskedFillScalarFwdOp,
+    MaskedFillTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -95,7 +97,29 @@ def _bench(op_cls, call, *, torch_tag: str = "torch", count_copies: bool = False
         torch_tag: workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    ManifestBenchmark(op, workload).compare(functors, *inputs, count_copies=count_copies)
+    evidence = {}
+    if op_cls is DropoutFwdOp:
+        x = inputs[0]
+        arguments = workload.arguments()
+        p = arguments["p"] if arguments["training"] else 0.0
+
+        def validate(got, _expected):
+            if p in (0.0, 1.0):
+                torch.testing.assert_close(got, x if p == 0 else torch.zeros_like(x))
+                return
+            # Independent generators need not choose identical masks.
+            torch.testing.assert_close(got, torch.where(got != 0, x / (1 - p), 0))
+            eligible = x != 0
+            n = eligible.sum()
+            dropped = ((got == 0) & eligible).sum()
+            assert (dropped - n * p).abs() <= 6 * (n * p * (1 - p)).sqrt() + 1
+
+        evidence = dict.fromkeys(
+            functors, Custom(validate, "dropout scaling and six-sigma mask rate")
+        )
+    ManifestBenchmark(op, workload).compare(
+        functors, *inputs, count_copies=count_copies, evidence=evidence
+    )
 
 
 @pytest.mark.parametrize("call", manifest_calls(PreluFwdOp))
@@ -103,11 +127,11 @@ def test_prelu_bench(call) -> None:
     _bench(PreluFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaskedFillFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MaskedFillTensorFwdOp))
 def test_masked_fill_bench(call) -> None:
     # The baseline is a clone plus an in-place fill, and the clone is a copy, not a
     # kernel; counting copies is what puts all of it in the reading.
-    _bench(MaskedFillFwdOp, call, count_copies=True)
+    _bench(MaskedFillTensorFwdOp, call, count_copies=True)
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaskedFillScalarFwdOp))
@@ -150,9 +174,9 @@ def test_floor_divide_bench(call) -> None:
     _bench(FloorDivideFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LerpFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(LerpScalarFwdOp))
 def test_lerp_bench(call) -> None:
-    _bench(LerpFwdOp, call)
+    _bench(LerpScalarFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaximumFwdOp))
@@ -295,9 +319,9 @@ def test_softplus_bench(call) -> None:
     _bench(SoftplusFwdOp, call)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ClampFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(ClampTensorFwdOp))
 def test_clamp_bench(call) -> None:
-    _bench(ClampFwdOp, call)
+    _bench(ClampTensorFwdOp, call)
 
 
 @pytest.mark.parametrize("call", manifest_calls(ClampScalarFwdOp))

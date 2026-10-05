@@ -35,7 +35,7 @@ from tileops.kernels.norm.call_spec import (
     InstanceNormInferFwdInterface,
     InstanceNormTrainFwdInterface,
 )
-from tileops.ops.norm.norm_base import affine_or_constant
+from tileops.ops.norm.affine import affine_or_constant
 from tileops.ops.op_base import Op
 
 __all__ = ["InstanceNormFwdOp"]

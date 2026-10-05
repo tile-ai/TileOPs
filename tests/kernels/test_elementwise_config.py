@@ -13,9 +13,11 @@ from tileops.kernels.elementwise import (
     AddFwdKernel,
     BitwiseAndFwdKernel,
     EluFwdKernel,
+    FloorDivideFwdKernel,
     HardtanhFwdKernel,
     LeakyReluFwdKernel,
     PowFwdKernel,
+    RemainderFwdKernel,
     SiluAndMulFwdKernel,
 )
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
@@ -48,10 +50,6 @@ def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
 
 
-# Big enough that the grid-filling shrink leaves the dtype-driven width alone.
-_WIDE_N = 1 << 24
-
-
 @pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
@@ -65,11 +63,13 @@ _WIDE_N = 1 << 24
 @pytest.mark.parametrize("kernel_cls", INDEPENDENT_KERNELS_SIMPLE)
 def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expected_npt):
     """Representative independent kernels should preserve dtype-driven npt defaults."""
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     with (
         patch.object(kernel_cls, "_build_kernel", return_value=None),
         patch.object(kernel_cls, "init_config"),
     ):
-        kernel = kernel_cls(_WIDE_N, dtype)
+        kernel = kernel_cls(wide_n, dtype)
     assert kernel.default_config["num_per_thread"] == expected_npt
     assert kernel.default_config["threads"] == 256
 
@@ -85,11 +85,13 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
 )
 def test_same_shape_binary_default_npt(kernel_cls, dtype, expected_npt):
     """Same-shape binary threads carry eight elements, at most two vectors; heavy bodies keep one."""
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     with (
         patch.object(kernel_cls, "_build_kernel", return_value=None),
         patch.object(kernel_cls, "init_config"),
     ):
-        kernel = kernel_cls((_WIDE_N,), (_WIDE_N,), dtype)
+        kernel = kernel_cls((wide_n,), (wide_n,), dtype)
     cfg = kernel.default_config
     assert (cfg["strategy"], cfg["num_per_thread"]) == ("register_copy", expected_npt)
 
@@ -110,6 +112,8 @@ def test_multi_input_kernels_take_the_shared_launch_config(dtype, expected_npt):
     They all stage their per-element inputs the way ``register_copy`` does, so none of
     them states a thread count of its own.
     """
+    # Keep enough work that grid filling does not shrink the dtype-driven width.
+    wide_n = 1 << 24
     subclasses = MultiInputElementwiseKernel.__subclasses__()
     assert subclasses, "no several-input kernel was imported"
     for kernel_cls in subclasses:
@@ -118,7 +122,7 @@ def test_multi_input_kernels_take_the_shared_launch_config(dtype, expected_npt):
         kernel = kernel_cls.__new__(kernel_cls)
         kernel.dtype = dtype
         kernel.output_dtype = dtype
-        kernel.N_total = _WIDE_N
+        kernel.N_total = wide_n
         assert kernel.default_config == {"threads": 128, "num_per_thread": expected_npt}, (
             kernel_cls.__name__
         )
@@ -198,3 +202,31 @@ def test_fused_gated_explicit_config_follows_the_work():
             c["num_per_thread"] == cfg["num_per_thread"] and c["threads"] == cfg["threads"]
             for c in kernel.autotune_configs
         )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("kernel_cls", "ref_fn"),
+    [
+        pytest.param(RemainderFwdKernel, torch.remainder, id="remainder"),
+        pytest.param(FloorDivideFwdKernel, torch.floor_divide, id="floor_divide"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dtype", "npt"),
+    [
+        # The top of each dtype's sweep: twice the elements its bytes a thread give.
+        pytest.param(torch.float16, 16, id="float16"),
+        pytest.param(torch.bfloat16, 16, id="bfloat16"),
+        pytest.param(torch.float32, 8, id="float32"),
+    ],
+)
+def test_floored_kernels_build_at_the_widest_tuned_fold(kernel_cls, ref_fn, dtype, npt) -> None:
+    """The floored bodies build and stay exact where a thread holds more than one vector."""
+    threads = 128
+    n = threads * npt
+    a = torch.rand(n, device="cuda", dtype=dtype) + 0.5
+    b = torch.rand(n, device="cuda", dtype=dtype) + 0.5
+    kernel = kernel_cls(a.shape, b.shape, dtype, config={"threads": threads, "num_per_thread": npt})
+    torch.testing.assert_close(kernel.forward(a, b), ref_fn(a, b), atol=0.0, rtol=0.0)

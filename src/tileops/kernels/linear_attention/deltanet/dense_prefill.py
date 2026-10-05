@@ -10,6 +10,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceCall,
     DeltaNetInferenceFwdInterface,
+    head_count_refusal,
 )
 from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
@@ -36,15 +37,17 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
     def refusal(cls, call: DeltaNetInferenceCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        The partitioned pipeline runs equal-length chunks of 64 tokens over a square
-        16-bit state, and takes Q and K already normalized.
+        The pipeline runs chunks of 64 tokens over a square 16-bit state, equal-length or
+        packed, with a row that is not a whole chunk, and with the Q/K L2 normalization
+        taken in kernel.
         """
+        heads = head_count_refusal(call.heads)
+        if heads is not None:
+            return heads
         unsupported = [
             name
             for name, present in (
-                ("Q/K L2 normalization", call.l2norm),
-                ("packed varlen", call.varlen),
-                ("T not divisible by 64", call.seq_len < 64 or call.seq_len % 64 != 0),
+                ("a single token outside a packed call", call.seq_len == 1 and not call.varlen),
                 (
                     "K/V dimensions other than matching 64 or 128",
                     call.dim_k != call.dim_v or call.dim_k not in (64, 128),
@@ -61,25 +64,31 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
     @classmethod
     def entry_for(cls, call: DeltaNetInferenceCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        identity = (call.batch, call.heads, call.seq_len, call.dim_k, call.scale, call.dtype, index)
-        return identity, lambda: cls(
+        arguments = dict(
             batch=call.batch,
             heads=call.heads,
             seq_len=call.seq_len,
+            num_sequences=call.num_sequences,
+            varlen=call.varlen,
             dim=call.dim_k,
             scale=call.scale,
             dtype=call.dtype,
+            l2norm=call.l2norm,
             device_index=index,
         )
+        return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)
 
     def __init__(
         self,
         batch: int,
         heads: int,
         seq_len: int,
+        num_sequences: int,
+        varlen: bool,
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        l2norm: bool = False,
         config: Optional[Dict[str, Any]] = None,
         *,
         device_index: int | None = None,
@@ -88,8 +97,15 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len
+        self.num_sequences = num_sequences
+        # A packed call reads the caller's int64 offsets and an equal-length one the
+        # int32 offsets this kernel builds, so the two compile different programs.
+        self.varlen = varlen
         self.dim = dim
         self.scale = scale
+        # Normalizing Q and K changes what every stage is built to read, so it belongs to
+        # the build identity rather than to a launch argument.
+        self.l2norm = l2norm
         self.init_config(config)
         if self.config["max_local_chunks"] < 4:
             raise ValueError(
@@ -100,13 +116,14 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        self.zero_gate = torch.zeros((batch, seq_len, heads), dtype=dtype, device=device)
+        self.zero_gate = torch.zeros(
+            (1, batch * seq_len, heads), dtype=torch.float32, device=device
+        )
 
     @staticmethod
     @functools.lru_cache(maxsize=32)
     def _partition_metadata(
-        batch: int,
-        seq_len: int,
+        sequence_lengths: tuple[int, ...],
         heads: int,
         max_local_chunks: int,
         use_partition: bool,
@@ -122,7 +139,9 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        raw_offsets = [i * seq_len for i in range(batch + 1)]
+        raw_offsets = [0]
+        for length in sequence_lengths:
+            raw_offsets.append(raw_offsets[-1] + length)
         raw_cu = torch.tensor(raw_offsets, dtype=torch.int32, device=device)
         if not use_partition:
             return raw_cu, None, None, None, None
@@ -157,30 +176,42 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             local_chunks = max(local_chunks, 256)
         return max(local_chunks, 4)
 
-    @classmethod
     def _partition_initial_state(
-        cls,
+        self,
         k: torch.Tensor,
         v: torch.Tensor,
         inverse: torch.Tensor,
         zero_gate: torch.Tensor,
         beta: torch.Tensor,
-        batch: int,
-        seq_len: int,
+        k_rnorm: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        sequence_lengths: tuple[int, ...] | None,
         initial_state: torch.Tensor | None,
         max_local_chunks: int,
     ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        """Prepare the correct start state for every independent prefill partition."""
+        """The state each partition starts from, and the offsets the recurrence walks.
+
+        Partitioning splits a long sequence at a chunk boundary and replays each piece from
+        a corrected state, which asks for every length on the host. A packed call that
+        passes no host copy of the offsets keeps its sequences whole instead.
+
+        A sequence that is not a whole number of chunks still partitions: every split lands
+        on a chunk boundary by construction, so only a sequence's last partition is short,
+        and the warmup pass that floors a partition's chunk count is the one pass that
+        skips a last partition.
+        """
+        if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
+            return initial_state, cu_seqlens, None, cu_seqlens
         heads = k.shape[2]
-        num_chunks = batch * seq_len // 64
+        num_chunks = -(-k.shape[1] // 64)
         use_partition = num_chunks > max_local_chunks and (
             heads <= 40 or (heads <= 64 and num_chunks >= 128)
         )
-        raw_cu, cp_cu, cp_to_raw, raw_to_cp, final_mask = cls._partition_metadata(
-            batch, seq_len, heads, max_local_chunks, use_partition, k.device.index
-        )
         if not use_partition:
-            return initial_state, raw_cu, None, raw_cu
+            return initial_state, cu_seqlens, None, cu_seqlens
+        raw_cu, cp_cu, cp_to_raw, raw_to_cp, final_mask = self._partition_metadata(
+            sequence_lengths, heads, max_local_chunks, True, k.device.index
+        )
         assert cp_cu is not None
         assert cp_to_raw is not None
         assert raw_to_cp is not None
@@ -204,6 +235,8 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             output_h=False,
             cu_seqlens=cp_cu,
             num_warmup_chunks=warmup_chunks,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
         )
         partition_h0 = correct_initial_states(
             raw_h0=initial_state,
@@ -217,7 +250,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
     @property
     def default_config(self) -> Dict[str, Any]:
         # A partition holds at most this many 64-token chunks; a longer sequence is split.
-        num_chunks = self.batch * self.seq_len // 64
+        num_chunks = -(-self.batch * self.seq_len // 64)
         return {"max_local_chunks": self._local_chunks(num_chunks, self.heads, self.device_index)}
 
     def forward(
@@ -230,23 +263,35 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         cu_seqlens: torch.Tensor | None = None,
         cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        del cu_seqlens, cu_seqlens_cpu
         self._require_cuda(q=q, k=k, v=v, beta=beta)
         batch, seq_len, heads, dim = q.shape
-        inverse = prefill_blocksolve_A_bthd(k, self.zero_gate, beta, 64, use_gate=False)
-        flattened = (
-            tensor.reshape(1, batch * seq_len, *tensor.shape[2:])
-            for tensor in (q, k, v, self.zero_gate, beta, inverse)
+        q_flat, k_flat, v_flat, beta_flat = (
+            tensor.reshape(1, batch * seq_len, *tensor.shape[2:]) for tensor in (q, k, v, beta)
         )
-        q_flat, k_flat, v_flat, g_flat, beta_flat, inverse_flat = flattened
-        partition_h0, cu, seq_map, raw_cu = self._partition_initial_state(
+        lengths: tuple[int, ...] | None
+        if cu_seqlens is None:
+            # An equal-length call is a packed call whose offsets step by the row length:
+            # the bytes are the same, so one set of kernels serves both.
+            cu_seqlens = torch.arange(
+                0, (batch + 1) * seq_len, seq_len, dtype=torch.int32, device=q.device
+            )
+            lengths = (seq_len,) * batch
+        elif cu_seqlens_cpu is not None:
+            lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
+        else:
+            lengths = None
+        inverse, k_rnorm = prefill_blocksolve_A_bthd(
+            k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, use_gate=False, l2norm=self.l2norm
+        )
+        partition_h0, offsets, seq_map, raw_offsets = self._partition_initial_state(
             k_flat,
             v_flat,
-            inverse_flat,
-            g_flat,
+            inverse,
+            self.zero_gate,
             beta_flat,
-            batch,
-            seq_len,
+            k_rnorm,
+            cu_seqlens,
+            lengths,
             initial_state,
             self.config["max_local_chunks"],
         )
@@ -254,16 +299,18 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             q_flat,
             k_flat,
             v_flat,
-            inverse_flat,
-            g_flat,
+            inverse,
+            self.zero_gate,
             beta_flat,
             scale=self.scale,
             initial_state=partition_h0,
             output_final_state=True,
             output_h=False,
-            cu_seqlens=cu,
+            cu_seqlens=offsets,
             cp_seq_map=seq_map,
-            raw_cu_seqlens=raw_cu,
+            raw_cu_seqlens=raw_offsets,
             chunk_size=64,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
         )
         return o.reshape(batch, seq_len, heads, dim), final_state

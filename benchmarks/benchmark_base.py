@@ -4,6 +4,7 @@ Timing lives in :mod:`benchmarks.timing`, reporting in :mod:`benchmarks.report`.
 are re-exported here, so a bench file keeps importing what it always did.
 """
 
+import gc
 import statistics
 from abc import ABC, abstractmethod
 from typing import Any, Generic, Optional, TypeVar
@@ -11,6 +12,7 @@ from typing import Any, Generic, Optional, TypeVar
 import pytest
 import torch
 
+from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import (
     _MAX_ITERS,
@@ -23,6 +25,14 @@ from benchmarks.timing import (
     _sample_spread_ms,
     bench_kernel,
     median_busy_ms,
+)
+from benchmarks.verification import (
+    Evidence,
+    Exact,
+    Unestablished,
+    describe,
+    ratio_allowed,
+    verifying,
 )
 from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_key
 from tileops.manifest.plan import entry_plan
@@ -60,6 +70,48 @@ def backward_of(output: torch.Tensor) -> Any:
     # A Python autograd.Function's node exposes apply() and is not callable; a node
     # built in C++ is callable and has no apply(). Neither offers the other's form.
     return getattr(node, "apply", None) or node
+
+
+def _flatten_tensors(value: Any) -> list:
+    """Every tensor reachable in *value* through tuples, lists and dicts."""
+    if torch.is_tensor(value):
+        return [value]
+    if isinstance(value, (tuple, list)):
+        return [found for item in value for found in _flatten_tensors(item)]
+    if isinstance(value, dict):
+        return [found for item in value.values() for found in _flatten_tensors(item)]
+    return []
+
+
+def _detached_copy(value: Any) -> Any:
+    """*value* with every tensor replaced by a copy, so a later write cannot reach it."""
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    if isinstance(value, tuple):
+        return tuple(_detached_copy(item) for item in value)
+    if isinstance(value, list):
+        return [_detached_copy(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _detached_copy(item) for key, item in value.items()}
+    return value
+
+
+def _same_callable(one: Any, other: Any) -> bool:
+    """Whether both run the same code on the same object."""
+    if one is other:
+        return True
+    function = getattr(one, "__func__", None)
+    return (
+        function is not None
+        and function is getattr(other, "__func__", None)
+        and getattr(one, "__self__", None) is getattr(other, "__self__", None)
+    )
+
+
+def _result_dtype(value: Any) -> Optional[torch.dtype]:
+    """The least precise floating dtype in *value*, which is the one a tolerance must admit."""
+    dtypes = [t.dtype for t in _flatten_tensors(value) if t.is_floating_point() or t.is_complex()]
+    return max(dtypes, key=lambda dtype: torch.finfo(dtype).eps) if dtypes else None
 
 
 class BenchmarkBase(Generic[W], ABC):
@@ -222,34 +274,179 @@ class OpBenchmark(BenchmarkBase[W]):
     def calculate_memory(self) -> Optional[float]:
         return self._get_roofline()[1]
 
+    def _resolve_evidence(self, plan: dict, declared: Optional[dict]) -> dict:
+        """Resolve each tag's evidence; missing oracles disable ratios."""
+        declared = declared or {}
+        stray = set(declared) - set(plan)
+        if stray:
+            raise ValueError(
+                f"evidence names {sorted(stray)}, which this call does not time; "
+                "a declaration matching no tag protects nothing"
+            )
+        resolved = {tag: declared.get(tag, Exact()) for tag in plan}
+        if getattr(self.workload, "ref_program", None) is not None:
+            return resolved
+        # Ratio-bearing evidence requires an oracle.
+        return {
+            tag: Unestablished()
+            if mark.kind in ("exact", "partial", "custom")
+            and getattr(mark, "reference", None) is None
+            else mark
+            for tag, mark in resolved.items()
+        }
+
+    def _verify(self, plan: dict, evidence: dict, inputs: tuple) -> None:
+        """Validate timed callables on their arguments against oracles on canonical inputs."""
+        reference = getattr(self.workload, "ref_program", None)
+        active = []
+        for tag, (functor, args) in plan.items():
+            mark = evidence[tag]
+            oracle = getattr(mark, "reference", None) or reference
+            if oracle is None or mark.kind not in ("exact", "partial", "custom"):
+                continue
+            if args is inputs and _same_callable(functor, oracle):
+                continue
+            active.append((tag, functor, args, mark, oracle))
+        if not active:
+            return
+
+        # Include tag-specific arguments: one tag must not mutate the next tag's input.
+        live = {id(t): t for t in _flatten_tensors(inputs)}
+        for _, args in plan.values():
+            live.update({id(t): t for t in _flatten_tensors(args)})
+        pristine = {key: tensor.detach().clone() for key, tensor in live.items()}
+
+        def restore():
+            with torch.no_grad():
+                for key, tensor in live.items():
+                    tensor.copy_(pristine[key])
+
+        # Share each oracle result across tags.
+        references = []
+        control_checks = {}
+        try:
+            for tag, functor, args, mark, oracle in active:
+                restore()
+                # Match the no-grad mode used by the timer, including compiled baselines.
+                with torch.no_grad():
+                    produced = _detached_copy(functor(*args))
+                restore()
+                for cached_oracle, cached_result in references:
+                    if _same_callable(oracle, cached_oracle):
+                        expected = cached_result
+                        break
+                else:
+                    expected = _detached_copy(oracle(*inputs))
+                    references.append((oracle, expected))
+                restore()
+                OpBenchmark._check_result(tag, produced, expected, mark)
+                outputs = produced if isinstance(produced, (tuple, list)) else (produced,)
+                dtypes = tuple(_result_dtype(output) for output in outputs)
+                reference_index = next(
+                    i
+                    for i, (candidate, _) in enumerate(references)
+                    if _same_callable(oracle, candidate)
+                )
+                for control in getattr(mark, "controls", ()):
+                    key = (reference_index, id(control))
+                    control_checks.setdefault(key, (control, []))[1].append((tag, mark, dtypes))
+                del produced
+
+            # Share each fault across tag comparators, retaining one fault output at a time.
+            for (reference_index, _), (control, checks) in control_checks.items():
+                oracle, expected = references[reference_index]
+                restore()
+                faulty = _detached_copy(control.run(oracle, inputs))
+                restore()
+                try:
+                    for tag, mark, dtypes in checks:
+                        try:
+                            OpBenchmark._check_result(
+                                tag, faulty, expected, mark, tolerance_dtypes=dtypes
+                            )
+                        except AssertionError:
+                            continue
+                        raise ValueError(
+                            f"{tag}: negative control {control.name!r} was accepted; "
+                            "the inputs or tolerance do not distinguish this fault"
+                        )
+                finally:
+                    del faulty
+
+        finally:
+            restore()
+
+    @staticmethod
+    def _check_result(
+        tag: str,
+        produced: Any,
+        expected: Any,
+        mark: Evidence,
+        *,
+        tolerance_dtypes: Optional[tuple] = None,
+    ) -> None:
+        if mark.kind == "custom":
+            mark.validator(produced, expected)
+            return
+        outputs = produced if isinstance(produced, (tuple, list)) else (produced,)
+        targets = expected if isinstance(expected, (tuple, list)) else (expected,)
+        width, covered = len(outputs), len(targets)
+        claimed = getattr(mark, "outputs", width)
+        if covered < 1 or width < 1:
+            raise ValueError(f"{tag}: the reference or implementation returned no outputs")
+        if mark.kind == "exact" and covered < width:
+            raise ValueError(
+                f"{tag}: the reference establishes {covered} of {width} outputs; declare "
+                f"Partial(outputs={covered}, reason=...) naming what the rest leaves open"
+            )
+        if claimed > min(width, covered):
+            raise ValueError(
+                f"{tag}: claims {claimed} outputs, implementation returns {width} "
+                f"and reference establishes {covered}"
+            )
+        dtypes = tolerance_dtypes or tuple(_result_dtype(output) for output in outputs)
+        for output, target, dtype in zip(
+            outputs[:claimed], targets[:claimed], dtypes[:claimed], strict=True
+        ):
+            tolerance = reference_tolerance(dtype) if dtype is not None else {}
+            try:
+                assert_matches_reference(
+                    lambda _o=output: _o, lambda _t=target: _t, **mark.tolerance(tolerance)
+                )
+            except AssertionError as exc:
+                raise AssertionError(f"{tag}: {exc}") from exc
+
     def compare(
         self,
         functors: dict[str, Any],
         *inputs: Any,
         count_copies: bool = False,
+        evidence: Optional[dict[str, Evidence]] = None,
     ) -> dict[str, dict]:
-        """Time several implementations forward then reversed, and record them.
+        """Verify, time in both tag orders, and record results under this op.
 
-        Every tag is recorded under the op this benchmark was built for: the row
-        names what ran, so no call site can put one op's numbers under another's
-        name.
+        Values are callables on ``inputs`` or ``(callable, args)`` pairs. Timing runs
+        under ``no_grad``; backward baselines must invoke their autograd node directly.
+        ``count_copies`` includes device copies consistently across all tags.
 
-        Timing each one twice in opposite orders keeps drift across the case
-        from landing on whichever ran last. A value is a callable timed on
-        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
-        ``no_grad``: a graph built inside the timed region is host work, and a
-        backward reached through autograd runs where the timer cannot attribute
-        it. A backward baseline is timed by applying its node directly.
+        ``evidence`` overrides the default reference check. Verification temporaries
+        are released before sampling; ``--tileops-verify`` omits timing.
 
-        ``count_copies`` puts device-to-device copies into every tag's reading, for a
-        case where an implementation computes part of the result with one. It belongs to
-        the case rather than the tag: reading one side with copies and the other without
-        compares two instruments.
-        """
+        Raises:
+            ValueError: Evidence names a tag absent from the timing plan."""
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
             for tag, value in functors.items()
         }
+        evidence = self._resolve_evidence(plan, evidence)
+        # Release verification temporaries before allocating timer buffers.
+        self._verify(plan, evidence, inputs)
+        if verifying():
+            return {}
+        if any(ratio_allowed(mark) for mark in evidence.values()):
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
         tags = list(plan)
         order = tags + tags[::-1]
         # Split the budget across the two passes rather than spending it twice:
@@ -284,7 +481,14 @@ class OpBenchmark(BenchmarkBase[W]):
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
         params = self.case_params()
         for tag in tags:
-            BenchmarkReport.record(self.op, params, results[tag], tag=tag)
+            BenchmarkReport.record(
+                self.op,
+                params,
+                results[tag],
+                tag=tag,
+                unverified=describe(evidence[tag]) or "",
+                ratio=ratio_allowed(evidence[tag]),
+            )
         return results
 
 

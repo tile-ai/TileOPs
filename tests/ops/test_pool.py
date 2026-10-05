@@ -64,7 +64,7 @@ class AvgPool1dFixture(FixtureBase):
                     True,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-k3-default-stride-fp16",
                 ),
                 pytest.param(
@@ -146,7 +146,7 @@ class AvgPool2dFixture(FixtureBase):
                     None,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-3x3-default-stride-fp16",
                 ),
                 pytest.param(
@@ -317,7 +317,7 @@ class AvgPool3dFixture(FixtureBase):
                     None,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-2x2x2-default-stride-fp16",
                 ),
                 pytest.param(
@@ -699,7 +699,7 @@ _MAX_POOL1D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-k3-s2-p1-fp16",
     ),
     pytest.param(
@@ -852,7 +852,7 @@ _MAX_POOL2D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-3x3-s2-p1-fp16",
     ),
     pytest.param(
@@ -996,7 +996,7 @@ _MAX_POOL3D_PARAMS = [
         torch.float16,
         False,
         True,
-        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
         id="smoke-k2-s2-fp16",
     ),
     pytest.param(
@@ -1241,13 +1241,6 @@ def test_max_pool3d(
     )
 
 
-# Per-dim pool config for the special-values tests.
-_MAX_POOL_SPECIAL_KWARGS: dict[int, dict[str, object]] = {
-    1: {"kernel_size": 3, "stride": 1, "padding": 1},
-    2: {"kernel_size": (3, 3), "stride": (1, 1), "padding": (1, 1)},
-    3: {"kernel_size": 2, "stride": 1, "padding": 1},
-}
-
 # Curated per-dim special-value inputs (NaN / tied maxima / -inf / padding).
 # Smoke cases lead the list: the tier gate requires smoke to collect first.
 _MAX_POOL_SPECIAL_VALUE_CASES = [
@@ -1425,9 +1418,14 @@ def test_max_pool_special_values(
     input_builder: Callable[[], torch.Tensor],
     return_indices: bool,
 ) -> None:
+    special_kwargs = {
+        1: {"kernel_size": 3, "stride": 1, "padding": 1},
+        2: {"kernel_size": (3, 3), "stride": (1, 1), "padding": (1, 1)},
+        3: {"kernel_size": 2, "stride": 1, "padding": 1},
+    }
     _ = case_name
     x = input_builder()
-    pool_kwargs = _MAX_POOL_SPECIAL_KWARGS[ndim]
+    pool_kwargs = special_kwargs[ndim]
     ref = max_pool_ref(ndim)(x, **pool_kwargs, return_indices=return_indices)
     op = _max_pool_op_cls(ndim, return_indices)(**pool_kwargs)
     if return_indices:
@@ -1439,21 +1437,6 @@ def test_max_pool_special_values(
         torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
 
 
-# Per-dim constructor config shared by the dynamic-shape and compile tests.
-_MAX_POOL_CTOR_KWARGS: dict[int, dict[str, object]] = {
-    1: {"kernel_size": 3, "stride": 2, "padding": 1},
-    2: {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
-    3: {"kernel_size": 3, "stride": 2, "padding": 1},
-}
-
-# Per-dim (first, second) input shapes for the dynamic-shape cache test.
-_MAX_POOL_DYNAMIC_SHAPES: dict[int, tuple[tuple[int, ...], tuple[int, ...]]] = {
-    1: ((1, 4, 32), (2, 4, 32)),
-    2: ((1, 4, 16, 16), (2, 4, 16, 16)),
-    3: ((1, 4, 8, 16, 16), (2, 4, 8, 16, 16)),
-}
-
-
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("return_indices", [False, True], ids=["plain", "indices"])
@@ -1462,8 +1445,18 @@ def test_max_pool_dynamic_shape_kernel_cache_and_roofline(
     ndim: int,
     return_indices: bool,
 ) -> None:
-    op = _max_pool_op_cls(ndim, return_indices)(**_MAX_POOL_CTOR_KWARGS[ndim])
-    shape1, shape2 = _MAX_POOL_DYNAMIC_SHAPES[ndim]
+    dynamic_shapes = {
+        1: ((1, 4, 32), (2, 4, 32)),
+        2: ((1, 4, 16, 16), (2, 4, 16, 16)),
+        3: ((1, 4, 8, 16, 16), (2, 4, 8, 16, 16)),
+    }
+    ctor_kwargs = {
+        1: {"kernel_size": 3, "stride": 2, "padding": 1},
+        2: {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
+        3: {"kernel_size": 3, "stride": 2, "padding": 1},
+    }
+    op = _max_pool_op_cls(ndim, return_indices)(**ctor_kwargs[ndim])
+    shape1, shape2 = dynamic_shapes[ndim]
     x1 = torch.randn(*shape1, dtype=torch.float16, device=run_device())
     x2 = torch.randn(*shape2, dtype=torch.float16, device=run_device())
 
@@ -1508,13 +1501,18 @@ def test_max_pool_compile_fullgraph(
     return_indices: bool,
     x_shape: tuple[int, ...],
 ) -> None:
-    op = op_cls(**_MAX_POOL_CTOR_KWARGS[ndim])
+    ctor_kwargs = {
+        1: {"kernel_size": 3, "stride": 2, "padding": 1},
+        2: {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
+        3: {"kernel_size": 3, "stride": 2, "padding": 1},
+    }
+    op = op_cls(**ctor_kwargs[ndim])
     x = torch.randn(*x_shape, device=run_device(), dtype=torch.float16)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
     ref = max_pool_ref(ndim)(
         x,
-        **_MAX_POOL_CTOR_KWARGS[ndim],
+        **ctor_kwargs[ndim],
         return_indices=return_indices,
     )
     if return_indices:
@@ -1650,7 +1648,7 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     (6, 6),
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-spp-6x6-fp16",
                 ),
                 pytest.param(
@@ -1726,7 +1724,7 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     (6, 6),
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-spp-6x6-fp16",
                 ),
                 pytest.param(

@@ -11,13 +11,13 @@ import torch
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
-    assert_matches_reference,
     compiled_reference,
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerTensorFwdOp
-from workloads.quantization import INT8QuantPerTensorWorkload
+from workloads.quantization.quantize import INT8QuantPerTensorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -44,7 +44,6 @@ def test_int8_quant_per_tensor_bench(call) -> None:
     op = INT8QuantPerTensorFwdOp(**call.arguments({}), tune=_TUNE)
     bm = ManifestBenchmark(op, workload)
 
-    assert_matches_reference(_vllm_quant, workload.ref_program, *inputs, rtol=0.0, atol=0.0)
     bm.compare(
         {
             "tileops": op,
@@ -53,4 +52,8 @@ def test_int8_quant_per_tensor_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        evidence={
+            tag: Custom(assert_quantized, "scales checked; INT8 rounding within one code")
+            for tag in ("tileops", VLLM_TAG, TORCH_COMPILE_TAG)
+        },
     )

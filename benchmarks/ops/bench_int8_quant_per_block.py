@@ -8,12 +8,12 @@ byte counts come from the op's ``eval_roofline()`` via
 import functools
 
 import pytest
-import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom, assert_quantized
 from tileops.quantization import INT8QuantPerBlockFwdOp
-from workloads.quantization import INT8QuantPerBlockWorkload
+from workloads.quantization.quantize import INT8QuantPerBlockWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -45,9 +45,11 @@ def test_int8_quant_per_block_bench(call) -> None:
         )
         # vllm divides by ``max(amax, 1e-10) / 127`` and truncates the quotient, so a code
         # can sit one below the reference's in magnitude; the scales agree to float32 rounding.
-        q, scale = vllm_quant(*inputs)
-        q_ref, scale_ref = workload.ref_program(*inputs)
-        torch.testing.assert_close(scale, scale_ref, rtol=1e-6, atol=0.0)
-        assert (q.int() - q_ref.int()).abs().max().item() <= 1
         functors[VLLM_TAG] = vllm_quant
-    bm.compare(functors, *inputs)
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Custom(assert_quantized, "scales checked; INT8 rounding within one code")
+        ),
+    )

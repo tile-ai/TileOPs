@@ -9,17 +9,18 @@ from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
+from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
     GLAInferenceFwdInterface,
-    dense_entry,
+    build_entry,
     serves_dense,
 )
-from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
-from tileops.kernels.linear_attention.gla.gla_fwd import (
+from tileops.kernels.linear_attention.gla.chunk_fwd import (
     GLAChunkedFwdKernel,
     gla_precompute_g_kernel,
 )
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -253,7 +254,7 @@ def _gla_fwd_partitioned_replay_kernel(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
+        compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _replay_func(threads=512):
         qk_shape = [batch, seq_len, heads, dim_k]
@@ -394,6 +395,10 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInter
     supported_archs = [90]
 
     @classmethod
+    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+        return head_count_refusal(call.heads) or super().refusal(call)
+
+    @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
         fit = _PARTITION_FITS.get(call.calibration)
         return (
@@ -407,7 +412,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInter
 
     @classmethod
     def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
-        return dense_entry(
+        return build_entry(
             cls,
             call,
             batch=call.batch,

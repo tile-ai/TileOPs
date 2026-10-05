@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.grouped_gemm import (
+from tileops.kernels.gemm.grouped import (
     GroupedGemmCall,
     GroupedGemmFwdInterface,
     GroupedGemmKernel,

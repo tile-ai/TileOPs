@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Run each benchmark file in its own pytest process and merge the results.
+"""Run isolated benchmark processes and merge reports, including partial failures.
 
-A native failure (hang, segfault, OOM kill) costs one file: other fragments
-survive into the merged report and a hung child leaves a py-spy stack dump.
-Upcoming children import while the current file owns the GPU, hiding startup
-cost. This parent must never import torch: children need fresh processes.
-
-Two limits, because a stuck file and an expensive one call for opposite
-responses. ``--stall-timeout`` kills a child that stopped starting tests,
-however long its individual tests take. ``--total-budget`` stops launching
-files and writes the report, killing nothing for being slow.
-"""
+Preload upcoming imports without initializing CUDA. The parent must not import torch.
+``--stall-timeout`` limits time without a new test; ``--total-budget`` bounds the
+entire sweep. Timeout failures retain partial results and a py-spy stack dump."""
 
 from __future__ import annotations
 
@@ -59,7 +52,7 @@ class Heartbeat:
         with open(beat, "w") as fh:
             fh.write(nodeid)
 
-rc_collect = int(pytest.main(["--collect-only", "-q", sys.argv[3]]))
+rc_collect = int(pytest.main(["--collect-only", *sys.argv[2:]]))
 open(status, "w").write(str(rc_collect))
 sys.stdin.readline()
 open(beat, "w").write("")
@@ -94,6 +87,7 @@ class Child:
                 env={
                     **os.environ,
                     "TILEOPS_COLLECT_STATUS": str(status_path),
+                    "PYTHONUNBUFFERED": "1",
                     "TILEOPS_HEARTBEAT": str(beat_path),
                 },
             )
@@ -285,6 +279,23 @@ def main() -> int:
             "written instead of the CI job being cancelled mid-sweep"
         ),
     )
+    parser.add_argument(
+        "--warn-after",
+        type=float,
+        help="warn once after this many sweep seconds without interrupting tests",
+    )
+    parser.add_argument(
+        "--pytest-arg",
+        action="append",
+        default=[],
+        help=(
+            "an argument handed to every child pytest, repeatable; "
+            "--pytest-arg=--tileops-verify runs the verification pass with this file isolation"
+        ),
+    )
+    parser.add_argument(
+        "--progress-interval", type=float, default=30, help="seconds between live progress updates"
+    )
     parser.add_argument("--dump-dir", default="bench_stack_dumps", help="stack dump directory")
     parser.add_argument(
         "--teardown-timeout",
@@ -299,6 +310,10 @@ def main() -> int:
         help="upcoming files importing in advance while the current file runs",
     )
     args = parser.parse_args()
+    if args.progress_interval <= 0:
+        parser.error("--progress-interval must be positive")
+    if args.warn_after is not None and args.warn_after <= 0:
+        parser.error("--warn-after must be positive")
 
     dump_dir = Path(args.dump_dir)
     suites: list[ET.Element] = []
@@ -325,7 +340,7 @@ def main() -> int:
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
-            argv = ["-q", bench_files[index], f"--junit-xml={fragment}"]
+            argv = ["-q", bench_files[index], f"--junit-xml={fragment}", *args.pytest_arg]
             return Child(
                 _CHILD,
                 argv,
@@ -345,9 +360,9 @@ def main() -> int:
                 pending.append(spawn_at(spawned))
                 spawned += 1
 
-        run_deadline = (
-            time.monotonic() + args.total_budget if args.total_budget is not None else None
-        )
+        run_start = time.monotonic()
+        run_deadline = run_start + args.total_budget if args.total_budget is not None else None
+        warned = False
         unrun: list[str] = []
 
         def budget_spent() -> bool:
@@ -372,20 +387,43 @@ def main() -> int:
                 # a file of many slow tests is progressing, not stuck.
                 stall_deadline = start + args.stall_timeout
                 last_beat = 0.0
+                last_progress = start
+                running_node = "collecting tests"
                 out_of_budget = False
                 while True:
+                    if (
+                        args.warn_after is not None
+                        and not warned
+                        and time.monotonic() - run_start >= args.warn_after
+                    ):
+                        print(
+                            f"::warning::Benchmark sweep exceeded {args.warn_after:.0f}s; "
+                            f"continuing [{index + 1}/{len(bench_files)}] {rel}",
+                            flush=True,
+                        )
+                        warned = True
                     limit = (
                         stall_deadline
                         if run_deadline is None
                         else min(stall_deadline, run_deadline)
                     )
-                    rc = child.wait_result(min(1.0, max(0.0, limit - time.monotonic())))
+                    rc = child.wait_result(
+                        min(1.0, args.progress_interval, max(0.0, limit - time.monotonic()))
+                    )
                     if rc is not None:
                         break
-                    beat_mtime, _ = child.beat()
+                    beat_mtime, node = child.beat()
                     if beat_mtime > last_beat:
                         last_beat = beat_mtime
                         stall_deadline = time.monotonic() + args.stall_timeout
+                        running_node = node or "starting tests"
+                    now = time.monotonic()
+                    if now - last_progress >= args.progress_interval:
+                        print(
+                            f"RUNNING [{index + 1}/{len(bench_files)}] {now - start:.0f}s: {running_node}",
+                            flush=True,
+                        )
+                        last_progress = now
                     if time.monotonic() >= stall_deadline:
                         break
                     if budget_spent():

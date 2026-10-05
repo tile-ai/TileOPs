@@ -75,15 +75,16 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     The override is the reason the call was made; falling back to the stock
     kernel would report a result the caller believes came from theirs.
     """
-    from tileops.kernels.gemm import GemmTmaKernel
     from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
+    stock = GemmFwdOp()
+    key = stock.select_implementation("gemm", _gemm_call())
 
-    class IncompatibleGemm(GemmTmaKernel):
+    class IncompatibleGemm(stock.kernel_map[key]):  # type: ignore[misc, valid-type]
         supported_archs = incompatible_archs
 
-    op = GemmFwdOp(kernel_map={"gemm_tma": IncompatibleGemm})
+    op = GemmFwdOp(kernel_map={key: IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
         op.kernel_for("gemm", _gemm_call())

@@ -1,5 +1,6 @@
 """Tests for the GLA ops: chunkwise forward and backward, inference, decode."""
 
+import itertools
 from functools import partial
 
 import pytest
@@ -15,9 +16,15 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
+from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
-from workloads.linear_attention import GLADecodeWorkload, GLAInferenceWorkload, gla_decode_torch
+from workloads.linear_attention.gla import (
+    GLADecodeWorkload,
+    GLAInferenceWorkload,
+    gla_autograd_bwd_torch,
+    gla_decode_torch,
+    gla_fwd_chunked_torch,
+)
 
 try:
     from fla.ops.gla import chunk_gla
@@ -45,52 +52,6 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
     a_flat = a.float().flatten()
     b_flat = b.float().flatten()
     return (torch.dot(a_flat, b_flat) / (a_flat.norm() * b_flat.norm() + 1e-12)).item()
-
-
-def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
-    """Fully differentiable chunked GLA forward in float32."""
-    B, T, H, K = q.shape
-    V = v.shape[-1]
-    BC = chunk_size
-    NC = T // BC
-
-    if scale is None:
-        scale = K**-0.5
-
-    q = q.float() * scale
-    k = k.float()
-    v = v.float()
-    g = g.float()
-
-    g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
-
-    h = q.new_zeros(B, H, K, V)
-    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
-
-    o_chunks = []
-    for c in range(NC):
-        sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, sl, :, :]
-        kc = k[:, sl, :, :]
-        vc = v[:, sl, :, :]
-        gc = g_cum[:, sl, :, :]
-        g_last = gc[:, -1:, :, :]
-
-        q_gated = qc * torch.exp(gc)
-        o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
-
-        k_ungated = kc * torch.exp(-gc)
-        A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
-        A = A * mask.unsqueeze(0).unsqueeze(0)
-        o_intra = torch.einsum("bhij,bjhv->bihv", A, vc)
-
-        o_chunks.append(o_inter + o_intra)
-
-        k_adj = kc * torch.exp(g_last - gc)
-        h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
-        h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
-
-    return torch.cat(o_chunks, dim=1)
 
 
 class GLAFwdFixture(FixtureBase):
@@ -131,7 +92,7 @@ def test_gla_fwd(
     g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
 
     # --- Torch reference ---
-    ref_o = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
+    ref_o, _ref_state = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
 
     # --- FLA reference (if available; its Triton kernels need CUDA) ---
     fla = chunk_gla is not None and run_device_is_cuda()
@@ -141,7 +102,7 @@ def test_gla_fwd(
         print(f"  FLA vs ref o: cosine={cos:.6f}")
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
         scale=scale,
         tune=tune,
@@ -163,21 +124,6 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
-
-
-def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
-    """Compute GLA backward gradients via autograd on the differentiable forward."""
-    sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
-
-    q_ = q.float().detach().requires_grad_(True)
-    k_ = k.float().detach().requires_grad_(True)
-    v_ = v.float().detach().requires_grad_(True)
-    g_ = g.float().detach().requires_grad_(True)
-
-    o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
-    loss = (o * do.float()).sum()
-    dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
-    return dq, dk, dv, dg
 
 
 def _fla_autograd_bwd(
@@ -263,7 +209,7 @@ def test_gla_bwd(
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
     # --- TileOPs kernel backward ---
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
         scale=scale,
         target=BUILTIN,
@@ -273,7 +219,7 @@ def test_gla_bwd(
     h = fwd_kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
@@ -305,11 +251,11 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
     v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLAFwdOp(chunk_size=64).forward(q, k, v, g)
+        GLAChunkFwdOp(chunk_size=64).forward(q, k, v, g)
     h = torch.zeros(B, 2, H, K, V, device="cuda")
     dht = torch.zeros(B, H, K, V, device="cuda")
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLABwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
+        GLAChunkBwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
 
 
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> None:
@@ -446,6 +392,90 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype,dim", [(torch.bfloat16, 64), (torch.float16, 128)])
+@pytest.mark.parametrize("scale", [None, 0.3])
+def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: float | None) -> None:
+    """Sequence lengths from one token up, with the state and the host offsets each absent.
+
+    Two heads is the fewest at which a per-sequence state walk oversubscribes the device at
+    width 128 and not at width 64, so the float16 case runs the partitioned walk and the
+    bfloat16 case the per-sequence one. The longest row spans several partitions, so the
+    state a chunk is read with is one the scan composed.
+    """
+    if chunk_gla is None:
+        pytest.skip("FLA not installed")
+    torch.manual_seed(2237)
+    lengths = [1, 7, 63, 64, 100, 600]
+    total, heads = sum(lengths), 2
+    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
+    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype)
+    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
+    seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
+    op = GLAInferenceFwdOp(scale)
+    tolerance = standard_tolerance(dtype)
+    for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
+        o, final_state = op(q, k, v, g, state, cu_seqlens, host)
+        ref_o, ref_state = chunk_gla(
+            q,
+            k,
+            v,
+            g,
+            scale=dim**-0.5 if scale is None else scale,
+            initial_state=state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+        )
+        torch.testing.assert_close(o, ref_o, **tolerance)
+        torch.testing.assert_close(final_state, ref_state, **tolerance)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
+    dtype: torch.dtype,
+) -> None:
+    """A chunk's causal product is two factors whose exponents cancel.
+
+    The signature bounds the gate nowhere, so a gate of ten per token drives one factor past
+    the largest bfloat16 and the other below the smallest, and their product would be a NaN
+    the cancelled exponent never has.
+    """
+    if chunk_gla is None:
+        pytest.skip("FLA not installed")
+    torch.manual_seed(2237)
+    lengths = [100, 156]
+    total, heads, dim = sum(lengths), 2, 64
+    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
+    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype) * 10.0
+    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
+    o, final_state = GLAInferenceFwdOp()(q, k, v, g, None, cu_seqlens, None)
+    ref_o, ref_state = chunk_gla(
+        q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
+    )
+    assert torch.isfinite(o).all()
+    tolerance = standard_tolerance(dtype)
+    torch.testing.assert_close(o, ref_o, **tolerance)
+    torch.testing.assert_close(final_state, ref_state, **tolerance)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
+    """An equal-length call whose rows are not a multiple of 64 runs the packed kernel."""
+    torch.manual_seed(2237)
+    test = GLAInferenceTest(2, 100, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    op = GLAInferenceFwdOp()
+    test.check(op, *test.gen_inputs(), **standard_tolerance(torch.bfloat16))
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,has_initial_state,gate_scale",
     [(torch.bfloat16, True, 1.0), (torch.float16, False, 3.0)],
@@ -499,11 +529,25 @@ def test_gla_dense_decode_matches_fla(
     _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp(scale)
-    test.check(op, *inputs, **standard_tolerance(dtype))
-    assert any(
-        isinstance(kernel, GLADenseDecodeFwdKernel)
-        for kernel in op.built_kernels("gla_inference").values()
-    )
+    # One token puts the output at 4e-1 against a measured 3e-8, which the dtype's standard
+    # tolerance covers whole.
+    test.check(op, *inputs, atol=3e-7, rtol=3e-7)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+def test_gla_dense_decode_builds_one_kernel_per_state_presence() -> None:
+    """State presence changes what the build emits, so the two calls do not share a kernel."""
+    torch.manual_seed(2174)
+    test = GLAInferenceTest(2, 1, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
+    q, k, v, g, state = test.gen_inputs()
+    op = GLAInferenceFwdOp()
+    op(q, k, v, g, state)
+    op(q, k, v, g)
+    built = op.built_kernels("gla_inference").values()
+    assert {kernel.has_initial_state for kernel in built} == {False, True}
 
 
 @pytest.mark.smoke
@@ -534,12 +578,18 @@ class GLADecodeTest(GLADecodeWorkload, TestBase):
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
+    """Ten times the agreement one decode step and four chained ones reach, by dtype.
+
+    One token leaves the output around 4e-1 and the error three to six orders below it, so
+    a bound set by the dtype's own rounding passes a step that was never taken. Re-fit by
+    measuring the step against ``ref_program`` over the fixture's whole grid.
+    """
     if dtype == torch.float32:
-        return {"atol": 5e-4, "rtol": 5e-4}
+        return {"atol": 3e-6, "rtol": 3e-6}
     elif dtype == torch.float16:
-        return {"atol": 1e-2, "rtol": 1e-2}
+        return {"atol": 7e-4, "rtol": 7e-4}
     else:  # bfloat16
-        return {"atol": 2e-2, "rtol": 2e-2}
+        return {"atol": 3e-3, "rtol": 3e-3}
 
 
 class GLADecodeFixture(FixtureBase):
@@ -570,7 +620,7 @@ def test_gla_decode(
 ) -> None:
     torch.manual_seed(42)
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = GLADecodeFwdOp(tune=tune)
+    op = GLARecurrentFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -589,7 +639,7 @@ def test_gla_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = GLADecodeFwdOp(tune=tune)
+    op = GLARecurrentFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -636,7 +686,7 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    op = GLADecodeFwdOp(scale=scale, tune=tune)
+    op = GLARecurrentFwdOp(scale=scale, tune=tune)
     with torch.no_grad():
         o_tile, s_tile = op(q, k, v, gk, state)
 

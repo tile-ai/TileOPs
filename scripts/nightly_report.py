@@ -49,6 +49,12 @@ _PERF_KEYS = (
     "baseline_latency_ms",
     "baseline_tflops",
     "baseline_ratio",
+    # What established the row, and whether anything did. A measurement published without
+    # them reads as though a reference stood behind it.
+    "tileops_unverified",
+    "baseline_unverified",
+    "tileops_no_ratio",
+    "baseline_no_ratio",
 )
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
@@ -174,6 +180,11 @@ def parse_bench_xml(path: str) -> list[dict]:
                 else None
             ),
         }
+        # Evidence rides on every tag, not only the two the perf keys name.
+        for pkey, pval in props.items():
+            if pkey.endswith(("_no_ratio", "_unverified")):
+                entry[pkey] = pval
+
         # Perf data
         for key in _PERF_KEYS:
             if key in props:
@@ -304,6 +315,9 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         for key in (*_PERF_KEYS, "baselines"):
             if key in r:
                 config_entry[key] = r[key]
+        for key, value in r.items():
+            if key.endswith(("_no_ratio", "_unverified")):
+                config_entry[key] = value
         d["configs"].append(config_entry)
     return dict(ops)
 
@@ -425,14 +439,18 @@ def _spread(props: dict) -> float | None:
     return hi - lo if lo is not None and hi is not None else None
 
 
-def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) -> str | None:
+def _alias_name(
+    runs: list[dict], op: str, config_name: str, work: _WorkCounts, current: frozenset[str]
+) -> str | None:
     """The unique prior display name of this row in history, or None.
 
     A name is adopted only when its recorded FLOP and byte counts equal the
-    current row's exactly, its case id names the same dtypes, and it never shares
-    a run with the current name: a renamed row and its new name never co-occur,
-    while another variant of the same workload does. Equal counts do not tell two
-    dtypes of one width apart.
+    current row's exactly, its case id names the same dtypes, and it shares a run
+    with the current name neither in history nor in *current*: a renamed row and
+    its new name never co-occur, while another variant of the same workload does.
+    A variant added in the same run as the row it resembles is only caught by
+    *current*, because the row itself is in no historical run. Equal counts do not
+    tell two dtypes of one width apart.
     """
     if not work.flops_recorded or work.flops is None or work.nbytes is None:
         return None
@@ -458,19 +476,24 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
                 and _dtypes_of(name) == dtypes
             ):
                 candidates.add(name)
-    candidates -= excluded
+    candidates -= excluded | current
     return candidates.pop() if len(candidates) == 1 else None
 
 
 def _config_readings(
-    runs: list[dict], op: str, config_name: str, key: str, work: _WorkCounts
+    runs: list[dict],
+    op: str,
+    config_name: str,
+    key: str,
+    work: _WorkCounts,
+    current: frozenset[str],
 ) -> list[_Reading]:
     """Workload-matched positive readings for one row, oldest first.
 
     Per run the current display name wins; a run that recorded the row only
     under its prior name (see ``_alias_name``) contributes that reading.
     """
-    alias = _alias_name(runs, op, config_name, work)
+    alias = _alias_name(runs, op, config_name, work, current)
     readings = []
     for run in runs:
         cfgs = run.get("ops", {}).get(op, {})
@@ -501,13 +524,14 @@ def _reportable(delta_ms: float, base: _Reading, curr_spread: float | None) -> b
 def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
     """Yield one verdict input per config with a positive reading and history."""
     for op, data in bench_ops.items():
+        current = frozenset(_case_id(cfg["name"]) for cfg in data["configs"])
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
             if lat is None or lat <= 0:
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
-            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work)
+            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work, current)
             if readings:
                 yield op, cfg, lat, _spread(props), readings
 
@@ -559,6 +583,30 @@ def detect_previous_run_shifts(bench_ops: dict, history_runs: list[dict]) -> lis
         if _reportable(abs(lat - base.ms), base, curr_spread):
             out.append(_record(op, cfg, base.ms, lat))
     return out
+
+
+def _unverified_rows(bench_ops: dict) -> list[tuple[str, str, str]]:
+    """Rows no reference checked, as (op, config, note).
+
+    A row carries ``no_ratio`` where nothing established it: the workload has no reference,
+    the baseline computes a different function, or no reference runs at this shape. A
+    `Partial` row is excluded; its reference checked part of the result and its note names
+    what that leaves open.
+    """
+    found = []
+    for op, data in bench_ops.items():
+        for cfg in data["configs"]:
+            for key in cfg:
+                if not key.endswith("_no_ratio") or not cfg[key]:
+                    continue
+                tag = key[: -len("_no_ratio")]
+                # The alias conftest writes beside the first baseline's own tag.
+                if tag == "baseline" and f"{cfg.get('baseline_tag', '')}_no_ratio" in cfg:
+                    continue
+                found.append(
+                    (op, cfg.get("config", ""), cfg.get(f"{tag}_unverified", "unestablished"))
+                )
+    return found
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -958,6 +1006,9 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
+    unverified = _unverified_rows(bench_ops or {})
+    if unverified:
+        lines.append(f"| **Rows no reference checked** | {_WARN} {len(unverified)} |")
     lines.append(f"| **History window** | {history_window} |")
     if have_gpu_profile:
         sol_icon = (

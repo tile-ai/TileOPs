@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
-from workloads.deepseek_attention import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
+from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
+from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
 
 class NsaFwdTest(NsaFwdWorkload, TestBase):
@@ -168,7 +168,7 @@ def test_nsa_cmp_fwd_varlen_op(
     test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
 
-    op = NSACmpVarlenFwdOp(scale=scale, bs=bs, tune=tune)
+    op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)
 
 
@@ -256,10 +256,39 @@ def test_nsa_topk_varlen_op(
 
     test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
     inputs = test.gen_inputs()
-    op = NSATopkVarlenFwdOp(
+    op = NSATopKVarlenFwdOp(
         scale=scale,
         selected_block_num=selected_block_num,
         bs=bs,
         tune=tune,
     )
     test.check_topk(op, *inputs)
+
+
+@pytest.mark.smoke
+def test_nsa_topk_reference_keeps_fp32_dot_products() -> None:
+    """Promoting a rounded half matmul is too late to rank close candidates."""
+    torch.manual_seed(1235)
+    workload = NsaTopkWorkload(1, 512, 32, 64, 16, 1.0, 16, 32, torch.float16)
+    q, k, *metadata = workload.gen_inputs()
+    torch.testing.assert_close(
+        workload.ref_program(q, k, *metadata),
+        workload.ref_program(q.float(), k.float(), *metadata),
+        rtol=0,
+        atol=0,
+    )
+
+
+@pytest.mark.smoke
+def test_nsa_topk_close_scores_have_a_total_order() -> None:
+    """Nearby scores use quantized ties, not a non-transitive epsilon comparator."""
+    workload = NsaTopkWorkload(1, 256, 16, 16, 16, 1.0, 8, 32, torch.float16)
+    q, k, *metadata = workload.gen_inputs()
+    q = torch.zeros_like(q)
+    q[-1].fill_(1)
+    k = torch.empty_like(k)
+    k.copy_(torch.arange(k.shape[0] - 1, -1, -1, device=k.device)[:, None, None] * 2**-24)
+    op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=8, bs=32)
+    torch.testing.assert_close(
+        op(q, k, *metadata), workload.ref_program(q, k, *metadata), rtol=0, atol=0
+    )

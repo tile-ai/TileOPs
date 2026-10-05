@@ -9,8 +9,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
-from tileops.kernels.linear_attention.gated_deltanet.prefill_common import prepare_chunk_offsets
+from tileops.kernels.constants import LOG2E, WARP_MMA_ROWS
+from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
+    L2NORM_EPS,
+    prepare_chunk_offsets,
+    step_size,
+)
 from tileops.utils import get_sm_count
 
 
@@ -19,7 +23,7 @@ from tileops.utils import get_sm_count
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
-    compile_flags=["-O3", "-DENABLE_BF16", "-include", "tl_templates/cuda/gemm.h"],
+    compile_flags=["-O3", "-DENABLE_BF16"],
 )
 def _build_fused_chunk_gdr_fwd_kernel(
     H,
@@ -43,17 +47,30 @@ def _build_fused_chunk_gdr_fwd_kernel(
     store_o,
     is_varlen,
     is_cp,
+    l2norm=False,
+    beta_sigmoid=False,
+    allow_neg_eigval=False,
     block_DV=128,
     state_head_first=False,
     chunks_per_sequence=0,
+    state_v_first=False,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
     num_chunks = T.dynamic("num_chunks")
     raw_batch_size = T.dynamic("raw_batch_size")
     block_S = chunk_size
+    # A build that does not normalize never reads this tensor, and the host hands it one
+    # token so the allocation carries no cost.
+    rnorm_tokens = num_tokens if l2norm else 1
+    # Key columns one pass of the query's row reduction holds, which bounds the squares
+    # it keeps in registers beside the warp group's own fragments. Re-fit it by sweeping
+    # it against the Gated DeltaNet prefill benchmark's `prefill-raw-4k` row; 16, 32, 64
+    # and the full key width all measured within 0.3 us of each other there.
+    l2norm_reduce_width = 32
 
     if is_varlen:
+        rnorm_shape = (1, rnorm_tokens, Hg)
         q_shape = (1, num_tokens, Hg, DK)
         k_shape = (1, num_tokens, Hg, DK)
         v_shape = (1, num_tokens, H, DV)
@@ -63,6 +80,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
         b_shape = (1, num_tokens, H)
         h_shape = (1, num_chunks, H, DK, DV)
     else:
+        rnorm_shape = (batch_size, rnorm_tokens, Hg)
         q_shape = (batch_size, num_tokens, Hg, DK)
         k_shape = (batch_size, num_tokens, Hg, DK)
         v_shape = (batch_size, num_tokens, H, DV)
@@ -71,10 +89,16 @@ def _build_fused_chunk_gdr_fwd_kernel(
         g_shape = (batch_size, num_tokens, H)
         b_shape = (batch_size, num_tokens, H)
         h_shape = (batch_size, num_chunks, H, DK, DV)
+    if state_v_first and store_h:
+        raise ValueError("a value-major state has no per-chunk state buffer to write")
+    # Under a value-major state the accumulator holds S^T, so every contraction reading or
+    # writing it swaps operand order and the value tile becomes its leading extent.
+    state_rows, state_cols = (block_DV, DK) if state_v_first else (DK, block_DV)
+    state_axes = (DV, DK) if state_v_first else (DK, DV)
     if state_head_first:
         h_shape = (raw_batch_size, H, chunks_per_sequence + 1, DK, DV)
-    h0_shape = (batch_size, H, DK, DV)
-    ht_shape = (raw_batch_size, H, DK, DV)
+    h0_shape = (batch_size, H, *state_axes)
+    ht_shape = (raw_batch_size, H, *state_axes)
 
     @T.prim_func
     def fused_chunk_gdr_fwd_kernel(
@@ -84,6 +108,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
         a: T.Tensor(a_shape, dtype=qkva_dtype),
         g: T.Tensor(g_shape, dtype=g_dtype),
         b: T.Tensor(b_shape, dtype=b_dtype),
+        k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
         h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
@@ -136,14 +161,14 @@ def _build_fused_chunk_gdr_fwd_kernel(
             b_shared = T.alloc_shared((2, block_S), dtype=accum_dtype, scope="shared")
 
             o_shared = T.alloc_shared((block_S, block_DV), dtype=o_dtype)
-            h_shared = T.alloc_shared((DK, block_DV), dtype=qkva_dtype)
+            h_shared = T.alloc_shared((state_rows, state_cols), dtype=qkva_dtype)
             vd_shared = T.alloc_shared((block_S, block_DV), dtype=qkva_dtype)
             vn_shared = T.alloc_shared((block_S, block_DV), dtype=qkva_dtype)
             p_shared = T.alloc_shared((block_S, block_S), dtype=qkva_dtype)
             g_exp_shared = T.alloc_shared((block_S), dtype=accum_dtype, scope="shared")
             g_rev_exp_shared = T.alloc_shared((block_S), dtype=accum_dtype, scope="shared")
 
-            h_fragment = T.alloc_fragment((DK, block_DV), dtype=accum_dtype)
+            h_fragment = T.alloc_fragment((state_rows, state_cols), dtype=accum_dtype)
             o_fragment = T.alloc_fragment((block_S, block_DV), dtype=accum_dtype)
             v_fragment = T.alloc_fragment((block_S, block_DV), dtype=accum_dtype)
             u_fragment = T.alloc_fragment((block_S, block_DV), dtype=accum_dtype)
@@ -151,6 +176,14 @@ def _build_fused_chunk_gdr_fwd_kernel(
             a_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
             g_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
             g_last_local = T.alloc_local((1), dtype=accum_dtype)
+
+            if l2norm:
+                square_fragment = T.alloc_fragment(
+                    (block_S, l2norm_reduce_width), dtype=accum_dtype
+                )
+                sumsq_fragment = T.alloc_fragment((block_S,), dtype=accum_dtype)
+                q_rnorm_shared = T.alloc_shared((block_S), dtype=accum_dtype, scope="shared")
+                k_rnorm_shared = T.alloc_shared((2, block_S), dtype=accum_dtype, scope="shared")
 
             data_is_ready = T.alloc_barrier(arrive_count=[96] * 2)
             data_is_free = T.alloc_barrier(arrive_count=[384] * 2)
@@ -176,10 +209,16 @@ def _build_fused_chunk_gdr_fwd_kernel(
                 T.set_max_nreg(CONSUMER_S_NREG, 1)
 
                 if use_initial_state:
-                    T.copy(
-                        h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
-                        h_fragment,
-                    )
+                    if state_v_first:
+                        T.copy(
+                            h0[bb, bh, bv * block_DV : (bv + 1) * block_DV, 0:DK],
+                            h_fragment,
+                        )
+                    else:
+                        T.copy(
+                            h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
+                            h_fragment,
+                        )
                 else:
                     T.clear(h_fragment)
 
@@ -194,27 +233,42 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     T.barrier_wait(bar_1, i_s % 2)
                     # S = g_last * S
                     g_last_local[0] = g_exp_shared[block_S - 1]
-                    for j_k, j_v in T.Parallel(DK, block_DV):
-                        h_fragment[j_k, j_v] *= g_last_local[0]
+                    for j_a, j_b in T.Parallel(state_rows, state_cols):
+                        h_fragment[j_a, j_b] *= g_last_local[0]
                     T.barrier_arrive(bar_5)
 
                     T.barrier_wait(bar_5, i_s % 2)
                     # S += K^T @ V'
-                    T.gemm(
-                        k_shared[i_s % 2, :, :],
-                        vn_shared,
-                        h_fragment,
-                        transpose_A=True,
-                        clear_accum=False,
-                    )
+                    if state_v_first:
+                        T.gemm(
+                            vn_shared,
+                            k_shared[i_s % 2, :, :],
+                            h_fragment,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
+                    else:
+                        T.gemm(
+                            k_shared[i_s % 2, :, :],
+                            vn_shared,
+                            h_fragment,
+                            transpose_A=True,
+                            clear_accum=False,
+                        )
 
                     T.barrier_arrive(data_is_free[i_s % 2])
 
                 if need_store_final_state:
-                    T.copy(
-                        h_fragment,
-                        ht[raw_batch_idx, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
-                    )
+                    if state_v_first:
+                        T.copy(
+                            h_fragment,
+                            ht[raw_batch_idx, bh, bv * block_DV : (bv + 1) * block_DV, 0:DK],
+                        )
+                    else:
+                        T.copy(
+                            h_fragment,
+                            ht[raw_batch_idx, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
+                        )
                     if state_head_first and store_h:
                         T.copy(
                             h_fragment,
@@ -235,6 +289,27 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     T.barrier_arrive(bar_0)
 
                     T.barrier_wait(bar_0, i_s % 2)
+                    if l2norm:
+                        # The query and the key enter every product of this stage on a free
+                        # index, so each row scale is folded into the per-row factors those
+                        # products already carry and neither staged tile is rewritten. The
+                        # key's reciprocal norm is the block solve's Gram diagonal, staged
+                        # with the gate; only the query's is reduced here.
+                        T.clear(sumsq_fragment)
+                        for start in T.serial(DK // l2norm_reduce_width):
+                            T.copy(
+                                q_shared[
+                                    i_s % 2,
+                                    :,
+                                    start * l2norm_reduce_width : (start + 1) * l2norm_reduce_width,
+                                ],
+                                square_fragment,
+                            )
+                            for j_s, j_k in T.Parallel(block_S, l2norm_reduce_width):
+                                square_fragment[j_s, j_k] *= square_fragment[j_s, j_k]
+                            T.reduce_sum(square_fragment, sumsq_fragment, dim=1, clear=False)
+                        for j_s in T.Parallel(block_S):
+                            q_rnorm_shared[j_s] = T.rsqrt(sumsq_fragment[j_s] + L2NORM_EPS)
                     # Precompute g, g_last/g
                     for j_s in T.Parallel(block_S):
                         g_exp_shared[j_s] = T.exp2(g_shared[i_s % 2, j_s] * LOG2E)
@@ -250,12 +325,24 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
-                    T.gemm(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
+                    T.gemm(
+                        k_shared[i_s % 2, :, :],
+                        h_shared,
+                        u_fragment,
+                        transpose_B=state_v_first,
+                        clear_accum=True,
+                    )
 
                     # [STAGE 0] 2
                     # W = V - g * U
-                    for j_s, j_v in T.Parallel(block_S, block_DV):
-                        u_fragment[j_s, j_v] *= -g_exp_shared[j_s]
+                    if l2norm:
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            u_fragment[j_s, j_v] *= (
+                                -g_exp_shared[j_s] * k_rnorm_shared[i_s % 2, j_s]
+                            )
+                    else:
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            u_fragment[j_s, j_v] *= -g_exp_shared[j_s]
                     for j_s, j_v in T.Parallel(block_S, block_DV):
                         u_fragment[j_s, j_v] += v_shared[i_s % 2, j_s, j_v]
                     for j_s, j_v in T.Parallel(block_S, block_DV):
@@ -274,8 +361,14 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     # [STAGE 0] 4
                     # V' = g_last/g Vd
-                    for j_s, j_v in T.Parallel(block_S, block_DV):
-                        v_fragment[j_s, j_v] *= g_rev_exp_shared[j_s]
+                    if l2norm:
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            v_fragment[j_s, j_v] *= (
+                                g_rev_exp_shared[j_s] * k_rnorm_shared[i_s % 2, j_s]
+                            )
+                    else:
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            v_fragment[j_s, j_v] *= g_rev_exp_shared[j_s]
                     T.copy(v_fragment, vn_shared)
                     T.barrier_arrive(bar_5)
 
@@ -321,17 +414,36 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # O = Q @ S
-                    T.gemm(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
+                    T.gemm(
+                        q_shared[i_s % 2, :, :],
+                        h_shared,
+                        o_fragment,
+                        transpose_B=state_v_first,
+                        clear_accum=True,
+                    )
 
                     # [STAGE 0] 3
                     # Pg = s * G * P
-                    for j_s, j_t in T.Parallel(block_S, block_S):
-                        p_fragment[j_s, j_t] *= scale * g_fragment[j_s, j_t]
+                    if l2norm:
+                        for j_s, j_t in T.Parallel(block_S, block_S):
+                            p_fragment[j_s, j_t] *= (
+                                scale
+                                * g_fragment[j_s, j_t]
+                                * q_rnorm_shared[j_s]
+                                * k_rnorm_shared[i_s % 2, j_t]
+                            )
+                    else:
+                        for j_s, j_t in T.Parallel(block_S, block_S):
+                            p_fragment[j_s, j_t] *= scale * g_fragment[j_s, j_t]
                     T.copy(p_fragment, p_shared)
                     T.barrier_arrive(bar_3)
                     # O = s * g * O
-                    for j_s, j_k in T.Parallel(block_S, DK):
-                        o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s]
+                    if l2norm:
+                        for j_s, j_k in T.Parallel(block_S, DK):
+                            o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s] * q_rnorm_shared[j_s]
+                    else:
+                        for j_s, j_k in T.Parallel(block_S, DK):
+                            o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s]
 
                     T.barrier_wait(bar_4, i_s % 2)
                     # O += Pg @ Vd
@@ -385,13 +497,24 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         )
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
-                                b_shared[i_s % 2, j_s] = b[batch_idx, left + j_s, bh]
+                                b_shared[i_s % 2, j_s] = step_size(
+                                    b[batch_idx, left + j_s, bh], beta_sigmoid, allow_neg_eigval
+                                )
                         else:
                             for j_s in T.Parallel(block_S):
                                 if left + j_s < seq_end_idx:
-                                    b_shared[i_s % 2, j_s] = b[batch_idx, left + j_s, bh]
+                                    b_shared[i_s % 2, j_s] = step_size(
+                                        b[batch_idx, left + j_s, bh],
+                                        beta_sigmoid,
+                                        allow_neg_eigval,
+                                    )
                                 else:
                                     b_shared[i_s % 2, j_s] = 0
+                        if l2norm:
+                            for j_s in T.Parallel(block_S):
+                                k_rnorm_shared[i_s % 2, j_s] = k_rnorm[
+                                    batch_idx, T.min(left + j_s, seq_end_idx - 1), bhg
+                                ]
 
                         T.barrier_arrive(data_is_ready[i_s % 2])
 
@@ -542,6 +665,11 @@ def fused_gdr_fwd(
     chunk_size: int = 64,
     state_head_first: bool = False,
     chunks_per_sequence: int = 0,
+    state_v_first: bool = False,
+    k_rnorm: torch.Tensor | None = None,
+    l2norm: bool = False,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
@@ -558,9 +686,9 @@ def fused_gdr_fwd(
         is_varlen = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        chunk_offsets, num_chunks = prepare_chunk_offsets(cu_seqlens, chunk_size)
-        chunk_offsets = chunk_offsets.to(cu_seqlens.dtype)
-        num_chunks = num_chunks if output_h else 0
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, chunk_size).to(cu_seqlens.dtype)
+        # Only a per-chunk buffer needs the count, and reading it synchronizes the device.
+        num_chunks = int(chunk_offsets[-1].item()) if output_h else 0
         seqlen_dtype = cu_seqlens.dtype
         is_varlen = True
 
@@ -570,10 +698,11 @@ def fused_gdr_fwd(
     else:
         is_cp = True
 
+    state_axes = (V, K) if state_v_first else (K, V)
     use_initial_state = initial_state is not None
     if initial_state is None:
         initial_state = torch.empty(
-            (real_batch_size, H, K, V), dtype=torch.float32, device=k.device
+            (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
         )
     if state_head_first and raw_cu_seqlens is None:
         raw_cu_seqlens = cu_seqlens
@@ -592,10 +721,12 @@ def fused_gdr_fwd(
         h = torch.empty((batch_size, num_chunks, H, K, V), dtype=k.dtype, device=k.device)
     if raw_cu_seqlens is None:
         raw_cu_seqlens = torch.empty((real_batch_size + 1,), dtype=seqlen_dtype, device=k.device)
-        final_state = torch.empty((real_batch_size, H, K, V), dtype=torch.float32, device=k.device)
+        final_state = torch.empty(
+            (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
+        )
     else:
         final_state = torch.empty(
-            (raw_cu_seqlens.shape[0] - 1, H, K, V), dtype=torch.float32, device=k.device
+            (raw_cu_seqlens.shape[0] - 1, H, *state_axes), dtype=torch.float32, device=k.device
         )
     o = torch.empty_like(v)
 
@@ -612,6 +743,10 @@ def fused_gdr_fwd(
         block_DV = min(64, V)
     else:
         block_DV = min(32, V)
+    # The transposed accumulator's leading extent is the value tile, which no matrix
+    # operand may take below one warp-level MMA.
+    if state_v_first:
+        block_DV = max(block_DV, min(WARP_MMA_ROWS, V))
 
     fused_chunk_gdr_fwd_kernel = _build_fused_chunk_gdr_fwd_kernel(
         H,
@@ -635,10 +770,16 @@ def fused_gdr_fwd(
         store_o=output_o,
         is_varlen=is_varlen,
         is_cp=is_cp,
+        l2norm=l2norm,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
         block_DV=block_DV,
         state_head_first=state_head_first,
         chunks_per_sequence=chunks_per_sequence,
+        state_v_first=state_v_first,
     )
+    if k_rnorm is None:
+        k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
     fused_chunk_gdr_fwd_kernel(
         q,
         k,
@@ -646,6 +787,7 @@ def fused_gdr_fwd(
         a,
         g,
         b,
+        k_rnorm,
         initial_state,
         cu_seqlens,
         chunk_offsets,

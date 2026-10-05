@@ -1,4 +1,4 @@
-"""Benchmark for MoePermuteAlignFwdOp vs Triton and sgl-kernel baselines.
+"""Benchmark for MoEPermuteAlignFwdOp vs Triton and sgl-kernel baselines.
 
 Baselines:
   - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
@@ -21,8 +21,10 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
+from benchmarks.baselines import VLLM_TAG, vllm_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.moe import MoePermuteAlignFwdOp
+from benchmarks.verification import Custom
+from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -138,21 +140,14 @@ def _triton_permute_align(
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoePermuteAlignFwdOp))
+@pytest.mark.parametrize("call", manifest_calls(MoEPermuteAlignFwdOp))
 def test_permute_align_bench(call) -> None:
     workload = MoePermuteAlignWorkload(call)
     inputs = workload.gen_inputs()
-    op = MoePermuteAlignFwdOp(**call.arguments({}))
+    op = MoEPermuteAlignFwdOp(**call.arguments({}))
     num_experts, block_size = op.num_experts, op.block_size
     numel = inputs[0].numel()
     bm = ManifestBenchmark(op, workload)
-
-    got = op(*inputs)
-    ref = workload.ref_program(*inputs)
-    # Slot order inside an expert is not specified; the padded count and block owners are.
-    torch.testing.assert_close(got[2], ref[2])
-    blocks = int(ref[2].item()) // block_size
-    torch.testing.assert_close(got[1][:blocks], ref[1][:blocks])
 
     functors = {"tileops": op}
 
@@ -172,10 +167,17 @@ def test_permute_align_bench(call) -> None:
         )
         return sorted_ids, expert_ids, num_post_pad
 
-    _triton_fn(*inputs)
-    torch.cuda.synchronize()
-
     functors["triton"] = _triton_fn
+    align = vllm_op("moe_align_block_size")
+    vllm_sorted = torch.empty_like(sorted_ids)
+    vllm_experts = torch.empty_like(expert_ids)
+    vllm_count = torch.empty_like(num_post_pad)
+
+    def vllm_fn(topk_ids):
+        align(topk_ids, num_experts, block_size, vllm_sorted, vllm_experts, vllm_count)
+        return vllm_sorted, vllm_experts, vllm_count
+
+    functors[VLLM_TAG] = vllm_fn
 
     # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
@@ -197,9 +199,39 @@ def test_permute_align_bench(call) -> None:
             )
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
-        _sgl_fn(*inputs)
-        torch.cuda.synchronize()
-
         functors["sgl-kernel"] = _sgl_fn
 
-    bm.compare(functors, *inputs)
+    def validate(got, expected):
+        tokens, experts, count = got
+        ref_tokens, ref_experts, ref_count = expected
+        assert tokens.dtype == ref_tokens.dtype and experts.dtype == ref_experts.dtype
+        torch.testing.assert_close(count, ref_count, rtol=0, atol=0)
+        size = int(ref_count.item())
+        blocks = size // block_size
+        assert tokens.numel() >= size and experts.numel() >= blocks
+        torch.testing.assert_close(experts[:blocks], ref_experts, rtol=0, atol=0)
+        tokens = tokens[:size].long()
+        assert ((tokens >= 0) & (tokens <= numel)).all(), "invalid padding/token id"
+        valid = tokens < numel
+        # Every route occurs exactly once, and belongs to its block's expert.
+        torch.testing.assert_close(
+            tokens[valid].sort().values,
+            torch.arange(numel, device=tokens.device),
+            rtol=0,
+            atol=0,
+        )
+        owners = experts[:blocks].repeat_interleave(block_size)
+        torch.testing.assert_close(
+            inputs[0].flatten()[tokens[valid]],
+            owners[valid],
+            rtol=0,
+            atol=0,
+        )
+
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors, Custom(validate, "all routes and expert ownership in the valid padded prefix")
+        ),
+    )

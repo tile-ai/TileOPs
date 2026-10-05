@@ -21,39 +21,43 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops.ops.attention.deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from tileops.ops.attention.deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from tileops.ops.attention.deepseek_nsa import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
-from tileops.ops.attention.gqa import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionPagedFwdOp,
+from tileops.ops.attention.dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops.ops.attention.gqa.bwd import GroupedQueryAttentionBwdOp
+from tileops.ops.attention.gqa.dense import GroupedQueryAttentionDenseFwdOp
+from tileops.ops.attention.gqa.paged import GroupedQueryAttentionPagedFwdOp
+from tileops.ops.attention.gqa.prefill_paged_kv_append import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
 )
+from tileops.ops.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdOp
 from tileops.ops.attention.mha import (
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
+from tileops.ops.attention.mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.nsa import (
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
+    NSAVarlenFwdOp,
+)
+from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
-from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.fp8_quant import FP8QuantFwdOp
-from tileops.ops.gemm.bmm import BmmFp8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
+from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
-from tileops.ops.linear_attention.deltanet import DeltaNetBwdOp, DeltaNetFwdOp
-from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
+from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
+from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
-from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
-from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
-from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
-from tileops.ops.mamba.cb_producer import CBProducerFwdOp
-from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
+from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
-from tileops.ops.pool import MeanPoolingFwdOp
+from tileops.ops.pool.mean_pooling import MeanPoolingFwdOp
 from tileops.ops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -65,12 +69,12 @@ from tileops.ops.quantization import (
     INT8QuantPerTensorFwdOp,
     SmoothQuantFwdOp,
 )
+from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
 from tileops.ops.rope import (
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
-    RopeNeoxFwdOp,
     RopeNeoxPositionIdsFwdOp,
-    RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
 from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
@@ -82,32 +86,27 @@ from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
-from tileops.ops.topk_selector import TopkSelectorFwdOp
-from workloads.deepseek_attention import (
-    DsaDecodeWorkload,
-    MlaDecodeWorkload,
-    NsaCmpFwdWorkload,
-    NsaFwdWorkload,
-    NsaTopkWorkload,
-)
-from workloads.device import run_device
-from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
-from workloads.gqa import (
-    GQAPrefillPagedWithKVCacheFwdWorkload,
+from workloads.attention.dsa import DsaDecodeWorkload
+from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
+from workloads.attention.gqa.bwd import GroupedQueryAttentionBwdWorkload
+from workloads.attention.gqa.dense import GroupedQueryAttentionDenseDecodeWorkload
+from workloads.attention.gqa.paged import GroupedQueryAttentionPagedFwdWorkload
+from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
+from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
-    GroupedQueryAttentionBwdWorkload,
-    GroupedQueryAttentionDenseDecodeWorkload,
-    GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
-from workloads.int8_dequant import (
+from workloads.attention.mha import MhaDecodePagedWorkload
+from workloads.attention.mla import MlaDecodeWorkload
+from workloads.attention.nsa import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
+from workloads.attention.paged_kv_cache import make_unit_cache_scales
+from workloads.device import run_device
+from workloads.quantization.int8_dequant import (
     INT8DequantPerBlockWorkload,
     INT8DequantPerChannelWorkload,
     INT8DequantPerTensorWorkload,
 )
-from workloads.mha import MhaDecodePagedWorkload
-from workloads.paged_kv_cache import make_unit_cache_scales
-from workloads.quantization import (
+from workloads.quantization.quantize import (
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
     INT8QuantPerBlockWorkload,
@@ -187,12 +186,12 @@ def _attention_cases():
 
     def nsa_cmp_fwd():
         case = NsaCmpFwdWorkload(1, 512, 32, _DIM, _DIM, 16, 0.088, 32, _DTYPE)
-        op = NSACmpVarlenFwdOp(scale=0.088, bs=32)
+        op = NSACompressedVarlenFwdOp(scale=0.088, bs=32)
         return op, case.gen_inputs()
 
     def nsa_topk():
         case = NsaTopkWorkload(1, 512, 32, _DIM, 16, 1.0, 16, 32, _DTYPE)
-        op = NSATopkVarlenFwdOp(scale=1.0, selected_block_num=16, bs=32)
+        op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=16, bs=32)
         return op, case.gen_inputs()
 
     def dsa_decode():
@@ -209,7 +208,7 @@ def _attention_cases():
         score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device=run_device())
         starts = torch.zeros(1, 256, dtype=torch.int32, device=run_device())
         ends = torch.full((1, 256), 512, dtype=torch.int32, device=run_device())
-        return TopkSelectorFwdOp(topk=64), (score, starts, ends)
+        return TopKSelectFwdOp(topk=64), (score, starts, ends)
 
     return (
         ("gqa-dense", gqa_dense),
@@ -246,7 +245,7 @@ def _gemm_cases():
     def gemm_fp8():
         fp8 = dict(dtype=torch.float8_e4m3fn)
         f32 = dict(dtype=torch.float32)
-        return GemmFp8FwdOp(), (
+        return GemmFP8FwdOp(), (
             _x(_M, _K).to(**fp8),
             _x(_N, _K).to(**fp8),
             _x(1, 1, **f32).abs(),
@@ -282,7 +281,7 @@ def _gemm_cases():
         batch = 2
         fp8 = dict(dtype=torch.float8_e4m3fn)
         scale = torch.tensor(1.0, dtype=torch.float32, device=run_device())
-        return BmmFp8FwdOp(out_dtype=torch.float16), (
+        return BmmFP8FwdOp(out_dtype=torch.float16), (
             _x(batch, _M, _K).to(**fp8),
             _x(batch, _K, _N).to(**fp8),
             scale,
@@ -312,11 +311,11 @@ def _mamba_cases():
     f32 = dict(dtype=torch.float32)
 
     def da_cumsum():
-        op = DaCumsumFwdOp(chunk_len=_Q, out_dtype=_DTYPE, dt_softplus=True)
+        op = SSDChunkCumsumFwdOp(chunk_len=_Q, out_dtype=_DTYPE, dt_softplus=True)
         return op, (_x(_B, _S, _H, **f32), -_x(_H, **f32).abs(), None)
 
     def cb_producer():
-        op = CBProducerFwdOp(_Q)
+        op = SSDChunkCouplingFwdOp(_Q)
         return op, (_x(_B, _S, _G, _N), _x(_B, _S, _G, _N))
 
     def ssd_chunk_state():
@@ -346,7 +345,7 @@ def _mamba_cases():
         )
 
     def ssd_decode():
-        return SSDDecodeFwdOp(), (
+        return SSDRecurrentFwdOp(), (
             -_x(_H, _P, _N, **f32).abs(),
             _x(_B, _H, _P, **f32),
             _x(_B, _H, _P),
@@ -378,7 +377,7 @@ def _linear_attention_cases():
     chunks = _S // _CHUNK + 1
 
     def gla_fwd():
-        op = GLAFwdOp(chunk_size=_CHUNK, scale=_SCALE)
+        op = GLAChunkFwdOp(chunk_size=_CHUNK, scale=_SCALE)
         # ``g`` is a log-space decay, so it must be non-positive.
         return op, (
             _x(_B, _S, _H, _D),
@@ -389,7 +388,7 @@ def _linear_attention_cases():
         )
 
     def gla_bwd():
-        op = GLABwdOp(chunk_size=_CHUNK, scale=_SCALE)
+        op = GLAChunkBwdOp(chunk_size=_CHUNK, scale=_SCALE)
         return op, (
             _x(_B, _S, _H, _D),
             _x(_B, _S, _H, _D),
@@ -401,7 +400,7 @@ def _linear_attention_cases():
         )
 
     def gla_decode():
-        op = GLADecodeFwdOp(scale=_SCALE)
+        op = GLARecurrentFwdOp(scale=_SCALE)
         return op, (
             _x(_B, _H, _D),
             _x(_B, _H, _D),
@@ -413,7 +412,7 @@ def _linear_attention_cases():
     def deltanet_fwd():
         # The delta rule is a recurrence over S steps; unit-variance operands overflow it
         # into NaN, which compares unequal to itself. Scale as ``DeltaNetFwdWorkload`` does.
-        op = DeltaNetFwdOp(chunk_size=_CHUNK)
+        op = DeltaNetChunkFwdOp(chunk_size=_CHUNK)
         return op, (
             _x(_B, _H, _S, _D) * 0.1,
             _x(_B, _H, _S, _D) * 0.1,
@@ -422,7 +421,7 @@ def _linear_attention_cases():
         )
 
     def deltanet_bwd():
-        op = DeltaNetBwdOp(chunk_size=_CHUNK)
+        op = DeltaNetChunkBwdOp(chunk_size=_CHUNK)
         return op, (
             _x(_B, _H, _S, _D),
             _x(_B, _H, _S, _D),
@@ -437,7 +436,7 @@ def _linear_attention_cases():
         )
 
     def deltanet_decode():
-        return DeltaNetDecodeFwdOp(), (
+        return DeltaNetRecurrentFwdOp(), (
             _x(_B, _H, _D),
             _x(_B, _H, _D),
             _x(_B, _H, _D),
@@ -693,10 +692,10 @@ def _rope_cases():
         return torch.randn(*shape, dtype=_DTYPE, device=run_device())
 
     def one_d(op_cls):
-        return lambda: (op_cls(layout="1d"), (_x(_SEQ_LEN, _D),))
+        return lambda: (op_cls(input_layout="1d"), (_x(_SEQ_LEN, _D),))
 
     def two_d(op_cls):
-        return lambda: (op_cls(layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
+        return lambda: (op_cls(input_layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
 
     def longrope():
         rescale = torch.linspace(1.0, 2.0, _D // 2, device=run_device())
@@ -708,8 +707,14 @@ def _rope_cases():
         return op, (_x(_SEQ_LEN, _HEADS, _D), positions)
 
     return (
-        ("rope-neox", one_d(RopeNeoxFwdOp)),
-        ("rope-non-neox", two_d(RopeNonNeoxFwdOp)),
+        ("rope-neox", one_d(RopeFwdOp)),
+        (
+            "rope-interleaved",
+            lambda: (
+                RopeFwdOp(rope_layout="interleaved", input_layout="2d"),
+                (_x(2, _SEQ_LEN, _HEADS, _D),),
+            ),
+        ),
         ("rope-llama31", one_d(RopeLlama31FwdOp)),
         ("rope-yarn", two_d(RopeYarnFwdOp)),
         ("rope-longrope", longrope),
@@ -759,29 +764,32 @@ for _op_cls in (
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
     NSAVarlenFwdOp,
-    NSACmpVarlenFwdOp,
-    NSATopkVarlenFwdOp,
+    NSACompressedVarlenFwdOp,
+    NSATopKVarlenFwdOp,
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
     FP8LightningIndexerFwdOp,
-    TopkSelectorFwdOp,
+    TopKSelectFwdOp,
     GemmFwdOp,
-    GemmFp8FwdOp,
+    GemmFP8FwdOp,
     GemmW4A16FwdOp,
     GroupedGemmFwdOp,
     BmmFwdOp,
-    BmmFp8FwdOp,
-    DaCumsumFwdOp,
-    CBProducerFwdOp,
+    BmmFP8FwdOp,
+    SSDChunkCumsumFwdOp,
+    SSDChunkCouplingFwdOp,
     SSDChunkStateFwdOp,
     SSDStatePassingFwdOp,
     SSDChunkScanFwdOp,
-    SSDDecodeFwdOp,
-    GLAFwdOp,
-    GLABwdOp,
-    GLADecodeFwdOp,
-    DeltaNetFwdOp,
-    DeltaNetBwdOp,
-    DeltaNetDecodeFwdOp,
+    SSDRecurrentFwdOp,
+    GLAChunkFwdOp,
+    GLAChunkBwdOp,
+    GLARecurrentFwdOp,
+    GLAInferenceFwdOp,
+    DeltaNetChunkFwdOp,
+    DeltaNetChunkBwdOp,
+    DeltaNetRecurrentFwdOp,
+    DeltaNetInferenceFwdOp,
+    GatedDeltaNetFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
     ChainSpeculativeSamplingFwdOp,
@@ -803,8 +811,7 @@ for _op_cls in (
     EngramDecodeFwdOp,
     MHCPreFwdOp,
     MHCPostFwdOp,
-    RopeNeoxFwdOp,
-    RopeNonNeoxFwdOp,
+    RopeFwdOp,
     RopeLlama31FwdOp,
     RopeYarnFwdOp,
     RopeLongRopeFwdOp,

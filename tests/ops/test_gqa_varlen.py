@@ -7,9 +7,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.ops import GroupedQueryAttentionVarlenFwdOp
 from tileops.perf.formulas import visible_scores
-from workloads.gqa import (
-    GroupedQueryAttentionVarlenFwdWorkload,
-)
+from workloads.attention.gqa.varlen import GroupedQueryAttentionVarlenFwdWorkload
 
 
 class GroupedQueryAttentionVarlenFwdTest(GroupedQueryAttentionVarlenFwdWorkload, TestBase):
@@ -448,6 +446,68 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     test.check(op, *inputs, atol=1e-2, rtol=1e-2)
     first = op(*inputs)
     assert torch.equal(op(*inputs), first)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
+    [
+        pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
+        pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
+        # The channels past a partial rotary width pass through unrotated.
+        pytest.param([1, 0, 130], [200, 0, 130], 128, 64, "neox", -1, id="ragged-partial"),
+        pytest.param([130, 70], [130, 70], 128, None, "interleaved", 64, id="windowed"),
+        pytest.param([70, 40], [200, 40], 512, None, "neox", -1, id="dim-512"),
+    ],
+)
+def test_varlen_rope_rotates_at_per_request_positions(
+    q_lens: list[int],
+    kv_lens: list[int],
+    dim: int,
+    rotary_dim: int | None,
+    rope_layout: str,
+    window_size_left: int,
+) -> None:
+    """Query token i of a request sits at kv_len - q_len + i, key token j at j."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, 8, 2, dim, True, window_size_left, -1, torch.float16,
+        pos_encoding_mode="rope", rotary_dim=rotary_dim, rope_layout=rope_layout,
+    )  # fmt: skip
+    op = GroupedQueryAttentionVarlenFwdOp(
+        is_causal=True,
+        window_size_left=window_size_left,
+        pos_encoding_mode="rope",
+        rotary_dim=rotary_dim,
+        rope_layout=rope_layout,
+    )
+    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "dim, window_size_left, kernel",
+    [
+        pytest.param(128, -1, "GQAPrefillVarlenWSFwdKernel", id="ws-region"),
+        pytest.param(128, 64, "GQAPrefillVarlenFwdKernel", id="windowed"),
+        pytest.param(512, -1, "GQAPrefillVarlenFwdKernel", id="wide-head"),
+    ],
+)
+def test_varlen_rope_selects_the_kernel_of_its_region(
+    dim: int, window_size_left: int, kernel: str
+) -> None:
+    """A fused-RoPE call is served, and by the implementation whose region holds it."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, [128, 64], [128, 64], 8, 2, dim, True, window_size_left, -1, torch.float16,
+        pos_encoding_mode="rope",
+    )  # fmt: skip
+    op = GroupedQueryAttentionVarlenFwdOp(
+        is_causal=True, window_size_left=window_size_left, pos_encoding_mode="rope"
+    )
+    inputs = test.gen_inputs()
+    if served_in_tree(op):
+        assert type(op._get_kernel(inputs)).__name__ == kernel
 
 
 @pytest.mark.smoke

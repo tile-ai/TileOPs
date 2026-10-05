@@ -73,7 +73,7 @@ def test_check_rejects(tensors, message):
         type(op)._signature.check(op, tensors)
 
 
-@pytest.mark.parametrize("name", ["ClampFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
+@pytest.mark.parametrize("name", ["ClampTensorFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
 def test_check_traces_on_symints(name):
     call = next(_calls(name))
     tensors = call.materialize(device="cpu")
@@ -110,7 +110,7 @@ def test_construction_checks_what_construction_decides():
     _op("DSADecodeFwdOp", {"dim_tail": -1})  # a signed offset carries no obligation of its own
     with pytest.raises(ValueError, match="axis 1 of hidden_states, hidden_size, is negative"):
         _op(
-            "FusedMoeSharedExpertFwdOp",
+            "FusedMoESharedExpertFwdOp",
             {"num_tokens": 2, "hidden_size": -1, "shared_ffn_size": None},
         )
 
@@ -358,8 +358,8 @@ def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
 def test_an_adt_parameter_must_be_its_declared_class():
     from tileops.ops.moe.contracts import MaskedLayoutSpec
 
-    cls = type("MoePrePermuteFwdOp", (), {})
-    install(cls, _ENTRIES["MoePrePermuteFwdOp"], _CASES["adts"])
+    cls = type("MoEPrePermuteFwdOp", (), {})
+    install(cls, _ENTRIES["MoEPrePermuteFwdOp"], _CASES["adts"])
     op = cls()
     vars(op).update(layout=MaskedLayoutSpec(max_m=4), num_local_experts=2)
     op._check_construction()
@@ -420,6 +420,41 @@ def test_an_output_present_with_out_has_its_own_operator():
     torch._dynamo.reset()
     y, aux = torch.compile(op, fullgraph=True)(x, out)
     assert aux.tolist() == [2, 2]
+
+
+def test_one_instance_takes_its_own_branch_per_presence():
+    """An effect branch is a function of what the call passed, not of the instance. One
+    instance that first omits two optional inputs, then passes them, takes the branch that
+    writes one and emits the output the other gates, and takes the first branch again when
+    the next call omits them."""
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {
+            "x": {"dtype": "T", "shape": "[M]"},
+            "bias": {"dtype": "T", "shape": "[M]", "optional": True},
+            "acc": {"dtype": "T", "shape": "[M]", "optional": True, "mutated": "present(acc)"},
+        },
+        "outputs": {
+            "y": {"dtype": "T", "shape": "[M]"},
+            "aux": {"dtype": "T", "shape": "[M]", "nullable": "present(bias)"},
+        },
+    }
+
+    def eager(self, x, bias=None, acc=None):
+        if acc is not None:
+            acc.add_(x)
+        return x + (1 if bias is None else bias), (None if bias is None else bias + 1)
+
+    op = _probe("ProbeBranchPerPresenceFwdOp", signature, eager, boundary=True)()
+    x = torch.ones(2, dtype=torch.float16)
+    bias = torch.full((2,), 3, dtype=torch.float16)
+    acc = torch.zeros(2, dtype=torch.float16)
+    y, aux = op(x)
+    assert y.tolist() == [2, 2] and aux is None and acc.tolist() == [0, 0]
+    y, aux = op(x, bias, acc)
+    assert y.tolist() == [4, 4] and aux.tolist() == [4, 4] and acc.tolist() == [1, 1]
+    y, aux = op(x)
+    assert y.tolist() == [2, 2] and aux is None and acc.tolist() == [1, 1]
 
 
 def test_a_cpu_construction_tensor_takes_its_declared_dtype():
@@ -736,8 +771,27 @@ def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
     [
         ("norm", "RMSNormFwdOp", "norm_rms_norm_fwd"),
         ("convolution", "Conv2dFwdOp", "convolution_conv2d_fwd"),
-        ("moe", "MoePrePermuteFwdOp", "moe_pre_permute_fwd"),
+        ("moe", "MoEPrePermuteFwdOp", "moe_pre_permute_fwd"),
     ],
 )
 def test_the_operator_names_its_family_once(family: str, class_name: str, expected: str) -> None:
+    assert operator_name(family, class_name) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "family, class_name, expected",
+    [
+        # One capital inside the abbreviation, which the case split would otherwise take.
+        ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
+        # A digit on each side of the capital.
+        ("gemm", "GemmW4A16FwdOp", "gemm_w4a16_fwd"),
+        ("gemm", "GemmINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
+        # Two abbreviations, one of them the family's own name.
+        ("fft", "FFTC2CFwdOp", "fft_c2c_fwd"),
+        # Two abbreviations in a row.
+        ("sampling", "TopKTopPMaskFwdOp", "sampling_topk_topp_mask_fwd"),
+    ],
+)
+def test_an_abbreviation_stays_one_word(family: str, class_name: str, expected: str) -> None:
     assert operator_name(family, class_name) == expected

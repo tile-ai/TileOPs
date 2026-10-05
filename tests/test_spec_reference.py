@@ -25,7 +25,9 @@ from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from workloads import int8_dequant, quantization, sampling
+from workloads import sampling
+from workloads.quantization import int8_dequant
+from workloads.quantization import quantize as quantization
 
 pytestmark = pytest.mark.smoke
 

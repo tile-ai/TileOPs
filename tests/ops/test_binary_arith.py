@@ -5,6 +5,8 @@ floor_divide, lerp, maximum, minimum (plus existing add).
 Also includes L4 edge case tests for div, remainder, floor_divide, pow.
 """
 
+import functools
+
 import pytest
 import torch
 
@@ -20,7 +22,7 @@ from tileops.ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
     FloorDivideFwdOp,
-    LerpFwdOp,
+    LerpScalarFwdOp,
     LerpTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
@@ -164,16 +166,6 @@ def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
 
 # Broadcast pattern tests for all binary arith ops (L3)
 
-# Broadcast patterns: (a_shape, b_shape)
-_BROADCAST_PATTERNS = [
-    # bias-add: (B,S,D) + (1,1,D)
-    ((2, 64, 128), (1, 1, 128)),
-    # row broadcast: (B,S,D) + (B,S,1)
-    ((2, 64, 128), (2, 64, 1)),
-    # scalar broadcast: (M,N) + (1,1)
-    ((64, 128), (1, 1)),
-]
-
 # (op_name, op_cls, ref_fn, gen_a, gen_b)
 _ARITH_BROADCAST_OPS = [
     (
@@ -220,7 +212,7 @@ _ARITH_BROADCAST_OPS = [
     ),
     (
         "lerp",
-        LerpFwdOp,
+        LerpScalarFwdOp,
         lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
         lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
         lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
@@ -243,25 +235,35 @@ _ARITH_BROADCAST_OPS = [
 
 
 class ArithBroadcastFixture(FixtureBase):
-    PARAMS = [
-        (
-            "op_name, op_cls, ref_fn, gen_a, gen_b, a_shape, b_shape",
-            [
-                pytest.param(
-                    name,
-                    cls,
-                    ref,
-                    ga,
-                    gb,
-                    a_s,
-                    b_s,
-                    marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
-                )
-                for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
-                for i, (a_s, b_s) in enumerate(_BROADCAST_PATTERNS)
-            ],
-        ),
-    ]
+    @classmethod
+    def get_params(cls):
+        patterns = [
+            # bias-add: (B,S,D) + (1,1,D)
+            ((2, 64, 128), (1, 1, 128)),
+            # row broadcast: (B,S,D) + (B,S,1)
+            ((2, 64, 128), (2, 64, 1)),
+            # scalar broadcast: (M,N) + (1,1)
+            ((64, 128), (1, 1)),
+        ]
+        return [
+            (
+                "op_name, op_cls, ref_fn, gen_a, gen_b, a_shape, b_shape",
+                [
+                    pytest.param(
+                        name,
+                        cls,
+                        ref,
+                        ga,
+                        gb,
+                        a_s,
+                        b_s,
+                        marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
+                    )
+                    for j, (name, cls, ref, ga, gb) in enumerate(_ARITH_BROADCAST_OPS)
+                    for i, (a_s, b_s) in enumerate(patterns)
+                ],
+            ),
+        ]
 
 
 @ArithBroadcastFixture
@@ -468,11 +470,25 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
-    "dtype, rounding_mode",
+    "dtype, make_op, ref_fn",
     [
-        pytest.param(torch.bfloat16, None, id="bfloat16"),
-        pytest.param(torch.bfloat16, "trunc", id="bfloat16-trunc"),
-        pytest.param(torch.float16, "trunc", id="float16-trunc"),
+        pytest.param(torch.bfloat16, DivFwdOp, torch.div, id="bfloat16-div"),
+        pytest.param(
+            torch.bfloat16,
+            functools.partial(DivFwdOp, rounding_mode="trunc"),
+            functools.partial(torch.div, rounding_mode="trunc"),
+            id="bfloat16-div-trunc",
+        ),
+        pytest.param(
+            torch.float16,
+            functools.partial(DivFwdOp, rounding_mode="trunc"),
+            functools.partial(torch.div, rounding_mode="trunc"),
+            id="float16-div-trunc",
+        ),
+        pytest.param(torch.bfloat16, RemainderFwdOp, torch.remainder, id="bfloat16-remainder"),
+        pytest.param(
+            torch.bfloat16, FloorDivideFwdOp, torch.floor_divide, id="bfloat16-floor-divide"
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -482,11 +498,12 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
         pytest.param((64, 1024), (1, 1024), id="bias"),
     ],
 )
-def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, rounding_mode) -> None:
+def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
     """The fast 16-bit divide gives torch's result bit for bit.
 
     Random bit patterns put divisors past ``2**126`` and below ``2**-126`` among
-    ordinary ones.
+    ordinary ones. Those are the divisors the floored ops' cheap tier declines,
+    because the reciprocal it takes answers a zero or an infinity for them.
     """
     gen = torch.Generator(device=run_device()).manual_seed(0)
 
@@ -495,8 +512,7 @@ def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, rounding_m
         return raw.to(torch.int16).view(dtype)
 
     a, b = bits(a_shape), bits(b_shape)
-    out = DivFwdOp(rounding_mode=rounding_mode)(a, b)
-    ref = torch.div(a, b, rounding_mode=rounding_mode)
+    out, ref = make_op()(a, b), ref_fn(a, b)
     number = ~ref.isnan()
     assert torch.equal(out.isnan(), ~number)
     assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
@@ -540,7 +556,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         atol, rtol = 1.6e-2, 1.6e-2
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
-        op = LerpFwdOp(weight=weight)
+        op = LerpScalarFwdOp(weight=weight)
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
@@ -800,7 +816,7 @@ class FloatOnlyBinaryRejectFixture(FixtureBase):
                 pytest.param(RemainderFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.smoke),
-                pytest.param(LerpFwdOp, torch.int32, marks=pytest.mark.smoke),
+                pytest.param(LerpScalarFwdOp, torch.int32, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -1309,3 +1325,14 @@ def test_add_bool_broadcast() -> None:
     with torch.no_grad():
         out = op(a, b)
     _exact_compare(out, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_lerp_tensor_cancellation_uses_float_intermediates(dtype: torch.dtype) -> None:
+    """Rounding end-start to the storage dtype can erase a nonzero midpoint."""
+    a = torch.full((256,), -4 - 4 * torch.finfo(dtype).eps, dtype=dtype, device=run_device())
+    b = torch.full_like(a, 4)
+    w = torch.full_like(a, 0.5)
+    torch.testing.assert_close(LerpTensorFwdOp()(a, b, w), torch.lerp(a, b, w), rtol=0, atol=0)

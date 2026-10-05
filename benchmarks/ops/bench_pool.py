@@ -14,7 +14,6 @@ import torch
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -349,14 +348,37 @@ def test_mean_pooling_bench(call) -> None:
     inputs = workload.gen_inputs()
     bm = ManifestBenchmark(op, workload)
 
+    reference = workload.ref_program
+    if len(inputs) > 1 and inputs[1] is not None:
+        # Fixed chunk bounds permit full-graph compilation of ragged workloads.
+        offsets = inputs[1].tolist()
+        slices = [
+            (start, min(start + workload.chunk_size, end))
+            for begin, end in zip(offsets[:-1], offsets[1:], strict=True)
+            for start in range(begin, end, workload.chunk_size)
+        ]
+
+        def reference(x, *_metadata):
+            return torch.stack([x[:, begin:end].mean(1) for begin, end in slices], dim=1)
+
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+        TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)
     if view_mean is not None:
-        assert_matches_reference(view_mean, workload.ref_program, *inputs)
         functors["torch-view-mean"] = view_mean
 
-    bm.compare(functors, *inputs)
+    if len(inputs) > 1 and inputs[1] is not None:
+        lengths = torch.tensor(
+            [end - begin for begin, end in slices], dtype=torch.int64, device=inputs[0].device
+        )
+
+        def segmented_mean(x, *_metadata):
+            values = x.transpose(0, 1).contiguous().float()
+            out = torch.segment_reduce(values, "mean", lengths=lengths, unsafe=True)
+            return out.to(x.dtype).transpose(0, 1).contiguous()
+
+        functors["torch-segment-reduce"] = segmented_mean
+    bm.compare(functors, *inputs, count_copies=True)

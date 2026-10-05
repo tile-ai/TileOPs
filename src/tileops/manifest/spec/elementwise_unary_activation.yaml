@@ -281,7 +281,7 @@ SoftplusFwdOp:
     # mul-beta(1) + threshold compare-and-select(1) + exp(1) + log1p(1) + div-by-beta(1) = 5 per elem.
     flops: "5 * prod(S)"
 
-ClampFwdOp:
+ClampTensorFwdOp:
   # PyTorch's torch.clamp(input, min=None, max=None) where each bound is a
   # Tensor or absent, broadcast with input. At least one bound must be passed;
   # min-only is torch.clamp_min and max-only is torch.clamp_max. The scalar
@@ -322,7 +322,7 @@ ClampFwdOp:
 
 ClampScalarFwdOp:
   # PyTorch's torch.clamp(input, min=None, max=None) with Number (or None)
-  # bounds. The bounds are params here and tensor inputs in ClampFwdOp above:
+  # bounds. The bounds are params here and tensor inputs in ClampTensorFwdOp above:
   # two signatures, so two entries.
   ref_api: "torch.clamp"
   family: elementwise

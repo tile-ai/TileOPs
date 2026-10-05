@@ -9,20 +9,16 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
+    QUACK_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
-    reference_tolerance,
+    quack_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedGemmFwdOp
 from workloads.gemm import (
     GroupedGemmWorkload,
 )
-
-# Autotuning is a bench-run policy, not a workload property; manifest
-# workloads do not carry it.
-_TUNE = True
 
 
 def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
@@ -56,26 +52,55 @@ def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
     return fn
 
 
+def _compiled_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
+    """Specialize the compiled baseline to this workload's fixed group boundaries."""
+    sizes = inputs[2].tolist()
+    starts = inputs[3].tolist()
+    bounds = tuple((start, start + size) for start, size in zip(starts, sizes, strict=True))
+
+    def fn(a, b, *_):
+        outputs = []
+        for i, (start, end) in enumerate(bounds):
+            if workload.transpose_a:
+                rhs = b[:, start:end].t() if workload.transpose_b else b[start:end]
+                outputs.append(torch.mm(a[start:end].t(), rhs))
+            else:
+                rhs = b[i].t().contiguous() if workload.transpose_b else b[i]
+                outputs.append(torch.mm(a[start:end], rhs))
+        return torch.stack(outputs) if workload.transpose_a else torch.cat(outputs)
+
+    return compiled_reference(fn)
+
+
 @pytest.mark.parametrize("call", manifest_calls(GroupedGemmFwdOp))
 def test_grouped_gemm_bench(call) -> None:
     workload = GroupedGemmWorkload.from_call(call)
     inputs = workload.gen_inputs()
-    dtype = workload.dtype
 
-    op = GroupedGemmFwdOp(**call.arguments({}), tune=_TUNE)
+    op = GroupedGemmFwdOp(**call.arguments({}), tune=True)
     bm = ManifestBenchmark(op, workload)
 
     functors = {
         "tileops": op,
         "torch-ref": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+        TORCH_COMPILE_TAG: _compiled_grouped_mm(workload, inputs),
     }
     grouped_mm_fn = _torch_grouped_mm(workload, inputs)
     if grouped_mm_fn is not None:
-        assert_matches_reference(
-            grouped_mm_fn, workload.ref_program, *inputs, **reference_tolerance(dtype)
-        )
         functors["torch"] = grouped_mm_fn
-    # Rows are named by the op, with the layout among their params: a row named
-    # for the layout leaves the op it measured out of the report.
+    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+    offsets = torch.tensor(
+        [0, *torch.tensor(workload.batch_sizes_list).cumsum(0).tolist()],
+        device=inputs[0].device,
+        dtype=torch.int32,
+    )
+
+    def quack_fn(a, b, *_):
+        if workload.transpose_a:
+            rhs = b.T if workload.transpose_b else b
+            return quack_gemm(a.T, rhs, cu_seqlens_k=offsets)
+        rhs = b.transpose(-1, -2) if workload.transpose_b else b
+        return quack_gemm(a, rhs, cu_seqlens_m=offsets)
+
+    functors[QUACK_TAG] = quack_fn
     bm.compare(functors, *inputs)

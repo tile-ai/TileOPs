@@ -11,7 +11,7 @@ from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
-from workloads.normalization import FusedAddRMSNormWorkload, RMSNormWorkload
+from workloads.norm import FusedAddRMSNormWorkload, RMSNormWorkload
 
 register_compile_contract(RMSNormFwdOp)
 
@@ -31,7 +31,7 @@ class RMSNormFixture(FixtureBase):
                     4096,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="norm")],
                 ),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
@@ -225,6 +225,27 @@ def test_no_weight_and_no_eps_match_torch() -> None:
     """An absent weight scales by one; ``eps=None`` is torch's float32 machine epsilon."""
     x = torch.full((2, 4), 1e-3, dtype=torch.float16, device=run_device())
     torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n,dtype,has_weight",
+    [
+        pytest.param(131072, torch.float16, True, id="wide-fp16"),
+        pytest.param(262144, torch.bfloat16, True, id="wide-bf16"),
+        pytest.param(131073, torch.bfloat16, False, id="tail-no-weight"),
+    ],
+)
+def test_rms_norm_rows_exceeding_shared_memory(n, dtype, has_weight) -> None:
+    x = torch.randn(3, n, device=run_device(), dtype=dtype)
+    weight = torch.randn(n, device=x.device, dtype=dtype) if has_weight else None
+    expected = F.rms_norm(x.float(), (n,), None if weight is None else weight.float(), eps=1e-6).to(
+        dtype
+    )
+    actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
+    torch.testing.assert_close(
+        actual, expected, rtol=1e-3 if dtype == torch.float16 else 1.6e-2, atol=1e-3
+    )
 
 
 class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):

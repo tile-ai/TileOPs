@@ -70,6 +70,7 @@ from tileops.kernels.elementwise.comparison import (
     NeBoolStorageFwdKernel,
     NeFwdKernel,
 )
+from tileops.kernels.elementwise.dropout import DropoutCall, DropoutFwdInterface, DropoutKernel
 from tileops.kernels.elementwise.logical import (
     LogicalAndBoolStorageFwdKernel,
     LogicalAndFwdKernel,
@@ -132,6 +133,9 @@ __all__ = [
     "CosFwdKernel",
     "DivFwdKernel",
     "DivTruncFwdKernel",
+    "DropoutCall",
+    "DropoutFwdInterface",
+    "DropoutKernel",
     "EluFwdKernel",
     "EqBoolStorageFwdKernel",
     "EqFwdKernel",

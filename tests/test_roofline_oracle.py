@@ -139,13 +139,13 @@ class TestBytesOracle:
             assert self._priced(cls(), tensors)[1] == oracle, cls.__name__
 
     def test_fused_moe_counts_the_experts_its_stage_read_and_the_bias(self):
-        from tileops.moe import FusedMoEExpertsFwdOp, FusedMoeFwdOp
+        from tileops.moe import FusedMoEExpertsFwdOp, FusedMoEFwdOp
 
         tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
         routed = self._routed_tensors(tokens, experts, top_k, hidden, ffn, [[0, 3], [3, 7]])
         stage = FusedMoEExpertsFwdOp()._signature.check(FusedMoEExpertsFwdOp(), routed)
         for has_bias in (True, False):
-            op = FusedMoeFwdOp(top_k, scoring_func="sigmoid")
+            op = FusedMoEFwdOp(top_k, scoring_func="sigmoid")
             tensors = {
                 "hidden_states": routed["hidden_states"],
                 "gating_output": torch.empty(tokens, experts),
@@ -156,7 +156,7 @@ class TestBytesOracle:
 
             def ledger(active, has_bias=has_bias):
                 return _ledger(
-                    "FusedMoeFwdOp",
+                    "FusedMoEFwdOp",
                     hidden_states=((tokens, hidden), torch.bfloat16),
                     gating_output=((tokens, experts), torch.float32),
                     w_gate_up=((active, 2 * ffn, hidden), torch.bfloat16),  # read experts
@@ -171,11 +171,11 @@ class TestBytesOracle:
             assert self._priced(op, tensors)[1] == ledger(top_k), f"has_bias={has_bias}"
 
     def test_shared_expert_adds_its_shard_to_the_routed_cost(self):
-        from tileops.moe import FusedMoeSharedExpertFwdOp
+        from tileops.moe import FusedMoESharedExpertFwdOp
 
         tokens, experts, top_k, hidden, ffn, shared_ffn, tp = 2, 8, 2, 64, 32, 32, 2
         bf16 = torch.bfloat16
-        op = FusedMoeSharedExpertFwdOp(top_k, tp_size=tp, tp_rank=1)
+        op = FusedMoESharedExpertFwdOp(top_k, tp_size=tp, tp_rank=1)
         tensors = {
             "hidden_states": torch.empty(tokens, hidden, dtype=bf16),
             "gating_output": torch.empty(tokens, experts),
@@ -186,7 +186,7 @@ class TestBytesOracle:
             "shared_w_down": None,
         }
         routed = _ledger(
-            "FusedMoeSharedExpertFwdOp",
+            "FusedMoESharedExpertFwdOp",
             hidden_states=((tokens, hidden), bf16),
             gating_output=((tokens, experts), torch.float32),
             w_gate_up=((top_k, 2 * ffn, hidden), bf16),  # the bound: top_k experts
@@ -342,7 +342,7 @@ class TestBytesOracle:
     def test_topk_selector_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
-        from tileops.ops import TopkSelectorFwdOp
+        from tileops.ops import TopKSelectFwdOp
 
         batch, seq, extent, topk = 1, 4, 16, 2
         starts = torch.tensor([[0, 4, 8, 12]], dtype=torch.int32)
@@ -354,13 +354,13 @@ class TestBytesOracle:
         }
         scores = int((ends - starts).clamp(min=0).sum())
         oracle = _ledger(
-            "TopkSelectorFwdOp",
+            "TopKSelectFwdOp",
             index_score=((scores,), torch.float32),
             starts=((batch, seq), torch.int32),
             ends=((batch, seq), torch.int32),
             indexes=((batch, seq, 1, topk), torch.int32),
         )
-        assert self._priced(TopkSelectorFwdOp(topk), tensors) == (scores, oracle)
+        assert self._priced(TopKSelectFwdOp(topk), tensors) == (scores, oracle)
 
     def test_windowed_pools_read_the_positions_some_window_reaches(self):
         """A stride past the kernel span, or a dilation, leaves input positions no window
@@ -417,7 +417,7 @@ class TestBytesOracle:
         triangle, so only the strict-lower C * (C - 1) / 2 entries are read."""
         from tests.roofline_binder import manifest_cases
 
-        op_name = "DeltaNetBwdOp"
+        op_name = "DeltaNetChunkBwdOp"
         rows = {row["label"]: row for row in _manifest_rows(op_name)}
         for label, dtype_name, op, _oracle, _reads in manifest_cases(op_name):
             ix = _manifest_call(op_name, rows[label]).ix
@@ -752,12 +752,12 @@ class TestSpecOnlyRecounts:
 HAND_WRITTEN = {
     "AvgPool1dFwdOp": "a stride past the kernel leaves input positions no window reads",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
-    "DeltaNetBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
+    "DeltaNetChunkBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
     "MaxPool1dFwdOp": "a dilated or strided window leaves input positions no window reads",
     "MaxPool1dIndicesFwdOp": "a dilated or strided window leaves input positions no window reads",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
-    "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
+    "FusedMoEFwdOp": "the routed weight reads follow the routing its experts stage receives",
+    "FusedMoESharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -877,5 +877,7 @@ class TestCoverageLevels:
         missing = sorted(set(HAND_WRITTEN) - _RECOUNTED)
         assert not missing, (
             f"declared level two with no _ledger case above: {missing}; a case that "
-            "sums anonymous tuples cannot be checked against the signature"
+            "sums anonymous tuples cannot be checked against the signature. A case "
+            "another xdist worker ran is not recorded here: run this file in one "
+            "process, or pass --dist loadfile"
         )

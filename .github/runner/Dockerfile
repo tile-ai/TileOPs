@@ -83,7 +83,7 @@ ARG FLASH_ATTENTION_FORCE_BUILD=
 RUN FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
         uv pip install --no-build-isolation "flash-attn==2.8.3.post1"
 
-# This vllm and no other: its apache-tvm-ffi pin (0.1.11) is the one the tilelang commit needs.
+# This vllm and no other: it pins constraints.txt's tilelang release and apache-tvm-ffi 0.1.11.
 # Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
 FROM fa2 AS fullstack
 RUN for pkg in \
@@ -115,15 +115,48 @@ RUN { mkdir -p /tmp/DeepGEMM \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
     rm -rf /tmp/DeepGEMM
 
-# Built LAST: a SHA bump rebuilds only this layer, tilelang links against the final stack, and the
-# ARGs live here so changing them never invalidates the bench layers. vllm pins an exact tilelang
-# release, which this stage overwrites — leaving that pin unsatisfied is the point.
+# The Hadamard transform baselines. Both non-fatal, like the baselines above: no test imports
+# them, and their absence drops benchmark rows rather than failing the image.
+# A commit, not PyPI's 1.1.0 sdist: only v1.1.0.post2 gates `c10::DeviceGuard` by torch version and
+# takes the lightweight CUDAGuard header, and both are needed to compile against this torch.
+# FORCE_BUILD compiles here instead of fetching a release wheel: the releases carry no
+# cu13/torch2.13 build. --no-deps: torch, packaging and ninja are already installed and pinned.
+ARG FAST_HADAMARD_TRANSFORM_GIT_SHA=e7706faf8d1c3b9f241e36860640ad1dac644ede
+RUN { mkdir -p /tmp/fast-hadamard-transform \
+        && cd /tmp/fast-hadamard-transform \
+        && git init -q \
+        && git remote add origin https://github.com/Dao-AILab/fast-hadamard-transform.git \
+        && git fetch --depth 1 origin "${FAST_HADAMARD_TRANSFORM_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
+        && FAST_HADAMARD_TRANSFORM_FORCE_BUILD=TRUE \
+            uv pip install --no-build-isolation --no-deps .; } \
+    || echo "WARNING: bench baseline 'fast-hadamard-transform' install failed (non-fatal)"; \
+    rm -rf /tmp/fast-hadamard-transform
+# HadaCore. It is one directory of a monorepo that publishes no release, so the SHA is the last
+# commit touching that directory. Its setup.py hard-codes -gencode for sm_80, sm_89 and sm_90 and
+# reads no TORCH_CUDA_ARCH_LIST; sm_90 is the pool's arch and is in that list. The package it
+# installs is named faster_hadamard_transform.
+ARG HADACORE_GIT_SHA=c833061bd85d2e7f3af796b9a461e27dcd73f812
+RUN { mkdir -p /tmp/applied-ai \
+        && cd /tmp/applied-ai \
+        && git init -q \
+        && git remote add origin https://github.com/meta-pytorch/applied-ai.git \
+        && git fetch --depth 1 origin "${HADACORE_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
+        && uv pip install --no-build-isolation --no-deps \
+            ./kernels/cuda/inference/hadamard_transform; } \
+    || echo "WARNING: bench baseline 'HadaCore' install failed (non-fatal)"; \
+    rm -rf /tmp/applied-ai
+
+# After the bench baselines, so tilelang links against the final stack and a TILELANG_GIT_SHA bump
+# reuses every layer before this one. By default it installs the tilelang release constraints.txt
+# pins, which vllm already pulled; naming it here keeps it off vllm's non-fatal install.
+# TILELANG_GIT_SHA compiles that main commit instead: the wheel replaces the pinned release, so the
+# constraints are dropped for that one install and vllm's tilelang pin goes unsatisfied.
+# `pip wheel` stays on pip — uv has no equivalent subcommand. cutlass and tvm only:
+# composable_kernel is the ROCm backend's, and this image builds CUDA.
 FROM fullstack AS tilelang
 ARG TILELANG_GIT_SHA
-ARG TILELANG_VERSION
-# --no-deps: never re-resolve the cu132 stack. --reinstall: a same-version PyPI tilelang must not
-# read as already satisfied. `pip wheel` stays on pip — uv has no equivalent subcommand.
-# cutlass and tvm only: composable_kernel is the ROCm backend's, and this image builds CUDA.
 RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         mkdir -p /tmp/tilelang && cd /tmp/tilelang \
         && git init -q \
@@ -134,14 +167,11 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
             3rdparty/cutlass 3rdparty/tvm \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
-            python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
-        && uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
+            env -u PIP_CONSTRAINT python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
+        && env -u UV_CONSTRAINT uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang /opt/tilelang-wheels; \
-    elif [ -n "${TILELANG_VERSION}" ]; then \
-        uv pip install --no-deps --reinstall "tilelang==${TILELANG_VERSION}"; \
     else \
-        echo "ERROR: set --build-arg TILELANG_GIT_SHA=<commit> (main) or TILELANG_VERSION=<ver> (release)"; \
-        exit 1; \
+        uv pip install tilelang; \
     fi
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
 RUN uv pip install --no-deps cupti-python
@@ -150,12 +180,13 @@ RUN uv pip install --no-deps cupti-python
 RUN uv pip install nvmath-python
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
-
-FROM tilelang AS final
-# The image names itself, so a run can report which image produced it. Asking
-# the registry which tag is newest answers a different question. -e overrides.
+# The image names itself, so a run can report which image produced it. Asking the registry which
+# tag is newest answers a different question. -e overrides. Last in the stage, so both targets
+# carry it and a tag change invalidates nothing above.
 ARG TILEOPS_RUNNER_IMAGE=""
 ENV TILEOPS_RUNNER_IMAGE=${TILEOPS_RUNNER_IMAGE}
+
+FROM tilelang AS final
 # The host bind-mounts /ci-cache; the dirs are pre-created for unmounted runs.
 ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \

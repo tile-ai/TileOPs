@@ -1,19 +1,19 @@
 """The GEMM ops, at the public path ``tileops.gemm``."""
 
 from tileops.ops.gemm import (
-    BmmFp8FwdOp,
+    BmmFP8FwdOp,
     BmmFwdOp,
-    GemmFp8FwdOp,
+    GemmFP8FwdOp,
     GemmFwdOp,
     GemmW4A16FwdOp,
     GroupedGemmFwdOp,
 )
 
 __all__ = [
-    "GemmFwdOp",
-    "GemmFp8FwdOp",
-    "GemmW4A16FwdOp",
+    "BmmFP8FwdOp",
     "BmmFwdOp",
-    "BmmFp8FwdOp",
+    "GemmFP8FwdOp",
+    "GemmFwdOp",
+    "GemmW4A16FwdOp",
     "GroupedGemmFwdOp",
 ]

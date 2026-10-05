@@ -19,6 +19,7 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
 
 from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Custom
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.moe import FusedTopKWorkload
 
@@ -34,13 +35,6 @@ def test_fused_topk_bench(call) -> None:
     top_k, scoring_func, renormalize = op.top_k, op.scoring_func, op.renormalize
     num_tokens = gating_output.shape[0]
     bm = ManifestBenchmark(op, workload)
-
-    weights, _ = op(*inputs)
-    ref_weights, _ = workload.ref_program(*inputs)
-    # Ties may pick different experts; the kept weights agree once sorted.
-    torch.testing.assert_close(
-        weights.sort(dim=-1).values, ref_weights.sort(dim=-1).values, rtol=1e-3, atol=1e-3
-    )
 
     functors = {"tileops": op}
 
@@ -69,8 +63,36 @@ def test_fused_topk_bench(call) -> None:
                 scoring_func=scoring_func,
             )
 
-    _vllm_fn(*inputs)  # warmup
-    torch.cuda.synchronize()
     functors[VLLM_TAG] = _vllm_fn
 
-    bm.compare(functors, *inputs)
+    def validate(got, expected):
+        weights, ids = got[:2]
+        ref_weights, ref_ids = expected
+        assert weights.shape == ref_weights.shape and weights.dtype == ref_weights.dtype
+        assert ids.shape == ref_ids.shape and ids.dtype == ref_ids.dtype
+        assert ((ids >= 0) & (ids < gating_output.shape[-1])).all()
+        ordered = ids.sort(-1).values
+        assert (ordered[:, 1:] != ordered[:, :-1]).all(), "duplicate expert"
+        logits = gating_output.float()
+        scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
+        selection = scores if correction_bias is None else scores + correction_bias
+        # Validate selected scores and per-expert weights independently of tie order.
+        torch.testing.assert_close(
+            selection.gather(1, ids.long()).sort(-1).values,
+            selection.gather(1, ref_ids.long()).sort(-1).values,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        selected = scores.gather(1, ids.long())
+        if renormalize:
+            selected = selected / selected.sum(-1, keepdim=True)
+        torch.testing.assert_close(weights, selected, rtol=1e-3, atol=1e-3)
+
+    bm.compare(
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(
+            functors,
+            Custom(validate, "selected experts and their weights, independent of tie order"),
+        ),
+    )

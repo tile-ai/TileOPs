@@ -39,17 +39,15 @@ def _to_tuple(outputs):
     raise ValueError(f"Unsupported output type: {type(outputs)}")
 
 
-# docs/design/testing.md §Tolerance.
-_STANDARD_TOLERANCES = {
-    torch.float32: 1e-5,
-    torch.float16: 1e-3,
-    torch.bfloat16: 1.6e-2,
-}
-
-
 def standard_tolerance(dtype: torch.dtype) -> dict[str, float]:
     """Return the standard ``atol``/``rtol`` for *dtype*, ready to splat into a check."""
-    tol = _STANDARD_TOLERANCES[dtype]
+    # docs/design/testing.md §Tolerance.
+    tolerances = {
+        torch.float32: 1e-5,
+        torch.float16: 1e-3,
+        torch.bfloat16: 1.6e-2,
+    }
+    tol = tolerances[dtype]
     return {"atol": tol, "rtol": tol}
 
 

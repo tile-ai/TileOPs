@@ -2,7 +2,7 @@
 
 Covers: SumFwdOp, MeanFwdOp, AmaxFwdOp, AminFwdOp, ProdFwdOp, VarFwdOp, StdFwdOp, VarMeanFwdOp
 with dim=None. Also covers LogSumExpFwdOp, AllFwdOp, AnyFwdOp, CountNonzeroFwdOp,
-L1NormFwdOp, L2NormFwdOp, InfNormFwdOp.
+VectorNormFwdOp.
 
 Each test verifies that reducing with dim=None matches the corresponding
 PyTorch reference (full reduction over all dimensions).
@@ -335,10 +335,10 @@ def test_l1_norm_dim_none(
     keepdim: bool,
     dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.vector_norm import L1NormFwdOp
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = L1NormFwdOp(dim=None, keepdim=keepdim)
+    op = VectorNormFwdOp(1, dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(),
@@ -358,10 +358,10 @@ def test_l2_norm_dim_none(
     keepdim: bool,
     dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.vector_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = L2NormFwdOp(dim=None, keepdim=keepdim)
+    op = VectorNormFwdOp(2, dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(),
@@ -381,10 +381,12 @@ def test_inf_norm_dim_none(
     keepdim: bool,
     dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.vector_norm import InfNormFwdOp
+    from math import inf
+
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = InfNormFwdOp(dim=None, keepdim=keepdim)
+    op = VectorNormFwdOp(inf, dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(),

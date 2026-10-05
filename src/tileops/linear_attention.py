@@ -1,27 +1,25 @@
 """The linear attention ops, at the public path ``tileops.linear_attention``."""
 
 from tileops.ops.linear_attention import (
-    DeltaNetAutogradFwdOp,
-    DeltaNetBwdOp,
-    DeltaNetDecodeFwdOp,
-    DeltaNetFwdOp,
+    DeltaNetChunkBwdOp,
+    DeltaNetChunkFwdOp,
     DeltaNetInferenceFwdOp,
+    DeltaNetRecurrentFwdOp,
     GatedDeltaNetFwdOp,
-    GLABwdOp,
-    GLADecodeFwdOp,
-    GLAFwdOp,
+    GLAChunkBwdOp,
+    GLAChunkFwdOp,
     GLAInferenceFwdOp,
+    GLARecurrentFwdOp,
 )
 
 __all__ = [
-    "DeltaNetAutogradFwdOp",
-    "DeltaNetFwdOp",
+    "DeltaNetChunkBwdOp",
+    "DeltaNetChunkFwdOp",
     "DeltaNetInferenceFwdOp",
-    "DeltaNetBwdOp",
-    "DeltaNetDecodeFwdOp",
-    "GatedDeltaNetFwdOp",
-    "GLAFwdOp",
+    "DeltaNetRecurrentFwdOp",
+    "GLAChunkBwdOp",
+    "GLAChunkFwdOp",
     "GLAInferenceFwdOp",
-    "GLABwdOp",
-    "GLADecodeFwdOp",
+    "GLARecurrentFwdOp",
+    "GatedDeltaNetFwdOp",
 ]

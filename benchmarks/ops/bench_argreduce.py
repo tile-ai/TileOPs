@@ -12,11 +12,11 @@ import pytest
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
     flaggems_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.verification import Exact
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from workloads.reduction import ReductionCall
 
@@ -26,7 +26,6 @@ def _functors(op, baseline_fn, flaggems_name: str, dim: int, keepdim: bool, inpu
 
     Indices are exact or wrong, so the check takes no tolerance.
     """
-    assert_matches_reference(op, baseline_fn, *inputs)
     functors = {"tileops": op}
     # flag_gems' argmin launch fails with an invalid argument on a non-last axis.
     if flaggems_name == "argmax" or dim in (-1, inputs[0].ndim - 1):
@@ -35,7 +34,6 @@ def _functors(op, baseline_fn, flaggems_name: str, dim: int, keepdim: bool, inpu
         def flaggems_fn(x):
             return fn(x, dim, keepdim)
 
-        assert_matches_reference(flaggems_fn, baseline_fn, *inputs)
         functors[FLAGGEMS_TAG] = flaggems_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
@@ -52,8 +50,12 @@ def test_argmax_bench(call) -> None:
     def baseline_fn(x):
         return x.argmax(dim=dim, keepdim=keepdim)
 
+    functors = _functors(op, baseline_fn, "argmax", dim, keepdim, inputs)
+
     ManifestBenchmark(op, workload).compare(
-        _functors(op, baseline_fn, "argmax", dim, keepdim, inputs), *inputs
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
     )
 
 
@@ -67,6 +69,10 @@ def test_argmin_bench(call) -> None:
     def baseline_fn(x):
         return x.argmin(dim=dim, keepdim=keepdim)
 
+    functors = _functors(op, baseline_fn, "argmin", dim, keepdim, inputs)
+
     ManifestBenchmark(op, workload).compare(
-        _functors(op, baseline_fn, "argmin", dim, keepdim, inputs), *inputs
+        functors,
+        *inputs,
+        evidence=dict.fromkeys(functors, Exact(reference=baseline_fn)),
     )

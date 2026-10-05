@@ -32,7 +32,7 @@ BmmFwdOp:
 
 # Strict 3D-3D batched FP8 GEMM with per-tensor scaling. A single fp32 scalar per operand is shared
 # across the whole batch, mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
-BmmFp8FwdOp:
+BmmFP8FwdOp:
   family: gemm
   status: implemented
 

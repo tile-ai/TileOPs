@@ -12,7 +12,7 @@ from tileops.kernels.norm.ada_layer_norm import (
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
-from workloads.normalization import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
+from workloads.norm import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
