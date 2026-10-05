@@ -5,6 +5,7 @@ from tests.test_base import TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
+from workloads.device import run_device
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdWorkload
 from workloads.numerics import compare_outputs
 
@@ -118,6 +119,19 @@ def test_gated_deltanet_prefill_reads_offsets_rewritten_in_place() -> None:
     inputs[6][2] = 66
     inputs[7][2] = 66
     test.check(op, *inputs)
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_prefill_inverts_a_chunk_of_correlated_keys() -> None:
+    """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
+    lower matrix reaches the inverse, and every off-diagonal block depends on another."""
+    test = GatedDeltaNetFwdTest(1, 64, 1, 128, torch.float16)
+    q = torch.zeros(1, 64, 1, 128, dtype=torch.float16, device=run_device())
+    q[..., 0] = 1
+    k, v = q.clone(), torch.ones_like(q)
+    g = torch.zeros(1, 64, 1, dtype=torch.float16, device=run_device())
+    beta = torch.full_like(g, 0.5)
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g, beta)
 
 
 @pytest.mark.sm90
