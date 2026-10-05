@@ -738,6 +738,10 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             {**tile, "num_stages": 1},
             {**tile, "block_N": min(block_n, 16), "num_stages": 1},
         ]
+        if tile["block_M"] > WGMMA_ROWS:
+            candidates.append(
+                {**candidates[-1], "block_M": WGMMA_ROWS, "threads": WARPGROUP_THREADS}
+            )
         cap = get_shared_memory_optin(self.device_index)
         for config in candidates:
             if self._shared_bytes(config) <= cap:
