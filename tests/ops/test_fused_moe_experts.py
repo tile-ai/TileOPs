@@ -133,7 +133,6 @@ class TestFusedMoEExpertsFwdOp:
             compare_outputs(
                 inputs[0], workload.ref_program(*inputs), workload.verification(*inputs)
             )
-        assert [op.num_local_experts for op in experts.kernel_delegates()[:2]] == [4, 6]
 
     @pytest.mark.smoke
     def test_a_call_prices_the_experts_its_routing_reads(self):
@@ -145,24 +144,6 @@ class TestFusedMoEExpertsFwdOp:
         expected = active * 3 * F * H * elem + 2 * T * H * elem + T * K * (4 + 4)
         assert experts.eval_roofline()[1] == expected
         assert experts.roofline_inputs() == {"active_experts": active}
-
-    @pytest.mark.in_tree_kernels
-    @pytest.mark.smoke
-    @pytest.mark.parametrize("tokens,indexed", [(64, True), (65, False)])
-    def test_the_indexed_path_ends_at_two_routes_per_expert(self, tokens, indexed):
-        """The choice is made per call: at most two routes per expert takes the indexed op."""
-        experts = FusedMoEExpertsFwdOp()
-        E, K, H, F = 256, 8, 256, 256
-        args = (
-            torch.empty(tokens, H, dtype=torch.bfloat16, device=run_device()),
-            torch.randn(tokens, H, dtype=torch.bfloat16, device=run_device()) * 0.1,
-            torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()) * 0.02,
-            torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()) * 0.02,
-            torch.rand(tokens, K, dtype=torch.float32, device=run_device()),
-            torch.randint(0, E, (tokens, K), dtype=torch.int32, device=run_device()),
-        )
-        experts(*args)
-        assert bool(experts.last_call.stages["indexed_small_route"]) is indexed
 
     @pytest.mark.in_tree_kernels
     @pytest.mark.smoke

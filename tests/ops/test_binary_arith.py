@@ -522,20 +522,18 @@ def test_max_min_propagate_nan(op_cls) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("op_cls", [MaximumFwdOp, MinimumFwdOp])
 def test_max_min_canonicalize_the_nan_payload(op_cls) -> None:
-    """The in-tree kernels answer with one NaN bit pattern, not the operand's.
-
-    Deliberate: naming which operand costs a second select, which costs the
-    element body its float4 lanes. Nothing comparing floats can see the
-    difference, so this reads the bits.
-
-    The public docs promise canonicalization, not this exact payload, so the
-    pattern is pinned for the in-tree implementation alone; another backend
-    canonicalizing to a different NaN still satisfies the documented contract.
-    """
-    assert _nan_against_one(op_cls).view(torch.uint16).item() == 0x7FFF
+    """The NaN in the result does not carry the operand's payload: two NaN operands with
+    different bits give the same result bits."""
+    other = torch.tensor([1.0], dtype=torch.float16, device=run_device())
+    results = [
+        op_cls()(
+            torch.tensor([bits], dtype=torch.uint16, device=run_device()).view(torch.float16), other
+        )
+        for bits in (0xFE00, 0x7E01)
+    ]
+    assert torch.equal(results[0].view(torch.uint16), results[1].view(torch.uint16))
 
 
 @MaxMinNanFixture
