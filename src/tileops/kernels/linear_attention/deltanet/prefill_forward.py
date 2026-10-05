@@ -111,6 +111,7 @@ def _build_prefill_fwd_kernel(
             if l2norm:
                 kn_shared = T.alloc_shared((num_stages, C), accum_dtype, scope="shared")
                 qn_shared = T.alloc_shared((C,), accum_dtype, scope="shared")
+                qn_ready = T.alloc_barrier(arrive_count=128)
 
             # Stage ``i % num_stages`` holds chunk ``i``'s inputs, buffer ``i % 2`` its products.
             data_ready = T.alloc_barrier(arrive_count=[96] * num_stages)
@@ -230,6 +231,9 @@ def _build_prefill_fwd_kernel(
                             T.reduce_sum(square_fragment, sumsq_fragment, dim=1, clear=False)
                         for j_s in T.Parallel(C):
                             qn_shared[j_s] = T.rsqrt(sumsq_fragment[j_s] + L2NORM_EPS)
+                        # Every thread of the group scales rows whose norm another wrote.
+                        T.barrier_arrive(qn_ready)
+                        T.barrier_wait(qn_ready, i_s % 2)
                     for j_s, j_t in T.Parallel(C, C):
                         a_shared[ds, j_s, j_t] = T.cast(
                             T.cast(a_shared[ds, j_s, j_t], accum_dtype) * b_shared[ds, j_t], dtype
