@@ -4,11 +4,11 @@ from workloads.device import run_device
 from workloads.linear_attention.input_values import _log_gates, _small, _step_sizes
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["GatedDeltaNetFwdCall", "GatedDeltaNetFwdWorkload"]
+__all__ = ["GDNFwdCall", "GDNFwdWorkload"]
 
 
-class GatedDeltaNetFwdWorkload(WorkloadBase):
-    """BTHD Gated DeltaNet inference prefill or decode, equal-length or packed.
+class GDNFwdWorkload(WorkloadBase):
+    """BTHD Gated DeltaNet (GDN) inference prefill or decode, equal-length or packed.
 
     ``sequence_lengths`` packs the rows into one ``B = 1`` token axis and makes the call
     carry ``cu_seqlens``; ``value_heads`` gives the recurrence more heads than the key
@@ -137,7 +137,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return gated_deltanet_ref(
+        return gdn_ref(
             q,
             k,
             v,
@@ -164,7 +164,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         )
 
 
-class GatedDeltaNetFwdCall(CallWorkload):
+class GDNFwdCall(CallWorkload):
     """A manifest call sharing the focused workload's FP32 recurrence and verification."""
 
     def gen_inputs(self):
@@ -193,7 +193,7 @@ class GatedDeltaNetFwdCall(CallWorkload):
         self, q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias
     ):
         p = self.call.ix
-        return gated_deltanet_ref(
+        return gdn_ref(
             q,
             k,
             v,
@@ -221,7 +221,7 @@ class GatedDeltaNetFwdCall(CallWorkload):
         )
 
 
-def gated_deltanet_ref(
+def gdn_ref(
     q,
     k,
     v,

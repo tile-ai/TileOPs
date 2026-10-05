@@ -32,7 +32,7 @@ def decode_launch(
 
     Re-fit ``blocks_per_sm`` and either block shape by sweeping ``threads`` and
     ``lane_group`` against the decode workload rows of `benchmarks/ops/bench_deltanet.py`
-    and `benchmarks/ops/bench_gated_deltanet.py`.
+    and `benchmarks/ops/bench_gdn.py`.
     """
     if state_v_first:
         return {"threads": 8 * WARP_LANES, "lane_group": WARP_LANES // 2}

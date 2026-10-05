@@ -6,7 +6,7 @@ DeltaNet decode (single-step recurrence, ungated).
     o        = S @ q + (q . k) * v_new
     S_new    = S + outer(k, v_new)
 
-Unlike gated DeltaNet, there is no gate parameter g and no alpha = exp(g).
+Unlike Gated DeltaNet (GDN), there is no gate parameter g and no alpha = exp(g).
 
 Optimization:
   - T.Pipelined + T.copy: async prefetch state tiles from HBM

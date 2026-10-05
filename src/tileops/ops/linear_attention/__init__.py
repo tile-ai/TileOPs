@@ -4,7 +4,7 @@ from tileops.ops.linear_attention.deltanet.chunk import (
 )
 from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
-from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
+from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
@@ -15,10 +15,10 @@ __all__: list[str] = [
     "DeltaNetChunkFwdOp",
     "DeltaNetInferenceFwdOp",
     "DeltaNetRecurrentFwdOp",
+    "GDNFwdOp",
     "GLAChunkBwdOp",
     "GLAChunkFwdOp",
     "GLAInferenceFwdOp",
     "GLARecurrentFwdOp",
-    "GatedDeltaNetFwdOp",
     "KDAFwdOp",
 ]

@@ -25,13 +25,13 @@ __all__ = ["KDAFwdOp"]
 
 
 class KDAFwdOp(Op):
-    """Kimi Delta Attention: the gated delta rule with a per-key-channel decay.
+    """Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay.
 
     ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``beta`` and the output use
     ``HV`` recurrent heads, where ``HV`` is a multiple of ``H``; ``g`` carries
     one log-space decay per key channel, ``[B, T, HV, K]``, which is what
     separates this operator from the scalar per-head gate of
-    ``GatedDeltaNetFwdOp``. The recurrent state is always FP32 and key-major
+    ``GDNFwdOp``. The recurrent state is always FP32 and key-major
     ``[N, HV, K, V]``; ``state_v_first=True`` asks for the value-major layout.
     For equal-length inputs ``N == B``. Passing ``cu_seqlens`` selects packed
     varlen mode: the token tensors have ``B == 1`` and ``N`` is the number of

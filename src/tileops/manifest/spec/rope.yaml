@@ -1,4 +1,4 @@
-# Rotary position embedding (RoPE) operators, exported by the `rope` module.
+# Rotary Position Embedding (RoPE) operators, exported by the `rope` module.
 
 RoPEFwdOp:
   # `neox` rotates the two halves of a head against each other, `interleaved` rotates each

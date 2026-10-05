@@ -6,7 +6,7 @@ Pipeline (3 stages):
   2. h_recurrence:  (k, w, u, S_0) -> (S, v_new)   [sequential over chunks]
   3. output_o:      (q, k, S, v_new) -> o            [parallel over chunks]
 
-Unlike gated DeltaNet, there is no gate parameter g:
+Unlike Gated DeltaNet (GDN), there is no gate parameter g:
   - No exp(g) scaling in any stage
   - State update: h_new = h + k^T @ v_new (no decay)
   - v_new = u - w @ h (no exp scaling)

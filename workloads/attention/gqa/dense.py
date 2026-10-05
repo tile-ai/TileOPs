@@ -27,7 +27,7 @@ def dense_gqa_ref(
     window_size_left: int = -1,
     window_size_right: int = -1,
 ) -> torch.Tensor:
-    """Grouped-query attention over dense BSHD tensors, accumulated in FP32.
+    """Grouped-Query Attention (GQA) over dense BSHD tensors, accumulated in FP32.
 
     Query row ``i`` sits at KV position ``i + seq_len_kv - seq_len_q``, which
     the causal flag and the window bounds are read against.

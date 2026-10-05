@@ -23,7 +23,7 @@ __all__ = ["GQAVarlenFwdOp"]
 
 
 class GQAVarlenFwdOp(Op):
-    """Grouped-query attention over packed THD tensors.
+    """Grouped-Query Attention (GQA) over packed THD tensors.
 
     ``cu_seqlens_q`` and ``cu_seqlens_kv`` delimit each request. The interface
     covers both prefill and decode; tensor geometry and sequence metadata come

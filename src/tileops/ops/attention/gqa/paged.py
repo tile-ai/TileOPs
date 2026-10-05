@@ -21,7 +21,7 @@ __all__ = ["GQAPagedFwdOp"]
 
 
 class GQAPagedFwdOp(Op):
-    """Grouped-query attention over a caller-owned paged KV cache.
+    """Grouped-Query Attention (GQA) over a caller-owned paged KV cache.
 
     Packed Q and its cumulative sequence lengths cover both prefill and decode.
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and

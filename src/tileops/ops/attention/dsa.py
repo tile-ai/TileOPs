@@ -13,8 +13,7 @@ __all__ = ["DSADecodeWithKVCacheFwdOp"]
 
 
 class DSADecodeWithKVCacheFwdOp(Op):
-    """
-    Sparse Attention Decode Operation with Key-Value Cache for DeepSeek.
+    """DeepSeek Sparse Attention (DSA) decode.
 
     This operation is part of a sparse attention mechanism, designed for use in decoding
     with key-value (KV) caching.

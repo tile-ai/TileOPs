@@ -5,19 +5,19 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
-    GatedDeltaNetCall,
-    GatedDeltaNetDenseDecodeFwdKernel,
-    GatedDeltaNetDensePrefillFwdKernel,
-    GatedDeltaNetFwdInterface,
+    GDNCall,
+    GDNDenseDecodeFwdKernel,
+    GDNDensePrefillFwdKernel,
+    GDNFwdInterface,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GatedDeltaNetFwdOp"]
+__all__ = ["GDNFwdOp"]
 
 
-class GatedDeltaNetFwdOp(Op):
-    """Inference forward for the gated delta rule.
+class GDNFwdOp(Op):
+    """Gated DeltaNet (GDN): inference forward for the gated delta rule.
 
     ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``g``, ``beta`` and the
     output use ``HV`` recurrent heads, where ``HV`` is a multiple of ``H``.
@@ -41,25 +41,23 @@ class GatedDeltaNetFwdOp(Op):
     the current inputs; in particular, ``T == 1`` is decode rather than a
     separate public Op.
 
-    The in-tree implementations currently cover SM90 prefill over a 64- or
+    The in-tree kernels cover SM90 prefill over a 64- or
     128-wide square state in either layout -- equal-length or packed, with a
     sequence that is not a whole number of 64-token chunks, with ``HV`` a
     multiple of ``H``, and under any combination of the three input
     transforms -- and single-token SM90 decode over a key-major 128-wide one
     with matching recurrent head counts and the gate, the step size and the
-    Q/K normalization settled before the call. Other regions still require an
-    external target implementation while their retained kernels are migrated.
+    Q/K normalization settled before the call. Other calls need an external
+    target implementation.
     """
 
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gated_deltanet_dense_decode": GatedDeltaNetDenseDecodeFwdKernel,
-        "gated_deltanet_dense_prefill": GatedDeltaNetDensePrefillFwdKernel,
+        "gdn_dense_decode": GDNDenseDecodeFwdKernel,
+        "gdn_dense_prefill": GDNDensePrefillFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gated_deltanet": GatedDeltaNetFwdInterface
-    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gdn": GDNFwdInterface}
 
     def __init__(
         self,
@@ -157,7 +155,7 @@ class GatedDeltaNetFwdOp(Op):
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        call = GatedDeltaNetCall(
+        call = GDNCall(
             batch=batch,
             seq_len=seq_len,
             heads=heads,
@@ -176,4 +174,4 @@ class GatedDeltaNetFwdOp(Op):
             allow_neg_eigval=self.allow_neg_eigval,
             device=q.device,
         )
-        return self.kernel_for("gated_deltanet", call)(*inputs)
+        return self.kernel_for("gdn", call)(*inputs)

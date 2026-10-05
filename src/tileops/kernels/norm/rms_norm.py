@@ -1,4 +1,4 @@
-"""RMS Norm kernel using TileLang.
+"""RMSNorm kernel using TileLang.
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
@@ -129,7 +129,7 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, partial_min_element
 
 
 class RMSNormKernel(Kernel, RMSNormFwdInterface):
-    """RMS Norm kernel.
+    """RMSNorm kernel.
 
     Supports SM80+ architectures. The row is held in a register fragment from the load
     through the store; rows of at most ``_SHARED_ROW_MAX`` elements share a block.

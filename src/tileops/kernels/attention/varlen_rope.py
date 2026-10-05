@@ -1,4 +1,4 @@
-"""Rotary position embedding for packed variable-length attention.
+"""Rotary Position Embedding (RoPE) for packed variable-length attention.
 
 The two sides are placed differently because they are read differently. A rotated key row
 is read by every query tile of its request and by every query head of its KV group, so it

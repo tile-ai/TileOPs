@@ -208,7 +208,7 @@ class MLAVarlenCall(CallSpec):
 
 
 class GQADenseFwdInterface(KernelInterface):
-    """Grouped-query attention over dense Q, K and V."""
+    """Grouped-Query Attention (GQA) over dense Q, K and V."""
 
     request = AttentionCall
 
@@ -246,7 +246,7 @@ class GQADenseFwdInterface(KernelInterface):
 
 
 class GQAVarlenFwdInterface(KernelInterface):
-    """Grouped-query attention over packed variable-length requests."""
+    """Grouped-Query Attention (GQA) over packed variable-length requests."""
 
     request = AttentionCall
 
@@ -286,7 +286,7 @@ class GQAVarlenFwdInterface(KernelInterface):
 
 
 class GQAPagedFwdInterface(KernelInterface):
-    """Grouped-query attention of packed queries over a paged KV pool it only reads."""
+    """Grouped-Query Attention (GQA) of packed queries over a paged KV pool it only reads."""
 
     request = AttentionCall
 
@@ -321,7 +321,7 @@ class GQAPagedFwdInterface(KernelInterface):
 
 
 class MHAPagedDecodeFwdInterface(KernelInterface):
-    """Multi-head attention of BSHD queries over a paged KV pool it only reads."""
+    """Multi-Head Attention (MHA) of BSHD queries over a paged KV pool it only reads."""
 
     request = AttentionCall
 
@@ -420,7 +420,7 @@ class GQAPreprocessBwdInterface(KernelInterface):
 
 
 class GQABwdInterface(KernelInterface):
-    """Grouped-query attention backward from the saved log-sum-exp."""
+    """Grouped-Query Attention (GQA) backward from the saved log-sum-exp."""
 
     request = AttentionCall
 

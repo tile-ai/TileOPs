@@ -15,7 +15,7 @@ from tileops.kernels.linear_attention import (
     DeltaNetChunkCall,
     DeltaNetDecodeCall,
     DeltaNetInferenceCall,
-    GatedDeltaNetCall,
+    GDNCall,
     GLAChunkCall,
     GLADecodeCall,
 )
@@ -25,7 +25,7 @@ from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
-from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
+from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
@@ -297,12 +297,12 @@ def test_gla_inference_dispatch(call: GLAInferenceCallSpec, expected: str) -> No
     assert GLAInferenceFwdOp().select_implementation("gla_inference", call) == expected
 
 
-# --- Gated DeltaNet: one token continuing a state is decode, whole chunks of 64 from
+# --- GDN: one token continuing a state is decode, whole chunks of 64 from
 # zero are prefill, and nothing else is served.
 
 
-def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GatedDeltaNetCall:
-    return GatedDeltaNetCall(
+def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCall:
+    return GDNCall(
         arch=_SM90,
         batch=1,
         seq_len=seq_len,
@@ -322,44 +322,44 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> Gated
 @pytest.mark.parametrize(
     ("call", "expected"),
     [
-        pytest.param(_gated_call(1, True), "gated_deltanet_dense_decode", id="decode"),
+        pytest.param(_gated_call(1, True), "gdn_dense_decode", id="decode"),
         pytest.param(
             _gated_call(1, False, dim_k=64, dim_v=64, value_heads=64, state_v_first=True),
-            "gated_deltanet_dense_decode",
+            "gdn_dense_decode",
             id="decode-every-variant",
         ),
-        pytest.param(_gated_call(64, False), "gated_deltanet_dense_prefill", id="prefill-64"),
-        pytest.param(_gated_call(128, False), "gated_deltanet_dense_prefill", id="prefill-128"),
+        pytest.param(_gated_call(64, False), "gdn_dense_prefill", id="prefill-64"),
+        pytest.param(_gated_call(128, False), "gdn_dense_prefill", id="prefill-128"),
         pytest.param(
             _gated_call(64, True, dim_k=64, dim_v=64),
-            "gated_deltanet_dense_prefill",
+            "gdn_dense_prefill",
             id="prefill-narrow-state",
         ),
         pytest.param(
             _gated_call(4096, False, varlen=True, num_sequences=4),
-            "gated_deltanet_dense_prefill",
+            "gdn_dense_prefill",
             id="prefill-varlen",
         ),
-        pytest.param(_gated_call(63, False), "gated_deltanet_dense_prefill", id="prefill-ragged"),
+        pytest.param(_gated_call(63, False), "gdn_dense_prefill", id="prefill-ragged"),
         pytest.param(
             _gated_call(64, False, value_heads=64),
-            "gated_deltanet_dense_prefill",
+            "gdn_dense_prefill",
             id="prefill-grouped-value-heads",
         ),
         pytest.param(
             _gated_call(64, False, l2norm=True, gate_in_kernel=True, beta_sigmoid=True),
-            "gated_deltanet_dense_prefill",
+            "gdn_dense_prefill",
             id="prefill-input-transforms",
         ),
         pytest.param(
             _gated_call(64, True, state_v_first=True),
-            "gated_deltanet_dense_prefill",
+            "gdn_dense_prefill",
             id="prefill-value-major-state",
         ),
     ],
 )
-def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None:
-    assert GatedDeltaNetFwdOp().select_implementation("gated_deltanet", call) == expected
+def test_gdn_dispatch(call: GDNCall, expected: str) -> None:
+    assert GDNFwdOp().select_implementation("gdn", call) == expected
 
 
 @pytest.mark.cuda_only
@@ -374,9 +374,9 @@ def test_gated_deltanet_dispatch(call: GatedDeltaNetCall, expected: str) -> None
         ),
     ],
 )
-def test_gated_deltanet_refuses_what_no_kernel_serves(call: GatedDeltaNetCall, reason: str) -> None:
+def test_gdn_refuses_what_no_kernel_serves(call: GDNCall, reason: str) -> None:
     with pytest.raises(ValueError, match=reason):
-        GatedDeltaNetFwdOp().select_implementation("gated_deltanet", call)
+        GDNFwdOp().select_implementation("gdn", call)
 
 
 # --- DeltaNet inference: whole chunks of 64 are prefill and one token is decode, and
@@ -483,13 +483,13 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
             DeltaNetDecodeCall(dtype=torch.float32, **decode),
         ),
         (
-            GatedDeltaNetFwdOp(),
-            "gated_deltanet",
+            GDNFwdOp(),
+            "gdn",
             _gated_call(2048, False, heads=heads, value_heads=2 * heads),
         ),
         (
-            GatedDeltaNetFwdOp(),
-            "gated_deltanet",
+            GDNFwdOp(),
+            "gdn",
             _gated_call(1, True, heads=heads, value_heads=2 * heads),
         ),
         (GLAChunkFwdOp(), "gla_fwd", gla_chunk),
@@ -537,12 +537,12 @@ def test_linear_attention_serves_a_single_head_and_even_counts(heads: int) -> No
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("seq_len", [2048, 1])
-def test_gated_deltanet_refuses_an_odd_value_head_count(seq_len: int) -> None:
+def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
     """The value heads are their own axis: one key head can group an odd number of them."""
     call = _gated_call(seq_len, seq_len == 1, heads=1, value_heads=3)
 
     with pytest.raises(ValueError, match="even head count or a single head"):
-        GatedDeltaNetFwdOp().select_implementation("gated_deltanet", call)
+        GDNFwdOp().select_implementation("gdn", call)
 
 
 @pytest.mark.cuda_only

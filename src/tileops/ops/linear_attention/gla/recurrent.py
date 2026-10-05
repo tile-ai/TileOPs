@@ -16,7 +16,7 @@ __all__ = ["GLARecurrentFwdOp"]
 
 
 class GLARecurrentFwdOp(Op):
-    """GLA (Gated Linear Attention) decode (single-step recurrence).
+    """Gated Linear Attention (GLA) decode (single-step recurrence).
 
     Computes one step of the gated linear attention recurrence:
         S_new = diag(exp(gk)) @ S + outer(k, v)
