@@ -170,9 +170,6 @@ class RowReduceKernelBase(ReduceKernelBase):
             threads = self.config.get("threads", DEFAULT_THREADS)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
                 self.config["tile_n"] = self._planner.tiled_tile_n(bm, threads)
-            reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
-            if reason:
-                raise ValueError(reason)
 
     def _untiled(self) -> object:
         """The program for rows one block pass holds."""

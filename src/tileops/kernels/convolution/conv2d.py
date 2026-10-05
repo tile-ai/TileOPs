@@ -804,13 +804,6 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             self.dtype_str,
         )
         self.init_config(config, tune)
-        block_m = self.config["block_m"]
-        if not self.tile_stays_in_one_image(n, self.out_h * self.out_w, block_m):
-            raise ValueError(
-                f"block_m={block_m} spans two of this call's {n} images, whose output is "
-                f"{self.out_h * self.out_w} elements each. applies() and autotune_configs "
-                f"both reject such a tile, and a config passed in has to as well."
-            )
 
     @staticmethod
     def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:

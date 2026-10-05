@@ -41,13 +41,6 @@ def _check(op, workload, inputs) -> None:
     TestBase.check(workload, op, *inputs)
 
 
-def _built_kernel(op, inputs):
-    """The kernel *op* selects and builds for *inputs*."""
-    q, k_pages, _, page_table = inputs[:4]
-    call = op.paged_call(q, k_pages, page_table)
-    return op.kernel_for("gqa_paged", call)
-
-
 class GQAPagedDecodeFixture(FixtureBase):
     PARAMS = [
         (
@@ -160,25 +153,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
     if reverse_pages:
         inputs[3] = inputs[3].flip(-1).contiguous()
     op = GQAPagedFwdOp()
-    kernel = _built_kernel(op, inputs)
-    assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
-    assert kernel._select_tier(cache_len) == ("ctx" if cache_len >= 1024 else "no_split")
     _check(op, workload, inputs)
-
-
-@pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-def test_gqa_paged_decode_bs1_dispatch() -> None:
-    """An eligible batch-1 call selects the batch-1 kernel and its tiers."""
-    workload = _decode(1, 32, 4, [8192], 128, 256)
-    kernel = _built_kernel(GQAPagedFwdOp(), workload.gen_inputs())
-    assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
-    assert kernel._select_tier(1024) == "ctx"
-    assert kernel._select_tier(512) == "no_split"
-    assert kernel._ctx_splits_for(8192) == 32
-    assert kernel._ctx_splits_for(2048) == 16
-    assert kernel._ctx_splits_for(3072) == 8
 
 
 @pytest.mark.smoke

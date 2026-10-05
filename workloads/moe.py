@@ -2,20 +2,7 @@ import math
 
 import torch
 
-from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import Call, instantiate
 from workloads.workload_base import CallWorkload
-
-
-def moe_call(op: str, dtype_case: dict | None = None, **row) -> Call:
-    """The manifest call of *op* that *row* describes, as a workload row would.
-
-    A test picks its own shapes; the call still takes its metadata from the entry's
-    generators and its contract from the entry's signature (docs/design/manifest.md § Rows).
-    """
-    plan = entry_plan(op, load_manifest()[op], load_adts(), resolve=False)
-    return instantiate(plan, {**row, "label": "test"}, dtype_case or {})
 
 
 class FusedTopKWorkload(CallWorkload):

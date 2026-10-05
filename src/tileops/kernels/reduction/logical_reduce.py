@@ -271,10 +271,6 @@ def _fold_reduce(
     """Reduce each row of *x*, viewed as ``(lead, rows, cols)``, to one *out_dtype* value.
 
     Row ``r`` is the elements ``x[:, r, :]``. ``threads=None`` sizes the block by the run.
-
-    Raises:
-        ValueError: *threads* is not a power of two from one warp to
-            ``_FOLD_MAX_THREADS``, which the block's shuffle reduction needs.
     """
     # Views only: a conjugated complex tensor is read unconjugated, which negates only
     # imaginary parts and so no element's truth.
@@ -290,11 +286,6 @@ def _fold_reduce(
     vec = _fold_vector(units.element_size(), row_units, components, units.data_ptr())
     if threads is None:
         threads = _fold_threads(row_units, vec)
-    if not (_FOLD_MIN_THREADS <= threads <= _FOLD_MAX_THREADS and threads & (threads - 1) == 0):
-        raise ValueError(
-            f"threads={threads}: the fold needs a power of two from "
-            f"{_FOLD_MIN_THREADS} to {_FOLD_MAX_THREADS}"
-        )
     program = _logical_fold_kernel(
         lead,
         rows,

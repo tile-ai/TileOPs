@@ -3,7 +3,6 @@ import torch
 
 from tests.workload_test_base import TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
-from tileops.kernels.linear_attention import GDNDensePrefillFwdKernel
 from tileops.ops import GDNFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.gdn import GDNFwdWorkload
@@ -199,23 +198,9 @@ def test_gdn_partitioned_prefill_normalizes_the_key_it_stages() -> None:
     _check_partitioned(test, q, k, v, g * 0.01, beta, use_qk_l2norm_in_kernel=True)
 
 
-class _FourChunkPartitionsKernel(GDNDensePrefillFwdKernel):
-    """Partition every four chunks, so a short sequence crosses partitions."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **{**kwargs, "config": {"max_local_chunks": 4}})
-
-
 def _check_partitioned(test, *inputs, **params) -> None:
-    """Run the op with four-chunk partitions and check it against the workload."""
-    op = GDNFwdOp(
-        **params,
-        kernel_map={"gdn_dense_prefill": _FourChunkPartitionsKernel},
-        target=BUILTIN,
-    )
-    test.check(op, *inputs)
-    (kernel,) = op.built_kernels("gdn").values()
-    assert type(kernel) is _FourChunkPartitionsKernel
+    """Check a call short enough to take the four-chunk partition floor."""
+    test.check(GDNFwdOp(**params, target=BUILTIN), *inputs)
 
 
 @pytest.mark.sm90

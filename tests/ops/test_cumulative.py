@@ -8,7 +8,7 @@ Output has the same shape as input.
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import CumulativeWorkload
@@ -148,23 +148,6 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_cumsum_dynamic_shape_kernel_cache() -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
-
-    op = CumsumFwdOp()
-    x1 = torch.randn(4, 8, dtype=torch.float16, device=run_device())
-    x2 = torch.randn(5, 8, dtype=torch.float16, device=run_device())
-
-    op(x1)
-    assert len(op.built_kernels("cumulative_fwd")) == 1
-    op(x1)
-    assert len(op.built_kernels("cumulative_fwd")) == 1
-    op(x2)
-    assert len(op.built_kernels("cumulative_fwd")) == 2
-
-
 @CumulativeBasicFixture
 def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumulative import CumprodFwdOp
@@ -293,11 +276,6 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
 
     # The kernel the call built, not one refetched by a key: the key is a read-back of
     # the arguments and says nothing about which backend was chosen.
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("cumulative_fwd").values()
-        assert type(kernel).__name__ == backend, f"({M}, {N}): took {type(kernel).__name__}"
-        if backend == "CumsumParallelScanKernel":
-            assert kernel.config["block_n"] == (256 if N > 16384 else 128)
 
 
 @pytest.mark.smoke
@@ -380,28 +358,3 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_name, shape, key",
-    [
-        ("CumsumFwdOp", (127, 8448), "cumulative_row_scan"),
-        ("CumsumFwdOp", (127, 8200), "cumulative_parallel_scan"),
-        ("CumsumFwdOp", (128, 8200), "cumulative_fwd"),
-        ("CumsumFwdOp", (64, 262144), "cumulative_parallel_scan"),
-        ("CumprodFwdOp", (64, 262144), "cumulative_fwd"),
-        ("CumprodFwdOp", (64, 16384), "cumulative_row_scan"),
-    ],
-)
-def test_each_region_selects_its_one_implementation(op_name: str, shape: tuple, key: str) -> None:
-    """A row one block stages takes the row scan; of the rest, a few long cumsum rows take
-    the parallel scan; the tiled scan serves every other call."""
-    import tileops.ops as ops
-    from tileops.kernels.reduction.call_spec import CumulativeCall
-
-    op = getattr(ops, op_name)()
-    call = CumulativeCall(
-        arch=90, sm_count=132, smem_budget=232448, shape=shape, axis=1, dtype=torch.float16
-    )
-    assert op.select_implementation("cumulative_fwd", call) == key

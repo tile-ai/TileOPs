@@ -4,15 +4,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.norm.ada_layer_norm import (
-    AdaLayerNormKernel,
-    _should_use_cp_async,
-)
+from tileops.backend import BUILTIN
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
 from workloads.norm import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
-from workloads.numerics import compare_outputs
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
@@ -60,64 +56,8 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
 ) -> None:
     m, n = 16, 1152
     test = AdaLayerNormTest(m, n, dtype)
-    inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=False)
-    actual = kernel(*inputs)
-    expected = test.ref_program(*inputs)
-    assert actual.shape == (m, n)
-    compare_outputs(actual, expected, test.verification(*inputs))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_ada_layer_norm_async_copy_handles_row_tail() -> None:
-    """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
-    m, n, block_m = 17, 514, 4
-    dtype = torch.float16
-    test = AdaLayerNormTest(m, n, dtype)
-    inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(
-        n,
-        test.eps,
-        dtype,
-        has_gate=False,
-        config={"block_m": block_m, "threads": 128},
-    )
-    assert kernel.use_cp_async
-    actual = kernel(*inputs)
-    expected = test.ref_program(*inputs)
-    compare_outputs(actual, expected, test.verification(*inputs))
-
-
-@pytest.mark.smoke
-def test_ada_layer_norm_async_policy_edges() -> None:
-    cases = [
-        (511, torch.float16, False),
-        (512, torch.float16, False),
-        (513, torch.float16, False),
-        (514, torch.float16, True),
-        (1918, torch.float16, True),
-        (1919, torch.float16, False),
-        (1920, torch.float16, True),
-        (513, torch.float32, True),
-        (1919, torch.float32, True),
-    ]
-    for n, dtype, expected_async in cases:
-        assert _should_use_cp_async(n, dtype, has_gate=False) is expected_async
-
-
-@pytest.mark.smoke
-def test_ada_layer_norm_async_policy_shared_memory_limit() -> None:
-    cases = [
-        (8190, torch.float16, False, True),
-        (8194, torch.float16, False, False),
-        (6142, torch.float16, True, True),
-        (6146, torch.float16, True, False),
-        (4094, torch.float32, False, True),
-        (4098, torch.float32, False, False),
-    ]
-    for n, dtype, has_gate, expected_async in cases:
-        assert _should_use_cp_async(n, dtype, has_gate) is expected_async
+    op = AdaLayerNormFwdOp(eps=test.eps, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
@@ -135,13 +75,8 @@ def test_ada_layer_norm_async_policy_edge_correctness(
 ) -> None:
     m = 4
     test = AdaLayerNormTest(m, n, dtype)
-    inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=False)
-    if n == 514:
-        assert kernel.use_cp_async
-    actual = kernel(*inputs)
-    expected = test.ref_program(*inputs)
-    compare_outputs(actual, expected, test.verification(*inputs))
+    op = AdaLayerNormFwdOp(eps=test.eps, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 class AdaLayerNorm3DFixture(FixtureBase):
@@ -215,33 +150,8 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
 ) -> None:
     m, n = 16, 1152
     test = AdaLayerNormZeroTest(m, n, dtype)
-    inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(n, test.eps, dtype, has_gate=True)
-    actual = kernel(*inputs)
-    expected = test.ref_program(*inputs)
-    assert actual.shape == (m, n)
-    compare_outputs(actual, expected, test.verification(*inputs))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
-    """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
-    m, n, block_m = 17, 514, 4
-    dtype = torch.float16
-    test = AdaLayerNormZeroTest(m, n, dtype)
-    inputs = test.gen_inputs()
-    kernel = AdaLayerNormKernel(
-        n,
-        test.eps,
-        dtype,
-        has_gate=True,
-        config={"block_m": block_m, "threads": 128},
-    )
-    assert kernel.use_cp_async
-    actual = kernel(*inputs)
-    expected = test.ref_program(*inputs)
-    compare_outputs(actual, expected, test.verification(*inputs))
+    op = AdaLayerNormZeroFwdOp(eps=test.eps, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 class AdaLayerNormZero3DFixture(FixtureBase):
@@ -269,3 +179,18 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
 
     test = AdaLayerNormZeroTest(batch * seq, hidden, dtype)
     test.check(op, x, scale, shift, gate)
+
+
+_TUNE = [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)]
+
+
+@pytest.mark.parametrize("tune", _TUNE)
+def test_ada_layer_norm_under_tuning(tune: bool) -> None:
+    test = AdaLayerNormTest(17, 514, torch.float16)
+    test.check(AdaLayerNormFwdOp(eps=test.eps, tune=tune), *test.gen_inputs())
+
+
+@pytest.mark.parametrize("tune", _TUNE)
+def test_ada_layer_norm_zero_under_tuning(tune: bool) -> None:
+    test = AdaLayerNormZeroTest(17, 514, torch.float16)
+    test.check(AdaLayerNormZeroFwdOp(eps=test.eps, tune=tune), *test.gen_inputs())

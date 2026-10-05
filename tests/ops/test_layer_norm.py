@@ -4,8 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
-from tileops.kernels.norm.layer_norm import LayerNormKernel
+from tests.workload_test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.device import run_device
@@ -69,14 +69,8 @@ def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     m, n = 16, 3000
     dtype = torch.float16
     test = LayerNormTest(m, n, dtype)
-    x, weight, bias = test.gen_inputs()
-
-    kernel = LayerNormKernel(n, test.eps, dtype)
-    y = kernel(x, weight, bias)
-    y_ref = test.ref_program(x, weight, bias)
-
-    assert y.shape == (m, n)
-    compare_outputs(y, y_ref, layer_norm_verification(dtype))
+    op = LayerNormFwdOp(normalized_shape=(n,), eps=test.eps, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 class LayerNormNonContigFixture(FixtureBase):
@@ -197,15 +191,11 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
 
     x1 = torch.randn(512, n, dtype=dtype, device=run_device())
     y1 = op(x1, weight, bias)
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("layer_norm").values()
     assert y1.shape == x1.shape
 
     x2 = torch.randn(1024, n, dtype=dtype, device=run_device())
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
-    if served_in_tree(op):
-        assert list(op.built_kernels("layer_norm").values()) == [kernel]
 
     y_ref = F.layer_norm(
         x2.float(),

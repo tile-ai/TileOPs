@@ -205,22 +205,6 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        pytest.param(torch.float16, marks=pytest.mark.smoke),
-        pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
-        pytest.param(torch.float32, marks=pytest.mark.smoke),
-    ],
-)
-def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
-    from tileops.kernels.elementwise import BitwiseNotFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        BitwiseNotFwdKernel(N_total=16, dtype=dtype)
-
-
 # Dtype rejection tests for binary bitwise ops
 
 

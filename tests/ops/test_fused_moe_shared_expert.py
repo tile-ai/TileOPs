@@ -12,22 +12,21 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.kernels.gemm.dense import GemmTMAKernel
-from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import SharedExpertMLPWorkload, moe_call, moe_verification, ref_shared_expert
+from workloads.moe import SharedExpertMLPWorkload, moe_verification, ref_shared_expert
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", ["bfloat16", "float16"])
 def test_the_shared_expert_matches_its_reference(dtype):
     workload = SharedExpertMLPWorkload(
-        moe_call("SharedExpertMLPFwdOp", {"D": dtype}, T=32, H=256, S=128)
+        manifest_call("SharedExpertMLPFwdOp", {"D": dtype}, T=32, H=256, S=128)
     )
     inputs = workload.gen_inputs()
     TestBase.check(workload, SharedExpertMLPFwdOp(), *inputs)
@@ -45,14 +44,27 @@ def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, fu
     if get_sm_version(torch.device(run_device()).index) != 90:
         pytest.skip("the dense template serves SM90")
     workload = SharedExpertMLPWorkload(
-        moe_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=256, S=512)
+        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=256, S=512)
     )
     op = SharedExpertMLPFwdOp()
     TestBase.check(workload, op, *workload.gen_inputs())
-    (kernel,) = op.built_kernels("shared_expert_mlp").values()
-    assert isinstance(kernel._gemm_gate_up, GemmTemplate)
-    assert isinstance(kernel._gemm_down, GemmTemplate)
-    assert kernel._gemm_gate_up.activation == ("silu_and_mul" if fused else "none")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "hidden, ffn",
+    [
+        pytest.param(2048, 1408, id="fused-gate-up"),
+        pytest.param(1024, 6144, id="down"),
+    ],
+)
+def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
+    """At 32 tokens a long contraction runs split over K: the gate/up product fused with
+    its activation, or the down product on the calibrated small-M band."""
+    workload = SharedExpertMLPWorkload(
+        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=32, H=hidden, S=ffn)
+    )
+    TestBase.check(workload, SharedExpertMLPFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -95,15 +107,6 @@ def test_fused_moe_shared_expert_basic(num_tokens):
 
     shared_ref = ref_shared_expert(hidden, shared_w_gate_up, shared_w_down)
     compare_outputs(shared_out, shared_ref, moe_verification(1))
-
-    if get_sm_version() == 90:
-        shared_kernel = next(iter(op._shared_expert.built_kernels("shared_expert_mlp").values()))
-        assert isinstance(shared_kernel._gemm_gate_up, GemmTMAKernel)
-        assert isinstance(shared_kernel._gemm_down, GemmTMAKernel)
-        if T == 512:
-            wide = SharedExpertMLPKernel(512, 7168, 18432, dtype)
-            assert isinstance(wide._gemm_gate_up, GemmTemplate)
-            assert isinstance(wide._gemm_down, GemmTemplate)
 
     # routed_out matches FusedMoE
     op_routed = FusedMoEFwdOp(

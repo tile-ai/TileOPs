@@ -4,10 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.attention import MHADecodePagedWSKernel
 from tileops.ops import MHADecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MHADecodePagedWorkload
-from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
 
@@ -158,29 +156,3 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
         compare_outputs(
             output, test.ref_program(q, k, v, lengths, block_table), test.verification(q)
         )
-
-
-@pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.cuda_only
-@pytest.mark.in_tree_kernels
-def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
-    """Several query rows run on the warp-specialized kernel only below the work bound.
-
-    One query row always does; past ``MHADecodePagedWSKernel._MAX_MULTI_QUERY_MACS`` the
-    tensor-core kernel serves several.
-    """
-    op = MHADecodePagedWithKVCacheFwdOp(page_size=256, is_causal=True)
-    heads, dim = 32, 128
-    large = 2 * MHADecodePagedWSKernel._MAX_MULTI_QUERY_MACS // (4 * heads * dim)
-
-    def chosen(seqlen_q: int, seqlen_kv: int) -> str:
-        q = torch.empty(1, seqlen_q, heads, dim, dtype=torch.float16, device=run_device())
-        k = torch.empty(seqlen_kv, heads, dim, dtype=torch.float16, device=run_device())
-        block_table = torch.zeros(1, seqlen_kv // 256, dtype=torch.int32, device=run_device())
-        key = op.select_implementation("mha_decode_paged", op._attention_call(q, k, block_table))
-        return op.kernel_map[key].__name__
-
-    assert chosen(4, 1024) == "MHADecodePagedWSKernel"
-    assert chosen(1, large) == "MHADecodePagedWSKernel"
-    assert chosen(4, large) == "GQADecodePagedKernel"

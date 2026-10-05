@@ -2,12 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import BUILTIN, OpNotAvailableError
-from tileops.kernels.quantization import (
-    INT8QuantPerChannelFwdKernel,
-    INT8QuantPerTensorFwdKernel,
-    QuantizeCall,
-)
+from tileops.backend import OpNotAvailableError
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -92,17 +87,9 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
         pytest.skip(str(e))
 
 
-class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
-    """The default-policy loads the launch policy takes only above 96 MB of ``w``."""
-
-    @property
-    def default_config(self) -> dict:
-        return {**super().default_config, "evict_first": False}
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "rows, cols, dtype, make, kernel",
+    "rows, cols, dtype, make",
     [
         # The manifest's convention for an all-zero row: scale 1.0, q all zero.
         pytest.param(
@@ -110,7 +97,6 @@ class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
             1024,
             torch.float16,
             lambda w: w * (torch.arange(64, device=w.device) % 2 == 0)[:, None],
-            None,
             id="zero-rows",
         ),
         # A copy of w in a view that starts one element into its storage, off the 16-byte
@@ -124,34 +110,24 @@ class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
                 .view(w.shape)
                 .copy_(w)
             ),
-            None,
             id="misaligned-start",
         ),
         # An odd K: rows start inside a vector, and the storage ends inside the last one.
-        pytest.param(37, 999, torch.bfloat16, lambda w: w, None, id="odd-k"),
+        pytest.param(37, 999, torch.bfloat16, lambda w: w, id="odd-k"),
         # A K shorter than a vector, which then holds codes of several rows.
-        pytest.param(37, 3, torch.float16, lambda w: w, None, id="k-below-vector"),
+        pytest.param(37, 3, torch.float16, lambda w: w, id="k-below-vector"),
         # Whole vectors that do not split evenly over the threads: the last ones idle.
-        pytest.param(37, 264, torch.bfloat16, lambda w: w, None, id="aligned-inexact"),
+        pytest.param(37, 264, torch.bfloat16, lambda w: w, id="aligned-inexact"),
         # Subnormal rows and scales, which the quotient is scaled out of and clamped.
-        pytest.param(64, 1024, torch.float32, _subnormal, None, id="subnormal-scale"),
-        pytest.param(
-            64,
-            1024,
-            torch.bfloat16,
-            lambda w: w,
-            _DefaultPolicyLoads,
-            id="default-policy-loads",
-            marks=pytest.mark.in_tree_kernels,
-        ),
+        pytest.param(64, 1024, torch.float32, _subnormal, id="subnormal-scale"),
+        # Above 96 MiB of w the loads take the default cache policy instead of evict-first.
+        pytest.param(14336, 4096, torch.bfloat16, lambda w: w, id="default-policy-loads"),
     ],
 )
-def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make, kernel) -> None:
+def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (INT8QuantPerChannelWorkload, TestBase), {})(rows, cols, dtype)
     (w,) = test.gen_inputs()
-    kernel_map = {"int8_quant_per_channel_fwd": kernel} if kernel else None
-    op = INT8QuantPerChannelFwdOp(kernel_map=kernel_map)
-    test.check(op, make(w))
+    test.check(INT8QuantPerChannelFwdOp(), make(w))
 
 
 @pytest.mark.smoke
@@ -174,27 +150,6 @@ def test_int8_per_channel_round_trip(dtype: torch.dtype) -> None:
     bound = scale[:, None] * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()
     err = (x_hat.float() - x.float()).abs()
     assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
-
-
-class _OneTileHeldEach(INT8QuantPerTensorFwdKernel):
-    """One tile per thread in registers and one in shared memory, so a small input also
-    reaches the tiles read again after the grid barrier."""
-
-    @property
-    def default_config(self) -> dict:
-        return {"reg_tiles": 1, "smem_tiles": 1, "batch": 3}
-
-
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-# bfloat16 is held as 32-bit words of two elements, float16 element by element.
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_int8_quant_per_tensor_reaches_every_residency(dtype) -> None:
-    """Registers, shared memory, the re-read tiles in full batches and a partial one, a
-    ragged last round of tiles and a tail that ends in a partial vector, on 114 or 132 SMs."""
-    test = type("QuantizeTest", (INT8QuantPerTensorWorkload, TestBase), {})(1497, 4995, dtype)
-    op = INT8QuantPerTensorFwdOp(kernel_map={"int8_quant_per_tensor_fwd": _OneTileHeldEach})
-    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -300,25 +255,6 @@ def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "cols, dtype, key",
-    [
-        (7168, torch.bfloat16, "int8_quant_per_block_fwd"),
-        (4100, torch.float32, "int8_quant_per_block_fwd"),
-        (4099, torch.float16, "int8_quant_per_block_shifted_fwd"),
-        (4098, torch.float32, "int8_quant_per_block_shifted_fwd"),
-    ],
-)
-def test_int8_quant_per_block_each_region_selects_its_one_implementation(
-    cols: int, dtype: torch.dtype, key: str
-) -> None:
-    """Blocks that start on a 16-byte vector take the register program, any other the
-    shifted one."""
-    call = QuantizeCall(arch=90, sm_count=132, rows=64, cols=cols, dtype=dtype)
-    assert INT8QuantPerBlockFwdOp().select_implementation("int8_quant_per_block_fwd", call) == key
-
-
-@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
     """Quantizing then dequantizing moves ``x`` by at most half a step of its block's grid.
@@ -376,24 +312,6 @@ def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
     shifted = torch.empty(cols + offset, dtype=smooth.dtype, device=smooth.device)[offset:]
     shifted.copy_(smooth * sign)
     test.check(SmoothQuantFwdOp(), x, shifted)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op, interface",
-    [
-        (INT8QuantPerChannelFwdOp(target=BUILTIN), "int8_quant_per_channel_fwd"),
-        (SmoothQuantFwdOp(target=BUILTIN), "smooth_quant_fwd"),
-    ],
-    ids=lambda v: v if isinstance(v, str) else type(v).__name__,
-)
-def test_each_per_row_region_selects_its_one_implementation(op, interface: str) -> None:
-    """Every call whose elements int32 indexes has the one per-row program; a larger has none."""
-    served = QuantizeCall(arch=90, sm_count=132, rows=4096, cols=4096, dtype=torch.bfloat16)
-    assert op.select_implementation(interface, served) == interface
-    too_large = QuantizeCall(arch=90, sm_count=132, rows=2**16, cols=2**15, dtype=torch.bfloat16)
-    with pytest.raises(ValueError, match="int32"):
-        op.select_implementation(interface, too_large)
 
 
 @pytest.mark.smoke
@@ -559,19 +477,3 @@ def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (FP8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
     (w,) = test.gen_inputs()
     test.check(FP8QuantPerBlockFwdOp(), make(w))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "cols, dtype, key",
-    [
-        (4096, torch.bfloat16, "fp8_quant_per_block_fwd"),
-        (2884, torch.float32, "fp8_quant_per_block_fwd"),
-        (4099, torch.float16, "fp8_quant_per_block_unaligned_fwd"),
-    ],
-)
-def test_each_fp8_per_block_region_selects_its_one_implementation(cols, dtype, key) -> None:
-    """Rows that all start on a 16-byte vector take the register kernel, any other K the
-    unaligned one."""
-    call = QuantizeCall(arch=90, sm_count=132, rows=256, cols=cols, dtype=dtype)
-    assert FP8QuantPerBlockFwdOp().select_implementation("fp8_quant_per_block_fwd", call) == key

@@ -19,10 +19,8 @@ from tileops.kernels.elementwise._builders import (
     make_binary_direct,
     make_binary_explicit,
     make_binary_register_copy,
-    make_fused_gated_direct,
     make_fused_gated_explicit,
     make_unary_direct,
-    make_unary_explicit,
     make_unary_regcopy,
 )
 from tileops.kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, LOGICAL_DTYPES
@@ -103,12 +101,6 @@ class _ElementwiseKernel(Kernel):
         supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
         return f"serves dtypes [{supported}], not {call.dtype}"
 
-    def _validate_supported_dtype(self, dtype) -> None:
-        if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
-            return
-        supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-        raise ValueError(f"{type(self).__name__} only supports dtypes [{supported}], got {dtype}")
-
     def _restore_output_dtype(self, result):
         return result.view(torch.bool) if self._bool_via_int8 else result
 
@@ -165,15 +157,14 @@ class UnaryKernel(_StrategyKernel):
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input.
-        config: Optional dict with "strategy", "threads" and "num_per_thread".
-            "strategy" is one of "direct", "explicit_parallel",
-            "register_copy"; it selects the kernel body at build time.
+        config: Optional dict with "threads" and "num_per_thread".
+            "strategy" is chosen from the dtype: "direct" for bool, else
+            "register_copy".
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     # Fragment copy is the default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
@@ -190,13 +181,9 @@ class UnaryKernel(_StrategyKernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        self._validate_supported_dtype(dtype)
         self.N_total = N_total
         self.dtype = dtype
-        requested = (config or {}).get("strategy")
         self.strategy = choose_unary_strategy(
-            requested=requested,
-            strategies=self.STRATEGIES,
             default_strategy=self.DEFAULT_STRATEGY,
             input_dtype=dtype,
             declared_output_dtype=self.OUTPUT_DTYPE,
@@ -242,15 +229,6 @@ class UnaryKernel(_StrategyKernel):
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
             )
-        elif strategy == "explicit_parallel":
-            return make_unary_explicit(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
-            )
         elif strategy == "register_copy":
             return make_unary_regcopy(
                 self.N_total,
@@ -284,10 +262,9 @@ class BinaryKernel(_StrategyKernel):
         b_shape: Shape of input b. Broadcasts against *a_shape* under the
             PyTorch broadcasting rules.
         dtype: Torch dtype for input.
-        config: Optional dict with "strategy", "threads" and "num_per_thread".
-            "strategy" is one of "direct", "explicit_parallel",
-            "register_copy". If "register_copy" is requested but inputs
-            require broadcast, silently downgrades to "explicit_parallel".
+        config: Optional dict with "threads" and "num_per_thread".
+            "strategy" is chosen from the operands: "direct" for bool,
+            "register_copy" for same-shape operands, else "explicit_parallel".
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
 
@@ -297,7 +274,6 @@ class BinaryKernel(_StrategyKernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
@@ -319,7 +295,6 @@ class BinaryKernel(_StrategyKernel):
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
         super().__init__()
-        self._validate_supported_dtype(dtype)
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
@@ -342,10 +317,7 @@ class BinaryKernel(_StrategyKernel):
         )
         split = row_broadcast_split(coalesced_shape, a_strides, b_strides)
         self.row_broadcast_inner = None if self._same_shape or split is None else split[1]
-        requested = (config or {}).get("strategy")
         self.strategy = choose_binary_strategy(
-            requested=requested,
-            strategies=self.STRATEGIES,
             default_strategy=self.DEFAULT_STRATEGY,
             input_dtype=dtype,
             declared_output_dtype=self.OUTPUT_DTYPE,
@@ -453,15 +425,13 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         M: Number of rows.
         N: Half the column dimension (output width).
         dtype: Torch dtype.
-        config: Optional dict with "strategy", "threads" and "num_per_thread".
-            "strategy" is one of "direct", "explicit_parallel"; it selects
-            the kernel body at build time.
+        config: Optional dict with "threads" and "num_per_thread".
+            "strategy" is "explicit_parallel", the one body these kernels build.
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel"]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
@@ -476,15 +446,10 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
 
     def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
-        self._validate_supported_dtype(dtype)
         self.M = M
         self.N = N
         self.dtype = dtype
-        self.strategy = (config or {}).get("strategy") or self.DEFAULT_STRATEGY
-        if self.strategy not in self.STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
-            )
+        self.strategy = self.DEFAULT_STRATEGY
         self.output_dtype = dtype
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
@@ -503,15 +468,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     def _build_kernel(self, strategy):
         cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
-        if strategy == "direct":
-            return make_fused_gated_direct(
-                self.M,
-                self.N,
-                self.dtype_str,
-                effective_op,
-                threads=cfg["threads"],
-            )
-        elif strategy == "explicit_parallel":
+        if strategy == "explicit_parallel":
             return make_fused_gated_explicit(
                 self.M,
                 self.N,
@@ -704,12 +661,10 @@ class ScalarParamUnaryKernel(UnaryKernel):
     every distinct value is its own specialization. Subclasses implement
     ``_make_op_func`` and ``_param_key``; ``op_func`` is never called.
 
-    Only ``register_copy`` is offered; a ``config`` naming another strategy
-    raises.
+    The body is always ``register_copy``.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    STRATEGIES = ["register_copy"]
     DEFAULT_STRATEGY = "register_copy"
     DEFAULT_THREADS = 256
 
@@ -760,7 +715,6 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
-        self._validate_supported_dtype(dtype)
         self.N_total = N_total
         self.dtype = dtype
         self.output_dtype = dtype

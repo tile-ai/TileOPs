@@ -2658,9 +2658,6 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             raise ValueError("activation must be 'none' or 'silu_and_mul'")
         if activation != "none" and n % 2:
             raise ValueError("silu_and_mul requires an even output width")
-        misaligned = _tma_misalignment(m, n, k, dtype, trans_a, trans_b)
-        if misaligned is not None:
-            raise ValueError(f"{type(self).__name__} cannot serve {m}x{n}x{k}: {misaligned}")
         self.m = m
         self.n = n
         self.k = k
@@ -3262,9 +3259,6 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        narrow = self._narrow_k_row(k, dtype)
-        if narrow is not None:
-            raise ValueError(f"{type(self).__name__} cannot serve k={k}: {narrow}")
         self.m = m
         self.n = n
         self.k = k

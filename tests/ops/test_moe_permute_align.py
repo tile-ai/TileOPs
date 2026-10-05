@@ -13,7 +13,8 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.device import run_device
-from workloads.moe import MoEPermuteAlignWorkload, moe_call
+from workloads.moe import MoEPermuteAlignWorkload
+from workloads.workload_base import manifest_call
 
 
 class MoEPermuteAlignFixture(FixtureBase):
@@ -55,7 +56,7 @@ class MoEPermuteAlignFixture(FixtureBase):
 
 @MoEPermuteAlignFixture
 def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
-    call = moe_call(
+    call = manifest_call(
         "MoEPermuteAlignFwdOp",
         T=total_tokens,
         K=top_k,
@@ -124,7 +125,7 @@ def test_permute_align_skewed_distribution() -> None:
 
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
     workload = MoEPermuteAlignWorkload(
-        moe_call(
+        manifest_call(
             "MoEPermuteAlignFwdOp",
             T=total_tokens,
             K=top_k,
@@ -133,13 +134,3 @@ def test_permute_align_skewed_distribution() -> None:
         )
     )
     TestBase.check(workload, op, topk_ids)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_permute_align_builds_one_kernel_per_routed_count() -> None:
-    """The routed count comes from each call, so a second count builds a second kernel."""
-    op = MoEPermuteAlignFwdOp(num_experts=8, block_size=16)
-    for tokens in (4, 4, 6):
-        op(torch.randint(0, 8, (tokens, 2), dtype=torch.int32, device=run_device()))
-    assert len(op.built_kernels("permute_align")) == 2

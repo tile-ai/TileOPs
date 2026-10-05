@@ -132,11 +132,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
 
     def __init__(self, N_total, dtype, p=0.5, seed=0, config=None, tune=False):
         super().__init__()
-        if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
         self.N_total = N_total

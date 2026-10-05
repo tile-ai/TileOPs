@@ -5,27 +5,9 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.attention import (
-    MLAVarlenPrefillFwdKernel,
-    MLAVarlenPrefillWSFwdKernel,
-)
 from tileops.ops import MLAVarlenFwdOp
 from workloads.attention.mla import MLAVarlenWorkload, mla_varlen_inputs
 from workloads.numerics import compare_outputs
-
-
-@pytest.mark.smoke
-def test_mla_varlen_default_config_is_owned_by_each_kernel() -> None:
-    """Changing one kernel's config must not change another kernel or future defaults."""
-    budget, shape = 101376, (128, 64, 128, torch.float16.itemsize)
-    first = MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape)
-    second = MLAVarlenPrefillFwdKernel._default_config_for(budget, 2, *shape)
-    expected = second.copy()
-
-    first["block_n"] = 32
-
-    assert second == expected
-    assert MLAVarlenPrefillFwdKernel._default_config_for(budget, 1, *shape) == expected
 
 
 class MLAVarlenFwdFixture(FixtureBase):
@@ -154,10 +136,11 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
 
 
 @pytest.mark.parametrize(
-    "kernel_cls",
+    "dims",
     [
-        pytest.param(MLAVarlenPrefillFwdKernel, id="general"),
-        pytest.param(MLAVarlenPrefillWSFwdKernel, id="ws", marks=[pytest.mark.sm90]),
+        pytest.param((128, 64, 128), id="dims-of-64"),
+        # Head dims off a multiple of 64 leave the warp-specialized schedule.
+        pytest.param((96, 32, 96), id="dims-off-64"),
     ],
 )
 @pytest.mark.parametrize(
@@ -167,18 +150,7 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
         pytest.param([17, 1024], id="below-one-tile", marks=pytest.mark.full),
     ],
 )
-def test_each_implementation_matches_the_reference(kernel_cls, seq_lens) -> None:
-    """Both implementations answer the same thing.
-
-    The op dispatches to whichever one the device admits, so a test that only
-    calls the op leaves the other unexercised on any given machine.
-    """
-    inputs = mla_varlen_inputs(seq_lens, 4, 128, 64, 128, torch.bfloat16)
-    workload = MLAVarlenWorkload(seq_lens, 4, 128, 64, 128, torch.bfloat16)
-    # Where the WS kernel serves the call, its key runs whichever one is under test.
-    op = MLAVarlenFwdOp(
-        is_causal=True, kernel_map={"mla_varlen_fwd_ws": kernel_cls}, target=BUILTIN
-    )
-    TestBase.check(workload, op, *inputs)
-    (kernel,) = op.built_kernels("mla_varlen_fwd").values()
-    assert type(kernel) is kernel_cls
+def test_mla_varlen_matches_the_reference(seq_lens, dims) -> None:
+    inputs = mla_varlen_inputs(seq_lens, 4, *dims, torch.bfloat16)
+    workload = MLAVarlenWorkload(seq_lens, 4, *dims, torch.bfloat16)
+    TestBase.check(workload, MLAVarlenFwdOp(is_causal=True, target=BUILTIN), *inputs)

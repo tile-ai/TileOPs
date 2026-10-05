@@ -11,6 +11,9 @@ argument-less ``.cuda()`` call, unless it sits inside a function or class decora
 ``pytest.mark.cuda_only``, a ``pytest.param(..., marks=...)`` carrying it, or a module whose
 ``pytestmark`` carries it. ``workloads/device.py`` holds the default and is exempt.
 
+Also flags ``torch.cuda.is_available()`` anywhere outside a ``conftest.py``: an availability
+gate asks ``workloads.device.run_device_available()``, which answers for the run device.
+
 Usage: ``device_literal_lint.py [FILE ...]``. With no arguments, scans ``tests/`` and
 ``workloads/``. Exits 1 on a finding.
 """
@@ -41,6 +44,20 @@ def _literal(node: ast.AST) -> bool:
         and not node.args
         and not node.keywords
     )
+
+
+def _cuda_availability(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "is_available"
+        and ast.unparse(node.func.value) == "torch.cuda"
+    )
+
+
+def availability_findings(source: str) -> list[int]:
+    """Line numbers of ``torch.cuda.is_available()`` calls."""
+    return sorted({n.lineno for n in ast.walk(ast.parse(source)) if _cuda_availability(n)})
 
 
 def _module_marked(tree: ast.Module) -> bool:
@@ -98,6 +115,14 @@ def main(argv: list[str]) -> int:
             print(
                 f"{rel}:{line}: CUDA device literal; use workloads.device.run_device(), "
                 "or mark the test pytest.mark.cuda_only"
+            )
+        if path.name == "conftest.py":
+            continue
+        for line in availability_findings(path.read_text()):
+            failed = True
+            print(
+                f"{rel}:{line}: torch.cuda.is_available() gate; "
+                "use workloads.device.run_device_available()"
             )
     return 1 if failed else 0
 

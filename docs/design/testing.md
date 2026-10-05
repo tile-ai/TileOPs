@@ -32,28 +32,32 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 **Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
+**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, `tune=True` and `kernel_map` included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it.
+
 **Location:**
 
-- [`tests/ops/`](../../tests/ops/): every test that compares computed values. It reaches the kernel through the op's dispatch, the only path a caller has.
-- [`tests/kernels/`](../../tests/kernels/): what runs no op — configuration selection, autotune orchestration, build-time rejection.
+- [`tests/ops/`](../../tests/ops/): every test of an op's behavior. It reaches the kernel through the op's dispatch, the only path a caller has.
+- [`tests/kernels/`](../../tests/kernels/): only a shared mechanism no single kernel owns that a promise depends on, such as an autotune sweep helper.
 
 **Reachability:**
 
-- A path dispatch does not take for the test's input — a non-default config, an implementation another device would pick — is pinned through `kernel_map`, and the test asserts dispatch built the pin.
+- A test reaches a path with an input that dispatch sends there. A path no input reaches on any device is a dispatch defect: dispatch is fixed, or the code is removed. `kernel_map` in a test tests the `kernel_map` mechanism only.
+- A path another device selects is tested on that device; a test does not emulate a device.
+- Autotune candidates are covered by one `tune=True` test per op that checks the chosen result.
+- An input inside the signature domain that every implementation refuses is a coverage gap; one test per gap asserts the op refuses it before building anything and names the reason.
 - `check(runs=...)` takes only a compiled or wrapped form of the op; it refuses a kernel.
-- A condition no op call can produce is not tested. Code serving only such a condition is removed, or an op exposes it.
 
 **Target:**
 
 - A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
 - A test of target dispatch names its target or isolates the registry.
-- An assertion about the in-tree implementation — the kernel class, strategy or config chosen, how a cache key folds a shape — is gated on `served_in_tree(op)`, so the rest of the test also runs against a backend.
-- A test whose core depends on in-tree internals either pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
+- A test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
+- A test about the in-tree implementation set — a coverage gap, a `kernel_map` replacement — pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
 
 **Device:**
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
-- A test that needs CUDA whatever the target — it builds an in-tree kernel or call record directly, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
+- A test that needs CUDA whatever the target — it builds a call record that reads the device, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### Shared correctness contract

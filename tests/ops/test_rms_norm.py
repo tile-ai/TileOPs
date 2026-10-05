@@ -6,8 +6,6 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
-from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
@@ -126,29 +124,6 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
     y = op(x, weight)
     compare_outputs(y, y_ref, norm_verification(dtype))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
-    """The op keys on dtype: the row count reaches the kernel as an argument.
-
-    The TileLang program is still specialized per row count inside
-    ``_rms_norm_kernel``; moving that into the kernel's own cache is kernel-side work.
-    """
-    from tileops.kernels.norm.rms_norm import _rms_norm_kernel
-
-    op = RMSNormFwdOp(normalized_shape=(4096,), target=BUILTIN)
-    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
-    programs_before = _rms_norm_kernel.cache_info().currsize
-
-    for rows in (128, 129, 1024):
-        op(torch.randn(rows, 4096, dtype=torch.float16, device="cuda"), weight)
-    op(torch.randn(2, 8, 4096, dtype=torch.float16, device="cuda"), weight)
-
-    assert len(op.built_kernels("rms_norm")) == 1, "one kernel object"
-    grew = _rms_norm_kernel.cache_info().currsize - programs_before
-    assert grew == 3, "one program per distinct row count, held by the kernel not the op"
 
 
 @pytest.mark.cuda_only
@@ -349,15 +324,3 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     y, residual_out = op(x, residual, weight)
     compare_outputs(y, y_ref, norm_verification(dtype))
     compare_outputs(residual_out, add_ref, norm_verification(dtype))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_fused_add_rms_norm_rejects_partial_access_width() -> None:
-    """A width leaving a partial 16-byte access is refused at construction.
-
-    It truncates the kernel's per-CTA loop bounds to zero, so the row comes back
-    untouched rather than wrong in a way a tolerance would catch.
-    """
-    with pytest.raises(ValueError, match="whole 16-byte accesses"):
-        FusedAddRMSNormKernel(4096, 1e-6, torch.bfloat16, config={"threads": 768})

@@ -366,13 +366,4 @@ def test_rope_noncontiguous_1d_works() -> None:
     x_c = x_nc.contiguous()
     out_nc = op(x_nc)
     out_c = op(x_c)
-    torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_rope_rejects_non_float_dtype() -> None:
-    from tileops.kernels.rope import RoPENeoxKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        RoPENeoxKernel(seq_len=16, head_dim=64, dtype=torch.int32)
+    assert torch.equal(out_nc, out_c)

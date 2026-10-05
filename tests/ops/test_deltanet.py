@@ -3,14 +3,8 @@
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
-from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
-from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall
-from tileops.kernels.linear_attention.deltanet.chunk_bwd import DeltaNetBwdKernel
-from tileops.kernels.linear_attention.deltanet.recurrent import (
-    DeltaNetDecodeRawCudaFlaStyleKernel,
-)
 from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
@@ -90,11 +84,6 @@ def test_deltanet_fwd(
     test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     op = DeltaNetChunkFwdOp(chunk_size=chunk_size, tune=tune)
     test.check(op, *test.gen_inputs())
-    if served_in_tree(op) and tune:
-        # The forward above already proves the selected config builds and runs;
-        # this pins it to the declared candidate set the sweep draws from.
-        (kernel,) = op.built_kernels("deltanet_fwd").values()
-        assert kernel.config in kernel.autotune_configs
 
 
 class DeltaNetBwdFixture(FixtureBase):
@@ -163,52 +152,6 @@ def test_deltanet_bwd(
         tuple(t.to(dtype) for t in ref_outputs),
         chunkwise_verification(dtype, backward=True),
     )
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "budget, chunk_size, dim_k, dim_v, dtype, stages",
-    [
-        pytest.param(101376, 32, 64, 64, torch.float32, 1, id="sm89-c32-fp32"),
-        pytest.param(101376, 64, 64, 64, torch.float16, 2, id="sm89-c64-fp16"),
-        # Each refused by one program alone: the per-chunk backward, the recurrence, w/u.
-        pytest.param(101376, 64, 64, 64, torch.float32, None, id="sm89-c64-fp32-refused"),
-        pytest.param(101376, 32, 128, 128, torch.float16, None, id="sm89-c32-d128-refused"),
-        pytest.param(101376, 64, 64, 128, torch.float16, None, id="sm89-dv128-refused"),
-        # Refused by what the per-chunk backward holds once dP is written.
-        pytest.param(166912, 64, 160, 16, torch.float32, None, id="sm80-dp-refused"),
-        pytest.param(166912, 64, 128, 128, torch.float16, 1, id="sm80-d128"),
-        pytest.param(232448, 64, 64, 64, torch.float16, 2, id="sm90-c64-fp16"),
-        pytest.param(232448, 64, 128, 128, torch.float16, 1, id="sm90-d128"),
-    ],
-)
-def test_deltanet_bwd_config_follows_the_shared_memory_budget(
-    budget: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: torch.dtype,
-    stages: "int | None",
-) -> None:
-    """The recurrence's stage count and the refusal each follow their bound at a budget."""
-    call = DeltaNetChunkCall(
-        batch=1,
-        heads=1,
-        seq_len=4 * chunk_size,
-        chunk_size=chunk_size,
-        dim_k=dim_k,
-        dim_v=dim_v,
-        dtype=dtype,
-        arch=89,
-        sm_count=1,
-        smem_budget=budget,
-    )
-    if stages is None:
-        assert "needs at least" in DeltaNetBwdKernel.refusal(call)
-        return
-    assert DeltaNetBwdKernel.refusal(call) is None
-    config = DeltaNetBwdKernel._default_config_for(budget, chunk_size, dim_k, dim_v, dtype.itemsize)
-    assert config["num_stages"] == stages
 
 
 class DeltaNetInferenceTest(DeltaNetInferenceWorkload, TestBase):
@@ -334,13 +277,6 @@ def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
 
 
-class _FourChunkPartitionsKernel(DeltaNetDensePrefillFwdKernel):
-    """Partition every four chunks, so a short sequence crosses partitions."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **{**kwargs, "config": {"max_local_chunks": 4}})
-
-
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_only
@@ -348,13 +284,8 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
-    # 16 chunks split into partitions of 4.
-    op = DeltaNetInferenceFwdOp(
-        kernel_map={"deltanet_dense_prefill": _FourChunkPartitionsKernel}, target=BUILTIN
-    )
-    test.check(op, *inputs)
-    (kernel,) = op.built_kernels("deltanet_inference").values()
-    assert type(kernel) is _FourChunkPartitionsKernel
+    # 16 chunks fall to the four-chunk partition floor, so sequences cross partitions.
+    test.check(DeltaNetInferenceFwdOp(target=BUILTIN), *inputs)
 
 
 @pytest.mark.smoke
@@ -464,8 +395,6 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
     op = DeltaNetRecurrentFwdOp(tune=False, target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
-    (kernel,) = op.built_kernels("deltanet_decode").values()
-    assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
     test.check(op, *inputs)
 
 
@@ -499,48 +428,5 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
         with torch.no_grad():
             o_op, state_op = op(q, k, v, beta, state_op)
 
-        (kernel,) = op.built_kernels("deltanet_decode").values()
-        assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
-
         compare_outputs(o_op, o_ref, decode_verification(dtype))
         compare_outputs(state_op, state_ref, decode_verification(dtype))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.sm90
-def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
-    with pytest.raises(ValueError, match="threads .* must equal raw_group_size \\* v_tile"):
-        DeltaNetDecodeRawCudaFlaStyleKernel(
-            1,
-            32,
-            128,
-            128,
-            dtype="bfloat16",
-            config={
-                "threads": 16,
-                "v_tile": 16,
-                "raw_group_size": 2,
-                "raw_maxrregcount": 146,
-            },
-        )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.sm90
-def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
-    with pytest.raises(ValueError, match="raw_group_size must equal 2"):
-        DeltaNetDecodeRawCudaFlaStyleKernel(
-            1,
-            32,
-            128,
-            128,
-            dtype="bfloat16",
-            config={
-                "threads": 32,
-                "v_tile": 8,
-                "raw_group_size": 4,
-                "raw_maxrregcount": 146,
-            },
-        )

@@ -16,7 +16,7 @@ from tileops.ops.elementwise import (
     IsinfFwdOp,
     IsnanFwdOp,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     ElementwiseWorkload,
     SpecialCase,
@@ -112,15 +112,6 @@ def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
         return torch.randn(n, device=run_device(), dtype=dtype)
 
     _make_special_test(n_total, dtype, IsfiniteFwdOp, gen_fn=_all_finite)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_special_predicates_reject_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import IsnanFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        IsnanFwdKernel(N_total=16, dtype=torch.int32)
 
 
 # Independent special ops: where, clamp, masked_fill, nan_to_num,
@@ -313,16 +304,6 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
             device=run_device(),
         ).verification(*()),
     )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_sinusoidal_rejects_odd_d_model() -> None:
-    """An odd d_model has a dimension with no pair, which the kernel cannot place."""
-    from tileops.kernels.elementwise import SinusoidalFwdKernel
-
-    with pytest.raises(ValueError, match="even d_model"):
-        SinusoidalFwdKernel(8, 7, torch.float16)
 
 
 # L2 — Dtype x Size (4 cases for clamp)
@@ -562,15 +543,6 @@ def test_nan_to_num_stores_an_out_of_range_replacement_as_inf() -> None:
     ref = torch.nan_to_num(x, nan=1e6, posinf=1e6, neginf=-1e6)
     out = NanToNumFwdOp(nan=1e6, posinf=1e6, neginf=-1e6)(x)
     compare_outputs(out, ref, ElementwiseWorkload("NanToNumFwdOp", (x,)).verification(x))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_independent_special_rejects_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import ClampFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        ClampFwdKernel(N_total=16, dtype=torch.int32)
 
 
 # Negative tests: forward() dtype / numel validation
@@ -834,3 +806,50 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     mask = torch.zeros(1024, device=run_device(), dtype=torch.bool)
     with pytest.raises(ValueError, match="representable"):
         op(x, mask)
+
+
+# The independent elementwise ops reject fp8 and accept the manifest's non-fp8 dtypes.
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "bad_dtype",
+    [torch.float8_e4m3fn, torch.float8_e5m2],
+)
+def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
+    """WhereFwdOp must reject fp8 dtypes (manifest contract).
+
+    The element type arrives with the tensors, so the rejection does too.
+    """
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    op = WhereFwdOp()
+    cond = torch.zeros(shape, device=run_device(), dtype=torch.bool)
+    x = torch.zeros(shape, device=run_device()).to(bad_dtype)
+    with pytest.raises((ValueError, TypeError)):
+        op(cond, x, x)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
+    """WhereFwdOp constructs and runs for every manifest-declared dtype."""
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    cond = torch.randint(0, 2, shape, device=run_device()).bool()
+    inp = torch.randn(shape, device=run_device(), dtype=dtype)
+    other = torch.randn(shape, device=run_device(), dtype=dtype)
+    op = WhereFwdOp()
+    out = op(cond, inp, other)
+    ref = torch.where(cond, inp, other)
+    compare_outputs(
+        out,
+        ref,
+        ElementwiseWorkload(type(op).__name__, (cond, inp, other)).verification(
+            *(cond, inp, other)
+        ),
+    )

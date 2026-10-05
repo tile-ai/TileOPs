@@ -17,13 +17,9 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
-from workloads.moe import (
-    FusedTopKWorkload,
-    moe_call,
-    moe_verification,
-    ref_routed_experts,
-)
+from workloads.moe import FusedTopKWorkload, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 # vLLM optional import
 
@@ -415,7 +411,7 @@ def test_correction_bias_routing_precision() -> None:
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
 
-    call = moe_call(
+    call = manifest_call(
         "FusedTopKFwdOp",
         {"G": "float32"},
         T=T,
@@ -555,8 +551,3 @@ def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     assert flops == T * (4 * E + K + K * E) + T * K * (6 * F_ * H + 6 * F_ + 2 * H)
     assert nbytes == active * per_expert + fixed
     assert op.roofline_inputs() == {"active_experts": active}
-
-    import dataclasses
-
-    op._signature_call = dataclasses.replace(op.last_call, stages={})
-    assert op.eval_roofline()[1] == K * per_expert + fixed

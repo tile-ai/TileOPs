@@ -83,28 +83,6 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def make_unary_explicit(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
-    """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
-    out_dtype = output_dtype or dtype
-
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        op_func = op_func_for(op_name)
-        block_size = threads_arg * npt_arg
-
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg, prelude=PRELUDE) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    y[idx] = op_func(x[idx])
-
-        return main
-
-    return kernel
-
-
-@functools.lru_cache(maxsize=32)
 def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
@@ -701,31 +679,6 @@ def make_binary_explicit(
                         b_strides,
                     )
                     y[flat_idx] = op_func(a[a_off], b[b_off])
-
-        return main
-
-    return kernel
-
-
-@functools.lru_cache(maxsize=32)
-def make_fused_gated_direct(M, N, dtype, op_name, threads=256):
-    """FusedGated direct: 1 element per thread."""
-
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg):
-        op_func = op_func_for(op_name)
-
-        @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg, prelude=PRELUDE) as (
-                bx,
-                by,
-            ):
-                for i in T.Parallel(threads_arg):
-                    col = bx * threads_arg + i
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
 
         return main
 

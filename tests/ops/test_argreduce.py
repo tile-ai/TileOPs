@@ -583,88 +583,20 @@ def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
     )
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("ctas_per_row", [31, 33, 64])
-def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
-    """A split wider than a warp must still see every partial.
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_argmax_wide_rows_under_tuning(tune: bool) -> None:
+    """Rows wide enough to split across CTAs; the extremes sit in late chunks."""
+    from tileops.ops.reduction import ArgmaxFwdOp
 
-    The final pass assigns partials to lanes; reading one each would drop
-    everything past lane 31 and return an index from the wrong chunk. Splits
-    are chosen by the tuner, so nothing bounds them to a warp.
-    """
-    from tileops.kernels.reduction import argreduce as kernels
-
-    M, N = 3, 65536
-    x = torch.randn(M, N, dtype=torch.float16, device="cuda")
-    # Put the extremes in high chunks, which only a full sweep of the partials
-    # can reach, and a NaN in another so the tie rules run there too.
-    chunk = N // ctas_per_row
-    x[0, min(N - 1, chunk * (ctas_per_row - 1) + 7)] = 100.0
-    x[1, min(N - 1, chunk * (ctas_per_row // 2) + 3)] = -100.0
-    x[2, min(N - 1, chunk * (ctas_per_row - 2) + 1)] = float("nan")
-
-    partial = kernels._argreduce_multicta_partial_kernel(M, N, "argmax", "float16")
-    final = kernels._argreduce_multicta_final_kernel(M, N, "argmax", ctas_per_row)
-    values, indices = partial(256, ctas_per_row)(x)
-    got = final()(values, indices)
+    x = torch.randn(3, 65536, dtype=torch.float16, device=run_device())
+    x[0, 65000] = 100.0
+    x[1, 40000] = 100.0
+    x[2, 64000] = float("nan")
     compare_outputs(
-        got, torch.argmax(x, dim=-1), reduction_verification((torch.argmax(x, dim=-1)).dtype)
+        ArgmaxFwdOp(dim=-1, tune=tune)(x),
+        torch.argmax(x, dim=-1),
+        reduction_verification(torch.int64),
     )
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, axes, key",
-    [
-        ((4, 1024), (1,), "argreduce"),
-        ((4, 8192), (1,), "argreduce"),
-        ((4, 65536), (1,), "argreduce_split"),
-        ((4, 4, 4096), (1,), "argreduce_strided"),
-    ],
-)
-def test_argreduce_tuning_space_matches_its_kernel(shape: tuple, axes: tuple, key: str) -> None:
-    """A program may only offer knobs its own kernel takes.
-
-    The four programs are built from different JIT signatures, so one shared
-    config space hands at least one of them a parameter it would reject.
-    """
-    from tileops.kernels.reduction.call_spec import ArgreduceCall
-    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
-
-    op = ArgmaxFwdOp(dim=axes[0])
-    call = ArgreduceCall(device=torch.device("cuda"), shape=shape, axes=axes, dtype=torch.float16)
-    assert op.select_implementation("reduce", call) == key
-    kernel = op.kernel_for("reduce", call)
-    accepted = set(kernel.kernel.signature.parameters)
-    assert set(kernel.default_config) <= accepted
-    for candidate in kernel.autotune_configs:
-        assert set(candidate) <= accepted, (
-            f"{key}: candidate {candidate} names a knob outside {accepted}"
-        )
-    assert kernel.default_config in kernel.autotune_configs, (
-        "tuning cannot be worse than not tuning: the default must be a candidate"
-    )
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, axes, key",
-    [
-        ((4, 16, 128), (1,), "argreduce_strided"),
-        ((4, 17, 128), (1,), "argreduce"),
-        ((511, 32768), (1,), "argreduce_split"),
-        ((512, 32768), (1,), "argreduce"),
-        ((4, 32767), (1,), "argreduce"),
-        ((4, 16, 128), (0, 1, 2), "argreduce"),
-    ],
-)
-def test_each_region_selects_its_one_implementation(shape: tuple, axes: tuple, key: str) -> None:
-    """A short strided axis, a few long rows, or else the row program serves each call."""
-    from tileops.kernels.reduction.call_spec import ArgreduceCall
-    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
-
-    call = ArgreduceCall(arch=90, sm_count=132, shape=shape, axes=axes, dtype=torch.float16)
-    assert ArgmaxFwdOp().select_implementation("reduce", call) == key

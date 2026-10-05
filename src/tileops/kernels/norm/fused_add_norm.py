@@ -441,10 +441,6 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
             config: Optional ``{"threads": ...}`` override, for the row-per-CTA case.
             tune: Ignored -- the block width follows from the row width; see
                 ``autotune_configs``.
-
-        Raises:
-            ValueError: *config* names a width that does not cut the row into whole
-                16-byte accesses.
         """
         super().__init__()
         self.N = N
@@ -452,16 +448,6 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         self.dtype = dtype
         self.N_padded = align_up(N, ALIGNMENT)
         self.init_config(config, tune=False)
-        threads = self.config["threads"]
-        # A partial access truncates the per-CTA loop bounds to zero, which returns an
-        # untouched row rather than failing.
-        if (self.N_padded // _VEC) % threads:
-            raise ValueError(
-                f"{type(self).__name__} needs a block width that cuts a row of "
-                f"{self.N_padded} columns into whole {VECTOR_ACCESS_BYTES}-byte "
-                f"accesses; {threads} leaves a partial one. "
-                f"{self._row_threads()} is the width this row takes."
-            )
 
     @property
     def default_config(self) -> dict:

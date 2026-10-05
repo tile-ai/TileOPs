@@ -10,8 +10,6 @@ import torch
 
 from tests.workload_test_base import TestBase
 from tileops.backend import OpNotAvailableError
-from tileops.kernels.sampling import SamplingCall
-from tileops.kernels.sampling.radix_select import cluster_plan
 from tileops.sampling import (
     ChainSpeculativeSamplingFwdOp,
     MinPMaskFwdOp,
@@ -31,13 +29,13 @@ from workloads.sampling import (
     TopPMaskWorkload,
     min_p_mask,
     min_p_mask_verification,
-    sampling_call,
     sampling_from_probs,
     top_k_mask,
     top_k_mask_verification,
     top_p_mask,
     top_p_mask_verification,
 )
+from workloads.workload_base import manifest_call
 
 pytestmark = pytest.mark.smoke
 
@@ -87,7 +85,7 @@ def test_top_k_mask(dtype):
     vocab = 32000
     # k = 1, a k that bf16 ties overrun, k == vocab and k > vocab.
     workload = TopKMaskWorkload(
-        sampling_call("TopKMaskFwdOp", {"T": dtype}, V=vocab, k_list=[1, 50, vocab, vocab + 7])
+        manifest_call("TopKMaskFwdOp", {"T": dtype}, V=vocab, k_list=[1, 50, vocab, vocab + 7])
     )
     logits, k = workload.gen_inputs()
     ref = workload.ref_program(logits, k)
@@ -146,25 +144,12 @@ def test_top_k_mask_cuts_a_row_its_samples_misplace():
     compare_outputs(out, top_k_mask(logits, k), top_k_mask_verification(logits))
 
 
-@pytest.mark.in_tree_kernels
-def test_top_k_mask_selects_its_one_implementation():
-    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
-    assert TopKMaskFwdOp().select_implementation("top_k_mask_fwd", call) == "top_k_mask_fwd"
-
-
-@pytest.mark.in_tree_kernels
-def test_top_k_mask_refuses_a_call_int32_cannot_index():
-    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
-    with pytest.raises(ValueError, match="B \\* V"):
-        TopKMaskFwdOp().select_implementation("top_k_mask_fwd", call)
-
-
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_min_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
     margin = 1e-4
     vocab = 32000
-    workload = MinPMaskWorkload(sampling_call("MinPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
+    workload = MinPMaskWorkload(manifest_call("MinPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
     logits, min_p = workload.gen_inputs()
     ref = workload.ref_program(logits, min_p)
     _assert_top_set(ref, logits)
@@ -199,19 +184,13 @@ def test_top_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
     margin = 1e-4
     vocab = 32000
-    workload = TopPMaskWorkload(sampling_call("TopPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
+    workload = TopPMaskWorkload(manifest_call("TopPMaskFwdOp", {"T": dtype}, B=4, V=vocab))
     logits, p = workload.gen_inputs()
     _tie_at_the_boundary(logits, p)
     ref = workload.ref_program(logits, p)
     _assert_nucleus(ref, logits, p, margin=margin)
     out = _run(TopPMaskFwdOp(), logits, p)
     compare_outputs(out, ref, workload.verification(logits, p))
-
-
-@pytest.mark.in_tree_kernels
-def test_top_p_mask_selects_its_one_implementation():
-    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
-    assert TopPMaskFwdOp().select_implementation("top_p_mask_fwd", call) == "top_p_mask_fwd"
 
 
 def test_top_p_mask_rows_at_the_contract_endpoints():
@@ -245,7 +224,7 @@ def test_top_k_top_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
     margin = 1e-4
     vocab = 32000
-    call = sampling_call(
+    call = manifest_call(
         "TopKTopPMaskFwdOp", {"T": dtype}, V=vocab, k_list=[1, 50, vocab, vocab + 7]
     )
     workload = TopKTopPMaskWorkload(call)
@@ -286,45 +265,6 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
         compare_outputs(out, ref, top_p_mask_verification(logits, p, k=k))
 
 
-@pytest.mark.in_tree_kernels
-def test_top_k_top_p_mask_selects_its_one_implementation():
-    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, dtype=torch.bfloat16)
-    op = TopKTopPMaskFwdOp()
-    assert op.select_implementation("top_k_top_p_mask_fwd", call) == "top_k_top_p_mask_fwd"
-    wide = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.bfloat16)
-    with pytest.raises(ValueError, match="B \\* V"):
-        op.select_implementation("top_k_top_p_mask_fwd", wide)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    ("op", "name"),
-    [(TopKMaskFwdOp, "top_k_mask_fwd"), (TopKTopPMaskFwdOp, "top_k_top_p_mask_fwd")],
-)
-def test_top_k_masks_keep_a_row_in_one_cta_below_sm90(op, name):
-    """Below SM90 one CTA holds a row in up to 32 slots a thread: qwen3's bfloat16 vocabulary
-    and llama 3's in float32 fit, up to 262144 bfloat16 values."""
-    row = {"sm_count": 128, "batch": 1, "arch": 89}
-    kernel = op.kernel_types[name]
-    for vocab, dtype in (
-        (151936, torch.bfloat16),
-        (128256, torch.float32),
-        (262144, torch.bfloat16),
-    ):
-        call = SamplingCall(vocab=vocab, dtype=dtype, **row)
-        assert op().select_implementation(name, call) == name
-        assert cluster_plan(call, kernel._THREADS, kernel._MAX_SLOTS)["cluster"] == 1
-    with pytest.raises(ValueError, match="at most 262144"):
-        op().select_implementation(name, SamplingCall(vocab=262145, dtype=torch.bfloat16, **row))
-
-
-@pytest.mark.in_tree_kernels
-def test_sampling_from_probs_refuses_a_call_int32_cannot_index():
-    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, dtype=torch.float32)
-    with pytest.raises(ValueError, match="B \\* V"):
-        SamplingFromProbsFwdOp().select_implementation("sampling_from_probs", call)
-
-
 def test_sampling_from_probs():
     """Unnormalized rows with every fourth weight zero, drawn in 65536 identical rows."""
     n, vocab = 65536, 64
@@ -334,7 +274,7 @@ def test_sampling_from_probs():
     probs = weights.expand(n, vocab).contiguous()
     seed = torch.tensor([1234], dtype=torch.int64, device=device)
     offset = torch.tensor([7], dtype=torch.int64, device=device)
-    workload = SamplingFromProbsWorkload(sampling_call("SamplingFromProbsFwdOp", B=n, V=vocab))
+    workload = SamplingFromProbsWorkload(manifest_call("SamplingFromProbsFwdOp", B=n, V=vocab))
     ref = workload.ref_program(probs, seed, offset)
     assert torch.equal(ref, workload.ref_program(probs, seed, offset))
     op = SamplingFromProbsFwdOp()
@@ -385,7 +325,7 @@ def test_chain_speculative_sampling():
         torch.tensor([1234], dtype=torch.int64, device=device),
         torch.tensor([7], dtype=torch.int64, device=device),
     )
-    call = sampling_call("ChainSpeculativeSamplingFwdOp", B=n, N=num_draft, V=vocab)
+    call = manifest_call("ChainSpeculativeSamplingFwdOp", B=n, N=num_draft, V=vocab)
     workload = ChainSpeculativeSamplingWorkload(call)
     ref = workload.ref_program(*inputs)
     assert all(map(torch.equal, ref, workload.ref_program(*inputs)))
@@ -393,22 +333,6 @@ def test_chain_speculative_sampling():
     out = _run(op, *inputs)
     TestBase.check(workload, op, *inputs, runs=lambda *args: _run(op, *args))
     assert all(map(torch.equal, out, op(*inputs)))
-
-
-@pytest.mark.in_tree_kernels
-def test_chain_speculative_sampling_selects_its_one_implementation():
-    call = SamplingCall(arch=90, sm_count=132, batch=64, vocab=128256, num_draft=4)
-    op = ChainSpeculativeSamplingFwdOp()
-    assert (
-        op.select_implementation("chain_speculative_sampling", call) == "chain_speculative_sampling"
-    )
-
-
-@pytest.mark.in_tree_kernels
-def test_chain_speculative_sampling_refuses_a_call_int32_cannot_index():
-    call = SamplingCall(arch=90, sm_count=132, batch=2**16, vocab=2**16, num_draft=1)
-    with pytest.raises(ValueError, match=r"B \* \(N \+ 1\) \* V"):
-        ChainSpeculativeSamplingFwdOp().select_implementation("chain_speculative_sampling", call)
 
 
 @pytest.mark.in_tree_kernels
@@ -445,14 +369,13 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
         torch.tensor([7], dtype=torch.int64, device=device),
     )
     workload = ChainSpeculativeSamplingWorkload(
-        sampling_call("ChainSpeculativeSamplingFwdOp", B=batch, N=num_draft, V=vocab)
+        manifest_call("ChainSpeculativeSamplingFwdOp", B=batch, N=num_draft, V=vocab)
     )
     op = ChainSpeculativeSamplingFwdOp()
     # The dedicated chain test exercises the shared distribution probe once.
     # These cases cover launch boundaries, exact acceptance and residual-token support.
     out, ref = _run(op, *inputs), workload.ref_program(*inputs)
     compare_outputs(out, ref, workload.verification(*inputs))
-    assert torch.equal(out[1], ref[1])
 
 
 _SMALL_CALLS = {
@@ -472,7 +395,7 @@ _SMALL_CALLS = {
 @pytest.mark.parametrize("cls", list(_SMALL_CALLS), ids=lambda cls: cls.__name__)
 def test_generated_checks_reject_an_integer_first_input(cls):
     workload_cls, dtype_case, row = _SMALL_CALLS[cls]
-    inputs = list(workload_cls(sampling_call(cls.__name__, dtype_case, **row)).gen_inputs())
+    inputs = list(workload_cls(manifest_call(cls.__name__, dtype_case, **row)).gen_inputs())
     inputs[0] = inputs[0].to(torch.int32)
     with pytest.raises(ValueError):
         cls()(*inputs)

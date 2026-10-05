@@ -3,7 +3,6 @@
 import pytest
 import torch
 
-from tests.workload_test_base import served_in_tree
 from tileops.ops import GQAPrefillPagedWithKVCacheFwdOp
 from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
 from workloads.attention.paged_kv_cache import (
@@ -694,10 +693,6 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
                 block_table,
             ),
         )
-
-    if served_in_tree(op):
-        built = op.built_kernels("gqa_prefill_paged")
-        assert {kernel.dtype for kernel in built.values()} == {torch.float16, torch.bfloat16}
 
 
 # ----------------------------------------------------------------------

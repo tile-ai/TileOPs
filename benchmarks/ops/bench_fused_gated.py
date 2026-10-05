@@ -15,7 +15,6 @@ from benchmarks.baselines import (
     flashinfer_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluTanhAndMulFwdKernel,
@@ -28,9 +27,7 @@ from tileops.ops.elementwise import (
 )
 from workloads.elementwise import (
     ElementwiseCall,
-    FusedGatedBenchCase,
 )
-from workloads.workload_base import FixtureBase
 
 
 # flashinfer names its fused gated kernels after the same three activations and
@@ -103,41 +100,3 @@ def _strategy_params():
     for op_name, kernel_cls in sentinels:
         params.append(case(op_name, ref_scenario, ref_dtype, kernel_cls, pytest.mark.full))
     return params
-
-
-class FusedGatedStrategyBenchFixture(FixtureBase):
-    PARAMS = [("op_name, M, N, dtype, kernel_cls", _strategy_params())]
-
-
-@FusedGatedStrategyBenchFixture
-def test_fused_gated_default_strategy_is_the_fast_one(
-    op_name: str,
-    M: int,
-    N: int,
-    dtype: torch.dtype,
-    kernel_cls,
-) -> None:
-    """The kernel's DEFAULT_STRATEGY is the one that runs fastest here.
-
-    A decision, not a tracked number: it publishes no row, because the report's
-    rows are ops and a forced strategy is not one — the Op layer has no way to
-    ask for it.
-    """
-    inputs = FusedGatedBenchCase(M, N, dtype).gen_inputs()
-
-    timings = {}
-    for strategy in ("direct", "explicit_parallel"):
-        kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
-        with torch.no_grad():
-            timings[strategy] = median_busy_ms(bench_kernel(kernel, args=inputs))
-
-    # How far behind the fastest strategy the default may sit before the choice is
-    # stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
-    strategy_margin = 1.25
-    default = kernel_cls.DEFAULT_STRATEGY
-    fastest = min(timings, key=timings.get)
-    assert timings[default] <= timings[fastest] * strategy_margin, (
-        f"{kernel_cls.__name__} {M}x{N} {dtype}: DEFAULT_STRATEGY is {default} at "
-        f"{timings[default] * 1e3:.2f}us, but {fastest} runs at "
-        f"{timings[fastest] * 1e3:.2f}us"
-    )

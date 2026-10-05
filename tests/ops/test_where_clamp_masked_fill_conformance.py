@@ -11,7 +11,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload
 
@@ -167,8 +166,6 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     TestBase.check(workload, op, *workload.gen_inputs())
     workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
-
-    assert len(op.built_kernels(ELEMENTWISE)) == 3, "one kernel per presence pattern"
 
 
 # ClampScalarFwdOp, and ClampTensorFwdOp with one bound withheld

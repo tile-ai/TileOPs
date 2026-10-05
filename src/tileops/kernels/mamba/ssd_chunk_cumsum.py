@@ -250,11 +250,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         tune: bool = False,
     ) -> None:
         super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
         self.batch = batch
         self.num_chunks = num_chunks
         self.chunk_len = chunk_len
@@ -321,8 +316,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         """
         dt = dt.contiguous()
         A = A.contiguous()
-        if self.has_dt_bias and dt_bias is None:
-            raise ValueError("dt_bias is required when has_dt_bias=True")
         # The no-bias specialization does not read dt_bias. Reuse A as the
         # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
         dt_bias = A if dt_bias is None else dt_bias.contiguous()

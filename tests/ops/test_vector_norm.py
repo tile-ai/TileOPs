@@ -8,9 +8,7 @@ Uses torch.linalg.vector_norm as the reference implementation.
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
-from tileops.backend import BUILTIN
-from tileops.kernels.reduction.vector_norm import VectorNormKernel
+from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import VectorNormCase, vector_norm_verification
@@ -94,22 +92,6 @@ class VectorNormTest(VectorNormCase, TestBase):
     pass
 
 
-class _TailBlockVectorNormKernel(VectorNormKernel):
-    """Force tiled tests to cover tail-M masking with block_m > M."""
-
-    _TAIL_BLOCK_M = 4
-    _TAIL_TILE_N = 8192
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        assert self._needs_tiling, "tail-M regression test must use the tiled kernel"
-        self.config = {
-            "block_m": self._TAIL_BLOCK_M,
-            "threads": 128,
-            "tile_n": self._TAIL_TILE_N,
-        }
-
-
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
     return torch.randn(m, n * 2, dtype=dtype, device=run_device())
@@ -124,7 +106,6 @@ def _make_op(
     op_kind: str,
     dim: int = -1,
     keepdim: bool = False,
-    kernel_map=None,
     tune: bool = False,
     target=None,
 ):
@@ -134,9 +115,7 @@ def _make_op(
     from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     order = {"l1": 1, "l2": 2, "inf": inf}[op_kind]
-    return VectorNormFwdOp(
-        order, dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune, target=target
-    )
+    return VectorNormFwdOp(order, dim=dim, keepdim=keepdim, tune=tune, target=target)
 
 
 @VectorNormBasicFixture
@@ -505,24 +484,6 @@ def test_empty_dim_full_reduction_3d_dtypes(
     compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
-def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
-    """Exercise the N-tiled path with a tail-M block."""
-    dtype = torch.bfloat16
-    test = VectorNormTest(3, 33023, dtype, op_kind)
-    op = _make_op(
-        op_kind,
-        kernel_map={"vector_norm": _TailBlockVectorNormKernel},
-        target=BUILTIN,
-    )
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel.config["block_m"] > test.shape[0]
-    assert kernel.config["tile_n"] > 0
-
-
 @pytest.mark.smoke
 def test_vector_norm_tiled_autotune() -> None:
     """``tune=True`` must build and time every tiled candidate.
@@ -534,36 +495,6 @@ def test_vector_norm_tiled_autotune() -> None:
     test = VectorNormTest(m, n, dtype, "l2")
     op = _make_op("l2", tune=True)
     test.check(op, *test.gen_inputs())
-
-    if served_in_tree(op):
-        (kernel,) = op.built_kernels("reduce").values()
-        assert kernel._needs_tiling
-        assert kernel.config in kernel.autotune_configs
-
-
-@pytest.mark.smoke
-def test_vector_norm_candidate_regions() -> None:
-    """Each call is served by the one implementation whose region names it."""
-    from tileops.kernels.reduction.call_spec import ReduceCall
-
-    cases = [
-        ("l2", (8, 4096), (1,), "vector_norm_fold"),
-        ("l1", (8, 4095), (1,), "vector_norm"),
-        # Edge axes read in place win over the fold where both apply.
-        ("inf", (4, 128, 4096), (0, 2), "vector_norm_edge"),
-    ]
-    for op_kind, shape, axes, key in cases:
-        op = _make_op(op_kind)
-        call = ReduceCall(
-            arch=90,
-            sm_count=132,
-            smem_budget=232448,
-            shape=shape,
-            axes=axes,
-            op_kind=op_kind,
-            dtype=torch.float16,
-        )
-        assert op.select_implementation("reduce", call) == key, (op_kind, shape, axes)
 
 
 @pytest.mark.smoke

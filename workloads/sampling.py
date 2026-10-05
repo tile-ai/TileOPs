@@ -11,9 +11,6 @@ distribution so that an implementation drawing its own stream can be checked too
 
 import torch
 
-from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import Call, instantiate
 from workloads.workload_base import CallWorkload
 
 _INF = float("inf")
@@ -21,12 +18,6 @@ _MASK = 0xFFFFFFFF
 # Philox4x32 round multipliers and Weyl key increments (Salmon et al., SC'11).
 _M0, _M1 = 0xD2511F53, 0xCD9E8D57
 _W0, _W1 = 0x9E3779B9, 0xBB67AE85
-
-
-def sampling_call(op: str, dtype_case: dict | None = None, **row) -> Call:
-    """The manifest call of *op* that *row* describes, as a workload row would."""
-    plan = entry_plan(op, load_manifest()[op], load_adts(), resolve=False)
-    return instantiate(plan, {**row, "label": "test"}, dtype_case or {})
 
 
 def _mulhilo(a: torch.Tensor, m: int) -> tuple[torch.Tensor, torch.Tensor]:

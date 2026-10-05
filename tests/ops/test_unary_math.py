@@ -30,7 +30,6 @@ from tileops.ops.elementwise import (
     SqrtFwdOp,
     TruncFwdOp,
 )
-from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload, ErfRoundingWorkload, UnaryMathCase
 from workloads.numerics import compare_outputs
@@ -203,15 +202,6 @@ def test_log1p(n_total: int, dtype: torch.dtype) -> None:
 @MathFixture
 def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, Expm1FwdOp)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_math_ops_reject_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import ExpFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        ExpFwdKernel(N_total=16, dtype=torch.int32)
 
 
 # Integer-dtype identity short-circuit for floor / ceil / round / trunc.
@@ -568,6 +558,5 @@ def test_reciprocal_int_input_validation() -> None:
     op = ReciprocalFwdOp()
     assert op(torch.ones(4, device=run_device(), dtype=torch.float32)).dtype == torch.float32
     assert op(torch.ones(4, device=run_device(), dtype=torch.int32)).dtype == torch.float32
-    assert len(op.built_kernels(ELEMENTWISE)) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(4, device=run_device(), dtype=torch.float64))

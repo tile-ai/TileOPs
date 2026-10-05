@@ -15,7 +15,10 @@ from zlib import crc32
 
 import torch
 
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.plan import entry_plan
 from tileops.manifest.primitives import WORKLOAD_SEED
+from tileops.manifest.workload import Call, instantiate
 from workloads.device import run_device
 from workloads.numerics import Evidence, Exact
 
@@ -60,6 +63,16 @@ class WorkloadBase(ABC):
         """
         seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
         return torch.Generator(device=device).manual_seed(seed)
+
+
+def manifest_call(op: str, dtype_case: dict | None = None, **row) -> Call:
+    """The manifest call of *op* that *row* describes, as a workload row would.
+
+    A test picks its own shapes; the call still takes its metadata from the entry's
+    generators and its contract from the entry's signature (docs/design/manifest.md § Rows).
+    """
+    plan = entry_plan(op, load_manifest()[op], load_adts(), resolve=False)
+    return instantiate(plan, {**row, "label": "test"}, dtype_case or {})
 
 
 class CallWorkload(WorkloadBase):

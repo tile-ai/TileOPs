@@ -541,11 +541,6 @@ class _RoPEKernelBase(Kernel):
         tune: bool = False,
     ):
         super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
         if head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even, got {head_dim}")
         if input_layout not in ("1d", "2d"):
@@ -689,11 +684,6 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         tune: bool = False,
     ):
         super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
         if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > head_dim:
             raise ValueError("rotary_dim must be positive, even, and <= head_dim")
         if num_tokens <= 0:

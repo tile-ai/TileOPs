@@ -62,9 +62,10 @@ def _clamp_construct_kwargs(op_name: str) -> dict:
     return {}
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.parametrize("op_name", _CLAMP_OPS)
 def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     """A user-supplied ``kernel_map`` value must reach the kernel build.

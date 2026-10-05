@@ -16,8 +16,8 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKFwdOp
-from workloads.device import run_device
-from workloads.moe import FusedTopKWorkload, moe_call
+from workloads.moe import FusedTopKWorkload
+from workloads.workload_base import manifest_call
 
 
 class FusedTopKFixture(FixtureBase):
@@ -175,7 +175,7 @@ def _check(test: FusedTopKWorkload) -> None:
 
 @FusedTopKFixture
 def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype) -> None:
-    call = moe_call(
+    call = manifest_call(
         "FusedTopKFwdOp",
         {"G": str(dtype).removeprefix("torch.")},
         T=num_tokens,
@@ -185,21 +185,3 @@ def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, d
         renormalize=renormalize,
     )
     _check(FusedTopKWorkload(call))
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_fused_topk_kernel_cache_specializations() -> None:
-    op = FusedTopKFwdOp(top_k=2)
-    gating1 = torch.randn(4, 8, dtype=torch.float16, device=run_device())
-    gating2 = torch.randn(5, 8, dtype=torch.float16, device=run_device())
-    gating3 = gating1.to(torch.bfloat16)
-
-    op(gating1)
-    assert len(op.built_kernels("fused_topk")) == 1
-    op(gating1)
-    assert len(op.built_kernels("fused_topk")) == 1
-    op(gating2)
-    assert len(op.built_kernels("fused_topk")) == 2
-    op(gating3)
-    assert len(op.built_kernels("fused_topk")) == 3

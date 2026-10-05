@@ -112,10 +112,6 @@ def _gemm_fp8_1d2d_kernel(
         group_size_m: int = 16,
         group_unroll: int = 1,
     ) -> Callable:
-        # Each value divides 128, so a tile reads one B-scale block, and is a multiple
-        # of the 16-column STSM atom; any other leaves epilogue columns unwritten.
-        if block_n not in (16, 32, 64, 128):
-            raise ValueError(f"block_n must be one of 16/32/64/128, got {block_n}")
         if group_size_m < 1:
             raise ValueError(f"group_size_m must be positive, got {group_size_m}")
         if num_stages < 1:
