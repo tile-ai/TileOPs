@@ -16,6 +16,7 @@ from tileops.kernels.convolution import (
     Conv1dFwdInterface,
     Conv1dKernel,
     Conv1dPointwiseKernel,
+    Conv1dUnitStrideKernel,
     Conv2d1x1Kernel,
     Conv2dCall,
     Conv2dFwdInterface,
@@ -79,6 +80,7 @@ class Conv1dFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv1d_pointwise": Conv1dPointwiseKernel,
         "conv1d": Conv1dKernel,
+        "conv1d_unit_stride": Conv1dUnitStrideKernel,
         "depthwise_conv1d": DepthwiseConv1dKernel,
         "group_conv1d": GroupConv1dKernel,
     }

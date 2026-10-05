@@ -8,6 +8,7 @@ from tileops.backend import BUILTIN
 from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
+    Conv1dUnitStrideKernel,
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv2dSymmetricKernel,
@@ -72,6 +73,21 @@ class Conv1dFixture(FixtureBase):
                     False,
                     marks=pytest.mark.smoke,
                     id="smoke-tcn-k3-s1-bf16",
+                ),
+                pytest.param(
+                    1,
+                    17,
+                    5,
+                    7,
+                    3,
+                    1,
+                    5,
+                    2,
+                    1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-padding-wider-than-row-fp16",
                 ),
                 pytest.param(
                     4,
@@ -355,7 +371,8 @@ def test_conv1d_same_padding_even_kernel_matches_torch(use_bias: bool) -> None:
 @pytest.mark.parametrize(
     "kernel_size, stride, padding, dilation, expected_kernel",
     [
-        pytest.param(3, 1, 1, 1, Conv1dKernel, id="generic"),
+        pytest.param(3, 1, 1, 1, Conv1dUnitStrideKernel, id="unit-stride"),
+        pytest.param(3, 2, 1, 1, Conv1dKernel, id="generic"),
         pytest.param(1, 1, 0, 1, Conv1dPointwiseKernel, id="pointwise"),
     ],
 )
@@ -375,9 +392,29 @@ def test_conv1d_dispatches_kernel(
     weight = torch.randn(64, 32, kernel_size, device=run_device(), dtype=torch.float16).contiguous()
     out = op(x, weight)
     if served_in_tree(op):
-        assert isinstance(op.kernel, expected_kernel)
+        assert type(op.kernel) is expected_kernel
     ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding, dilation=dilation)
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
+
+
+class _TwoTapConv1dKernel(Conv1dUnitStrideKernel):
+    """Pin two taps per k tile, which the untuned default never picks."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config = {**self.default_config, "block_m": 32, "block_n": 32, "taps": 2}
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+def test_conv1d_two_taps_per_k_tile_matches_torch() -> None:
+    """Two taps share a k tile: c_in = 130 puts each tap's weight columns off a 16-byte
+    boundary and needs two channel blocks, and the padding gives boundary CTAs."""
+    test = Conv1dTest(1, 130, 260, 67, 4, 1, 3, 2, 1, torch.float16)
+    op = Conv1dFwdOp(padding=3, dilation=2, kernel_map={"conv1d_unit_stride": _TwoTapConv1dKernel})
+    test.check(op, *test.gen_inputs())
+    if served_in_tree(op):
+        assert type(op.kernel) is _TwoTapConv1dKernel and op.kernel.config["taps"] == 2
 
 
 class Conv2dFixture(FixtureBase):
