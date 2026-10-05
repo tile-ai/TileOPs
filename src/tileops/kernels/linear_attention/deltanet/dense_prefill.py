@@ -12,11 +12,12 @@ from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceFwdInterface,
     head_count_refusal,
 )
+from tileops.kernels.linear_attention.deltanet.partition_scan import partition_scan
+from tileops.kernels.linear_attention.deltanet.prefill_forward import deltanet_prefill_fwd
+from tileops.kernels.linear_attention.deltanet.prefill_prepare import deltanet_partition_states
 from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
 from tileops.kernels.linear_attention.gdn.prefill_prepare import (
-    correct_initial_states,
     fused_gdr_h,
-    get_warmup_chunks,
     prefill_blocksolve_A_bthd,
 )
 from tileops.utils import get_sm_count
@@ -134,8 +135,15 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
+        torch.Tensor | None,
     ]:
-        """Cache only shape-derived offsets and maps, never recurrent state."""
+        """Cache only shape-derived offsets, maps and replay counts, never recurrent state.
+
+        Without a gate no decay cuts a partition's replay short, so the warmup pass replays
+        every chunk of a partition that is not its sequence's last, and none of the last. The
+        count, per partition and per partition and head, is shape-derived and is cached with
+        the offsets.
+        """
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
@@ -144,7 +152,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             raw_offsets.append(raw_offsets[-1] + length)
         raw_cu = torch.tensor(raw_offsets, dtype=torch.int32, device=device)
         if not use_partition:
-            return raw_cu, None, None, None, None
+            return raw_cu, None, None, None, None, None
 
         cp_offsets = []
         cp_to_raw = []
@@ -159,12 +167,19 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             final_partition_mask[-1] = True
             raw_to_cp.append(len(cp_offsets))
         cp_offsets.append(raw_offsets[-1])
+        replay = [
+            0 if final else (end - start) // 64
+            for start, end, final in zip(
+                cp_offsets, cp_offsets[1:], final_partition_mask, strict=False
+            )
+        ]
         return (
             raw_cu,
             torch.tensor(cp_offsets, dtype=torch.int32, device=device),
             torch.tensor(cp_to_raw, dtype=torch.int32, device=device),
             torch.tensor(raw_to_cp, dtype=torch.int32, device=device),
-            torch.tensor(final_partition_mask, dtype=torch.bool, device=device),
+            torch.tensor(replay, dtype=torch.int32, device=device),
+            torch.tensor([[count] * heads for count in replay], dtype=torch.int32, device=device),
         )
 
     @staticmethod
@@ -176,20 +191,14 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             local_chunks = max(local_chunks, 256)
         return max(local_chunks, 4)
 
-    def _partition_initial_state(
+    def _partitions(
         self,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        inverse: torch.Tensor,
-        zero_gate: torch.Tensor,
-        beta: torch.Tensor,
-        k_rnorm: torch.Tensor,
-        cu_seqlens: torch.Tensor,
+        num_tokens: int,
+        heads: int,
         sequence_lengths: tuple[int, ...] | None,
-        initial_state: torch.Tensor | None,
-        max_local_chunks: int,
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        """The state each partition starts from, and the offsets the recurrence walks.
+        device_index: int | None,
+    ) -> tuple[torch.Tensor, ...] | None:
+        """Where the sequences split, or ``None`` when they are walked whole.
 
         Partitioning splits a long sequence at a chunk boundary and replays each piece from
         a corrected state, which asks for every length on the host. A packed call that
@@ -197,54 +206,68 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
 
         A sequence that is not a whole number of chunks still partitions: every split lands
         on a chunk boundary by construction, so only a sequence's last partition is short,
-        and the warmup pass that floors a partition's chunk count is the one pass that
-        skips a last partition.
+        and it is the one partition the warmup pass skips.
         """
         if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
-            return initial_state, cu_seqlens, None, cu_seqlens
-        heads = k.shape[2]
-        num_chunks = -(-k.shape[1] // 64)
-        use_partition = num_chunks > max_local_chunks and (
+            return None
+        max_local_chunks = self.config["max_local_chunks"]
+        num_chunks = -(-num_tokens // 64)
+        # Splitting pays once the longest sequence spans two partitions; below that the
+        # partition pass costs more than the chunks it takes off the walk.
+        longest = -(-max(sequence_lengths) // 64)
+        use_partition = longest >= 2 * max_local_chunks and (
             heads <= 40 or (heads <= 64 and num_chunks >= 128)
         )
         if not use_partition:
-            return initial_state, cu_seqlens, None, cu_seqlens
-        raw_cu, cp_cu, cp_to_raw, raw_to_cp, final_mask = self._partition_metadata(
-            sequence_lengths, heads, max_local_chunks, True, k.device.index
+            return None
+        return self._partition_metadata(
+            sequence_lengths, heads, max_local_chunks, True, device_index
         )
-        assert cp_cu is not None
-        assert cp_to_raw is not None
-        assert raw_to_cp is not None
-        assert final_mask is not None
 
-        warmup_chunks, fallback_mask = get_warmup_chunks(
-            g=zero_gate,
-            cu_seqlens=cp_cu,
-            ht_mask=final_mask,
-            chunk_size=64,
-            threshold=-10.0,
-        )
+    def _gdn_partitioned(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        inverse: torch.Tensor,
+        beta: torch.Tensor,
+        k_rnorm: torch.Tensor,
+        initial_state: torch.Tensor | None,
+        split: tuple[torch.Tensor, ...],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Partitioned prefill on the GDN programs with a zero gate."""
+        raw_cu, offsets, sequence_of, first_of, _, replay_per_head = split
         partition_h, partition_m = fused_gdr_h(
             k=k,
             v=v,
             a=inverse,
-            g=zero_gate,
+            g=self.zero_gate,
             b=beta,
             initial_state=None,
             output_final_state=True,
-            cu_seqlens=cp_cu,
-            num_warmup_chunks=warmup_chunks,
+            cu_seqlens=offsets,
+            num_warmup_chunks=replay_per_head,
             k_rnorm=k_rnorm,
             l2norm=self.l2norm,
         )
-        partition_h0 = correct_initial_states(
-            raw_h0=initial_state,
-            ht_buffer=partition_h,
-            mt_buffer=partition_m,
-            fallback_mask=fallback_mask,
-            seq_map_r2c=raw_to_cp,
+        start_state = partition_scan(initial_state, partition_h, partition_m, first_of)
+        return fused_gdr_fwd(
+            q,
+            k,
+            v,
+            inverse,
+            self.zero_gate,
+            beta,
+            scale=self.scale,
+            initial_state=start_state,
+            output_final_state=True,
+            cu_seqlens=offsets,
+            cp_seq_map=sequence_of,
+            raw_cu_seqlens=raw_cu,
+            chunk_size=64,
+            k_rnorm=k_rnorm,
+            l2norm=self.l2norm,
         )
-        return partition_h0, cp_cu, cp_to_raw, raw_cu
 
     @property
     def default_config(self) -> Dict[str, Any]:
@@ -270,11 +293,12 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         lengths: tuple[int, ...] | None
         if cu_seqlens is None:
             # An equal-length call is a packed call whose offsets step by the row length:
-            # the bytes are the same, so one set of kernels serves both.
-            cu_seqlens = torch.arange(
-                0, (batch + 1) * seq_len, seq_len, dtype=torch.int32, device=q.device
-            )
+            # the bytes are the same, so one set of kernels serves both. The offsets are
+            # shape-derived and come from the cache rather than a per-call launch.
             lengths = (seq_len,) * batch
+            cu_seqlens = self._partition_metadata(
+                lengths, heads, self.config["max_local_chunks"], False, q.device.index
+            )[0]
         elif cu_seqlens_cpu is not None:
             lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
         else:
@@ -282,33 +306,33 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         inverse, k_rnorm = prefill_blocksolve_A_bthd(
             k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, use_gate=False, l2norm=self.l2norm
         )
-        partition_h0, offsets, seq_map, raw_offsets = self._partition_initial_state(
-            k_flat,
-            v_flat,
-            inverse,
-            self.zero_gate,
-            beta_flat,
-            k_rnorm,
-            cu_seqlens,
-            lengths,
-            initial_state,
-            self.config["max_local_chunks"],
-        )
-        o, final_state = fused_gdr_fwd(
-            q_flat,
-            k_flat,
-            v_flat,
-            inverse,
-            self.zero_gate,
-            beta_flat,
-            scale=self.scale,
-            initial_state=partition_h0,
-            output_final_state=True,
-            cu_seqlens=offsets,
-            cp_seq_map=seq_map,
-            raw_cu_seqlens=raw_offsets,
-            chunk_size=64,
-            k_rnorm=k_rnorm,
-            l2norm=self.l2norm,
-        )
+        split = self._partitions(k_flat.shape[1], heads, lengths, q.device.index)
+        if dim == 128 and split is not None:
+            # Partitions of a 128-wide state would take this file's programs to 64 state
+            # columns per CTA and two waves, so they keep the GDN programs at 128.
+            o, final_state = self._gdn_partitioned(
+                q_flat, k_flat, v_flat, inverse, beta_flat, k_rnorm, initial_state, split
+            )
+        else:
+            partitions = None
+            if split is not None:
+                raw_cu, offsets, sequence_of, first_of, replay, _ = split
+                partition_h, partition_m = deltanet_partition_states(
+                    k_flat, v_flat, inverse, beta_flat, offsets, replay, k_rnorm, self.l2norm
+                )
+                partitions = (offsets, sequence_of, first_of, partition_h, partition_m)
+                cu_seqlens = raw_cu
+            o, final_state = deltanet_prefill_fwd(
+                q_flat,
+                k_flat,
+                v_flat,
+                inverse,
+                beta_flat,
+                self.scale,
+                initial_state,
+                cu_seqlens,
+                partitions,
+                k_rnorm,
+                self.l2norm,
+            )
         return o.reshape(batch, seq_len, heads, dim), final_state

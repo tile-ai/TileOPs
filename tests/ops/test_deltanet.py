@@ -305,6 +305,16 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
+    torch.manual_seed(2163)
+    test = DeltaNetInferenceTest(2, 1024, 4, 128, torch.bfloat16)
+    # 16 chunks a row over a four-chunk partition: a 128-wide state crosses partitions.
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
 @pytest.mark.cuda_only
