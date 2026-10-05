@@ -127,9 +127,6 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     with pytest.raises(ValueError, match="k must span at least one"):
         op.select_implementation("gemm", call)
 
-    with pytest.raises(ValueError, match="cannot serve k=1"):
-        GemmCpAsyncKernel(64, 64, 1, torch.float16, trans_b=True)
-
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke

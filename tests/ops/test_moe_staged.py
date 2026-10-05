@@ -147,7 +147,7 @@ class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
+@pytest.mark.skipif(not run_device_available(), reason="candidate test uses CUDA calls")
 def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     device = torch.device("cuda")
     ends = torch.tensor([1], dtype=torch.int32, device=device)
@@ -306,7 +306,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="selection records CUDA architecture")
+@pytest.mark.skipif(not run_device_available(), reason="selection records CUDA architecture")
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
     """A call outside every shipped candidate's region says so, rather than crashing."""
     device = torch.device("cuda")

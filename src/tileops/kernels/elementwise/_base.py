@@ -19,10 +19,8 @@ from tileops.kernels.elementwise._builders import (
     make_binary_direct,
     make_binary_explicit,
     make_binary_register_copy,
-    make_fused_gated_direct,
     make_fused_gated_explicit,
     make_unary_direct,
-    make_unary_explicit,
     make_unary_regcopy,
 )
 from tileops.kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, LOGICAL_DTYPES
@@ -166,14 +164,14 @@ class UnaryKernel(_StrategyKernel):
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input.
         config: Optional dict with "strategy", "threads" and "num_per_thread".
-            "strategy" is one of "direct", "explicit_parallel",
-            "register_copy"; it selects the kernel body at build time.
+            "strategy" is "direct" or "register_copy"; it selects the kernel
+            body at build time.
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
+    STRATEGIES = ["direct", "register_copy"]
     # Fragment copy is the default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
@@ -241,15 +239,6 @@ class UnaryKernel(_StrategyKernel):
                 effective_op,
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
-            )
-        elif strategy == "explicit_parallel":
-            return make_unary_explicit(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
             )
         elif strategy == "register_copy":
             return make_unary_regcopy(
@@ -454,14 +443,13 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         N: Half the column dimension (output width).
         dtype: Torch dtype.
         config: Optional dict with "strategy", "threads" and "num_per_thread".
-            "strategy" is one of "direct", "explicit_parallel"; it selects
-            the kernel body at build time.
+            "strategy" is "explicit_parallel", the one body these kernels build.
         tune: Whether to autotune (sweeps "threads" / "num_per_thread"
             within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    STRATEGIES = ["direct", "explicit_parallel"]
+    STRATEGIES = ["explicit_parallel"]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
@@ -503,15 +491,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     def _build_kernel(self, strategy):
         cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
-        if strategy == "direct":
-            return make_fused_gated_direct(
-                self.M,
-                self.N,
-                self.dtype_str,
-                effective_op,
-                threads=cfg["threads"],
-            )
-        elif strategy == "explicit_parallel":
+        if strategy == "explicit_parallel":
             return make_fused_gated_explicit(
                 self.M,
                 self.N,

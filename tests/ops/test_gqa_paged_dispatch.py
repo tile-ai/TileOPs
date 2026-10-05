@@ -7,10 +7,11 @@ from tileops.ops import (
     GQAPagedFwdOp,
     GQAPrefillPagedWithKVCacheFwdOp,
 )
+from workloads.device import run_device_available
 
 pytestmark = [
     pytest.mark.skipif(
-        not torch.cuda.is_available(), reason="attention selection reads the device architecture"
+        not run_device_available(), reason="attention selection reads the device architecture"
     ),
     pytest.mark.cuda_only,
 ]

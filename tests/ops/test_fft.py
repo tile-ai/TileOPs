@@ -5,7 +5,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels import fft as fft_kernels
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CFourStepKernel
 from tileops.ops import FFTC2CFwdOp
@@ -177,18 +176,3 @@ def test_every_plan_fits_the_blocks_of_the_architectures_it_serves() -> None:
             _nf, lanes, extent, _twrows, _r = plan.geometry(index)
             assert tile >= 1 and extent % tile == 0, f"{where} kernel {index}"
             assert tile * lanes <= MAX_BLOCK_THREADS, f"{where} kernel {index}"
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "arch, table",
-    [pytest.param(89, FFT_NARROW_PLANS, id="sm89"), pytest.param(90, FFT_PLANS, id="sm90")],
-)
-def test_decomposed_kernel_selects_its_devices_record(
-    monkeypatch: pytest.MonkeyPatch, arch: int, table: dict
-) -> None:
-    monkeypatch.setattr(fft_kernels, "get_sm_version", lambda index=None: arch)
-    kernel = FFTC2CFourStepKernel(1 << 22, torch.complex64)
-    assert kernel.plan is table[1 << 22, "complex64"]
-    assert kernel.config["tile"] == kernel.plan.tile

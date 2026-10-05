@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
@@ -50,36 +49,6 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test = ReluTest(n_total, dtype)
     op = ReluFwdOp()
     test.check(op, *test.gen_inputs())
-
-
-class ReluStrategyFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype, strategy",
-            [
-                pytest.param(1_000_000, torch.float16, "direct", marks=pytest.mark.smoke),
-                pytest.param(1_000_000, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-                pytest.param(1_000_000, torch.float16, "register_copy", marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@pytest.mark.cuda_only
-@ReluStrategyFixture
-def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """All 3 unary strategies selected via the config dict produce correct results."""
-    from tileops.backend import BUILTIN
-
-    class Pinned(ReluFwdKernel):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **{**kwargs, "config": {"strategy": strategy}})
-
-    test = ReluTest(n_total, dtype)
-    op = ReluFwdOp(kernel_map={"relu": Pinned}, target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("elementwise").values()
-    assert type(kernel) is Pinned and kernel.strategy == strategy
 
 
 # Template-based activation ops
@@ -189,15 +158,6 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluFwdOp
 
     _make_activation_test(n_total, dtype, _randn, SeluFwdOp)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_activation_rejects_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import GeluFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        GeluFwdKernel(N_total=16, dtype=torch.int32)
 
 
 # L4 edge-case tests (fp32, 4K)
@@ -389,12 +349,3 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     bad = torch.randn((2, 8, 4), device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_independent_activation_rejects_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import LeakyReluFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        LeakyReluFwdKernel(N_total=16, dtype=torch.int32)

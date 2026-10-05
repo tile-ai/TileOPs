@@ -11,6 +11,7 @@ from tileops.kernels.linear_attention import (
 )
 from tileops.ops import KDAFwdOp
 from workloads.linear_attention.kda import KDAFwdWorkload
+from workloads.numerics import compare_outputs
 
 pytestmark = pytest.mark.smoke
 
@@ -100,15 +101,17 @@ def test_kda_decode_runs_from_a_zero_state() -> None:
 def test_kda_prefill_continues_across_calls() -> None:
     """The state a prefill ends on is the one the next call starts from."""
     torch.manual_seed(42)
-    q, k, v, g, beta, state = KDAFwdTest(1, 128, 4, 128, torch.bfloat16).gen_inputs()
+    test = KDAFwdTest(1, 128, 4, 128, torch.bfloat16)
+    inputs = test.gen_inputs()
+    q, k, v, g, beta, state = inputs
     op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
     first_o, carried = op(q[:, :64], k[:, :64], v[:, :64], g[:, :64], beta[:, :64], state)
     second_o, final = op(q[:, 64:], k[:, 64:], v[:, 64:], g[:, 64:], beta[:, 64:], carried)
-    whole_o, whole_final = op(q, k, v, g, beta, state)
-    torch.testing.assert_close(
-        torch.cat([first_o, second_o], dim=1), whole_o, atol=1.6e-2, rtol=1.6e-2
+    compare_outputs(
+        (torch.cat([first_o, second_o], dim=1), final),
+        test.ref_program(*inputs),
+        test.verification(*inputs),
     )
-    torch.testing.assert_close(final, whole_final, atol=1.6e-2, rtol=1.6e-2)
 
 
 def test_kda_fused_prefill_takes_the_wide_launches() -> None:

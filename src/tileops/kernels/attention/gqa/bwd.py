@@ -482,9 +482,64 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
 
         self.init_config(config, tune)
 
+    # Default configs, widest first. A 256-thread program lays out its shared tiles only at
+    # a head dim that is a multiple of 32; the 128-thread ones take any multiple of 16.
+    _DEFAULTS = (
+        {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256},
+        {"block_m": 128, "block_n": 64, "num_stages": 1, "threads": 256},
+        {"block_m": 64, "block_n": 64, "num_stages": 2, "threads": 128},
+        {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128},
+    )
+
+    @classmethod
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """Require complete WGMMA contractions and shared memory for the narrowest default."""
+        if call.dim % 16 != 0:
+            return f"head dim must be a multiple of 16 for the WGMMA contraction, got {call.dim}"
+        if not call.smem_budget:
+            return None
+        grouped = call.heads != call.heads_kv
+        need = cls._config_bytes(cls._DEFAULTS[-1], call.dim, call.dtype.itemsize, grouped)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs at least {need} bytes of shared memory per block at head dim {call.dim} "
+            f"in {call.dtype}; the device gives {call.smem_budget}"
+        )
+
     @property
     def default_config(self) -> dict:
-        return {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256}
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.dim,
+            self.dtype.itemsize,
+            self.heads != self.heads_kv,
+        )
+
+    @classmethod
+    def _default_config_for(cls, budget: int, dim: int, itemsize: int, grouped: bool) -> dict:
+        """The widest default that lays out at *dim* and fits *budget* bytes per block."""
+        fits = [
+            c
+            for c in cls._DEFAULTS
+            if (c["threads"] == 128 or dim % 32 == 0)
+            and cls._config_bytes(c, dim, itemsize, grouped) <= budget
+        ]
+        return dict(fits[0] if fits else cls._DEFAULTS[-1])
+
+    @staticmethod
+    def _config_bytes(config: dict, dim: int, itemsize: int, grouped: bool) -> int:
+        """Shared memory of *config*'s program: the key-block loop's buffers (K, V, dS, each
+        stage's Q, dO, lse and delta, the fp32 dQ tile), or the dK/dV staging tiles that
+        reuse them after the loop, whichever is larger."""
+        m, n, stages = config["block_m"], config["block_n"], config["num_stages"]
+        loop = (2 * m * dim + 2 * stages * n * dim + m * n) * itemsize
+        loop += n * dim * 4 + 2 * stages * n * 4
+        return max(loop, 2 * m * dim * (4 if grouped else itemsize))
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -535,10 +590,6 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     # Key rows and threads of the blocks the default tries, widest first: the row-split GEMMs
     # give each warp 16 key rows.
     _KEY_BLOCKS = ((128, 256), (64, 128))
-
-    @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:

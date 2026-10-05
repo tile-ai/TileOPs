@@ -205,15 +205,6 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, Expm1FwdOp)
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_math_ops_reject_non_float_dtype() -> None:
-    from tileops.kernels.elementwise import ExpFwdKernel
-
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        ExpFwdKernel(N_total=16, dtype=torch.int32)
-
-
 # Integer-dtype identity short-circuit for floor / ceil / round / trunc.
 #
 # The manifest declares these ops over both integer and float dtypes; the

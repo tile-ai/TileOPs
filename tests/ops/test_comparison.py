@@ -8,7 +8,9 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
+from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import ComparisonCase, ElementwiseWorkload
 from workloads.numerics import compare_outputs
@@ -357,21 +359,14 @@ def test_comparison_rejects_unsupported_dtype(
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("strategy", ["explicit_parallel", "direct"])
-def test_comparison_bool_result_per_strategy(strategy: str) -> None:
-    """Every strategy returns the same bool tensor, whatever it stores underneath.
-
-    Every strategy but ``direct`` now writes an int8 buffer the op views back as
-    bool; only ``register_copy`` used to.
-    """
-    from tileops.kernels.elementwise import GtFwdKernel
-
-    shape = (4096,)
-    a = torch.randn(shape, device="cuda", dtype=torch.float16)
-    b = torch.randn(shape, device="cuda", dtype=torch.float16)
-    out = GtFwdKernel(shape, shape, torch.float16, config={"strategy": strategy}).forward(a, b)
-    assert out.dtype == torch.bool
-    compare_outputs(out, torch.gt(a, b), ElementwiseWorkload("GtFwdOp", (a, b)).verification(a, b))
+def test_comparison_bool_result_from_int8_storage() -> None:
+    """A broadcast comparison writes an int8 buffer the op returns as a bool tensor."""
+    a = torch.randn(2, 64, 128, device="cuda", dtype=torch.float16)
+    b = torch.randn(1, 1, 128, device="cuda", dtype=torch.float16)
+    op = GtFwdOp(target=BUILTIN)
+    ComparisonTest(a.numel(), a.dtype, "GtFwdOp").check(op, a, b)
+    (kernel,) = op.built_kernels(ELEMENTWISE).values()
+    assert kernel.strategy == "explicit_parallel" and kernel._bool_via_int8
 
 
 @pytest.mark.smoke

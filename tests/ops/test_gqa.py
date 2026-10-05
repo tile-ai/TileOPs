@@ -7,7 +7,6 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     GQABwdMMAKernel,
-    GQABwdPreprocessKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -34,9 +33,8 @@ from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GQAVarlenScaledWorkload
-from workloads.device import run_device
+from workloads.device import run_device_available
 from workloads.numerics import compare_outputs
-from workloads.reduction import reduction_verification
 
 
 class GQABwdTest(GQABwdWorkload, TestBase):
@@ -515,38 +513,23 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     assert {kernel.config["block_N"] for kernel in kernels} == {64, 128}
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("seqlen_kv", [1, 63, 128, 1024])
-def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -> None:
-    """Every swept config leaves each split one full KV tile; num_split=1 stays comparable."""
-    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
-        pytest.skip("GQA decode requires SM80/89/90")
-    kernel = GQADecodeKernel(2, 8, 2, seqlen_kv, 128, dtype=torch.float16)
-    configs = kernel.autotune_configs
-    assert configs, "the sweep must stay non-empty for any positive sequence length"
-    for config in configs:
-        assert config["num_split"] <= max(1, seqlen_kv // config["block_N"])
-    assert any(config["num_split"] == 1 for config in configs)
+class _TunedSplitDecodeKernel(GQADecodeKernel):
+    """The autotune candidate of 32 splits over 128-key tiles, valid from 4096 keys."""
+
+    def __init__(self, *args, **kwargs):
+        config = {"block_H": 64, "block_N": 128, "num_split": 32, "num_stages": 2, "threads": 128}
+        super().__init__(*args, **{**kwargs, "config": config})
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
     """A tuned num_split the sequence cannot fill shrinks instead of pushing
-    dispatch into the never-tuned no-split kernel."""
-    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
+    dispatch into the never-tuned no-split kernel; a sequence too short for two
+    splits runs the no-split kernel."""
+    if not run_device_available() or get_sm_version() not in (80, 89, 90):
         pytest.skip("GQA decode requires SM80/89/90")
     batch, heads, heads_kv, dim = 2, 32, 4, 128
-    kernel = GQADecodeKernel(
-        batch,
-        heads,
-        heads_kv,
-        1024,
-        dim,
-        dtype=torch.float16,
-        config={"block_H": 64, "block_N": 64, "num_split": 32, "num_stages": 2, "threads": 128},
-    )
 
     calls: list[tuple[str, int]] = []
 
@@ -564,18 +547,26 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
         "tileops.kernels.attention.gqa.decode.gqa_decode_no_split_run", no_split_spy
     )
 
-    # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two
-    for seq_len_kv, expected in ((1024, ("split", 16)), (100, ("no_split", 0))):
+    tuned = GQADenseFwdOp(kernel_map={"gqa_dense_decode": _TunedSplitDecodeKernel}, target=BUILTIN)
+    default = GQADenseFwdOp(target=BUILTIN)
+    # One kernel serves 2048 keys and up: 4096 fill the tuned 32 splits, 2048 fill 16;
+    # 100 keys cannot fill two splits under the default ceiling either.
+    for op, seq_len_kv, expected in (
+        (tuned, 4096, ("split", 32)),
+        (tuned, 2048, ("split", 16)),
+        (default, 100, ("no_split", 0)),
+    ):
         q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
         k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
         v = torch.randn_like(k)
-        output = kernel(q, k, v)
         compare_outputs(
-            output,
+            op(q, k, v),
             dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
             dense_gqa_verification(q.dtype),
         )
         assert calls[-1] == expected
+    (kernel,) = tuned.built_kernels("gqa_dense").values()
+    assert type(kernel) is _TunedSplitDecodeKernel
 
 
 @pytest.mark.sm90
@@ -761,17 +752,13 @@ def test_gqa_bwd_mma_rejects_before_preprocess(
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_gqa_bwd_wgmma_head_dim_16_override() -> None:
-    """A valid 128-thread configuration must not inherit the default's dim-32 restriction."""
-
-    class ConfiguredWGMMAKernel(gqa_bwd.GQABwdWGMMAPipelinedKernel):
-        @property
-        def default_config(self) -> dict:
-            return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128}
-
+@pytest.mark.parametrize("dim", [16, 80, 96, 192, 256])
+def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
+    """Dims the 256-thread, two-stage default cannot lay out or fit step down to a narrower
+    default; 100 rows end part way through a block."""
     torch.manual_seed(123)
-    test = GQABwdTest(1, 8, 2, 128, 16, True, torch.float16)
-    op = GQABwdOp(target=BUILTIN, kernel_map={"gqa_bwd_kernel": ConfiguredWGMMAKernel})
+    test = GQABwdTest(1, 4, 2, 100, dim, True, torch.float16)
+    op = GQABwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
 
 
@@ -950,18 +937,3 @@ def test_gqa_bwd_mma_builds_per_device() -> None:
     first, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 0)))
     second, _ = GQABwdMMAKernel.entry_for(AttentionCall(**shape, device=torch.device("cuda", 1)))
     assert first != second
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", [80, 96])
-def test_gqa_bwd_preprocess_sums_rows_of_any_head_dim(dim: int) -> None:
-    """At head dims that are not powers of two, delta is each row's sum of o * do and the dQ
-    accumulator starts at zero; 100 rows end part way through a block."""
-    o, do = (
-        torch.randn(2, 100, 4, dim, device=run_device(), dtype=torch.float16) for _ in range(2)
-    )
-    delta, dq_accum = GQABwdPreprocessKernel(2, 4, 100, dim, torch.float16)(o, do)
-    expected = (o.float() * do.float()).sum(-1).transpose(1, 2)
-    compare_outputs(delta, expected, reduction_verification(delta.dtype))
-    assert not dq_accum.any()

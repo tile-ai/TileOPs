@@ -693,7 +693,7 @@ def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype
 
 
 @pytest.mark.cuda_only
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.parametrize(
     "op_kind, dtype, tune",
     [
@@ -833,15 +833,3 @@ def test_count_nonzero_exact_past_fp32_integers() -> None:
         torch.count_nonzero(x, dim=-1),
         reduction_verification((torch.count_nonzero(x, dim=-1)).dtype),
     )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_logical_reduce_rejects_width_its_reduction_cannot_fold() -> None:
-    """A block width that is not a power of two would drop warps from the reduction."""
-    kernel = LogicalReduceKernel(
-        (4, 4096), (1,), "count_nonzero", torch.float16, config={"threads": 96}
-    )
-    with pytest.raises(ValueError, match="power of two"):
-        kernel(torch.ones(4, 4096, dtype=torch.float16, device="cuda"))

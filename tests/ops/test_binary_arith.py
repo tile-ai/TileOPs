@@ -294,34 +294,6 @@ def test_binary_arith_broadcast(
     compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
-class AddStrategyFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype, strategy",
-            [
-                pytest.param(4_096, torch.float16, "direct", marks=pytest.mark.smoke),
-                pytest.param(16_384, torch.float16, "explicit_parallel", marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@pytest.mark.cuda_only
-@AddStrategyFixture
-def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """Binary strategies selected via the config dict produce correct results."""
-
-    class Pinned(AddFwdKernel):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **{**kwargs, "config": {"strategy": strategy}})
-
-    test = AddSameShapeTest(n_total, dtype)
-    op = AddFwdOp(kernel_map={"add": Pinned}, target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_kernels("elementwise").values()
-    assert type(kernel) is Pinned and kernel.strategy == strategy
-
-
 # Generic binary test helper
 
 

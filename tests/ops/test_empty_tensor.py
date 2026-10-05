@@ -111,7 +111,8 @@ def test_a_written_input_with_elements_still_runs():
     theirs = torch.zeros(4, device=run_device()), torch.ones(4, device=run_device())
     InstanceNormFwdOp()(x, *ours)
     F.instance_norm(x, *theirs, use_input_stats=True)
-    torch.testing.assert_close(ours, theirs, equal_nan=True)
+    for a, b in zip(ours, theirs, strict=True):
+        assert torch.equal(a.isnan(), b.isnan()) and torch.equal(a.nan_to_num(), b.nan_to_num())
 
 
 def test_a_compiled_empty_call_returns_what_torch_returns():

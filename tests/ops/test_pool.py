@@ -1620,7 +1620,7 @@ class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
     """A replacement inheriting the key's interface runs in its place."""
     op = AvgPool2dFwdOp(

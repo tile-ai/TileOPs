@@ -181,7 +181,7 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
 @pytest.mark.smoke
 def test_training_rejects_one_value_per_channel() -> None:
     """Bessel's correction divides by L - 1; torch refuses the same call."""
-    if not torch.cuda.is_available():
+    if not run_device_available():
         pytest.skip("CUDA required for forward call")
 
     C = 4
@@ -466,7 +466,7 @@ def _batch_norm_bwd_ref(
 @pytest.mark.smoke
 def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
     """BatchNorm op-layer cache reuses identical specs and caches changed specs."""
-    if not torch.cuda.is_available():
+    if not run_device_available():
         pytest.skip("CUDA required for forward call")
 
     op = BatchNormFwdOp(
@@ -511,7 +511,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 @pytest.mark.smoke
 def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None:
     """Training BatchNorm forward cache path is executable under fake kernels."""
-    if not torch.cuda.is_available():
+    if not run_device_available():
         pytest.skip("CUDA required for forward call")
 
     op = BatchNormFwdOp(
@@ -557,7 +557,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 @pytest.mark.smoke
 def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
     """BatchNorm backward cache path is executable under fake kernels."""
-    if not torch.cuda.is_available():
+    if not run_device_available():
         pytest.skip("CUDA required for backward call")
 
     eps = 1e-5

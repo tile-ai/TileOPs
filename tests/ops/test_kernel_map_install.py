@@ -147,7 +147,7 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
 
 
 @pytest.mark.cuda_only
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     """A compatible user-supplied override yields bit-identical forward output.
@@ -182,7 +182,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
 
 
 @pytest.mark.cuda_only
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     """``supported_archs=None`` means no restriction, and the op runs.

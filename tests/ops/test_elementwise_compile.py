@@ -1028,7 +1028,7 @@ def test_reciprocal_int_promotion_compiles(dtype):
 
     assert eager.dtype == torch.float32
     assert compiled.dtype == eager.dtype
-    torch.testing.assert_close(compiled, eager, atol=1e-6, rtol=1e-6)
+    assert torch.equal(compiled, eager)
     workload = ElementwiseWorkload(type(op).__name__, (x,))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
@@ -1076,7 +1076,7 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
     compiled = torch.compile(op, fullgraph=True)(x)
     eager = op._eager_forward(x)
     assert compiled.dtype == eager.dtype
-    torch.testing.assert_close(compiled, eager, atol=1e-6, rtol=1e-6)
+    assert torch.equal(compiled, eager)
 
 
 # --- Parametric activations and nan_to_num: one construction param or more ---

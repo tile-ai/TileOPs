@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
-from tileops.kernels.norm.layer_norm import LayerNormKernel
+from tileops.backend import BUILTIN
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.device import run_device
@@ -69,14 +69,8 @@ def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     m, n = 16, 3000
     dtype = torch.float16
     test = LayerNormTest(m, n, dtype)
-    x, weight, bias = test.gen_inputs()
-
-    kernel = LayerNormKernel(n, test.eps, dtype)
-    y = kernel(x, weight, bias)
-    y_ref = test.ref_program(x, weight, bias)
-
-    assert y.shape == (m, n)
-    compare_outputs(y, y_ref, layer_norm_verification(dtype))
+    op = LayerNormFwdOp(normalized_shape=(n,), eps=test.eps, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 class LayerNormNonContigFixture(FixtureBase):

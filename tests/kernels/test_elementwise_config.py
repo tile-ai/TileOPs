@@ -104,19 +104,12 @@ def test_fused_gated_explicit_config_follows_the_work():
 
     A row that fills the device keeps the widest thread its dtype allows; one
     that does not gives width back until the grid reaches the device, and silu
-    stops at two. The direct strategy keeps 256 threads: one element a thread
-    makes the thread count the whole block.
+    stops at two.
     """
     with (
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
         patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
-        direct = SiluAndMulFwdKernel(
-            M=32,
-            N=1024,
-            dtype=torch.float16,
-            config={"strategy": "direct"},
-        )
         wide_fp16 = SiluAndMulFwdKernel(
             M=4096,
             N=14336,
@@ -141,8 +134,6 @@ def test_fused_gated_explicit_config_follows_the_work():
             dtype=torch.float32,
             config={"strategy": "explicit_parallel"},
         )
-    assert direct.default_config["num_per_thread"] == 8
-    assert direct.default_config["threads"] == 256
     assert wide_fp16.default_config == {
         "strategy": "explicit_parallel",
         "threads": 128,
@@ -170,4 +161,17 @@ def test_fused_gated_explicit_config_follows_the_work():
         assert any(
             c["num_per_thread"] == cfg["num_per_thread"] and c["threads"] == cfg["threads"]
             for c in kernel.autotune_configs
+        )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_fused_gated_kernel_rejects_unknown_strategy() -> None:
+    """FusedGatedKernel must reject unknown strategy names."""
+    with pytest.raises(ValueError, match="Unknown strategy"):
+        SiluAndMulFwdKernel(
+            M=16,
+            N=16,
+            dtype=torch.float16,
+            config={"strategy": "nonexistent"},
         )

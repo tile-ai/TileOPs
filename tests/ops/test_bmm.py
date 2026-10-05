@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
+from tileops.backend import BUILTIN
 from tileops.kernels.gemm.bmm import BmmFP8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
@@ -365,24 +366,29 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("block", BmmFP8TransposeKernel.TILE_CANDIDATES)
-def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:
-    """The staging kernel is bit-identical to torch's materialized transpose."""
-    batch, rows, cols = 2, block + 7, 2 * block + 13
-    src = torch.randn(batch, rows, cols, device="cuda").to(torch.float8_e4m3fn)
-    kernel = BmmFP8TransposeKernel(
-        batch,
-        rows,
-        cols,
-        torch.float8_e4m3fn,
-        config={"block": block},
-        device_index=src.device.index,
-    )
+@pytest.mark.parametrize(
+    "block",
+    [b for b in BmmFP8TransposeKernel.TILE_CANDIDATES if b != BmmFP8TransposeKernel.TILE],
+)
+def test_bmm_fp8_kn_transpose_tuned_tile_handles_tail(block: int) -> None:
+    """Each tuned staging tile transposes a ``[B, K, N]`` operand with tails exactly.
 
-    out = kernel(src)
-    ref = src.transpose(-2, -1).contiguous()
-    assert out.is_contiguous()
-    assert torch.equal(out, ref)
+    N leaves a tail under the tile; K is a multiple of 32, so it leaves one under
+    every tile but 32.
+    """
+
+    class _Pinned(BmmFP8TransposeKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "config": {"block": block, "threads": 128}})
+
+    batch, m, n, k = 2, 128, 2 * block + 16, block + 32
+    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    op = BmmFP8FwdOp(
+        out_dtype=torch.bfloat16, kernel_map={"bmm_fp8_transpose": _Pinned}, target=BUILTIN
+    )
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("bmm_fp8_transpose").values()
+    assert type(kernel) is _Pinned
 
 
 @pytest.mark.smoke

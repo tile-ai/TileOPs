@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.device import run_device
@@ -349,15 +348,3 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     y, residual_out = op(x, residual, weight)
     compare_outputs(y, y_ref, norm_verification(dtype))
     compare_outputs(residual_out, add_ref, norm_verification(dtype))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_fused_add_rms_norm_rejects_partial_access_width() -> None:
-    """A width leaving a partial 16-byte access is refused at construction.
-
-    It truncates the kernel's per-CTA loop bounds to zero, so the row comes back
-    untouched rather than wrong in a way a tolerance would catch.
-    """
-    with pytest.raises(ValueError, match="whole 16-byte accesses"):
-        FusedAddRMSNormKernel(4096, 1e-6, torch.bfloat16, config={"threads": 768})

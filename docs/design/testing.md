@@ -35,13 +35,13 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 **Location:**
 
 - [`tests/ops/`](../../tests/ops/): every test that compares computed values. It reaches the kernel through the op's dispatch, the only path a caller has.
-- [`tests/kernels/`](../../tests/kernels/): what runs no op — configuration selection, autotune orchestration, build-time rejection.
+- [`tests/kernels/`](../../tests/kernels/): what runs no op — configuration selection, autotune orchestration, build-time rejection, and a kernel's validation of its own construction and call arguments.
 
 **Reachability:**
 
-- A path dispatch does not take for the test's input — a non-default config, an implementation another device would pick — is pinned through `kernel_map`, and the test asserts dispatch built the pin.
+- A choice dispatch does not make for the test's input is pinned through `kernel_map`, and the test asserts dispatch built the pin. A pin reproduces a choice selection can make for that input — an autotune candidate, another input's default that this input also admits, or the implementation another device selects — and never one selection cannot produce.
 - `check(runs=...)` takes only a compiled or wrapped form of the op; it refuses a kernel.
-- A condition no op call can produce is not tested. Code serving only such a condition is removed, or an op exposes it.
+- A condition no op call can produce is not tested. Code serving only such a condition is removed, or an op exposes it; a kernel's argument validation is not a reason to keep such code.
 
 **Target:**
 

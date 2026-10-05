@@ -8,7 +8,7 @@ Philox stream need not match the reference's.
 import pytest
 import torch
 
-from tests.workload_test_base import TestBase
+from tests.workload_test_base import TestBase, served_in_tree
 from tileops.backend import OpNotAvailableError
 from tileops.kernels.sampling import SamplingCall
 from tileops.kernels.sampling.radix_select import cluster_plan
@@ -452,7 +452,10 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
     # These cases cover launch boundaries, exact acceptance and residual-token support.
     out, ref = _run(op, *inputs), workload.ref_program(*inputs)
     compare_outputs(out, ref, workload.verification(*inputs))
-    assert torch.equal(out[1], ref[1])
+    if served_in_tree(op):
+        # The in-tree kernel draws acceptance from the reference's own stream, so its
+        # accepted lengths match exactly; another backend is held to the distribution.
+        assert torch.equal(out[1], ref[1])
 
 
 _SMALL_CALLS = {
