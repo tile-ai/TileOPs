@@ -20,6 +20,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.grouped_tiling import GroupTiling
 
 __all__ = ["chunk_prepare_program", "chunk_scan_program"]
 
@@ -40,11 +41,13 @@ def chunk_prepare_program(
     scale: float,
     l2norm: bool,
     total_tokens: int,
-    num_chunks: int,
+    num_seqs: int,
     threads: int = 256,
 ):
     """Build the chunk-local program for one static packed shape."""
     BT = chunk_size
+    tiling = GroupTiling(num_seqs, chunk_size)
+    num_chunks = tiling.tile_upper_bound(total_tokens)
     BC = REFERENCE_BLOCK
     NC = BT // BC
     REF = BC // 2
@@ -65,8 +68,7 @@ def chunk_prepare_program(
             v: T.Tensor([1, total_tokens, HV, V], dtype),
             g: T.Tensor([1, total_tokens, HV, K], dtype),
             beta: T.Tensor([1, total_tokens, HV], dtype),
-            chunk_bos: T.Tensor([num_chunks], "int32"),
-            chunk_len: T.Tensor([num_chunks], "int32"),
+            cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             w: T.Tensor([1, total_tokens, HV, K], dtype),
             u: T.Tensor([1, total_tokens, HV, V], dtype),
             qg: T.Tensor([1, total_tokens, HV, K], dtype),
@@ -76,8 +78,11 @@ def chunk_prepare_program(
         ):
             with T.Kernel(num_chunks, HV, threads=threads) as (ic, ihv):
                 ih = ihv // group
-                bos = chunk_bos[ic]
-                rows = chunk_len[ic]
+                tile_cum = T.alloc_shared([num_seqs + 1], "int32")
+                lo = T.alloc_local([1], "int32")
+                hi = T.alloc_local([1], "int32")
+                seq = T.alloc_local([1], "int32")
+                first = T.alloc_local([1], "int32")
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
@@ -94,6 +99,21 @@ def chunk_prepare_program(
                 tqk = T.alloc_fragment([BT, BT], accum)
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
+
+                tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                # The chunk axis runs to a bound. A CTA past the last real chunk
+                # decodes the last one and then holds no row, so every load reads
+                # zero and every store is predicated off: it falls out of the data
+                # flow rather than branching around the body. Guarding the body with
+                # `if ic < live` instead costs 24% to 47% here, because the syncs it
+                # carries hoist out of the branch -- these CTAs pay every barrier
+                # anyway, and the full ones lose their pipeline to the branch.
+                live = tile_cum[num_seqs]
+                tiling.decode(T.min(ic, live - 1), tile_cum, lo, hi, seq, first)
+                bos = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                rows = T.if_then_else(
+                    ic < live, T.min(BT, T.cast(cu_seqlens[seq[0] + 1], "int32") - bos), 0
+                )
 
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
@@ -231,8 +251,9 @@ def chunk_prepare_program(
                         aqk[0, bos + i, ihv, j] = T.cast(
                             T.if_then_else(i >= j, aq[i, j], 0.0), dtype
                         )
+                last = T.max(rows - 1, 0)
                 for j in T.Parallel(K):
-                    dec[ic, ihv, j] = T.exp2(gc_s[rows - 1, j])
+                    dec[ic, ihv, j] = T.exp2(gc_s[last, j])
                 T.sync_threads()
                 for i, j in T.Parallel(BT, V):
                     b_s[i, j] = T.cast(
@@ -260,12 +281,13 @@ def chunk_scan_program(
     chunk_size: int,
     dtype: str,
     total_tokens: int,
-    num_chunks: int,
     num_seqs: int,
     threads: int = 256,
 ):
     """Build the sequential chunk scan for one static packed shape."""
     BT = chunk_size
+    tiling = GroupTiling(num_seqs, chunk_size)
+    num_chunks = tiling.tile_upper_bound(total_tokens)
     HV, K, V = value_heads, dim_k, dim_v
     accum = "float32"
 
@@ -284,16 +306,19 @@ def chunk_scan_program(
             aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
             dec: T.Tensor([num_chunks, HV, K], accum),
             h0: T.Tensor([num_seqs, HV, K, V], accum),
-            seq_bos: T.Tensor([num_seqs], "int32"),
-            seq_len: T.Tensor([num_seqs], "int32"),
-            seq_chunk0: T.Tensor([num_seqs], "int32"),
+            cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             o: T.Tensor([1, total_tokens, HV, V], dtype),
             ht: T.Tensor([num_seqs, HV, K, V], accum),
         ):
             with T.Kernel(num_seqs, HV, threads=threads) as (iseq, ihv):
-                bos = seq_bos[iseq]
-                length = seq_len[iseq]
-                chunk0 = seq_chunk0[iseq]
+                tile_cum = T.alloc_shared([num_seqs + 1], "int32")
+
+                # The scan walks one sequence, so it needs where that sequence's
+                # chunks start on the axis the chunk-local half wrote dec along.
+                tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                bos = T.cast(cu_seqlens[iseq], "int32")
+                length = T.cast(cu_seqlens[iseq + 1], "int32") - bos
+                chunk0 = tile_cum[iseq]
 
                 state_s = T.alloc_shared([K, V], dtype)
                 w_s = T.alloc_shared([BT, K], dtype)

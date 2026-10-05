@@ -187,10 +187,16 @@ class KimiDeltaAttentionCall(CallSpec):
         ]
         if unsupported:
             return "does not support " + ", ".join(unsupported)
+        heads = head_count_refusal(self.heads, self.value_heads)
+        if heads is not None:
+            return heads
         if self.value_heads % self.heads != 0:
             return f"requires HV a multiple of H, got {self.value_heads} and {self.heads}"
-        if self.dim_k not in (64, 128) or self.dim_v not in (64, 128):
-            return "does not support K or V other than 64 or 128"
+        # The chunk-local half stages the value tile in the buffers it sized for a
+        # key tile, so the two widths have to agree, as they do in every model that
+        # runs this recurrence.
+        if self.dim_k != self.dim_v or self.dim_k not in (64, 128):
+            return f"serves K equal to V at 64 or 128, got {self.dim_k} and {self.dim_v}"
         return None
 
 

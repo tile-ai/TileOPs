@@ -13,9 +13,22 @@ from tileops.kernels.linear_attention.kda.chunk_programs import (
     chunk_prepare_program,
     chunk_scan_program,
 )
-from tileops.kernels.linear_attention.kda.packing import chunk_metadata, sequence_lengths
 
 __all__ = ["KimiDeltaAttentionChunkPrefillFwdKernel"]
+
+
+def packed_offsets(
+    batch: int, seq_len: int, cu_seqlens: Optional[torch.Tensor], device: torch.device
+) -> torch.Tensor:
+    """The offsets both programs read their sequence boundaries from.
+
+    They take one packed token axis, so an equal-length call states the same
+    boundaries its shapes already state. Writing them out keeps one path through
+    the kernels rather than a second schedule for the equal-length case.
+    """
+    if cu_seqlens is not None:
+        return cu_seqlens
+    return torch.arange(0, (batch + 1) * seq_len, seq_len, dtype=torch.int64, device=device)
 
 CHUNK_SIZE = 64
 
@@ -114,18 +127,14 @@ class KimiDeltaAttentionChunkPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the chunk-local half, then the scan; see the interface for the tensors."""
-        del A_log, dt_bias
+        del A_log, dt_bias, cu_seqlens_cpu
         self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
-        lengths = sequence_lengths(batch, seq_len, cu_seqlens, cu_seqlens_cpu)
         total = batch * seq_len
-        num_seqs = len(lengths)
-        num_chunks = sum((length + CHUNK_SIZE - 1) // CHUNK_SIZE for length in lengths)
-        chunk_bos, chunk_len, seq_bos, seq_lens, seq_chunk0 = chunk_metadata(
-            lengths, CHUNK_SIZE, q.device.index
-        )
+        offsets = packed_offsets(batch, seq_len, cu_seqlens, q.device)
+        num_seqs = offsets.numel() - 1
 
         flat = lambda tensor, width: tensor.reshape(1, total, tensor.shape[2], width)  # noqa: E731
         qf, kf = flat(q, K), flat(k, K)
@@ -139,9 +148,9 @@ class KimiDeltaAttentionChunkPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
 
         name = self.dtype_to_str(self.dtype)
         prepare = chunk_prepare_program(
-            H, HV, K, V, CHUNK_SIZE, name, self.scale, self.l2norm, total, num_chunks
+            H, HV, K, V, CHUNK_SIZE, name, self.scale, self.l2norm, total, num_seqs
         )
-        scan = chunk_scan_program(HV, K, V, CHUNK_SIZE, name, total, num_chunks, num_seqs)
-        w, u, qg, kg, aqk, dec = prepare(qf, kf, vf, gf, bf, chunk_bos, chunk_len)
-        o, final_state = scan(w, u, qg, kg, aqk, dec, state, seq_bos, seq_lens, seq_chunk0)
+        scan = chunk_scan_program(HV, K, V, CHUNK_SIZE, name, total, num_seqs)
+        w, u, qg, kg, aqk, dec = prepare(qf, kf, vf, gf, bf, offsets)
+        o, final_state = scan(w, u, qg, kg, aqk, dec, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state

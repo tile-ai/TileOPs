@@ -91,6 +91,58 @@ def test_kimi_delta_attention_prefill_packs_ragged_sequences() -> None:
 
 
 @pytest.mark.sm90
+def test_kimi_delta_attention_prefill_packs_a_batch_holding_an_empty_sequence() -> None:
+    """A sequence with no token owns no chunk, and the ones around it keep their own.
+
+    Such a sequence applies no update, so it ends on the state it started from.
+    FLA leaves that slot at zero instead, so the reference is only asked about the
+    sequences that carry a token.
+    """
+    torch.manual_seed(42)
+    lengths = [100, 0, 70, 130]
+    q, k, v, g, beta, state, cu_seqlens = _inputs(
+        1, 300, 4, 4, 128, torch.bfloat16, lengths=lengths
+    )
+    op = KimiDeltaAttentionFwdOp(use_qk_l2norm_in_kernel=True)
+    got_o, got_state = op(q, k, v, g, beta, state, cu_seqlens, cu_seqlens.cpu())
+    want_o, want_state = _reference(q, k, v, g, beta, state, cu_seqlens)
+
+    atol, rtol = TOLERANCE[torch.bfloat16]
+    torch.testing.assert_close(got_o, want_o, atol=atol, rtol=rtol)
+    for seq, length in enumerate(lengths):
+        if length:
+            torch.testing.assert_close(got_state[seq], want_state[seq], atol=atol, rtol=rtol)
+        else:
+            torch.testing.assert_close(got_state[seq], state[seq], atol=0.0, rtol=0.0)
+
+
+@pytest.mark.sm90
+def test_kimi_delta_attention_prefill_packs_sequences_that_fill_their_chunks() -> None:
+    """The launch bound is loosest when every sequence ends on a chunk boundary.
+
+    Four 64-token sequences need four chunks and the bound gives eight, so half the
+    launch is the chunks past the last real one. They must leave the output alone.
+    """
+    torch.manual_seed(42)
+    _check(torch.bfloat16, *_inputs(1, 256, 4, 4, 128, torch.bfloat16, lengths=[64] * 4))
+
+
+@pytest.mark.sm90
+def test_kimi_delta_attention_prefill_reads_offsets_a_freed_buffer_left_behind() -> None:
+    """Boundaries come from the offsets this call was handed, not the last ones.
+
+    The caching allocator hands a freed block to the next tensor of the same size,
+    so a second call can carry offsets at the address and version the first one had.
+    """
+    torch.manual_seed(42)
+    first = _inputs(1, 300, 4, 4, 128, torch.bfloat16, lengths=[100, 100, 100])
+    _check(torch.bfloat16, *first)
+    del first
+    torch.cuda.empty_cache()
+    _check(torch.bfloat16, *_inputs(1, 300, 4, 4, 128, torch.bfloat16, lengths=[50, 120, 130]))
+
+
+@pytest.mark.sm90
 def test_kimi_delta_attention_prefill_serves_more_value_heads_than_query_heads() -> None:
     torch.manual_seed(42)
     _check(torch.bfloat16, *_inputs(1, 256, 2, 4, 128, torch.bfloat16))

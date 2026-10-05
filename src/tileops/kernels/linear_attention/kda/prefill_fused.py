@@ -10,8 +10,7 @@ from tileops.kernels.linear_attention.call_spec import (
     KimiDeltaAttentionFwdInterface,
 )
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
-from tileops.kernels.linear_attention.kda.packing import chunk_metadata, sequence_lengths
-from tileops.kernels.linear_attention.kda.prefill import CHUNK_SIZE
+from tileops.kernels.linear_attention.kda.prefill import CHUNK_SIZE, packed_offsets
 
 __all__ = ["KimiDeltaAttentionFusedPrefillFwdKernel"]
 
@@ -112,15 +111,14 @@ class KimiDeltaAttentionFusedPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
-        del A_log, dt_bias
+        del A_log, dt_bias, cu_seqlens_cpu
         self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
-        lengths = sequence_lengths(batch, seq_len, cu_seqlens, cu_seqlens_cpu)
         total = batch * seq_len
-        num_seqs = len(lengths)
-        _, _, seq_bos, seq_lens, _ = chunk_metadata(lengths, CHUNK_SIZE, q.device.index)
+        offsets = packed_offsets(batch, seq_len, cu_seqlens, q.device)
+        num_seqs = offsets.numel() - 1
 
         qf = q.reshape(1, total, H, K)
         kf = k.reshape(1, total, H, K)
@@ -144,5 +142,5 @@ class KimiDeltaAttentionFusedPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
             total,
             num_seqs,
         )
-        o, final_state = program(qf, kf, vf, gf, bf, state, seq_bos, seq_lens)
+        o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state

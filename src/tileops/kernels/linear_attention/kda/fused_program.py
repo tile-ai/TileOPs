@@ -61,15 +61,14 @@ def fused_chunk_program(
             g: T.Tensor([1, total_tokens, HV, K], dtype),
             beta: T.Tensor([1, total_tokens, HV], dtype),
             h0: T.Tensor([num_seqs, HV, K, V], accum),
-            seq_bos: T.Tensor([num_seqs], "int32"),
-            seq_len: T.Tensor([num_seqs], "int32"),
+            cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             o: T.Tensor([1, total_tokens, HV, V], dtype),
             ht: T.Tensor([num_seqs, HV, K, V], accum),
         ):
             with T.Kernel(num_seqs, HV, threads=threads) as (iseq, ihv):
                 ih = ihv // group
-                origin = seq_bos[iseq]
-                length = seq_len[iseq]
+                origin = T.cast(cu_seqlens[iseq], "int32")
+                length = T.cast(cu_seqlens[iseq + 1], "int32") - origin
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
