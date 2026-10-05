@@ -445,9 +445,9 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
     op = ChainSpeculativeSamplingFwdOp()
     # The dedicated chain test exercises the shared distribution probe once.
     # These cases cover launch boundaries, exact acceptance and residual-token support.
-    compare_outputs(
-        _run(op, *inputs), workload.ref_program(*inputs), workload.verification(*inputs)
-    )
+    out, ref = _run(op, *inputs), workload.ref_program(*inputs)
+    compare_outputs(out, ref, workload.verification(*inputs))
+    assert torch.equal(out[1], ref[1])
 
 
 _SMALL_CALLS = {

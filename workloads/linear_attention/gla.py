@@ -355,6 +355,11 @@ def gla_inference_ref(
     """FLA inference oracle shared by dense fixtures and packed manifest rows."""
     from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
+    # FLA caches derived sequence metadata by tensor identity. Give it a per-call
+    # snapshot so in-place changes to caller-owned offsets cannot reuse stale indices.
+    cu_seqlens = None if cu_seqlens is None else cu_seqlens.clone()
+    cu_seqlens_cpu = None if cu_seqlens_cpu is None else cu_seqlens_cpu.clone()
+
     args = dict(
         scale=q.shape[-1] ** -0.5 if scale is None else scale,
         initial_state=initial_state,

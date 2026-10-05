@@ -103,9 +103,8 @@ def prefill_chunk_local_cumsum_bthd_tl(
                         )
                         if gate_in_kernel:
                             biased = raw + shift_s[hid]
-                            softplus = T.log(T.float32(1.0) + T.exp(biased))
                             chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
-                                biased > softplus_threshold, biased, softplus
+                                biased > softplus_threshold, biased, T.log1p(T.exp(biased))
                             )
                         else:
                             chunk_s[i, hid] = raw
@@ -1135,7 +1134,6 @@ def _build_prepare_h_kernel(
             batch_idx = T.alloc_var("int32")
             seq_start_idx = T.alloc_var("int32")
             seq_end_idx = T.alloc_var("int32")
-            _seq_split_idx = T.alloc_var("int32")
 
             batch_idx = 0 if is_varlen else bb
             seq_start_idx = cu_seqlens[bb] if is_varlen else 0

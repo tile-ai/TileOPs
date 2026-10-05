@@ -32,7 +32,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
     over an FP8 cache.
 
     By default the op does not check tensor contents. An FP8 cache scale that is not
-    finite and positive makes the output non-finite, and with fused RoPE a request whose
+    finite and positive can corrupt the output, and with fused RoPE a request whose
     cached plus new tokens exceed ``max_position`` reads the RoPE table out of bounds. The
     caller guarantees both, or passes ``validate_inputs=True``, which checks them on every
     call at the cost of device synchronizations and cannot run inside CUDA Graph capture.

@@ -67,7 +67,11 @@ class MLADecodeWorkload(WorkloadBase):
         - k_pe (Tensor): [batch, seqlen_kv, heads_kv, dim_pe]
         Outputs:
         - output (Tensor): [batch, heads, dim]
+
+        Computed in float32 and rounded once to the input dtype.
         """
+        dtype = q.dtype
+        q, q_pe, kv, k_pe = (t.float() for t in (q, q_pe, kv, k_pe))
         dim = q.shape[-1]
         dim_pe = q_pe.shape[-1]
         num_head_groups = q.shape[1] // kv.shape[2]
@@ -101,13 +105,15 @@ class MLADecodeWorkload(WorkloadBase):
             attention, KV, "b g h s, b h s d -> b g h d"
         )  # [batch_size, num_head_groups, groups, dim]
         out = rearrange(out, "b g h d -> b (h g) d")  # [batch_size, heads, dim]
-        return out
+        return out.to(dtype)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact, zeroed_input
 
-        # Split-K tail tiles change the accumulation order.
-        tol = 2e-3 if self.seq_len_kv % 64 else 1e-3
+        # The kernel rounds the probabilities to the input dtype before the PV GEMM,
+        # one relative eps on outputs below 1; split-K tail tiles add a second.
+        eps = torch.finfo(self.dtype).eps
+        tol = 2 * eps if self.seq_len_kv % 64 else eps
         # With zero or one key, attention does not depend on the query.
         controls = (zeroed_input(0, "first-input-zeroed"),) if self.seq_len_kv > 1 else ()
         return Exact(controls=controls, atol=tol, rtol=tol)

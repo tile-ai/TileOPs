@@ -3,8 +3,7 @@
 The references of the random ops draw their uniforms from Philox4x32-10 keyed by ``seed``
 and counted by ``(draw, row, offset)``, written in integer tensor arithmetic so that the
 draws are the same on every device, meta included. A kernel draws from its own Philox
-stream for categorical draws, so sampled tokens are checked by distribution.
-Speculative acceptance uses the specified uniform stream and matches exactly.
+stream, so its samples are compared with these by distribution, never one by one.
 """
 
 import torch
@@ -303,8 +302,14 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
             assert torch.equal(tokens == -1, positions > accepted[:, None])
             prefix = positions[:, :num_draft] < accepted[:, None]
             assert torch.equal(tokens[:, :num_draft][prefix], draft_ids[prefix])
-            # Acceptance uses a specified uniform stream; only the residual token may differ.
-            assert torch.equal(accepted, expected[1])
+            # Each implementation draws its own stream, so two of one rule agree on how the
+            # accepted lengths are distributed, never on the batch they drew: each length's
+            # count stays within 5 sigma of two independent batches, plus 5.
+            got_counts = torch.bincount(accepted.long(), minlength=num_draft + 1).double()
+            want = torch.bincount(expected[1].long(), minlength=num_draft + 1).double()
+            share = want / batch
+            bound = 5 * (2 * batch * share * (1 - share)).sqrt() + 5
+            assert ((got_counts - want).abs() <= bound).all(), (got_counts, want, bound)
             rows = torch.arange(batch, device=tokens.device)
             padded = torch.cat([draft, torch.zeros_like(draft[:, :1])], 1)
             weights = (target[rows, accepted.long()] - padded[rows, accepted.long()]).clamp_min(0)
@@ -343,7 +348,7 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
             )
 
         return Custom(
-            validate, "exact acceptance prefix and residual-token distribution", probe=distribution
+            validate, "accepted-length and residual-token distribution", probe=distribution
         )
 
 

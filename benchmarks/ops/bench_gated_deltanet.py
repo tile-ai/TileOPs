@@ -16,19 +16,16 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GatedDeltaNetFwdOp(**workload.arguments())
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
-    offsets = inputs[6]
-    if offsets is None:
-        offsets = (
-            torch.arange(inputs[0].shape[0] + 1, dtype=torch.int64, device=inputs[0].device)
-            * inputs[0].shape[1]
-        )
 
     def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+        offsets = cu
+        if offsets is None:
+            offsets = torch.arange(q.shape[0] + 1, dtype=torch.int64, device=q.device) * q.shape[1]
         if call.ix["use_gate_in_kernel"]:
-            g = (-torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)).to(g.dtype)
+            g = -torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)
         if call.ix["use_beta_sigmoid_in_kernel"]:
             factor = 2.0 if call.ix["allow_neg_eigval"] else 1.0
-            beta = (torch.sigmoid(beta.float()) * factor).to(beta.dtype)
+            beta = torch.sigmoid(beta.float()) * factor
         if state is not None and not call.ix["state_v_first"]:
             state = state.transpose(-1, -2).contiguous()
         dim = q.shape[-1]
@@ -105,9 +102,17 @@ def test_gated_deltanet_fwd_bench(call) -> None:
         return out[..., :dim].to(q.dtype), final[..., :dim, :dim].contiguous()
 
     functors = {"tileops": op, "fla": workload.ref_program, FLASHINFER_TAG: flashinfer_fn}
-    if inputs[0].shape[1] == 1 and inputs[6] is None and not call.ix["allow_neg_eigval"]:
-        functors["flashinfer-decode"] = decode_fn
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-    )
+    noncomparable = None
+    if inputs[0].shape[1] == 1:
+        # A decode step is checked against FLA's FP32 recurrence; both FlashInfer
+        # paths carry BF16- or FP16-grade error into the FP32 state.
+        noncomparable = {
+            FLASHINFER_TAG: "chunk prefill kernel multiplies the FP32 state at input precision"
+        }
+        if inputs[6] is None and not call.ix["allow_neg_eigval"]:
+            functors["flashinfer-decode"] = decode_fn
+            noncomparable["flashinfer-decode"] = (
+                "takes Q/K/V and the raw gate and step-size logits as BF16; converting "
+                "the workload's log decay and step size rounds both"
+            )
+    ManifestBenchmark(op, workload).compare(functors, *inputs, noncomparable=noncomparable)

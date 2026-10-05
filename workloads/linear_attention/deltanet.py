@@ -447,6 +447,10 @@ def deltanet_inference_ref(
     """FLA inference oracle shared by dense fixtures and packed manifest rows."""
     from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 
+    # FLA caches derived sequence metadata by tensor identity. Give it a per-call
+    # snapshot so in-place changes to caller-owned offsets cannot reuse stale indices.
+    cu_seqlens = None if cu_seqlens is None else cu_seqlens.clone()
+
     reference = fused_recurrent_delta_rule if q.shape[1] == 1 else chunk_delta_rule
     return reference(
         q,

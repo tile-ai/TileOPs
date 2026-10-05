@@ -7,7 +7,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
-from workloads.device import run_device
+from workloads.device import run_device, run_device_is_cuda
 from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index
 
 
@@ -84,7 +84,19 @@ def test_mean_pooling_op(
     if seq_lens is not None:
         # Output rows follow the caller's chunk order, not the canonical one.
         inputs[2] = inputs[2].flip(0).contiguous()
-    test.check(op, *inputs)
+    if seq_lens is not None and run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            op(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = op(*inputs)
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: output)
+    else:
+        test.check(op, *inputs)
 
 
 @pytest.mark.smoke

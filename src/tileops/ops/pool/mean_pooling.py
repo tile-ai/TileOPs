@@ -33,10 +33,10 @@ class MeanPoolingFwdOp(Op):
 
     By default the op does not check the contents of ``offsets`` and ``indices``. The
     kernel indexes ``offsets`` by ``indices`` and ``x`` by ``offsets`` without bounds
-    checks, so a map that does not partition the sequence axis reads device memory out of
-    bounds and returns undefined values. The caller guarantees a consistent map, or passes
-    ``validate_inputs=True``, which checks it on every call at the cost of device
-    synchronizations and cannot run inside CUDA Graph capture.
+    checks, so an inconsistent map can cause out-of-bounds accesses or incorrect results.
+    The caller guarantees a consistent map, or passes ``validate_inputs=True``, which
+    checks it on every call at the cost of device synchronizations and cannot run inside
+    CUDA Graph capture.
 
     Example:
         ```python linenums="1"

@@ -93,7 +93,14 @@ def test_gated_deltanet_prefill_packs_ragged_sequences_with_grouped_value_heads(
         value_heads=8,
         sequence_lengths=(1, 63, 100, 192),
     )
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
+    inputs = list(test.gen_inputs())
+    op = GatedDeltaNetFwdOp()
+    test.check(op, *inputs)
+    # Reuse the buffers with a different split; the reference must read the call's
+    # offsets too, rather than reconstructing them from the fixture's lengths.
+    inputs[6][2] = 66
+    inputs[7][2] = 66
+    test.check(op, *inputs)
 
 
 @pytest.mark.sm90

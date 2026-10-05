@@ -143,11 +143,6 @@ class INT8QuantPerBlockWorkload(_QuantizeWorkload):
     def ref_program(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int8_quant_per_block(x)
 
-    def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
-
 
 class FP8QuantPerBlockWorkload(_QuantizeWorkload):
     _ROWS = "N"

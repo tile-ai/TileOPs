@@ -449,6 +449,10 @@ def verify(
         return result
     finally:
         restore()
+        # A caught negative-control failure keeps this frame in a reference cycle
+        # until the next gc pass; drop the snapshots now so they never pile up.
+        pristine.clear()
+        live.clear()
 
 
 def assert_rounded(
