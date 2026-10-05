@@ -184,16 +184,27 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
 
     @classmethod
     def applies(cls, call: MGroupedGemmCall) -> bool:
+        return cls.refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: MGroupedGemmCall) -> Optional[str]:
+        """The layouts, dtypes and extents the template instantiates."""
+        if (call.kind, call.packing, call.metadata_kind) not in cls._TYPES:
+            return f"does not serve the {call.kind} {call.packing} {call.metadata_kind} layout"
+        if call.ab_dtype not in (torch.bfloat16, torch.float16):
+            return f"serves bfloat16 and float16 operands, got {call.ab_dtype}"
+        if call.cd_dtype not in (call.ab_dtype, torch.float32):
+            return f"writes the operand dtype or float32, got {call.cd_dtype}"
+        if call.packing == "aligned" and call.alignment not in cls._ALIGNED_TILE_HEIGHTS:
+            return f"aligns groups to a tile height in {cls._ALIGNED_TILE_HEIGHTS}, got {call.alignment}"
+        if call.activation is not None and call.activation not in ACTIVATIONS:
+            return f"fuses only {sorted(ACTIVATIONS)}, got {call.activation}"
+        if call.k % 8:
+            return f"steps K by 8, got K = {call.k}"
         n_step = 8 if call.activation is None else 16
-        return (
-            (call.kind, call.packing, call.metadata_kind) in cls._TYPES
-            and call.ab_dtype in (torch.bfloat16, torch.float16)
-            and call.cd_dtype in (call.ab_dtype, torch.float32)
-            and (call.packing != "aligned" or call.alignment in cls._ALIGNED_TILE_HEIGHTS)
-            and (call.activation is None or call.activation in ACTIVATIONS)
-            and call.k % 8 == 0
-            and call.n % n_step == 0
-        )
+        if call.n % n_step:
+            return f"needs N a multiple of {n_step} here, got N = {call.n}"
+        return None
 
     def __init__(self, call: MGroupedGemmCall) -> None:
         device_index = call.device.index if call.device is not None else None

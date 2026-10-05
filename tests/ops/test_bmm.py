@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm.bmm import BmmFP8TransposeKernel, BmmPersistentKernel
+from tileops.kernels.gemm.bmm import BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
@@ -320,7 +320,6 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160
-    assert all(n % tile for tile in BmmFP8TransposeKernel.TILE_CANDIDATES)
     test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()

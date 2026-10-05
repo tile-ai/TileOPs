@@ -1050,7 +1050,7 @@ def test_compiled_non_contiguous_integer_fallback(op_name):
     x = torch.arange(1, n + 1, device=run_device(), dtype=torch.int32).reshape(8, 8).t()
     assert not x.is_contiguous()
 
-    eager = op._eager_forward(x)
+    eager = op(x)
     assert eager.is_contiguous(), "the fallback kept the input's layout"
     compiled = torch.compile(op, fullgraph=True)(x)
     torch.testing.assert_close(compiled, eager)
@@ -1074,7 +1074,7 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
     assert not x.is_contiguous()
 
     compiled = torch.compile(op, fullgraph=True)(x)
-    eager = op._eager_forward(x)
+    eager = op(x)
     assert compiled.dtype == eager.dtype
     assert torch.equal(compiled, eager)
 

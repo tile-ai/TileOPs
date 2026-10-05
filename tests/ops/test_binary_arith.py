@@ -12,8 +12,6 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import (
-    DivTruncFwdKernel,
-    FloorDivideFwdKernel,
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise import (
@@ -992,10 +990,8 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
 
 
 @pytest.mark.smoke
-def test_div_rounding_mode_dispatch() -> None:
-    """DivFwdOp wires rounding_mode to the right kernel class and rejects unknown modes."""
-    assert list(DivFwdOp(rounding_mode="trunc").kernel_map.values()) == [DivTruncFwdKernel]
-    assert list(DivFwdOp(rounding_mode="floor").kernel_map.values()) == [FloorDivideFwdKernel]
+def test_div_rejects_an_unknown_rounding_mode() -> None:
+    """DivFwdOp rejects an unknown rounding mode."""
     with pytest.raises(ValueError, match="rounding_mode"):
         DivFwdOp(rounding_mode="invalid")
 

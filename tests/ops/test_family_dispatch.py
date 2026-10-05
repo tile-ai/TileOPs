@@ -81,17 +81,28 @@ def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64)
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("call", "interfaces"),
+    ("call", "interfaces", "reason"),
     [
-        pytest.param(_chunk_call(128, 128, chunk_size=48), ("gla_fwd", "gla_bwd"), id="chunk-48"),
-        pytest.param(_chunk_call(128, 16), ("gla_fwd", "gla_bwd"), id="value-below-a-tile"),
-        pytest.param(_chunk_call(32, 64), ("gla_bwd",), id="bwd-narrow-key-half-value"),
+        pytest.param(
+            _chunk_call(128, 128, chunk_size=48),
+            ("gla_fwd", "gla_bwd"),
+            "chunk_size=48 must be",
+            id="chunk-48",
+        ),
+        pytest.param(
+            _chunk_call(128, 16), ("gla_fwd", "gla_bwd"), "dim_v=16", id="value-below-a-tile"
+        ),
+        pytest.param(
+            _chunk_call(32, 64), ("gla_bwd",), "dim_k=32, dim_v=64", id="bwd-narrow-key-half-value"
+        ),
     ],
 )
-def test_gla_chunked_refuses_what_no_kernel_serves(call: GLAChunkCall, interfaces: tuple) -> None:
+def test_gla_chunked_refuses_what_no_kernel_serves(
+    call: GLAChunkCall, interfaces: tuple, reason: str
+) -> None:
     ops = {"gla_fwd": GLAChunkFwdOp, "gla_bwd": GLAChunkBwdOp}
     for interface in interfaces:
-        with pytest.raises(ValueError, match="no implementation serves this call"):
+        with pytest.raises(ValueError, match=reason):
             ops[interface](chunk_size=call.chunk_size).select_implementation(interface, call)
 
 
@@ -291,18 +302,40 @@ def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
 
 _GQA_DENSE_GAPS = [
     # (dtype, batch, seq_len_q, heads, heads_kv, dim, seq_len_kv, window, rope, softcap)
-    (("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0), "fp8-window"),
-    (("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0), "fp8-rope"),
-    (("fp16", 1, 1, 32, 4, 144, 2048, (-1, -1), False, 0.0), "decode-dim-144"),
-    (("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0), "window-unequal-lengths"),
-    (("fp16", 1, 4, 32, 4, 72, 2048, (-1, -1), False, 0.0), "prefill-dim-72"),
+    (
+        ("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        "fp8-window",
+        r"does not serve sliding windows",
+    ),
+    (
+        ("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0),
+        "fp8-rope",
+        r"does not serve RoPE with one query position",
+    ),
+    (
+        ("fp16", 1, 1, 32, 4, 144, 2048, (-1, -1), False, 0.0),
+        "decode-dim-144",
+        r"multiple of 16 in \[16, 128\]",
+    ),
+    (
+        ("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        "window-unequal-lengths",
+        r"requires equal Q and KV lengths",
+    ),
+    (
+        ("fp16", 1, 4, 32, 4, 72, 2048, (-1, -1), False, 0.0),
+        "prefill-dim-72",
+        r"requires head dimension a multiple of 16",
+    ),
 ]
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("row", [pytest.param(row, id=name) for row, name in _GQA_DENSE_GAPS])
-def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple) -> None:
+@pytest.mark.parametrize(
+    ("row", "reason"), [pytest.param(row, reason, id=name) for row, name, reason in _GQA_DENSE_GAPS]
+)
+def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> None:
     from tileops.kernels.attention.call_spec import AttentionCall
     from tileops.ops.attention.gqa.dense import GQADenseFwdOp
 
@@ -333,5 +366,5 @@ def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple) -> None:
         fuse_rope=rope,
     )
 
-    with pytest.raises(ValueError, match="no implementation serves"):
+    with pytest.raises(ValueError, match=reason):
         op.select_implementation("gqa_dense", call)

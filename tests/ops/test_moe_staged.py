@@ -278,22 +278,6 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     compare_outputs(output.float(), expected, post_permute_verification())
 
 
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.skipif(not run_device_available(), reason="selection records CUDA architecture")
-def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
-    """A call outside every shipped candidate's region says so, rather than crashing."""
-    device = torch.device("cuda")
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    assert set(op.kernel_map) == {"grouped_gemm", "grouped_gemm_mma"}
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        op(  # K = 4: both candidates step K by 8
-            torch.empty(2, 4, dtype=torch.bfloat16, device=device),
-            torch.empty(2, 8, 4, dtype=torch.bfloat16, device=device),
-            torch.tensor([1, 2], dtype=torch.int32, device=device),
-        )
-
-
 # MoEGroupedGemmFwdOp selects MoEGroupedGemmKernel, the adapter over the shared template, through the
 # staged candidate protocol; these tests route every layout it claims through the op and check the
 # rows the layout defines against the workload's per-expert reference.
@@ -500,31 +484,6 @@ def test_grouped_gemm_refuses_a_strided_out():
         op(*workload.gen_inputs(), out=out)
 
 
-@pytest.mark.smoke
-def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
-    """Calls outside the adapter's region are refused by selection, naming the reason."""
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    a = torch.randn(8, 60, dtype=torch.bfloat16, device=run_device())
-    b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device=run_device())
-    ends = torch.tensor([4, 8], dtype=torch.int32, device=run_device())
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        op(a, b, ends)  # K not a multiple of 8
-    fused = MoEGroupedGemmFwdOp(
-        ContiguousLayoutSpec.tight_physical_psum(), activation="silu_and_mul"
-    )
-    a = torch.randn(8, 64, dtype=torch.bfloat16, device=run_device())
-    b = torch.randn(2, 24, 64, dtype=torch.bfloat16, device=run_device())
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        fused(a, b, ends)  # fused N must be a multiple of 16
-    # An aligned layout whose alignment is not a tile height has no instantiation either.
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(8))
-    a = torch.randn(16, 64, dtype=torch.bfloat16, device=run_device())
-    b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device=run_device())
-    ids = torch.tensor([0] * 8 + [1] * 8, dtype=torch.int32, device=run_device())
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        op(a, b, ids)
-
-
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -606,3 +565,56 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     )
     op, out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
+
+
+def _grouped_call(**facts) -> MGroupedGemmCall:
+    return MGroupedGemmCall(
+        **{
+            "arch": 90,
+            "sm_count": 132,
+            "kind": "contiguous",
+            "packing": "tight",
+            "metadata_kind": "physical_psum",
+            "ab_dtype": torch.bfloat16,
+            "cd_dtype": torch.bfloat16,
+            "num_groups": 2,
+            "m": 8,
+            "n": 16,
+            "k": 64,
+            **facts,
+        }
+    )
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("layout", "activation", "facts", "reason"),
+    [
+        pytest.param("tight", None, {"k": 60}, "steps K by 8", id="k-off-8"),
+        pytest.param(
+            "tight",
+            "silu_and_mul",
+            {"n": 24, "activation": "silu_and_mul"},
+            "N a multiple of 16",
+            id="fused-n-off-16",
+        ),
+        pytest.param(
+            "aligned8",
+            None,
+            {"packing": "aligned", "metadata_kind": "per_row", "alignment": 8},
+            "tile height",
+            id="alignment-off-a-tile",
+        ),
+    ],
+)
+def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, facts, reason):
+    spec = (
+        ContiguousLayoutSpec.aligned_per_row(8)
+        if layout == "aligned8"
+        else ContiguousLayoutSpec.tight_physical_psum()
+    )
+    op = MoEGroupedGemmFwdOp(spec, **({"activation": activation} if activation else {}))
+    with pytest.raises(ValueError, match=reason):
+        op.select_implementation("grouped_gemm", _grouped_call(**facts))

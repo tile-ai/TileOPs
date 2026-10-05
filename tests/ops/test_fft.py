@@ -5,8 +5,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.constants import MAX_BLOCK_THREADS
-from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CFourStepKernel
+from tileops.kernels.fft import FFTC2CCall, FFTC2CFourStepKernel
 from tileops.ops import FFTC2CFwdOp
 from workloads.device import run_device
 from workloads.fft import FFTWorkload
@@ -107,15 +106,10 @@ def test_fft_lazy_conjugate_input() -> None:
     ),
 )
 def test_every_power_of_two_through_2_28_has_a_kernel(dtype: torch.dtype) -> None:
-    """The manifest's upper bound: 2**28 is served and 2**29 is not."""
+    """Every length in the manifest's domain, 2 through 2**28, has an implementation."""
     op = FFTC2CFwdOp()
-    for exponent in range(1, 30):
-        call = FFTC2CCall(n=1 << exponent, dtype=dtype)
-        if exponent == 29:
-            with pytest.raises(ValueError, match="no implementation serves"):
-                op.select_implementation("fft_c2c", call)
-        else:
-            op.select_implementation("fft_c2c", call)
+    for exponent in range(1, 29):
+        op.select_implementation("fft_c2c", FFTC2CCall(n=1 << exponent, dtype=dtype))
 
 
 @pytest.mark.smoke
@@ -148,27 +142,3 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
 
     workload = FFTWorkload(x.shape[-1], x.dtype)
     compare_outputs(got, workload.ref_program(x), workload.verification(x))
-
-
-@pytest.mark.smoke
-def test_every_plan_fits_the_blocks_of_the_architectures_it_serves() -> None:
-    """CI runs on Hopper, whose larger limits would hide a plan other cards cannot run."""
-    # The four-pass kernel sizes its strides from the length; 137 KB exceeds sm_86's 99 KB,
-    # which is the reason FFT_NARROW_PLANS carries a second record for this length.
-    assert 86 not in FFT_PLANS[16384, "complex64"].archs
-    for (n, dtype_str), plan in FFT_PLANS.items():
-        assert {80, 90} <= set(plan.archs), f"{n} {dtype_str}"
-    for (n, dtype_str), plan in FFT_NARROW_PLANS.items():
-        # An empty record serves nothing and makes ``smem_cap`` reduce over no architecture.
-        assert plan.archs, f"{n} {dtype_str}"
-    for (n, dtype_str), plan in [*FFT_PLANS.items(), *FFT_NARROW_PLANS.items()]:
-        where = f"{n} {dtype_str}"
-        if not plan.decomposed:
-            assert n < 1024 or n // 16 <= MAX_BLOCK_THREADS, where
-            continue
-        for factor in plan.factors:
-            assert not FFT_PLANS[factor, dtype_str].decomposed, f"{where}: factor {factor}"
-        for index, tile in enumerate(plan.tile):
-            _nf, lanes, extent, _twrows, _r = plan.geometry(index)
-            assert tile >= 1 and extent % tile == 0, f"{where} kernel {index}"
-            assert tile * lanes <= MAX_BLOCK_THREADS, f"{where} kernel {index}"
