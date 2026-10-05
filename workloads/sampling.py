@@ -305,6 +305,8 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
             assert torch.equal(tokens == -1, positions > accepted[:, None])
             prefix = positions[:, :num_draft] < accepted[:, None]
             assert torch.equal(tokens[:, :num_draft][prefix], draft_ids[prefix])
+            support = target[:, :num_draft].gather(-1, draft_ids.long()[..., None])[..., 0]
+            assert (support[prefix] > 0).all(), "accepted a draft the target cannot draw"
             # Each implementation draws its own stream, so two of one rule agree on how the
             # accepted lengths are distributed, never on the batch they drew: each length's
             # count stays within 5 sigma of two independent batches, plus 5.
@@ -398,7 +400,8 @@ def _assert_follows(samples, probs):
 def _assert_verifies_chains(tokens, num, draft_ids, draft, target, accepted):
     """The accepted prefix is the drafts and ``-1`` follows the drawn token; the drawn token
     follows the residual of its position, or target row ``N`` after a whole chain; the first
-    token follows target row 0; ``num`` follows the acceptance probabilities ``accepted``."""
+    token follows target row 0; an accepted draft follows ``min(draft, target)`` of its
+    position; ``num`` follows the acceptance probabilities ``accepted``."""
     assert tokens.dtype == num.dtype == torch.int32
     num_draft = draft.shape[0]
     position = torch.arange(num_draft + 1, device=tokens.device)[None]
@@ -409,5 +412,8 @@ def _assert_verifies_chains(tokens, num, draft_ids, draft, target, accepted):
         weights = target[stop] if stop == num_draft else (target[stop] - draft[stop]).clamp_min(0)
         _assert_follows(tokens[num == stop, stop], weights / weights.sum())
     _assert_follows(tokens[:, 0], target[0])
+    for step in range(num_draft):
+        kept = torch.minimum(draft[step], target[step])
+        _assert_follows(draft_ids[num > step, step], kept / kept.sum())
     a0, a1 = accepted
     _assert_follows(num, torch.stack([1 - a0, a0 * (1 - a1), a0 * a1]))

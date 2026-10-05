@@ -268,7 +268,13 @@ class CumulativeWorkload(WorkloadBase):
         return scan(x.float(), dim=self.dim).to(x.dtype)
 
     def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, product=self.op_kind == "cumprod")
+        x = inputs[0]
+        if self.op_kind == "cumprod":
+            return reduction_verification(x.dtype, product=True)
+        scale = (
+            x.shape[self.dim] ** 0.5 * x.float().nan_to_num(0, 0, 0).square().mean().sqrt().item()
+        )
+        return reduction_verification(x.dtype, scale=scale)
 
 
 class CumulativeCall(CallWorkload, CumulativeWorkload):
@@ -284,8 +290,14 @@ class CumulativeCall(CallWorkload, CumulativeWorkload):
     gen_inputs = CumulativeWorkload.gen_inputs
 
 
-def reduction_verification(dtype, *, product=False, scalar=False):
-    """Long reductions use the existing reduction bound, shared by both consumers."""
+def reduction_verification(dtype, *, product=False, scalar=False, scale=1.0):
+    """Long reductions use the existing reduction bound, shared by both consumers.
+
+    ``scale`` is the magnitude of the running sum: a partial sum near zero
+    cancels terms of that size and keeps their rounding error, so the absolute
+    tolerance is the relative one at that scale, and a normalized-error bound
+    rejects an output lost to that cancellation.
+    """
     from workloads.numerics import Exact
 
     # Scalar closed forms and integer/boolean outputs have no rounding budget.
@@ -296,6 +308,8 @@ def reduction_verification(dtype, *, product=False, scalar=False):
         if product
         else (1e-4 if dtype == torch.float32 else 1e-2)
     )
+    if scale > 1.0:
+        return Exact(atol=tol * scale, rtol=tol, normalized=1e-3)
     return Exact(atol=tol, rtol=tol)
 
 

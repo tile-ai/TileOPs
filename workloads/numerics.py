@@ -152,11 +152,13 @@ def zeroed_input(index: int, name: str) -> NegativeControl:
 class Exact:
     """Compare every returned output with an independent reference.
 
-    Explicit tolerances override dtype defaults."""
+    Explicit tolerances override dtype defaults. ``normalized`` adds a bound on each
+    output's normalized squared error, for an atol scaled past the output itself."""
 
     rtol: Optional[float] = None
     atol: Optional[float] = None
     controls: tuple[NegativeControl, ...] = ()
+    normalized: Optional[float] = None
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
@@ -335,6 +337,8 @@ def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckRe
                     equal_nan=True,
                     **evidence.tolerance(reference_tolerance(got.dtype)),
                 )
+                if getattr(evidence, "normalized", None) is not None:
+                    assert_normalized_error(got, target, evidence.normalized)
     # Metrics are diagnostics computed only after all comparisons succeed.
     maximum = 0.0
     checked = 0

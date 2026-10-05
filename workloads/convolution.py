@@ -87,7 +87,7 @@ class Conv1dWorkload(WorkloadBase):
 
     def verification(self, *inputs):
         return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
         )
 
 
@@ -173,7 +173,7 @@ class Conv2dWorkload(WorkloadBase):
 
     def verification(self, *inputs):
         return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
         )
 
 
@@ -269,12 +269,18 @@ class Conv3dWorkload(WorkloadBase):
 
     def verification(self, *inputs):
         return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:]
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
         )
 
 
-def convolution_verification(dtype, *, padding=0, kernel_shape=()):
-    """One numerical policy for the 1D, 2D and 3D convolution families."""
+def convolution_verification(dtype, *, padding=0, kernel_shape=(), inputs=None):
+    """One numerical policy for the 1D, 2D and 3D convolution families.
+
+    Given the call's ``(x, weight, ...)``, the absolute tolerance is the relative
+    one at the output's scale: an output near zero cancels terms of that scale
+    and keeps their accumulation error. A normalized-error bound then rejects an
+    output lost to that cancellation.
+    """
     from workloads.numerics import Exact, reference_tolerance
 
     tolerance = reference_tolerance(dtype)
@@ -284,4 +290,19 @@ def convolution_verification(dtype, *, padding=0, kernel_shape=()):
         tolerance = {"atol": 2e-3 if len(kernel_shape) == 1 else 2e-2, "rtol": 3e-3}
     if dtype == torch.float32:
         tolerance = {"atol": 6e-2, "rtol": 1.6e-2}
+    if inputs is not None:
+        x, weight = inputs[0], inputs[1]
+        scale = (
+            weight[0].numel() ** 0.5
+            * (
+                x.float().nan_to_num(0, 0, 0).square().mean()
+                * weight.float().nan_to_num(0, 0, 0).square().mean()
+            )
+            .sqrt()
+            .item()
+        )
+        tolerance = tolerance | {
+            "atol": max(tolerance["atol"], tolerance["rtol"] * scale),
+            "normalized": 1e-3,
+        }
     return Exact(**tolerance)
