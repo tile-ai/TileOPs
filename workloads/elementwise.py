@@ -612,6 +612,11 @@ class RemainderCase(PositivePairWorkload):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.remainder(a, b)
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
 
 class FloorDivideCase(PositivePairWorkload):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

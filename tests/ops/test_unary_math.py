@@ -557,6 +557,7 @@ def test_reciprocal_int_roofline_prices_the_promoted_output(
     assert bytes_ == expected_bytes
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_reciprocal_int_input_validation() -> None:
     """One instance serves integer and float inputs, and rejects the rest.

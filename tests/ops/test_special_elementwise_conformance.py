@@ -146,6 +146,7 @@ def test_clamp_scalar_both_none_rejected():
         ClampScalarFwdOp(min=None, max=None)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     """Which bounds a call passes is read off the call, so one instance serves all three.

@@ -223,13 +223,16 @@ class GroupNormWorkload(WorkloadBase):
         return x, weight, bias
 
     def ref_program(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+        self,
+        x: torch.Tensor,
+        weight: "torch.Tensor | None" = None,
+        bias: "torch.Tensor | None" = None,
     ) -> torch.Tensor:
         return F.group_norm(
             x.float(),
             self.g,
-            weight=weight.float(),
-            bias=bias.float(),
+            weight=None if weight is None else weight.float(),
+            bias=None if bias is None else bias.float(),
             eps=self.eps,
         ).to(x.dtype)
 

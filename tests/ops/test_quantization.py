@@ -136,7 +136,13 @@ class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
         # Subnormal rows and scales, which the quotient is scaled out of and clamped.
         pytest.param(64, 1024, torch.float32, _subnormal, None, id="subnormal-scale"),
         pytest.param(
-            64, 1024, torch.bfloat16, lambda w: w, _DefaultPolicyLoads, id="default-policy-loads"
+            64,
+            1024,
+            torch.bfloat16,
+            lambda w: w,
+            _DefaultPolicyLoads,
+            id="default-policy-loads",
+            marks=pytest.mark.in_tree_kernels,
         ),
     ],
 )

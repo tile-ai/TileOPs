@@ -647,6 +647,7 @@ def test_avg_pool_negative_divisor_override_matches_torch(
     compare_outputs(out, ref, pool_verification(maximum=False))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
@@ -1438,6 +1439,7 @@ def test_max_pool_special_values(
         compare_outputs(out, ref, pool_verification(maximum=True))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("return_indices", [False, True], ids=["plain", "indices"])
@@ -1630,6 +1632,7 @@ def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
     assert isinstance(op.kernel, _PassthroughGenericKernel)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_avg_pool2d_kernel_cache_separates_dtypes() -> None:

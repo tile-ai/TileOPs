@@ -187,6 +187,7 @@ def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, d
     _check(FusedTopKWorkload(call))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fused_topk_kernel_cache_specializations() -> None:
     op = FusedTopKFwdOp(top_k=2)

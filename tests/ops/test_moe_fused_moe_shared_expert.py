@@ -36,6 +36,28 @@ def test_the_shared_expert_matches_its_reference(dtype):
 @pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "tokens, fused",
+    [pytest.param(1024, True, id="fused-gate-up"), pytest.param(4096, False, id="separate")],
+)
+def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, fused):
+    """A wide shared expert past ``template_min_m`` runs both GEMMs on the SM90 dense template."""
+    if get_sm_version(torch.device(run_device()).index) != 90:
+        pytest.skip("the dense template serves SM90")
+    workload = SharedExpertMLPWorkload(
+        moe_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=256, S=512)
+    )
+    op = SharedExpertMLPFwdOp()
+    TestBase.check(workload, op, *workload.gen_inputs())
+    (kernel,) = op.built_kernels("shared_expert_mlp").values()
+    assert isinstance(kernel._gemm_gate_up, GemmTemplate)
+    assert isinstance(kernel._gemm_down, GemmTemplate)
+    assert kernel._gemm_gate_up.activation == ("silu_and_mul" if fused else "none")
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
+@pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
 def test_fused_moe_shared_expert_basic(num_tokens):
     """FusedMoESharedExpertFwdOp with shared expert kernel."""

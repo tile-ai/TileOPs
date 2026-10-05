@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tileops.backend import BUILTIN
 from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.ops import GQAVarlenFwdOp
 from tileops.perf.formulas import visible_scores
@@ -370,22 +371,21 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
 def test_general_kernel_serves_sliding_windows(
     q_lens: list[int], kv_lens: list[int], is_causal: bool, wl: int, wr: int
 ) -> None:
-    """The general kernel's window bounds, built directly: on SM90 the op hands windowed
-    calls to the sliding-window kernel instead."""
+    """The general kernel's window bounds. On SM90 dispatch hands a windowed call to the
+    sliding-window kernel, so that key runs the general kernel here."""
     test = GQAVarlenFwdTest(
         len(q_lens), q_lens, kv_lens, 8, 2, 64, is_causal, wl, wr, torch.float16
     )
-    kernel = GQAPrefillVarlenFwdKernel(
-        len(q_lens),
-        8,
-        2,
-        64,
+    op = GQAVarlenFwdOp(
         is_causal,
-        torch.float16,
-        window_size_left=wl,
-        window_size_right=wr,
+        wl,
+        wr,
+        kernel_map={"gqa_varlen_sliding_window": GQAPrefillVarlenFwdKernel},
+        target=BUILTIN,
     )
-    test.check(GQAVarlenFwdOp(), *test.gen_inputs(), runs=kernel)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("gqa_varlen").values()
+    assert type(kernel) is GQAPrefillVarlenFwdKernel
 
 
 @pytest.mark.smoke

@@ -135,6 +135,7 @@ def test_permute_align_skewed_distribution() -> None:
     TestBase.check(workload, op, topk_ids)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_permute_align_builds_one_kernel_per_routed_count() -> None:
     """The routed count comes from each call, so a second count builds a second kernel."""

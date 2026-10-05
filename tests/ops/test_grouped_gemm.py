@@ -116,6 +116,26 @@ def test_grouped_gemm(
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("transpose_b", [True, False], ids=["tn", "tt"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_k_grouped_gemm_with_ragged_groups(
+    dtype: torch.dtype, transpose_b: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Groups split K: ragged group lengths, an empty group and output edges off the tile grid.
+
+    A group whose length is not a multiple of 8 starts mid-vector, and the empty group's
+    output block is zero.
+    """
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
+    sizes = [100, 0, 300, 64, 7, 1]
+    test = GroupedGemmTest(sum(sizes), len(sizes), 200, 136, dtype, True, transpose_b)
+    test.batch_sizes_list = sizes
+    op = GroupedGemmFwdOp(transpose_a=True, transpose_b=transpose_b)
+    test.check(op, *test.gen_inputs())
+
+
 # What `tune=True` measures
 
 

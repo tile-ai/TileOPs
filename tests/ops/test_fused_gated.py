@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.elementwise import (
     FusedGatedKernel,
     GeluAndMulFwdKernel,
@@ -118,6 +119,7 @@ def test_fused_gated_rejects_integer_dtype() -> None:
         op(x)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
     """The element type comes from the tensor, so both are valid on one op."""
@@ -193,13 +195,34 @@ class FusedGatedDirectStrategyFixture(FixtureBase):
     ]
 
 
+class _DirectStrategy:
+    """Pin the direct strategy."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **{**kwargs, "config": {"strategy": "direct"}})
+
+
+class _DirectSiluAndMulFwdKernel(_DirectStrategy, SiluAndMulFwdKernel):
+    pass
+
+
+class _DirectGeluAndMulFwdKernel(_DirectStrategy, GeluAndMulFwdKernel):
+    pass
+
+
+class _DirectGeluTanhAndMulFwdKernel(_DirectStrategy, GeluTanhAndMulFwdKernel):
+    pass
+
+
 @pytest.mark.cuda_only
 @FusedGatedDirectStrategyFixture
 def test_silu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
     """SiluAndMul with config strategy='direct' produces correct results."""
     test = SiluAndMulTest(m, n, dtype)
-    kernel = SiluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
-    test.check(SiluAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
+    op = SiluAndMulFwdOp(kernel_map={"silu_and_mul": _DirectSiluAndMulFwdKernel}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is _DirectSiluAndMulFwdKernel and kernel.strategy == "direct"
 
 
 @pytest.mark.cuda_only
@@ -207,8 +230,10 @@ def test_silu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
 def test_gelu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
     """GeluAndMul with config strategy='direct' produces correct results."""
     test = GeluAndMulTest(m, n, dtype)
-    kernel = GeluAndMulFwdKernel(M=m, N=n, dtype=dtype, config={"strategy": "direct"})
-    test.check(GeluAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
+    op = GeluAndMulFwdOp(kernel_map={"gelu_and_mul": _DirectGeluAndMulFwdKernel}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is _DirectGeluAndMulFwdKernel and kernel.strategy == "direct"
 
 
 @pytest.mark.cuda_only
@@ -216,13 +241,12 @@ def test_gelu_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> Non
 def test_gelu_tanh_and_mul_direct_strategy(m: int, n: int, dtype: torch.dtype) -> None:
     """GeluTanhAndMul with config strategy='direct' produces correct results."""
     test = GeluTanhAndMulTest(m, n, dtype)
-    kernel = GeluTanhAndMulFwdKernel(
-        M=m,
-        N=n,
-        dtype=dtype,
-        config={"strategy": "direct"},
+    op = GeluTanhAndMulFwdOp(
+        kernel_map={"gelu_tanh_and_mul": _DirectGeluTanhAndMulFwdKernel}, target=BUILTIN
     )
-    test.check(GeluTanhAndMulFwdOp(), *test.gen_inputs(), runs=kernel)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is _DirectGeluTanhAndMulFwdKernel and kernel.strategy == "direct"
 
 
 @pytest.mark.smoke

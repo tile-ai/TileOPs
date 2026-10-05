@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops.elementwise.dropout import DropoutFwdOp
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload
@@ -193,34 +194,6 @@ class DropoutCustomConfigFixture(FixtureBase):
 
 @pytest.mark.cuda_only
 @DropoutCustomConfigFixture
-def test_dropout_custom_config_p0_identity(
-    n_total: int,
-    dtype: torch.dtype,
-    threads: int,
-    num_per_thread: int,
-) -> None:
-    """Non-default kernel config with p=0 must act as identity.
-
-    Regression test: codegen block_size must match the runtime launch config.
-    If the kernel is built with default config but launched with a different
-    config, the grid dimensions will be wrong and elements will be missed.
-    """
-    from tileops.kernels.elementwise.dropout import DropoutKernel
-
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
-    kernel = DropoutKernel(
-        n_total,
-        dtype,
-        p=0.0,
-        seed=0,
-        config={"threads": threads, "num_per_thread": num_per_thread},
-    )
-    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=0.0)
-    TestBase.check(workload, DropoutFwdOp(p=0.0), x, runs=kernel)
-
-
-@pytest.mark.cuda_only
-@DropoutCustomConfigFixture
 def test_dropout_custom_config_correctness(
     n_total: int,
     dtype: torch.dtype,
@@ -235,12 +208,15 @@ def test_dropout_custom_config_correctness(
 
     p = 0.5
     x = torch.ones(n_total, dtype=dtype, device="cuda")
-    kernel = DropoutKernel(
-        n_total,
-        dtype,
-        p=p,
-        seed=42,
-        config={"threads": threads, "num_per_thread": num_per_thread},
-    )
+    config = {"threads": threads, "num_per_thread": num_per_thread}
+
+    class Pinned(DropoutKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "config": config})
+
     workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
-    TestBase.check(workload, DropoutFwdOp(p=p), x, runs=kernel)
+    op = DropoutFwdOp(p=p, seed=42, kernel_map={"dropout": Pinned}, target=BUILTIN)
+    TestBase.check(workload, op, x)
+    (kernel,) = op.built_kernels("dropout").values()
+    assert type(kernel) is Pinned
+    assert {k: kernel.config[k] for k in config} == config

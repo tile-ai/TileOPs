@@ -171,6 +171,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
         assert len({type(k) for k in built}) == 2, "and two different kernel classes"
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_masked_fill_alternates_between_bool_and_float_input():
     """The scalar is re-validated per element type, the mask stays bool."""

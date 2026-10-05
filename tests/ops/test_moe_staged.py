@@ -178,6 +178,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
         op(a, b, ends, out=torch.empty(1, 8, dtype=torch.float32, device=device))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
     mlp = MoEExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
@@ -309,13 +310,13 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
     """A call outside every shipped candidate's region says so, rather than crashing."""
     device = torch.device("cuda")
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     assert set(op.kernel_map) == {"grouped_gemm", "grouped_gemm_mma"}
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op(
-            torch.empty(2, 8, dtype=torch.bfloat16, device=device),
-            torch.empty(2, 4, 8, dtype=torch.bfloat16, device=device),
-            torch.tensor([0, 1], dtype=torch.int32, device=device),
+        op(  # K = 4: both candidates step K by 8
+            torch.empty(2, 4, dtype=torch.bfloat16, device=device),
+            torch.empty(2, 8, 4, dtype=torch.bfloat16, device=device),
+            torch.tensor([1, 2], dtype=torch.int32, device=device),
         )
 
 
@@ -390,6 +391,84 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
         arch = get_sm_version(out.device.index)
         expected = MoEGroupedGemmKernel if arch == 90 else MoEGroupedGemmMMAKernel
         assert type(kernel) is expected
+
+
+def _uneven_rows(layout: dict, sizes: list) -> tuple:
+    """Row count and metadata placing ``sizes[e]`` rows on expert ``e``, empty experts included.
+
+    Tight rows pack; an aligned expert starts on a multiple of the alignment; per-row ids
+    pad each expert to the alignment and close with one tile of unassigned rows; a masked
+    slab records each expert's count.
+    """
+    if "masked" in layout:
+        return len(sizes) * layout["masked"]["max_m"], list(sizes)
+    spec = layout["contiguous"]
+    align = spec["alignment"]
+    if spec["metadata_kind"] == "per_row":
+        ids = [g for g, size in enumerate(sizes) for _ in range(-(-size // align) * align)]
+        ids += [len(sizes)] * align
+        return len(ids), ids
+    row, ends = 0, []
+    for size in sizes:
+        row = (row if spec["packing"] == "tight" else -(-row // align) * align) + size
+        ends.append(row)
+    return (row if spec["packing"] == "tight" else -(-row // align) * align), ends
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("layout", "sizes", "activation"),
+    [
+        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, id="tight-psum"),
+        pytest.param(_aligned("per_row"), [100, 0, 300, 128, 7, 64], None, id="aligned-per-row"),
+        pytest.param(_aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, id="aligned-psum"),
+        pytest.param(_aligned("physical_psum"), [300] * 32, None, id="aligned-psum-32-experts"),
+        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, id="masked"),
+        pytest.param(
+            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", id="masked-gated"
+        ),
+    ],
+)
+def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation):
+    """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
+    written and matches the reference."""
+    rows, metadata = _uneven_rows(layout, sizes)
+    extra = {} if activation is None else {"activation": activation}
+    rows_arg = {} if "masked" in layout else {"P": rows}
+    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=256, **rows_arg, **extra)
+    workload = MoEGroupedGemmWorkload(call)
+    a, b, _ = workload.gen_inputs()
+    metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
+    out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
+    op = MoEGroupedGemmFwdOp(**call.arguments({}))
+    assert op(a, b, metadata, out=out) is out
+    compare_outputs(
+        out, workload.ref_program(a, b, metadata), workload.verification(a, b, metadata)
+    )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_grouped_gemm_tight_per_row_matches_the_psum_layout():
+    """Per-row ids on tight rows, an empty group included: the psum layout's exact output."""
+    if get_sm_version(torch.device(run_device()).index) != 90:
+        pytest.skip("only the SM90 template serves a tight per-row layout")
+    sizes = [100, 0, 300, 128, 7, 64]
+    tight_per_row = {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}}
+    call = _gemm_call(torch.bfloat16, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
+    workload = MoEGroupedGemmWorkload(call)
+    a, b, _ = workload.gen_inputs()
+    counts = torch.tensor(sizes, device=a.device)
+    ids = torch.repeat_interleave(torch.arange(len(sizes), device=a.device), counts).int()
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())
+    out = op(a, b, ids)
+    compare_outputs(out, workload.ref_program(a, b, ids), workload.verification(a, b, ids))
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("grouped_gemm").values()
+        assert type(kernel) is MoEGroupedGemmKernel
+    psum = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    assert torch.equal(out, psum(a, b, counts.cumsum(0).int()))
 
 
 @pytest.mark.smoke

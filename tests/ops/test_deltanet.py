@@ -334,18 +334,27 @@ def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
 
 
+class _FourChunkPartitionsKernel(DeltaNetDensePrefillFwdKernel):
+    """Partition every four chunks, so a short sequence crosses partitions."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **{**kwargs, "config": {"max_local_chunks": 4}})
+
+
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
-    # 16 chunks split into partitions of 4.
-    kernel = DeltaNetDensePrefillFwdKernel(
-        2, 4, 512, 2, False, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
-    )
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
-    test.check(DeltaNetInferenceFwdOp(), *inputs, runs=kernel)
+    # 16 chunks split into partitions of 4.
+    op = DeltaNetInferenceFwdOp(
+        kernel_map={"deltanet_dense_prefill": _FourChunkPartitionsKernel}, target=BUILTIN
+    )
+    test.check(op, *inputs)
+    (kernel,) = op.built_kernels("deltanet_inference").values()
+    assert type(kernel) is _FourChunkPartitionsKernel
 
 
 @pytest.mark.smoke

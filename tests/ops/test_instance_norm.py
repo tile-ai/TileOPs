@@ -163,6 +163,7 @@ def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     """One op instance reuses identical specs and caches changed specs."""
