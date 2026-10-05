@@ -88,14 +88,22 @@ def rank_in_bins(total, target, acc, tx, span: int):
             acc[2] = acc[2] + count
 
 
+# Slots a thread holds where a row cannot spread past one CTA. The slots past the kernel's
+# registers spill, so one CTA serves rows a cluster would otherwise be needed for.
+ONE_CTA_SLOTS = 32
+
+
 def cluster_limit(arch: int) -> int:
     """CTAs one row may span: thread-block clusters start at SM90."""
     return MAX_PORTABLE_CLUSTER_BLOCKS if arch >= 90 else 1
 
 
 def widest_row(dtype: torch.dtype, threads: int, max_slots: int, arch: int) -> int:
-    """The longest row the launch policy holds without spilling a thread's registers."""
-    return cluster_limit(arch) * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * max_slots
+    """The longest row the launch policy holds: ``max_slots`` a thread over a cluster, or
+    ``ONE_CTA_SLOTS`` where the row stays in one CTA."""
+    limit = cluster_limit(arch)
+    slots = max_slots if limit > 1 else ONE_CTA_SLOTS
+    return limit * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * slots
 
 
 def cluster_plan(call, threads: int, max_slots: int) -> dict:
