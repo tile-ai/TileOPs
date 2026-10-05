@@ -18,6 +18,7 @@ from tileops.kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInte
 from tileops.kernels.sampling.radix_select import (
     BRACKET_SIGMAS,
     BRACKET_SLACK,
+    cluster_limit,
     cluster_plan,
     merge_counts,
     rank_in_bins,
@@ -668,6 +669,10 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     # cluster, slots) on the manifest rows: at [256, 128256] bfloat16, 4 slots on 4 CTAs run
     # 258.9 us, 8 slots on 2 CTAs 372.1 and 16 slots on 1 CTA 750.7.
     _MAX_SLOTS: ClassVar[int] = 4
+    # Slots a thread holds where `cluster_limit` keeps a row in one CTA: the fewest that hold
+    # llama 3's float32 vocabulary, 128256 values, at `_THREADS`. Those past the registers
+    # spill to local memory, which every pass then reads back.
+    _MAX_SLOTS_ONE_CTA: ClassVar[int] = 32
 
     @classmethod
     def refusal(cls, call: SamplingCall) -> Optional[str]:
@@ -676,7 +681,8 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
             return reason
         if call.batch * call.vocab > 2**31 - 1:
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
-        widest = widest_row(call.dtype, cls._THREADS, cls._MAX_SLOTS, call.arch)
+        slots = cls._MAX_SLOTS if cluster_limit(call.arch) > 1 else cls._MAX_SLOTS_ONE_CTA
+        widest = widest_row(call.dtype, cls._THREADS, slots, call.arch)
         if call.vocab > widest:
             return f"supports rows of at most {widest} values, and V = {call.vocab}"
         return None

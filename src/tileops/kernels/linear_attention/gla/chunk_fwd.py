@@ -16,8 +16,6 @@ from tileops.kernels.linear_attention.call_spec import (
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops.utils import get_shared_memory_optin
 
-# Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
-
 
 @functools.lru_cache(maxsize=32)
 def gla_precompute_g_kernel(
@@ -80,10 +78,6 @@ def gla_precompute_g_kernel(
     return _fn
 
 
-# Pass 1: compute h per chunk (sequential, B*H thread blocks)
-# Uses pre-computed g_cumsum — no T.Serial cumsum needed.
-
-
 @functools.lru_cache(maxsize=32)
 def gla_fwd_h_kernel(
     batch: int,
@@ -98,9 +92,8 @@ def gla_fwd_h_kernel(
 ) -> Callable:
     """Compute per-chunk hidden states h in forward order.
 
-    Sequential over chunks (inter-chunk recurrence).
-    Uses T.Pipelined + T.copy for async prefetch of k, v, g_cumsum.
-    g_cumsum is pre-computed — no T.Serial cumsum in this kernel.
+    Sequential over chunks (inter-chunk recurrence); the pipelined loop prefetches k, v and
+    g_cumsum.
 
     KV-partition parallelism: splits K and V dimensions across thread blocks
     for higher SM utilization and more square GEMM shapes.
@@ -164,7 +157,6 @@ def gla_fwd_h_kernel(
                 v_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
 
-                # Load initial state KV-slice
                 for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                     h_s[i_k, i_v] = initial_state[i_b, i_h, k_offset + i_k, v_offset + i_v]
 
@@ -200,16 +192,14 @@ def gla_fwd_h_kernel(
                         disable_tma=True,
                     )
 
-                    # Save pre-decay h KV-slice
+                    # h_out[i_c] is the state entering chunk i_c.
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         h_out[i_b, i_c, i_h, k_offset + i_k, v_offset + i_v] = h_s[i_k, i_v]
 
-                    # g_last from pre-computed cumsum
                     g_last = T.alloc_fragment([dim_k_part], accum_dtype)
                     for i_k in T.Parallel(dim_k_part):
                         g_last[i_k] = g_cumsum_s[chunk_size - 1, i_k]
 
-                    # Decay h
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         h_s[i_k, i_v] = h_s[i_k, i_v] * T.exp2(g_last[i_k] * LOG2E)
 
@@ -222,24 +212,18 @@ def gla_fwd_h_kernel(
                             dtype,
                         )
 
-                    # h += k_adj^T @ v_slice (RS GEMM)
                     delta_h = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                     T.fill(delta_h, 0.0)
                     T.gemm(k_adj_f, v_s, delta_h, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         h_s[i_k, i_v] = h_s[i_k, i_v] + delta_h[i_k, i_v]
 
-                # Save final state KV-slice
                 for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                     h_out[i_b, num_chunks, i_h, k_offset + i_k, v_offset + i_v] = h_s[i_k, i_v]
 
         return _main
 
     return _h_func
-
-
-# Pass 2: compute output per chunk (parallel, B*H*NC thread blocks)
-# Uses pre-computed g_cumsum — no T.Serial cumsum needed.
 
 
 @functools.lru_cache(maxsize=32)
@@ -367,10 +351,7 @@ class GLAChunkedFwdKernel(Kernel):
     Pass 1 (sequential, B*H blocks): Compute per-chunk hidden states h.
     Pass 2 (parallel, B*H*NC blocks): Compute output o per chunk independently.
 
-    By pre-computing g_cumsum, the sequential h_kernel is free of T.Serial
-    cumsum loops, dramatically reducing its latency.
-
-    h_out is saved for the backward pass (no recomputation needed).
+    h_out is kept for the backward pass.
 
     Reference:
         https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
@@ -556,7 +537,6 @@ class GLAChunkedFwdKernel(Kernel):
             try:
                 self._build_kernels(cfg)
 
-                # Warmup run
                 self.forward(q, k, v, g)
                 torch.cuda.synchronize()
 
@@ -598,10 +578,8 @@ class GLAChunkedFwdKernel(Kernel):
         else:
             init_state = initial_state.to(torch.float32)
 
-        # Pass 0: pre-compute g_cumsum (parallel, fast)
         g_cumsum = self._g_fn(g.to(dtype_torch))
 
-        # Pass 1: sequential h computation
         h_out = self._h_fn(
             k.to(dtype_torch),
             v.to(dtype_torch),
@@ -609,7 +587,6 @@ class GLAChunkedFwdKernel(Kernel):
             init_state,
         )
 
-        # Pass 2: parallel output computation
         o = self._o_fn(
             q.to(dtype_torch),
             k.to(dtype_torch),
@@ -618,7 +595,6 @@ class GLAChunkedFwdKernel(Kernel):
             h_out,
         )
 
-        # Store h_out for backward access
         self._h_out = h_out
 
         final_state = h_out[:, -1] if self.output_final_state else None
@@ -634,9 +610,12 @@ class GLAFwdKernel(GLAChunkedFwdKernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
-        """Why no program serves this call, or ``None``; the output pass's lower bound is above
-        the other passes' at their fewest stages, and a call above it that TileLang still cannot
-        place in the device's shared memory is built and fails at launch."""
+        """Why no program serves this call, or ``None``.
+
+        Refuses a call whose output pass holds more shared memory at once than the device gives,
+        a lower bound above the other passes' at their fewest stages. A call within the bound
+        that TileLang still cannot place builds and fails at launch.
+        """
         reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size
         )
