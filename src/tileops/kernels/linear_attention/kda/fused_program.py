@@ -1,4 +1,4 @@
-"""The fused Kimi Delta Attention chunk program: one CTA walks one sequence.
+"""The fused Kimi Delta Attention (KDA) chunk program: one CTA walks one sequence.
 
 Everything a chunk decides on its own and the recurrence that joins the chunks
 live in the same CTA, so the WY vectors, the gated query and key and the

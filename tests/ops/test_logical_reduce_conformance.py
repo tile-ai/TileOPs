@@ -1,4 +1,4 @@
-"""Spec-conformance tests for boolean / count reductions.
+"""Spec-conformance tests for the logical reductions.
 
 Covers ``AllFwdOp``, ``AnyFwdOp``, ``CountNonzeroFwdOp`` against the PyTorch
 references (``torch.all`` / ``torch.any`` / ``torch.count_nonzero``) across

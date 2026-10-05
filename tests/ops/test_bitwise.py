@@ -8,7 +8,7 @@ Covers L1 smoke correctness.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
     BitwiseAndFwdOp,
     BitwiseNotFwdOp,

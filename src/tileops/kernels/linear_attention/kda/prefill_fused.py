@@ -1,4 +1,4 @@
-"""Kimi Delta Attention prefill with the chunk step and the scan in one CTA."""
+"""Kimi Delta Attention (KDA) prefill with the chunk step and the scan in one CTA."""
 
 from typing import Optional, Tuple
 
@@ -6,16 +6,16 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    KimiDeltaAttentionCall,
-    KimiDeltaAttentionFwdInterface,
+    KDACall,
+    KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
 from tileops.kernels.linear_attention.kda.prefill import CHUNK_SIZE, packed_offsets
 
-__all__ = ["KimiDeltaAttentionFusedPrefillFwdKernel"]
+__all__ = ["KDAFusedPrefillFwdKernel"]
 
 
-class KimiDeltaAttentionFusedPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInterface):
+class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     """SM90 prefill that keeps a chunk's whole step inside one CTA.
 
     The chunk-local work and the recurrence share a block, so the WY vectors,
@@ -26,14 +26,14 @@ class KimiDeltaAttentionFusedPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
     """
 
     supported_archs = [90]
-    preferred_over = frozenset({"kimi_delta_attention_chunk_prefill"})
+    preferred_over = frozenset({"kda_chunk_prefill"})
 
     @classmethod
-    def applies(cls, call: KimiDeltaAttentionCall) -> bool:
+    def applies(cls, call: KDACall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: KimiDeltaAttentionCall) -> Optional[str]:
+    def refusal(cls, call: KDACall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal
         if chunked is not None:
@@ -49,7 +49,7 @@ class KimiDeltaAttentionFusedPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
         return None
 
     @classmethod
-    def entry_for(cls, call: KimiDeltaAttentionCall) -> Entry:
+    def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.batch,

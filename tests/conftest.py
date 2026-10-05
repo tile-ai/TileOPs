@@ -4,7 +4,7 @@ from collections import defaultdict
 import pytest
 import torch
 
-from tests.test_base import _check_result
+from tests.workload_test_base import _check_result
 from tileops.backend import BUILTIN, default_target
 from workloads.device import run_device_is_cuda
 

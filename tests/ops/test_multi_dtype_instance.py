@@ -8,7 +8,7 @@ This covers the invariant every family owes its L1 kernel slots.
 import pytest
 import torch
 
-from tests.test_base import served_in_tree
+from tests.workload_test_base import served_in_tree
 from tileops.manifest import load_manifest
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.norm.layer_norm import LayerNormFwdOp

@@ -5,7 +5,7 @@ import itertools
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention.call_spec import GLAChunkCall
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec

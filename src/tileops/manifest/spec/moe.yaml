@@ -191,8 +191,8 @@ FusedMoEFwdOp:
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-decode"}
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
-  - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-moe-decode-b1}
-  - {T: 32, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-moe-decode-b32}
+  - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b1}
+  - {T: 32, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b32}
   roofline:
     # The routed weights follow the routing the experts stage receives.
     func: "tileops.perf.formulas.fused_moe_fwd_roofline"
@@ -238,7 +238,7 @@ MoEPrePermuteFwdOp:
   - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
   - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
-  - {T: 1, H: 2048, K: 8, num_local_experts: 16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-permute-b1}
+  - {T: 1, H: 2048, K: 8, num_local_experts: 16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
   roofline:
     # A gather: no arithmetic.
     flops: "0"
@@ -389,7 +389,7 @@ MoEPostPermuteFwdOp:
   - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: H=7168, K=8.
   - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
-  - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-unpermute}
+  - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
   roofline:
     # The epilogue's scale is a float field of an object the language does not read.
     func: "tileops.perf.formulas.moe_post_permute_roofline"

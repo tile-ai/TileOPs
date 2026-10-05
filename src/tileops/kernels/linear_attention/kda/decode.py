@@ -1,4 +1,4 @@
-"""Single-token Kimi Delta Attention decode over a caller-owned state."""
+"""Single-token Kimi Delta Attention (KDA) decode over a caller-owned state."""
 
 from typing import Optional, Tuple
 
@@ -6,26 +6,26 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    KimiDeltaAttentionCall,
-    KimiDeltaAttentionFwdInterface,
+    KDACall,
+    KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.kda.decode_program import decode_program
 from tileops.utils import get_sm_count
 
-__all__ = ["KimiDeltaAttentionRecurrentDecodeFwdKernel"]
+__all__ = ["KDARecurrentDecodeFwdKernel"]
 
 
-class KimiDeltaAttentionRecurrentDecodeFwdKernel(Kernel, KimiDeltaAttentionFwdInterface):
+class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
     """SM90 decode: one recurrence step per sequence, one value channel per thread."""
 
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: KimiDeltaAttentionCall) -> bool:
+    def applies(cls, call: KDACall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: KimiDeltaAttentionCall) -> Optional[str]:
+    def refusal(cls, call: KDACall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal
         if chunked is not None:
@@ -35,7 +35,7 @@ class KimiDeltaAttentionRecurrentDecodeFwdKernel(Kernel, KimiDeltaAttentionFwdIn
         return None
 
     @classmethod
-    def entry_for(cls, call: KimiDeltaAttentionCall) -> Entry:
+    def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.batch,

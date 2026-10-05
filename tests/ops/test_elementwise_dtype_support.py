@@ -1,5 +1,5 @@
-"""Tests that the elementwise, rope and dropout kernels reject fp8 inputs at the kernel layer
-(``SUPPORTED_DTYPES``, not ``Op._validate_dtypes``).
+"""The dtypes the elementwise kernels reject at the kernel layer (``SUPPORTED_DTYPES``, not
+``Op._validate_dtypes``), and the dtypes ``WhereFwdOp`` accepts and rejects.
 """
 
 import pytest

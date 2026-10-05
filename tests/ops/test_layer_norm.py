@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp

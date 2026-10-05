@@ -11,7 +11,7 @@ reduction dimension is non-aligned.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import WelfordNonAlignedCase, reduction_verification

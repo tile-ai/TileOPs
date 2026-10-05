@@ -7,7 +7,7 @@ and L4 edge case for eq.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from workloads.device import run_device
 from workloads.elementwise import ComparisonCase, ElementwiseWorkload

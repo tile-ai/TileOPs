@@ -8,7 +8,7 @@ binary logical ops, and all supported dtypes for logical_not.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from workloads.device import run_device
 from workloads.elementwise import LogicalCase, LogicalNotWorkload

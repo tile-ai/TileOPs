@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.quantization import (
     DequantizeCall,
     INT8DequantPerBlockFwdKernel,

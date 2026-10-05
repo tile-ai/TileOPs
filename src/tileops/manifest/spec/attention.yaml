@@ -344,8 +344,8 @@ MHADecodePagedWithKVCacheFwdOp:
   - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv1k}
   - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv512}
   - {S_q: 4, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1000, 2)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: speculative-decode}
-  - {S_q: 1, H: 32, D: 64, N_kv: 2048, W: 16, kv_lens: [2048], page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-decode-b1}
-  - {S_q: 1, H: 32, D: 64, N_kv: 32768, W: 16, kv_lens: "repeat(2048, 16)", page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-decode-b16}
+  - {S_q: 1, H: 32, D: 64, N_kv: 2048, W: 16, kv_lens: [2048], page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b1}
+  - {S_q: 1, H: 32, D: 64, N_kv: 32768, W: 16, kv_lens: "repeat(2048, 16)", page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b16}
   roofline:
     func: tileops.perf.formulas.paged_decode_roofline
 
@@ -373,14 +373,14 @@ MLADecodeWithKVCacheFwdOp:
   - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
   - {B: 1, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-single-request}
   - {B: 12, H: 128, H_kv: 1, N_kv: 6144, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-serving-batch}
-  - {B: 128, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-4096}
-  - {B: 128, H: 128, H_kv: 1, N_kv: 8192, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-8192}
-  - {B: 128, H: 128, H_kv: 1, N_kv: 16384, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-16384}
-  - {B: 128, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-mla-b128-32768}
-  - {B: 1, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch1}
-  - {B: 2, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch2}
-  - {B: 6, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch6}
-  - {B: 64, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-mla-tp-batch64}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-b128-4096}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 8192, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-b128-8192}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 16384, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-b128-16384}
+  - {B: 128, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-b128-32768}
+  - {B: 1, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-tp-b1}
+  - {B: 2, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-tp-b2}
+  - {B: 6, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-tp-b6}
+  - {B: 64, H: 64, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: mla-tp-b64}
   roofline:
     # Per key and query head, QK over D + PE, PV over D and the softmax (5); per output
     # element, the softmax's divide.
@@ -464,7 +464,7 @@ NSACompressedVarlenFwdOp:
   workloads:
   - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
   - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
-  - {C: 33, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: nsa-ragged-prefill-bf16}
+  - {C: 33, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
   roofline:
     # Each token scores its own request's closed chunks.
     func: "tileops.perf.formulas.nsa_compressed_fwd_varlen_roofline"
@@ -530,7 +530,7 @@ NSAVarlenFwdOp:
   - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: false, scale: 0.1, block_size: 32, seq_lens: [4000, 4190], dtype_cases: [{T: float16}], label: prefill-noncausal-2x4k}
-  - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: nsa-ragged-prefill-bf16}
+  - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"

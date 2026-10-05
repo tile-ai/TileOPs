@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     GQABwdMMAKernel,

@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MHADecodePagedWSKernel
 from tileops.ops import MHADecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MHADecodePagedWorkload

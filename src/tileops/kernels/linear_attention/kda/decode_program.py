@@ -1,4 +1,4 @@
-"""The TileLang program for a single Kimi Delta Attention decode step.
+"""The TileLang program for a single Kimi Delta Attention (KDA) decode step.
 
 A decode step reads the recurrent state once and writes it once, so what
 decides its latency is how much of the machine is reading. One block takes one

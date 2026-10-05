@@ -316,7 +316,7 @@ def test_check_refuses_a_kernel_in_place_of_the_op_path():
     """A result is reported under an Op and runs what a caller reaches, before any reference."""
     import types
 
-    from tests.test_base import TestBase
+    from tests.workload_test_base import TestBase
     from tileops.kernels.elementwise import ReluFwdKernel
     from tileops.ops.elementwise import ReluFwdOp
 

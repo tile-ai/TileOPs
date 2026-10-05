@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops import TopKSelectFwdOp
 from tileops.utils import STR_TO_DTYPE
 from workloads.attention.topk_select import TopKSelectWorkload

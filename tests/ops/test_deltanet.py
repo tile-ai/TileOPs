@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
 from tileops.kernels.linear_attention.call_spec import DeltaNetChunkCall

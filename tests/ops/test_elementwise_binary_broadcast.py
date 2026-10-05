@@ -13,7 +13,7 @@ import pytest
 import torch
 
 import tileops.ops.elementwise as elementwise_mod
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs

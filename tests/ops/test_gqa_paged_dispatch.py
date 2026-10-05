@@ -1,4 +1,4 @@
-"""Kernel-selection coverage for the remaining paged attention ops."""
+"""Kernel selection of the GQA paged decode and paged prefill ops."""
 
 import pytest
 import torch

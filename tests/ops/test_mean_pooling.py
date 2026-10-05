@@ -5,7 +5,7 @@ from typing import List, Optional
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
 from workloads.device import run_device, run_device_is_cuda
 from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index

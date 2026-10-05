@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels import fft as fft_kernels
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops.kernels.fft import FFT_NARROW_PLANS, FFT_PLANS, FFTC2CCall, FFTC2CFourStepKernel

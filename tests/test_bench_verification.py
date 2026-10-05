@@ -19,7 +19,7 @@ def _workload():
 @pytest.mark.parametrize("consumer", ["test", "benchmark"])
 def test_both_consumers_reject_the_same_wrong_result(consumer, monkeypatch):
     if consumer == "test":
-        from tests.test_base import TestBase
+        from tests.workload_test_base import TestBase
         from tileops.ops.elementwise import AbsFwdOp
 
         with pytest.raises(AssertionError):

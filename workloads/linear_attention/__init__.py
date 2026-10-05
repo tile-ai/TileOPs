@@ -24,6 +24,7 @@ from workloads.linear_attention.gla import (
     gla_decode_torch,
     gla_fwd_chunked_torch,
 )
+from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload, kda_ref
 
 __all__ = [
     "DeltaNetChunkwiseCall",
@@ -40,6 +41,8 @@ __all__ = [
     "GLAInferenceWorkload",
     "GatedDeltaNetFwdCall",
     "GatedDeltaNetFwdWorkload",
+    "KDAFwdCall",
+    "KDAFwdWorkload",
     "compute_w_u_torch",
     "deltanet_autograd_bwd_torch",
     "deltanet_decode_torch",
@@ -47,6 +50,7 @@ __all__ = [
     "gla_autograd_bwd_torch",
     "gla_decode_torch",
     "gla_fwd_chunked_torch",
+    "kda_ref",
     "kernel2_deltanet_torch",
     "prepare_wy_repr_deltanet_torch",
 ]

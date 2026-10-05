@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp

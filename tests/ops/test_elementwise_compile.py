@@ -14,7 +14,7 @@ import torch
 
 import tileops.ops.elementwise as elementwise_mod
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.elementwise import DropoutFwdOp
 from tileops.ops.elementwise import (
     AbsFwdOp,

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.attention import MLADecodeCall, MLADecodeMMAKernel
 from tileops.ops import MLADecodeWithKVCacheFwdOp
 from workloads.attention.mla import MLADecodeWorkload

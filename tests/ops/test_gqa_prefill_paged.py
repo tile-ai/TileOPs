@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import served_in_tree
+from tests.workload_test_base import served_in_tree
 from tileops.ops import GQAPrefillPagedWithKVCacheFwdOp
 from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
 from workloads.attention.paged_kv_cache import (
