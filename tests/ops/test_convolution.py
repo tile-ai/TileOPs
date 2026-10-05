@@ -1321,3 +1321,25 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
     assert output.is_contiguous()
     torch.testing.assert_close(output, op(x, weight))
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+def test_conv1d_graph_reads_updated_inference_weights() -> None:
+    """Weight packing consumes live data, even without a Tensor version counter."""
+    workload = Conv1dTest(2, 64, 512, 128, 3, 1, 1, 1, 1, torch.float16)
+    op = Conv1dFwdOp(padding=1)
+    with torch.inference_mode():
+        inputs = workload.gen_inputs()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            op(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = op(*inputs)
+        inputs[1].mul_(0.5)
+        graph.replay()
+        workload.check(op, *inputs, runs=lambda *args: output)

@@ -26,7 +26,7 @@ that file states why each one is wrong. A module-level constant's spelling is ch
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-- PascalCase abbreviations stay fully uppercase: `RMSNormKernel`, `SSDRecurrentFwdOp`, `FusedAddRMSNormFwdOp`. Two carve-outs: `Gemm` and `Bmm` are stems, not abbreviations, and an activation named after its torch function keeps that spelling (`Relu`, `Gelu`, `Silu`, `Selu`, `Prelu`, `Elu`). `scripts/lint/op_naming_lint.py` checks the manifest op names against this.
+- Abbreviation spellings have one source of truth: `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`. The same table applies to manifest entry names and all classes under `src/tileops/` and `workloads/`; add or change spellings there instead of duplicating them in prose.
 
 - Filenames: lowercase with underscores, abbreviations included (`rms_norm.py`, `ssd_decode.py`). Never contract a norm name (`rms_norm`, not `rmsnorm`).
 

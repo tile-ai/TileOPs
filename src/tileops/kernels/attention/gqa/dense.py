@@ -38,12 +38,6 @@ _COMPILE_FLAGS = [
 ]
 
 
-# Causal warp-specialized Dense attention.
-_BLOCK_M = 128
-_BLOCK_N = 128
-_NSK = 2
-_NSV = 2
-_THREADS = 384
 _NMMA = 256
 
 
@@ -218,11 +212,11 @@ def _gqa_dense_ws_kernel(
     sm_scale,
     softcap,
     dtype,
-    block_M=_BLOCK_M,
-    block_N=_BLOCK_N,
-    nsK=_NSK,
-    nsV=_NSV,
-    threads=_THREADS,
+    block_M=128,
+    block_N=128,
+    nsK=2,
+    nsV=2,
+    threads=384,
 ):
     """Build the Dense WS program; its online softmax carries the previous tile's alpha."""
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale

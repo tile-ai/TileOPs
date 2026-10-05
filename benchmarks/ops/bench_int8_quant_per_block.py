@@ -32,6 +32,9 @@ def test_int8_quant_per_block_bench(call) -> None:
         "torch-ref": workload.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
+    noncomparable = {
+        TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes"
+    }
     # vllm requires K to be a whole number of groups, so a ragged K has no vllm row.
     if workload.cols % 128 == 0:
         # vllm's per_token_group_quant_int8 with 128-element groups; on CUDA it runs vllm's
@@ -45,12 +48,7 @@ def test_int8_quant_per_block_bench(call) -> None:
         # vllm divides by ``max(amax, 1e-10) / 127`` and truncates the quotient, so a code
         # can sit one below the reference's in magnitude; the scales agree to float32 rounding.
         functors[VLLM_TAG] = vllm_quant
-    bm.compare(
-        functors,
-        *inputs,
-        noncomparable={
-            VLLM_TAG: "vendor truncates codes and clamps tiny scales; workload requires round-to-nearest"
-        }
-        if VLLM_TAG in functors
-        else None,
-    )
+        noncomparable[VLLM_TAG] = (
+            "vendor truncates codes and clamps tiny scales; workload requires round-to-nearest"
+        )
+    bm.compare(functors, *inputs, noncomparable=noncomparable)

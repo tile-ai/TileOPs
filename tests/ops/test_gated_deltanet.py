@@ -5,6 +5,7 @@ from tests.test_base import TestBase
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
+from workloads.device import run_device
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdWorkload
 from workloads.numerics import compare_outputs
 
@@ -35,10 +36,18 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
     # The FP32 state must not inherit rounding of the chunk's cumulative log-gates.
-    test.check(
-        op,
-        *inputs,
-    )
+    test.check(op, *inputs)
+    reference = test.ref_program(*inputs)
+    evidence = test.verification(*inputs)
+    # Small outputs must not make either returned tensor optional to correctness.
+    for cleared in (0, 1):
+        faulty = list(reference)
+        faulty[cleared] = torch.zeros_like(faulty[cleared])
+        with pytest.raises(AssertionError):
+            compare_outputs(tuple(faulty), reference, evidence)
+        faulty[cleared] = reference[cleared] * 1.1
+        with pytest.raises(AssertionError):
+            compare_outputs(tuple(faulty), reference, evidence)
 
 
 @pytest.mark.sm90
@@ -97,6 +106,35 @@ def test_gated_deltanet_prefill_packs_ragged_sequences_with_grouped_value_heads(
 
 
 @pytest.mark.sm90
+def test_gated_deltanet_prefill_reads_offsets_rewritten_in_place() -> None:
+    """The same tensors, with the boundary between two sequences moved, compute the new split."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1, 0, 2, 64, torch.bfloat16, has_initial_state=True, sequence_lengths=(1, 63, 100, 192)
+    )
+    inputs = test.gen_inputs()
+    op = GatedDeltaNetFwdOp()
+    test.check(op, *inputs)
+    # A cache keyed by tensor identity would replay the first call's split here.
+    inputs[6][2] = 66
+    inputs[7][2] = 66
+    test.check(op, *inputs)
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_prefill_inverts_a_chunk_of_correlated_keys() -> None:
+    """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
+    lower matrix reaches the inverse, and every off-diagonal block depends on another."""
+    test = GatedDeltaNetFwdTest(1, 64, 1, 128, torch.float16)
+    q = torch.zeros(1, 64, 1, 128, dtype=torch.float16, device=run_device())
+    q[..., 0] = 1
+    k, v = q.clone(), torch.ones_like(q)
+    g = torch.zeros(1, 64, 1, dtype=torch.float16, device=run_device())
+    beta = torch.full_like(g, 0.5)
+    test.check(GatedDeltaNetFwdOp(), q, k, v, g, beta)
+
+
+@pytest.mark.sm90
 def test_gated_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(2, 100, 2, 64, torch.bfloat16)
@@ -145,17 +183,14 @@ def test_gated_deltanet_prefill_takes_each_input_transform(
         use_beta_sigmoid_in_kernel=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
     )
-    if dtype == torch.float16:
-        # Measured against the reference: the output reaches 1.03e-3 and the float32
-        # final state 4.3e-3. Both are chunk-decomposition differences the activation
-        # dtype's own 1e-3 bound does not describe, the state's the larger because the
-        # recurrence carries it to the end of the row.
-        test.check(
-            op,
-            *test.gen_inputs(),
-        )
-        return
-    test.check(op, *test.gen_inputs())
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    if l2norm and beta_sigmoid:
+        # Correlated keys expose a truncated triangular inverse that small random
+        # inner products hide. Reuse the same contract and compiled kernel.
+        inputs[1].copy_(inputs[1][:, :1].expand_as(inputs[1]).clone())
+        inputs[4].fill_(-2)
+        test.check(op, *inputs)
 
 
 @pytest.mark.sm90

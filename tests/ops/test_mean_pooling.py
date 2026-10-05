@@ -7,7 +7,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
-from workloads.device import run_device
+from workloads.device import run_device, run_device_is_cuda
 from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index
 
 
@@ -80,7 +80,23 @@ def test_mean_pooling_op(
         seq_lens=seq_lens,
     )
     op = MeanPoolingFwdOp(chunk_size=chunk_size, accum_dtype=torch.float32, tune=tune)
-    test.check(op, *test.gen_inputs())
+    inputs = list(test.gen_inputs())
+    if seq_lens is not None:
+        # Output rows follow the caller's chunk order, not the canonical one.
+        inputs[2] = inputs[2].flip(0).contiguous()
+    if seq_lens is not None and run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            op(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = op(*inputs)
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: output)
+    else:
+        test.check(op, *inputs)
 
 
 @pytest.mark.smoke
@@ -107,7 +123,7 @@ def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
 
 
 def _op() -> MeanPoolingFwdOp:
-    return MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32)
+    return MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
 
 
 def _x() -> torch.Tensor:
@@ -132,12 +148,13 @@ def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
 
 @pytest.mark.smoke
 def test_mean_pooling_rechecks_a_chunk_map_written_in_place() -> None:
-    """A map's checks are skipped while the same tensors come back unchanged, so one edited
-    in place has to be checked again instead of riding the earlier call's result."""
+    """Validation reads live contents, including inference tensors without version counters."""
     op = _op()
-    offsets, indices = mean_pooling_chunk_index([32, 32], 32)
+    with torch.inference_mode():
+        offsets, indices = mean_pooling_chunk_index([32, 32], 32)
     op(_x(), offsets, indices)
-    indices[1, 1] = 5  # a chunk its sequence does not have
+    with torch.inference_mode():
+        indices[1, 1] = 5  # a chunk its sequence does not have
     with pytest.raises(ValueError, match="does not have"):
         op(_x(), offsets, indices)
 

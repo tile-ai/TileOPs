@@ -224,7 +224,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             chunk_size=64,
             threshold=-10.0,
         )
-        _, partition_h, partition_m = fused_gdr_h(
+        partition_h, partition_m = fused_gdr_h(
             k=k,
             v=v,
             a=inverse,
@@ -232,7 +232,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             b=beta,
             initial_state=None,
             output_final_state=True,
-            output_h=False,
             cu_seqlens=cp_cu,
             num_warmup_chunks=warmup_chunks,
             k_rnorm=k_rnorm,
@@ -295,7 +294,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             initial_state,
             self.config["max_local_chunks"],
         )
-        o, _, final_state = fused_gdr_fwd(
+        o, final_state = fused_gdr_fwd(
             q_flat,
             k_flat,
             v_flat,
@@ -305,7 +304,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
             scale=self.scale,
             initial_state=partition_h0,
             output_final_state=True,
-            output_h=False,
             cu_seqlens=offsets,
             cp_seq_map=seq_map,
             raw_cu_seqlens=raw_offsets,

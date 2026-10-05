@@ -23,6 +23,7 @@ __all__ = [
     "assert_close",
     "assert_normalized_error",
     "assert_quantized",
+    "assert_rounded",
     "compare_outputs",
     "describe",
     "logit_mask_validator",
@@ -151,11 +152,13 @@ def zeroed_input(index: int, name: str) -> NegativeControl:
 class Exact:
     """Compare every returned output with an independent reference.
 
-    Explicit tolerances override dtype defaults."""
+    Explicit tolerances override dtype defaults. ``normalized`` adds a bound on each
+    output's normalized squared error, for an atol scaled past the output itself."""
 
     rtol: Optional[float] = None
     atol: Optional[float] = None
     controls: tuple[NegativeControl, ...] = ()
+    normalized: Optional[float] = None
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
@@ -334,6 +337,8 @@ def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckRe
                     equal_nan=True,
                     **evidence.tolerance(reference_tolerance(got.dtype)),
                 )
+                if getattr(evidence, "normalized", None) is not None:
+                    assert_normalized_error(got, target, evidence.normalized)
     # Metrics are diagnostics computed only after all comparisons succeed.
     maximum = 0.0
     checked = 0
@@ -448,6 +453,23 @@ def verify(
         return result
     finally:
         restore()
+        # A caught negative-control failure keeps this frame in a reference cycle
+        # until the next gc pass; drop the snapshots now so they never pile up.
+        pristine.clear()
+        live.clear()
+
+
+def assert_rounded(
+    got: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float = 0
+) -> None:
+    """Allow one adjacent stored value, then enforce the arithmetic error bound.
+
+    Independent reductions can straddle a half/bfloat rounding boundary even when
+    their FP32 error is smaller than a storage step. This allowance applies only
+    to the narrowed output; callers verify FP32 state without it.
+    """
+    adjacent = torch.nextafter(expected, got)
+    torch.testing.assert_close(got.float(), adjacent.float(), atol=atol, rtol=rtol, equal_nan=True)
 
 
 def assert_close(got: Any, expected: Any, *, atol: float, rtol: float) -> None:

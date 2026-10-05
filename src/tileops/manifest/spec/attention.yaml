@@ -230,6 +230,7 @@ GQAPrefillPagedWithKVCacheFwdOp:
       rope_base: {type: float, default: 10000.0}
       max_position: {type: "int | None", default: null}
       rotary_dim: {type: "int | None", default: null}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[T_q, H, D]"}
       k_new: {dtype: T, shape: "[T_q, H_kv, D]"}

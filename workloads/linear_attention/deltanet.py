@@ -154,19 +154,8 @@ class DeltaNetInferenceWorkload(WorkloadBase):
         cu_seqlens: torch.Tensor | None = None,
         cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
-
-        del cu_seqlens_cpu
-        fla_kernel = fused_recurrent_delta_rule if self.seq_len == 1 else chunk_delta_rule
-        return fla_kernel(
-            q,
-            k,
-            v,
-            beta,
-            initial_state=initial_state,
-            output_final_state=True,
-            cu_seqlens=cu_seqlens,
-            use_qk_l2norm_in_kernel=self.l2norm,
+        return deltanet_inference_ref(
+            q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu, l2norm=self.l2norm
         )
 
     def verification(self, *inputs):
@@ -374,19 +363,16 @@ class DeltaNetInferenceCall(CallWorkload):
         )
 
     def ref_program(self, q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu):
-        from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
-
-        fla_kernel = fused_recurrent_delta_rule if q.shape[1] == 1 else chunk_delta_rule
-        return fla_kernel(
+        return deltanet_inference_ref(
             q,
             k,
             v,
             beta,
+            initial_state,
+            cu_seqlens,
+            cu_seqlens_cpu,
             scale=self.call.ix["scale"],
-            initial_state=initial_state,
-            output_final_state=True,
-            cu_seqlens=cu_seqlens,
-            use_qk_l2norm_in_kernel=self.call.ix["use_qk_l2norm_in_kernel"],
+            l2norm=self.call.ix["use_qk_l2norm_in_kernel"],
         )
 
     def verification(self, *inputs):
@@ -405,7 +391,7 @@ def decode_verification(dtype):
 
 
 def inference_verification(dtype, *, decode=False, l2norm=False):
-    from workloads.numerics import Custom, assert_close
+    from workloads.numerics import Custom, assert_close, assert_rounded
 
     # FLA materializes normalized Q/K in the input dtype; our fused decode
     # keeps them in FP32. That path includes input rounding, even for one token.
@@ -416,10 +402,7 @@ def inference_verification(dtype, *, decode=False, l2norm=False):
             # does not apply. The stored output may straddle a half/bfloat rounding
             # boundary after two FP32 reduction orders; allow one adjacent value,
             # then apply the original absolute bound to the remaining error.
-            actual, target = got[0], expected[0]
-            adjacent = torch.nextafter(target, actual)
-            residual = (actual.float() - adjacent.float()).abs()
-            assert_close(residual, torch.zeros_like(residual), atol=4e-8, rtol=0)
+            assert_rounded(got[0], expected[0], atol=4e-8)
             assert_close(got[1], expected[1], atol=4e-8, rtol=4e-8)
 
         return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
@@ -446,4 +429,37 @@ def chunkwise_verification(dtype, *, backward=False):
         return Exact(atol=tol, rtol=tol)
     return Partial(
         1, "chunk intermediates are not produced by the independent oracle", atol=tol, rtol=tol
+    )
+
+
+def deltanet_inference_ref(
+    q,
+    k,
+    v,
+    beta,
+    initial_state=None,
+    cu_seqlens=None,
+    cu_seqlens_cpu=None,
+    *,
+    scale=None,
+    l2norm=False,
+):
+    """FLA inference oracle shared by dense fixtures and packed manifest rows."""
+    from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
+
+    # FLA caches derived sequence metadata by tensor identity. Give it a per-call
+    # snapshot so in-place changes to caller-owned offsets cannot reuse stale indices.
+    cu_seqlens = None if cu_seqlens is None else cu_seqlens.clone()
+
+    reference = fused_recurrent_delta_rule if q.shape[1] == 1 else chunk_delta_rule
+    return reference(
+        q,
+        k,
+        v,
+        beta,
+        scale=scale,
+        initial_state=initial_state,
+        output_final_state=True,
+        cu_seqlens=cu_seqlens,
+        use_qk_l2norm_in_kernel=l2norm,
     )

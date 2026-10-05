@@ -29,10 +29,6 @@ from workloads.moe import MoEPermuteAlignWorkload
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 
 
-def _ceil_div(a: int, b: int) -> int:
-    return (a + b - 1) // b
-
-
 @triton.jit
 def _stage1_count(
     topk_ids_ptr,
@@ -117,7 +113,7 @@ def _triton_permute_align(
     num_tokens_post_pad: torch.Tensor,
 ) -> None:
     numel = topk_ids.numel()
-    tokens_per_thread = _ceil_div(numel, num_experts)
+    tokens_per_thread = triton.cdiv(numel, num_experts)
     grid = (num_experts,)
     tokens_cnts = torch.zeros(
         (num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device

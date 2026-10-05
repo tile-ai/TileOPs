@@ -20,9 +20,9 @@ class RMSNormWorkload(WorkloadBase):
         return x, weight
 
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return ((x_f32 / rms) * weight.float()).to(x.dtype)
+        return _norm_reference(
+            "RMSNormFwdOp", (x, weight), dict(eps=self.eps, normalized_shape=(self.n,))
+        )
 
     def verification(self, *inputs):
         return norm_verification(inputs[0].dtype)
@@ -45,13 +45,9 @@ class LayerNormWorkload(WorkloadBase):
         self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
     ) -> torch.Tensor:
         # Reference uses torch.nn.functional.layer_norm
-        return F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
+        return _norm_reference(
+            "LayerNormFwdOp", (x, weight, bias), dict(eps=self.eps, normalized_shape=(self.n,))
+        )
 
     def verification(self, *inputs):
         return layer_norm_verification(inputs[0].dtype)
@@ -101,11 +97,11 @@ class FusedAddRMSNormWorkload(WorkloadBase):
         residual: torch.Tensor,
         weight: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        add_result = (x.float() + residual.float()).to(x.dtype)
-        add_f32 = add_result.float()
-        rms = torch.sqrt(add_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        y = ((add_f32 / rms) * weight.float()).to(x.dtype)
-        return y, add_result
+        return _norm_reference(
+            "FusedAddRMSNormFwdOp",
+            (x, residual, weight),
+            dict(eps=self.eps, normalized_shape=(self.n,)),
+        )
 
     def verification(self, *inputs):
         return norm_verification(inputs[0].dtype)
@@ -132,15 +128,11 @@ class FusedAddLayerNormWorkload(WorkloadBase):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        add_result = (x.float() + residual.float()).to(x.dtype)
-        y = F.layer_norm(
-            add_result.float(),
-            (self.n,),
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
-        return y, add_result
+        return _norm_reference(
+            "FusedAddLayerNormFwdOp",
+            (x, residual, weight, bias),
+            dict(eps=self.eps, normalized_shape=(self.n,)),
+        )
 
 
 class AdaLayerNormWorkload(WorkloadBase):
@@ -160,15 +152,9 @@ class AdaLayerNormWorkload(WorkloadBase):
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
     ) -> torch.Tensor:
         # AdaLN: y = scale * LayerNorm(x) + shift
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
+        return _norm_reference(
+            "AdaLayerNormFwdOp", (x, scale, shift), dict(eps=self.eps, normalized_shape=(self.n,))
         )
-        y = scale.float() * normed + shift.float()
-        return y.to(x.dtype)
 
 
 class AdaLayerNormZeroWorkload(WorkloadBase):
@@ -193,15 +179,11 @@ class AdaLayerNormZeroWorkload(WorkloadBase):
         gate: torch.Tensor,
     ) -> torch.Tensor:
         # AdaLN-Zero: y = gate * (scale * LayerNorm(x) + shift)
-        normed = F.layer_norm(
-            x.float(),
-            (self.n,),
-            weight=None,
-            bias=None,
-            eps=self.eps,
+        return _norm_reference(
+            "AdaLayerNormZeroFwdOp",
+            (x, scale, shift, gate),
+            dict(eps=self.eps, normalized_shape=(self.n,)),
         )
-        y = gate.float() * (scale.float() * normed + shift.float())
-        return y.to(x.dtype)
 
 
 class GroupNormWorkload(WorkloadBase):
@@ -228,13 +210,9 @@ class GroupNormWorkload(WorkloadBase):
         weight: "torch.Tensor | None" = None,
         bias: "torch.Tensor | None" = None,
     ) -> torch.Tensor:
-        return F.group_norm(
-            x.float(),
-            self.g,
-            weight=None if weight is None else weight.float(),
-            bias=None if bias is None else bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
+        return _norm_reference(
+            "GroupNormFwdOp", (x, weight, bias), dict(eps=self.eps, num_groups=self.g)
+        )
 
 
 class InstanceNormWorkload(WorkloadBase):
@@ -260,14 +238,11 @@ class InstanceNormWorkload(WorkloadBase):
     def ref_program(
         self, x: torch.Tensor, running_mean, running_var, weight: torch.Tensor, bias: torch.Tensor
     ) -> torch.Tensor:
-        return F.instance_norm(
-            x.float(),
-            running_mean=running_mean,
-            running_var=running_var,
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=self.eps,
-        ).to(x.dtype)
+        return _norm_reference(
+            "InstanceNormFwdOp",
+            (x, running_mean, running_var, weight, bias),
+            dict(eps=self.eps, use_input_stats=True, momentum=0.1),
+        )
 
 
 def _make_tensors(N, C, spatial, dtype, device=None):
@@ -361,42 +336,7 @@ class NormCall(CallWorkload):
         self.shape, self.dtype = spec.shape, spec.dtype
 
     def ref_program(self, *inputs):
-        p = self.call.params
-        name = self.call.signature.name
-        x = inputs[0]
-        eps = p.get("eps")
-        eps = torch.finfo(torch.float32).eps if eps is None else eps
-        if name == "GroupNormFwdOp":
-            _, weight, bias = inputs
-            return F.group_norm(x, p["num_groups"], weight, bias, eps)
-        if name in ("InstanceNormFwdOp", "BatchNormFwdOp"):
-            _, rm, rv, weight, bias = inputs
-            if name == "InstanceNormFwdOp":
-                if rm is not None:
-                    rm, rv = rm.clone(), rv.clone()
-                return F.instance_norm(
-                    x, rm, rv, weight, bias, p["use_input_stats"], p["momentum"], eps
-                )
-            return batch_norm_fwd_ref(x, weight, bias, rm, rv, p["training"], p["momentum"], eps)
-        if name in ("AdaLayerNormFwdOp", "AdaLayerNormZeroFwdOp"):
-            _, scale, shift, *gate = inputs
-            normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
-            out = scale.float() * normed + shift.float()
-            return (out * gate[0].float() if gate else out).to(x.dtype)
-        fused = name in ("FusedAddRMSNormFwdOp", "FusedAddLayerNormFwdOp")
-        if fused:
-            x = (x.float() + inputs[1].float()).to(x.dtype)
-            weight, *bias = inputs[2:]
-        else:
-            weight, *bias = inputs[1:]
-        shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
-        w = None if weight is None else weight.float()
-        if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
-            out = F.rms_norm(x.float(), shape, w, eps).to(x.dtype)
-        else:
-            b = None if not bias or bias[0] is None else bias[0].float()
-            out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
-        return (out, x) if fused else out
+        return _norm_reference(self.call.signature.name, inputs, self.call.params)
 
     def verification(self, *inputs):
         return normalization_verification(self.call.signature.name, inputs[0].dtype)
@@ -500,3 +440,41 @@ def normalization_verification(name, dtype):
     if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
         return norm_verification(dtype)
     return Exact()
+
+
+def _norm_reference(name, inputs, p):
+    """One normalization oracle for focused fixtures and manifest calls."""
+    x = inputs[0]
+    eps = p.get("eps")
+    eps = torch.finfo(torch.float32).eps if eps is None else eps
+    if name == "GroupNormFwdOp":
+        _, weight, bias = inputs
+        return F.group_norm(x, p["num_groups"], weight, bias, eps)
+    if name in ("InstanceNormFwdOp", "BatchNormFwdOp"):
+        _, rm, rv, weight, bias = inputs
+        if name == "InstanceNormFwdOp":
+            if rm is not None:
+                rm, rv = rm.clone(), rv.clone()
+            return F.instance_norm(
+                x, rm, rv, weight, bias, p["use_input_stats"], p["momentum"], eps
+            )
+        return batch_norm_fwd_ref(x, weight, bias, rm, rv, p["training"], p["momentum"], eps)
+    if name in ("AdaLayerNormFwdOp", "AdaLayerNormZeroFwdOp"):
+        _, scale, shift, *gate = inputs
+        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
+        out = scale.float() * normed + shift.float()
+        return (out * gate[0].float() if gate else out).to(x.dtype)
+    fused = name in ("FusedAddRMSNormFwdOp", "FusedAddLayerNormFwdOp")
+    if fused:
+        x = (x.float() + inputs[1].float()).to(x.dtype)
+        weight, *bias = inputs[2:]
+    else:
+        weight, *bias = inputs[1:]
+    shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
+    w = None if weight is None else weight.float()
+    if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
+        out = F.rms_norm(x.float(), shape, w, eps).to(x.dtype)
+    else:
+        b = None if not bias or bias[0] is None else bias[0].float()
+        out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
+    return (out, x) if fused else out

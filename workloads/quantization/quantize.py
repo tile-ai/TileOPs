@@ -14,7 +14,6 @@ from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
 _BLOCK = 128
-_FP8_MAX = 448.0
 
 
 def _int8_scale(amax: torch.Tensor) -> torch.Tensor:
@@ -65,9 +64,10 @@ def fp8_quant_per_block(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     padded = _pad_to_blocks(wf, rows=True)
     tiles = padded.view(padded.shape[0] // _BLOCK, _BLOCK, padded.shape[1] // _BLOCK, _BLOCK)
     amax = tiles.abs().amax(dim=(1, 3))
-    scale = torch.where(amax > 0, amax / _FP8_MAX, torch.ones_like(amax))
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    scale = torch.where(amax > 0, amax / fp8_max, torch.ones_like(amax))
     full = scale.repeat_interleave(_BLOCK, 0).repeat_interleave(_BLOCK, 1)[:n, :k]
-    q = (wf / full).clamp(-_FP8_MAX, _FP8_MAX).to(torch.float8_e4m3fn)
+    q = (wf / full).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
     return q, scale
 
 
@@ -142,11 +142,6 @@ class INT8QuantPerChannelWorkload(_QuantizeWorkload):
 class INT8QuantPerBlockWorkload(_QuantizeWorkload):
     def ref_program(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int8_quant_per_block(x)
-
-    def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
 
 
 class FP8QuantPerBlockWorkload(_QuantizeWorkload):

@@ -51,4 +51,7 @@ def test_int8_quant_per_tensor_bench(call) -> None:
             TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
+        noncomparable={
+            TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes",
+        },
     )

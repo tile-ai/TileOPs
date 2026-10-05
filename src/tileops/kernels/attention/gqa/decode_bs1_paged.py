@@ -1,6 +1,6 @@
 """Warp-specialized batch=1 paged GQA decode kernel (SM90), context-split.
 
-``GQADecodePagedBs1Kernel`` dispatches on the runtime ``real_seqlen_kv``: lengths >= 1024
+``GQADecodePagedBs1Kernel`` dispatches on the static page-table capacity: capacities >= 1024
 run a context-only warp-specialized split (one TMA producer warp feeding a four-warp
 wgmma consumer warpgroup, exp2-domain online softmax, fp32 partial reduce via a combine
 kernel); shorter lengths fall back to the generic paged non-split decode kernel.
@@ -132,8 +132,8 @@ def _gqa_decode_paged_bs1_ctx_kernel(
 class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterface):
     """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
-    ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
-    split, shorter lengths run the generic non-split paged GQA decode kernel.
+    ``forward`` specializes from the static page-table capacity; the kernels consume
+    live cache lengths on the device, including during CUDA Graph replay.
     """
 
     supported_archs: list[int] = [90]
@@ -237,8 +237,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         c = self.config
-        real_max = int(real_seqlen_kv.max().item())
-        if real_max < self._MIN_CTX:
+        capacity = self.max_pages_per_req * self.page_size
+        if capacity < self._MIN_CTX:
             kernel = gqa_decode_no_split_paged_kernel(
                 self.batch,
                 self.heads,
@@ -256,7 +256,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             q = Q.view(self.batch, 1, self.heads, self.dim)
             return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
-        ctx_splits = self._ctx_splits_for(real_max)
+        ctx_splits = self._ctx_splits_for(capacity)
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
         return _gqa_decode_paged_bs1_ctx_kernel(
             self.batch,

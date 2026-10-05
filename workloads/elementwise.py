@@ -17,7 +17,7 @@ class ReluWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu(x.float()).to(x.dtype)
+        return _REFERENCES["ReluFwdOp"]({}, x)
 
 
 class FusedGatedBenchCase:
@@ -49,7 +49,7 @@ class AddBroadcastWorkload(WorkloadBase):
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return (a.float() + b.float()).to(a.dtype)
+        return _REFERENCES["AddFwdOp"]({}, a, b)
 
 
 class PowPositiveWorkload(WorkloadBase):
@@ -63,7 +63,7 @@ class PowPositiveWorkload(WorkloadBase):
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.pow(a.float(), b.float()).to(a.dtype)
+        return _REFERENCES["PowFwdOp"]({}, a, b)
 
 
 class BitwiseNotWorkload(WorkloadBase):
@@ -81,7 +81,7 @@ class BitwiseNotWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.bitwise_not(x)
+        return _REFERENCES["BitwiseNotFwdOp"]({}, x)
 
 
 class AddCompileWorkload(WorkloadBase):
@@ -96,7 +96,7 @@ class AddCompileWorkload(WorkloadBase):
         return a, b
 
     def ref_program(self, a, b):
-        return (a.float() + b.float()).to(a.dtype)
+        return _REFERENCES["AddFwdOp"]({}, a, b)
 
 
 class EqCompileWorkload(WorkloadBase):
@@ -113,7 +113,7 @@ class EqCompileWorkload(WorkloadBase):
         return a, b
 
     def ref_program(self, a, b):
-        return a == b
+        return _REFERENCES["EqFwdOp"]({}, a, b)
 
 
 class SiluAndMulCompileWorkload(WorkloadBase):
@@ -127,9 +127,7 @@ class SiluAndMulCompileWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x):
-        gate = x[:, : self.N].float()
-        value = x[:, self.N :].float()
-        return (torch.nn.functional.silu(gate) * value).to(x.dtype)
+        return _REFERENCES["SiluAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -157,7 +155,7 @@ class LogicalNotWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.logical_not(x)
+        return _REFERENCES["LogicalNotFwdOp"]({}, x)
 
 
 class BitwiseWorkload(WorkloadBase):
@@ -345,7 +343,7 @@ def sinusoidal_reference(
 def _gated(activation):
     def reference(a: dict, x: torch.Tensor) -> torch.Tensor:
         half = x.shape[-1] // 2
-        return activation(x[..., :half]) * x[..., half:]
+        return (activation(x[..., :half].float()) * x[..., half:].float()).to(x.dtype)
 
     return reference
 
@@ -541,25 +539,22 @@ def fused_gated_verification(dtype):
 
 class ReluCompileCase(RandnFlatWorkload):
     def ref_program(self, x):
-        return torch.relu(x.float()).to(x.dtype)
+        return _REFERENCES["ReluFwdOp"]({}, x)
 
 
 class AbsCompileCase(RandnFlatWorkload):
     def ref_program(self, x):
-        return torch.abs(x.float()).to(x.dtype)
+        return _REFERENCES["AbsFwdOp"]({}, x)
 
 
 class SignCompileCase(RandnFlatWorkload):
     def ref_program(self, x):
-        return torch.sign(x.float()).to(x.dtype)
+        return _REFERENCES["SignFwdOp"]({}, x)
 
 
 class SiluAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.silu(gate) * value).to(x.dtype)
+        return _REFERENCES["SiluAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -567,10 +562,7 @@ class SiluAndMulCase(GatedRandnWorkload):
 
 class GeluAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.gelu(gate) * value).to(x.dtype)
+        return _REFERENCES["GeluAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -578,10 +570,7 @@ class GeluAndMulCase(GatedRandnWorkload):
 
 class GeluTanhAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        gate = x_f32[:, : self.n]
-        value = x_f32[:, self.n :]
-        return (F.gelu(gate, approximate="tanh") * value).to(x.dtype)
+        return _REFERENCES["GeluTanhAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -589,7 +578,7 @@ class GeluTanhAndMulCase(GatedRandnWorkload):
 
 class AddSameShapeCase(RandnPairWorkload):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return (a.float() + b.float()).to(a.dtype)
+        return _REFERENCES["AddFwdOp"]({}, a, b)
 
 
 class BinarySameShapeCase(RandnPairWorkload, ElementwiseWorkload):
@@ -610,7 +599,7 @@ class BinaryPositiveCase(PositivePairWorkload, ElementwiseWorkload):
 
 class RemainderCase(PositivePairWorkload):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.remainder(a, b)
+        return _REFERENCES["RemainderFwdOp"]({}, a, b)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
@@ -620,7 +609,7 @@ class RemainderCase(PositivePairWorkload):
 
 class FloorDivideCase(PositivePairWorkload):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.floor_divide(a, b)
+        return _REFERENCES["FloorDivideFwdOp"]({}, a, b)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
@@ -634,7 +623,7 @@ class LerpCase(RandnPairWorkload):
         self.weight = weight
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.lerp(a.float(), b.float(), self.weight).to(a.dtype)
+        return _REFERENCES["LerpScalarFwdOp"]({"weight": self.weight}, a, b)
 
     def verification(self, *inputs):
         return lerp_verification(inputs[0].dtype)
@@ -729,9 +718,6 @@ class ErfRoundingWorkload(ElementwiseWorkload):
     def __init__(self, dtype):
         codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
         super().__init__("ErfFwdOp", (codes.view(dtype),))
-
-    def ref_program(self, x):
-        return torch.erf(x.float()).to(x.dtype)
 
     def verification(self, *inputs):
         from workloads.numerics import Custom

@@ -1,7 +1,5 @@
 """Kernel-selection coverage for the remaining paged attention ops."""
 
-from itertools import accumulate
-
 import pytest
 import torch
 
@@ -86,8 +84,7 @@ def test_paged_dispatch_regions(ctor: dict, dtype: torch.dtype, expected: str) -
         extents["pages"], extents["page_size"], 4, dim, dtype=dtype, device="cuda"
     )
     page_table = torch.empty(batch, extents["pages"], dtype=torch.int32, device="cuda")
-    cu_seqlens_q = torch.tensor([0, *accumulate(q_lens)], dtype=torch.int32, device="cuda")
-    call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
+    call = op.paged_call(q, k_pages, page_table)
     assert op.kernel_map[op.select_implementation("gqa_paged", call)].__name__ == expected
 
 

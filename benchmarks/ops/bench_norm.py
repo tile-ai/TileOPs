@@ -72,19 +72,15 @@ def _in_place_fused_add(fn, args: tuple, eps: float):
     return baseline_fn, private
 
 
-def _eps(call) -> float:
-    """The row's ``eps``; ``None`` is float32's machine epsilon, torch's accumulation dtype."""
-    eps = call.params["eps"]
-    return torch.finfo(torch.float32).eps if eps is None else eps
-
-
 @pytest.mark.parametrize("call", manifest_calls(RMSNormFwdOp))
 def test_rms_norm_bench(call) -> None:
     workload = NormCall(call)
     inputs = workload.gen_inputs()
     x, weight = inputs
     op = RMSNormFwdOp(**workload.arguments(), tune=True)
-    shape, eps = (tuple(call.params["normalized_shape"]), _eps(call))
+    shape = tuple(call.params["normalized_shape"])
+    eps = call.params["eps"]
+    eps = torch.finfo(torch.float32).eps if eps is None else eps
     reference = workload.ref_program
     library = {}
     if weight is not None and x.ndim == 2:

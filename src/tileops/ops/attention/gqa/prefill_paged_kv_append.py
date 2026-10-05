@@ -28,9 +28,14 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
     request's logical KV length before append. ``block_table`` maps logical
     page ids to physical pages in ``k_pages`` / ``v_pages``.
 
-    The in-tree kernels refuse a ``page_size`` that is not a power of two, fused RoPE
-    over an FP8 cache, FP8 cache scales that are not finite and positive, and a
-    fused-RoPE call whose cached plus new tokens exceed ``max_position``.
+    The in-tree kernels refuse a ``page_size`` that is not a power of two and fused RoPE
+    over an FP8 cache.
+
+    By default the op does not check tensor contents. An FP8 cache scale that is not
+    finite and positive can corrupt the output, and with fused RoPE a request whose
+    cached plus new tokens exceed ``max_position`` reads the RoPE table out of bounds. The
+    caller guarantees both, or passes ``validate_inputs=True``, which checks them on every
+    call at the cost of device synchronizations and cannot run inside CUDA Graph capture.
     """
 
     compile_boundary = True
@@ -72,6 +77,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -81,7 +87,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         Args:
             page_size: Manifest ``params.page_size``, ``int``.
             max_seqlen_q: Manifest ``params.max_seqlen_q``, the launch bound the kernel
-                is built for; a call whose longest request exceeds it is refused.
+                is built for; callers must keep every request within it.
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
             cache_dtype: Manifest ``params.cache_dtype``, ``dtype | None``, default ``None``.
             sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``,
@@ -92,11 +98,14 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             max_position: Manifest ``params.max_position``, ``int | None``, default ``None``.
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``,
                 which rotates each call's full head dimension.
+            validate_inputs: Check scale values and RoPE positions on the CPU.
+                Synchronizes the device; enable only outside CUDA Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
+        self.validate_inputs = validate_inputs
         self.max_seqlen_q = max_seqlen_q
         self.page_size = page_size
         self.is_causal = is_causal
@@ -266,7 +275,8 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._check_call_values(k_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens)
+        if self.validate_inputs:
+            self._check_call_values(k_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens)
         q, k_new, v_new, k_scale, v_scale, cu_seqlens_q, cache_seqlens, block_table = (
             t.contiguous()
             for t in (q, k_new, v_new, k_scale, v_scale, cu_seqlens_q, cache_seqlens, block_table)

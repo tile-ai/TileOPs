@@ -105,24 +105,22 @@ class GQAPagedFwdOp(Op):
         q: torch.Tensor,
         k_pages: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
     ) -> AttentionCall:
         """State what one paged call is, for selection to filter against.
 
-        The query lengths are read from every step of ``cu_seqlens_q``: a packed
-        total equal to the batch does not by itself mean one token per request.
+        Device offsets stay runtime data. Only a single request is provably uniform
+        from shapes; total tokens / batch never establishes per-request lengths.
         """
         _, heads, dim = q.shape
         num_pages, page_size, heads_kv, _ = k_pages.shape
         batch, max_pages_per_req = page_table.shape
-        q_lens = (cu_seqlens_q[1:] - cu_seqlens_q[:-1]).tolist()
         return AttentionCall(
             dtype=q.dtype,
             batch=batch,
             heads=heads,
             heads_kv=heads_kv,
             dim=dim,
-            max_seqlen_q=max(q_lens, default=0),
+            max_seqlen_q=q.shape[0],
             seqlen_kv=num_pages * page_size,
             page_size=page_size,
             max_pages_per_req=max_pages_per_req,
@@ -132,7 +130,7 @@ class GQAPagedFwdOp(Op):
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
             is_fp8=torch.float8_e4m3fn in (q.dtype, k_pages.dtype),
-            is_uniform=len(set(q_lens)) <= 1,
+            is_uniform=batch == 1,
             cache_dtype=k_pages.dtype,
             fuse_rope=self.pos_encoding_mode == "rope",
             device=q.device,
@@ -206,7 +204,7 @@ class GQAPagedFwdOp(Op):
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
-        call = self.paged_call(q, k_pages, page_table, cu_seqlens_q)
+        call = self.paged_call(q, k_pages, page_table)
         inputs = (
             q,
             k_pages.flatten(0, 1),

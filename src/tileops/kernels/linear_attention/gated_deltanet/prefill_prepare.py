@@ -14,7 +14,6 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gated_deltanet.prefill_common import (
     L2NORM_EPS,
-    prepare_chunk_offsets,
     step_size,
 )
 
@@ -104,9 +103,8 @@ def prefill_chunk_local_cumsum_bthd_tl(
                         )
                         if gate_in_kernel:
                             biased = raw + shift_s[hid]
-                            softplus = T.log(T.float32(1.0) + T.exp(biased))
                             chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
-                                biased > softplus_threshold, biased, softplus
+                                biased > softplus_threshold, biased, T.log1p(T.exp(biased))
                             )
                         else:
                             chunk_s[i, hid] = raw
@@ -511,7 +509,9 @@ def _prefill_blocksolve_A_bthd_tl(
                     i_s[3, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
                 T.sync_threads()
 
-                for _r in T.Serial(1):
+                # For a strictly lower triangular L, L**block_c = 0. Repeated
+                # doubling forms I + L + ... + L**(block_c - 1), the full inverse.
+                for _r in T.Serial((block_c - 1).bit_length()):
                     T.clear(tmp)
                     T.gemm(a_s[0, :, :], i_s[0, :, :], tmp)
                     for i, j in T.Parallel(block_c, block_c):
@@ -559,16 +559,8 @@ def _prefill_blocksolve_A_bthd_tl(
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[1, i, j] = -tmp[i, j]
 
-                T.clear(tmp)
-                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    work_s[0, i, j] = tmp[i, j]
-                T.sync_threads()
-                T.clear(tmp)
-                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
-                for i, j in T.Parallel(block_c, block_c):
-                    a_s[4, i, j] = -tmp[i, j]
-
+                # The (2, 0) block needs the original (2, 1) block. Consume it
+                # before overwriting a_s[4] with the inverse's (2, 1) block.
                 T.clear(tmp)
                 T.gemm(a_s[3, :, :], i_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
@@ -582,6 +574,16 @@ def _prefill_blocksolve_A_bthd_tl(
                 T.gemm(i_s[2, :, :], work_s[0, :, :], tmp)
                 for i, j in T.Parallel(block_c, block_c):
                     a_s[3, i, j] = -tmp[i, j]
+
+                T.clear(tmp)
+                T.gemm(i_s[2, :, :], a_s[4, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    work_s[0, i, j] = tmp[i, j]
+                T.sync_threads()
+                T.clear(tmp)
+                T.gemm(work_s[0, :, :], i_s[1, :, :], tmp)
+                for i, j in T.Parallel(block_c, block_c):
+                    a_s[4, i, j] = -tmp[i, j]
 
                 T.clear(tmp)
                 T.gemm(a_s[6, :, :], i_s[0, :, :], tmp)
@@ -1080,11 +1082,9 @@ def _build_prepare_h_kernel(
     b_dtype,
     h0_dtype,
     ht_dtype,
-    h_dtype,
     seqlen_dtype,
     use_initial_state,
     store_final_state,
-    store_h,
     is_varlen,
     is_cp,
     l2norm=False,
@@ -1094,7 +1094,6 @@ def _build_prepare_h_kernel(
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
-    num_chunks = T.dynamic("num_chunks")
     block_S = chunk_size
     # A build that does not normalize never reads this tensor, and the host hands it one
     # token so the allocation carries no cost.
@@ -1107,7 +1106,6 @@ def _build_prepare_h_kernel(
         g_shape = (1, num_tokens, H)
         b_shape = (1, num_tokens, H)
         rnorm_shape = (1, rnorm_tokens, Hg)
-        h_shape = (1, num_chunks, H, DK, DV)
     else:
         k_shape = (batch_size, num_tokens, Hg, DK)
         v_shape = (batch_size, num_tokens, H, DV)
@@ -1115,7 +1113,6 @@ def _build_prepare_h_kernel(
         g_shape = (batch_size, num_tokens, H)
         b_shape = (batch_size, num_tokens, H)
         rnorm_shape = (batch_size, rnorm_tokens, Hg)
-        h_shape = (batch_size, num_chunks, H, DK, DV)
     h0_shape = (batch_size, H, DK, DV)
     ht_shape = (batch_size, H, DK, DV)
     m_shape = (batch_size, H, DK, DK)
@@ -1130,9 +1127,7 @@ def _build_prepare_h_kernel(
         k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
         h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
-        chunk_offsets: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         num_warmup_chunks: T.Tensor([batch_size, H], dtype=seqlen_dtype),
-        h: T.Tensor(h_shape, dtype=h_dtype),
         ht: T.Tensor(ht_shape, dtype=ht_dtype),
         mt: T.Tensor(m_shape, dtype=ht_dtype),
     ):
@@ -1143,14 +1138,10 @@ def _build_prepare_h_kernel(
             batch_idx = T.alloc_var("int32")
             seq_start_idx = T.alloc_var("int32")
             seq_end_idx = T.alloc_var("int32")
-            _seq_split_idx = T.alloc_var("int32")
-            chunk_start_idx = T.alloc_var("int32")
-            _chunk_split_idx = T.alloc_var("int32")
 
             batch_idx = 0 if is_varlen else bb
             seq_start_idx = cu_seqlens[bb] if is_varlen else 0
             seq_end_idx = cu_seqlens[bb + 1] if is_varlen else num_tokens
-            chunk_start_idx = chunk_offsets[bb] if is_varlen else 0
 
             num_iters = T.alloc_var("int32")
             num_iters = (
@@ -1481,11 +1472,6 @@ def _build_prepare_h_kernel(
 
                         T.barrier_wait(bar_0, i_s % 2)
                         T.barrier_wait(bar_1, i_s % 2)
-                        if store_h:
-                            T.copy(
-                                h_shared,
-                                h[batch_idx, chunk_start_idx + i_s, bh, 0:DK, 0:DV],
-                            )
 
     return prepare_h_kernel
 
@@ -1498,7 +1484,6 @@ def fused_gdr_h(
     b: torch.Tensor,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = True,
-    output_h: bool = True,
     chunk_size: int = 64,
     cu_seqlens: torch.LongTensor | None = None,
     num_warmup_chunks: torch.LongTensor | None = None,
@@ -1515,16 +1500,11 @@ def fused_gdr_h(
     if cu_seqlens is None:
         assert num_warmup_chunks is None
         real_batch_size = batch_size
-        num_chunks = tilelang.cdiv(num_tokens, chunk_size) if output_h else 0
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        chunk_offsets = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
         is_varlen = False
         is_cp = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        chunk_offsets = prepare_chunk_offsets(cu_seqlens, chunk_size).to(cu_seqlens.dtype)
-        # Only a per-chunk buffer needs the count, and reading it synchronizes the device.
-        num_chunks = int(chunk_offsets[-1].item()) if output_h else 0
         is_varlen = True
         if num_warmup_chunks is None:
             num_warmup_chunks = torch.empty(
@@ -1539,7 +1519,6 @@ def fused_gdr_h(
         initial_state = torch.empty(
             (real_batch_size, H, K, V), dtype=torch.float32, device=k.device
         )
-    h = torch.empty((batch_size, num_chunks, H, K, V), dtype=k.dtype, device=k.device)
     ht_dtype = k.dtype if is_cp else torch.float32
     final_state = torch.empty((real_batch_size, H, K, V), dtype=ht_dtype, device=k.device)
     final_correction = torch.empty((real_batch_size, H, K, K), dtype=ht_dtype, device=k.device)
@@ -1555,12 +1534,10 @@ def fused_gdr_h(
         b_dtype=b.dtype,
         h0_dtype=initial_state.dtype,
         ht_dtype=final_state.dtype,
-        h_dtype=h.dtype,
         seqlen_dtype=cu_seqlens.dtype,
         accum_dtype="float32",
         use_initial_state=use_initial_state,
         store_final_state=output_final_state,
-        store_h=output_h,
         is_varlen=is_varlen,
         is_cp=is_cp,
         l2norm=l2norm,
@@ -1578,9 +1555,7 @@ def fused_gdr_h(
         k_rnorm,
         initial_state,
         cu_seqlens,
-        chunk_offsets,
         num_warmup_chunks,
-        h,
         final_state,
         final_correction,
     )
@@ -1588,7 +1563,5 @@ def fused_gdr_h(
     if not output_final_state:
         final_state = None
         final_correction = None
-    if not output_h:
-        h = None
 
-    return h, final_state, final_correction
+    return final_state, final_correction

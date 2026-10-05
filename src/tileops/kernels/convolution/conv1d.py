@@ -627,9 +627,6 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
-        self._weight_flat_cache_source: Optional[torch.Tensor] = None
-        self._weight_flat_cache_version: Optional[int] = None
-        self._weight_flat_cache: Optional[torch.Tensor] = None
         self.kernel = _conv1d_kernel(
             n,
             c_in,
@@ -660,34 +657,16 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(self.dtype, self.device_index, block_n=[64, 128])
 
-    def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
-        """Return the weight laid out as the prim_func's ``(c_out, k_total)``.
-
-        k runs over ``(kernel_l, c_in)``, so this is a permute the caller's
-        ``(c_out, c_in, kernel_l)`` cannot alias. Held per weight identity and version:
-        a weight is a parameter, so it repeats across calls.
-        """
-        weight_version = weight._version
-        if (
-            self._weight_flat_cache_source is weight
-            and self._weight_flat_cache_version == weight_version
-            and self._weight_flat_cache is not None
-        ):
-            return self._weight_flat_cache
-
-        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
-        self._weight_flat_cache_source = weight
-        self._weight_flat_cache_version = weight_version
-        self._weight_flat_cache = weight_flat
-        return weight_flat
-
     def forward(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return launch(self, x, self._get_weight_flat(weight), bias=bias)
+        # The implicit-GEMM K axis is (kernel_l, c_in). Materialize it from live
+        # weights so inference tensors and graph replay need no version cache.
+        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
+        return launch(self, x, weight_flat, bias=bias)
 
 
 class GroupConv1dKernel(Kernel, Conv1dFwdInterface):

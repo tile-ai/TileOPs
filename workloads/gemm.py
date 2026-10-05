@@ -10,9 +10,6 @@ from workloads.workload_base import WorkloadBase
 W4A16_GROUP_SIZE = 128
 
 
-_FP8_INIT_SCALE: float = 0.25
-
-
 class GemmWorkload(WorkloadBase):
     def __init__(
         self,
@@ -394,13 +391,14 @@ class BmmFP8Workload(WorkloadBase):
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        init_scale = 0.25  # Keep FP8 products in range for this fixture.
         a = (
-            (torch.randn(self.batch, self.m, self.k, device=run_device()) * _FP8_INIT_SCALE)
+            (torch.randn(self.batch, self.m, self.k, device=run_device()) * init_scale)
             .to(self.dtype)
             .contiguous()
         )
         b = (
-            (torch.randn(self.batch, self.k, self.n, device=run_device()) * _FP8_INIT_SCALE)
+            (torch.randn(self.batch, self.k, self.n, device=run_device()) * init_scale)
             .to(self.dtype)
             .contiguous()
         )

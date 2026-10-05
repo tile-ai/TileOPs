@@ -16,19 +16,41 @@ def test_gated_deltanet_fwd_bench(call) -> None:
     inputs = workload.gen_inputs()
     op = GatedDeltaNetFwdOp(**workload.arguments())
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
-    offsets = inputs[6]
-    if offsets is None:
-        offsets = (
-            torch.arange(inputs[0].shape[0] + 1, dtype=torch.int64, device=inputs[0].device)
-            * inputs[0].shape[1]
+
+    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+        from fla.ops.gated_delta_rule import (
+            chunk_gated_delta_rule,
+            fused_recurrent_gated_delta_rule,
         )
 
-    def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+        # FLA caches derived metadata by tensor identity; snapshot the live call.
+        cu = None if cu is None else cu.clone()
+        cu_cpu = None if cu_cpu is None else cu_cpu.clone()
         if call.ix["use_gate_in_kernel"]:
-            g = (-torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)).to(g.dtype)
+            g = -torch.exp(a_log) * F.softplus(g.float() + dt_bias)
+        if call.ix["use_beta_sigmoid_in_kernel"]:
+            beta = torch.sigmoid(beta.float()) * (2.0 if call.ix["allow_neg_eigval"] else 1.0)
+        arguments = dict(
+            scale=q.shape[-1] ** -0.5 if call.ix["scale"] is None else call.ix["scale"],
+            initial_state=state,
+            output_final_state=True,
+            cu_seqlens=cu,
+            use_qk_l2norm_in_kernel=call.ix["use_qk_l2norm_in_kernel"],
+            state_v_first=call.ix["state_v_first"],
+        )
+        if q.shape[1] == 1:
+            return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)
+        return chunk_gated_delta_rule(q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_cpu, **arguments)
+
+    def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+        offsets = cu
+        if offsets is None:
+            offsets = torch.arange(q.shape[0] + 1, dtype=torch.int64, device=q.device) * q.shape[1]
+        if call.ix["use_gate_in_kernel"]:
+            g = -torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)
         if call.ix["use_beta_sigmoid_in_kernel"]:
             factor = 2.0 if call.ix["allow_neg_eigval"] else 1.0
-            beta = (torch.sigmoid(beta.float()) * factor).to(beta.dtype)
+            beta = torch.sigmoid(beta.float()) * factor
         if state is not None and not call.ix["state_v_first"]:
             state = state.transpose(-1, -2).contiguous()
         dim = q.shape[-1]
@@ -104,10 +126,18 @@ def test_gated_deltanet_fwd_bench(call) -> None:
             final = final.transpose(-1, -2).contiguous()
         return out[..., :dim].to(q.dtype), final[..., :dim, :dim].contiguous()
 
-    functors = {"tileops": op, "fla": workload.ref_program, FLASHINFER_TAG: flashinfer_fn}
-    if inputs[0].shape[1] == 1 and inputs[6] is None and not call.ix["allow_neg_eigval"]:
-        functors["flashinfer-decode"] = decode_fn
-    ManifestBenchmark(op, workload).compare(
-        functors,
-        *inputs,
-    )
+    functors = {"tileops": op, "fla": fla_fn, FLASHINFER_TAG: flashinfer_fn}
+    noncomparable = None
+    if inputs[0].shape[1] == 1:
+        # A decode step is checked against the FP32 recurrence; both FlashInfer
+        # paths carry BF16- or FP16-grade error into the FP32 state.
+        noncomparable = {
+            FLASHINFER_TAG: "chunk prefill kernel multiplies the FP32 state at input precision"
+        }
+        if inputs[6] is None and not call.ix["allow_neg_eigval"]:
+            functors["flashinfer-decode"] = decode_fn
+            noncomparable["flashinfer-decode"] = (
+                "takes Q/K/V and the raw gate and step-size logits as BF16; converting "
+                "the workload's log decay and step size rounds both"
+            )
+    ManifestBenchmark(op, workload).compare(functors, *inputs, noncomparable=noncomparable)

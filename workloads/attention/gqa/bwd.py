@@ -124,9 +124,16 @@ class GQABwdWorkload(WorkloadBase):
             return tuple(grad.to(dtype) for grad in gradients)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
+        from workloads.numerics import Exact, reference_tolerance, zeroed_input
 
-        return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=5e-3, rtol=1e-5)
+        # Gradients reach |g| ~ 8, where one stored step exceeds any fixed atol: the dtype
+        # rtol covers that step, the 5e-3 floor the FP32 accumulation error near zero.
+        tolerance = reference_tolerance(inputs[0].dtype)
+        return Exact(
+            controls=(zeroed_input(0, "first-input-zeroed"),),
+            atol=max(5e-3, tolerance["atol"]),
+            rtol=tolerance["rtol"],
+        )
 
 
 class GQABwdCall(CallWorkload, GQABwdWorkload):

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -104,7 +104,10 @@ class FP8LightningIndexerFwdOp(Op):
         if index_k_scale is None:
             # A bf16 call is quantized here; the kernel indexes FP8 keys and their scales.
             index_q = index_q.to(torch.float8_e4m3fn)
-            index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
+            key_f32 = index_k.float()
+            scale = key_f32.abs().amax(dim=-1, keepdim=True).clamp(min=1e-4) / FP8_E4M3_MAX
+            index_k = (key_f32 * scale.reciprocal()).to(torch.float8_e4m3fn)
+            index_k_scale = scale.squeeze(-1)
         batch, seq_len, heads, index_dim = index_q.shape
         _, seq_len_kv, kv_group, _ = index_k.shape
         call = FP8LightningIndexerCall(
@@ -123,17 +126,6 @@ class FP8LightningIndexerFwdOp(Op):
         )
         self.kernel = self.kernel_for("fp8_lightning_indexer", call)
         return self.kernel(*inputs)
-
-    def per_custom_dims_cast_to_fp8(
-        self, x: torch.Tensor, dims: Tuple[int], use_ue8m0: bool
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        x_absmax = x.to(torch.float32).abs().amax(dim=-1, keepdim=True).clamp(1e-4)
-        sf = x_absmax / FP8_E4M3_MAX
-        if use_ue8m0:
-            assert sf.view(-1).amax().item() > 0
-            sf = torch.pow(2.0, torch.ceil(torch.log2(x_absmax)))
-        x_scaled = (x.to(torch.float32) * (1.0 / sf)).to(torch.float8_e4m3fn)
-        return x_scaled, sf.squeeze(-1)
 
     def compute_roof(self) -> str:
         """Index scores contract at fp8 regardless of the input form."""
