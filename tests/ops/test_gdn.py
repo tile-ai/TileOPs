@@ -60,9 +60,7 @@ def test_gdn_dense_prefill_continues_an_initial_state() -> None:
 def test_gdn_dense_prefill_carries_a_value_major_state() -> None:
     """The caller's state is ``[N, HV, V, K]`` at both ends of the recurrence."""
     torch.manual_seed(42)
-    test = GDNFwdTest(
-        1, 64, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
-    )
+    test = GDNFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True)
     op = GDNFwdOp(state_v_first=True)
     test.check(op, *test.gen_inputs())
 
@@ -72,9 +70,7 @@ def test_gdn_dense_prefill_carries_a_value_major_state() -> None:
 def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     """The partition correction reads and writes the caller's layout, not the recurrence's."""
     torch.manual_seed(42)
-    test = GDNFwdTest(
-        1, 512, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
-    )
+    test = GDNFwdTest(1, 512, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True)
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
@@ -269,9 +265,7 @@ def test_gdn_decode_runs_each_recurrence_flag(flags: dict) -> None:
 def test_gdn_decode_groups_value_heads_over_a_64_wide_state() -> None:
     """A batch and head counts that are neither powers of two nor warp multiples."""
     torch.manual_seed(42)
-    test = GDNFwdTest(
-        17, 1, 6, 64, torch.bfloat16, has_initial_state=True, value_heads=12
-    )
+    test = GDNFwdTest(17, 1, 6, 64, torch.bfloat16, has_initial_state=True, value_heads=12)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
