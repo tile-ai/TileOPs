@@ -361,16 +361,31 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
     return w
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows, cols, group_size, make",
     [
-        pytest.param(64, 1024, 128, _int4_special_groups, id="special-groups"),
+        pytest.param(
+            64, 1024, 128, _int4_special_groups, id="special-groups", marks=pytest.mark.smoke
+        ),
         # Two lanes to a group, and a partial last CTA.
-        pytest.param(37, 1024, 64, lambda w: w, id="group-64"),
+        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.smoke),
         # One CTA of two warps to a row, whose 68 chunks leave most slots of the second empty.
-        pytest.param(19, 2176, 2176, _int4_special_groups, id="per-channel-uneven"),
-        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start"),
+        pytest.param(
+            19,
+            2176,
+            2176,
+            _int4_special_groups,
+            id="per-channel-uneven",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start", marks=pytest.mark.smoke),
+        # Manifest workload shapes. The nightly runs `full or nightly` and the benchmark's
+        # DeepSpeed baseline is noncomparable, so these are the op's only reference check there.
+        pytest.param(14336, 4096, 128, lambda w: w, id="llama-8b-mlp-up", marks=pytest.mark.full),
+        pytest.param(4096, 4096, 64, lambda w: w, id="llama-8b-q-proj", marks=pytest.mark.full),
+        pytest.param(
+            14336, 4096, 4096, lambda w: w, id="llama-8b-mlp-up-chan", marks=pytest.mark.full
+        ),
     ],
 )
 def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
