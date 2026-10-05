@@ -336,15 +336,6 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
         return super().refusal(call)
 
     @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 64,
-            "block_n": 64 if self.dim <= 128 else 32,
-            "num_stages": 1,
-            "threads": 128,
-        }
-
-    @property
     def autotune_configs(self) -> list[dict]:
         return _tile_stage_thread_configs()
 
@@ -701,15 +692,6 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
         if call.fuse_rope:
             return "does not serve fused RoPE"
         return super().refusal(call)
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 64,
-            "block_n": 64 if self.dim <= 128 else 32,
-            "num_stages": 1,
-            "threads": 128,
-        }
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1195,15 +1177,6 @@ class GQAPrefillPagedWithKVCacheRoPEFwdKernel(PagedPrefillKernel):
             )
         if self.rotary_dim <= 0 or self.rotary_dim % 2 != 0 or self.rotary_dim > self.dim:
             raise ValueError("rotary_dim must be positive, even, and <= dim")
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 64,
-            "block_n": 64 if self.dim <= 128 else 32,
-            "num_stages": 1,
-            "threads": 128,
-        }
 
     @property
     def autotune_configs(self) -> list[dict]:

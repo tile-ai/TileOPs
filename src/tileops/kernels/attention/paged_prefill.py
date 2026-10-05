@@ -1,4 +1,5 @@
-"""The constructor and build identity every paged GQA prefill implementation shares."""
+"""The constructor, build identity and default tiling every paged GQA prefill implementation
+shares."""
 
 from typing import Optional
 
@@ -6,6 +7,7 @@ import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQAPrefillPagedFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_shared_memory_optin
 
 __all__ = ["PagedPrefillKernel"]
 
@@ -21,10 +23,43 @@ class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None``.
 
-        Every implementation indexes pages by shift. A subclass states its own region
-        and asks this for the page-size limit.
+        Every implementation indexes pages by shift and attends over the same query, K and V
+        tiles. A subclass states its own region and asks this for the page-size and tile limits.
         """
-        return cls.page_size_refusal(call.page_size)
+        reason = cls.page_size_refusal(call.page_size)
+        if reason is not None or not call.smem_budget:
+            return reason
+        need = cls._shared_bytes(cls._tilings(call.dim)[-1], call.dim, call.dtype.itemsize)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"its narrowest default tile needs {need} bytes of shared memory per block at head "
+            f"dim {call.dim}; the device gives {call.smem_budget}"
+        )
+
+    @staticmethod
+    def _tilings(dim: int) -> list[dict]:
+        """The default's tilings, widest first. The query tile stays at 64 rows: each warp takes
+        16, and where the K and V tiles narrow one block fills the SM, so fewer rows idle it."""
+        wide = {"block_m": 64, "block_n": 64 if dim <= 128 else 32, "num_stages": 1, "threads": 128}
+        return [wide, {**wide, "block_n": 16}]
+
+    @staticmethod
+    def _shared_bytes(config: dict, dim: int, elem: int) -> int:
+        """Shared memory of the attend program at *config*: the query tile, one K and one V tile."""
+        return (config["block_m"] + 2 * config["block_n"]) * dim * elem
+
+    @property
+    def default_config(self) -> dict:
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index), self.dim, self.dtype.itemsize
+        )
+
+    @classmethod
+    def _default_config_for(cls, budget: int, dim: int, elem: int) -> dict:
+        """The widest tiling *budget* bytes of shared memory per block hold."""
+        tilings = cls._tilings(dim)
+        return next((c for c in tilings if cls._shared_bytes(c, dim, elem) <= budget), tilings[-1])
 
     @staticmethod
     def page_size_refusal(page_size: int) -> Optional[str]:
