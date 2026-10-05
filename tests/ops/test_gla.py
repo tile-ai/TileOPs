@@ -10,6 +10,7 @@ from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention.call_spec import GLAChunkCall
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
 from tileops.kernels.linear_attention.gla.chunk_bwd import GLABwdKernel
+from tileops.kernels.linear_attention.gla.chunk_fwd import GLAFwdKernel
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
@@ -113,6 +114,60 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("arch", "budget", "dim_k", "dim_v", "dtype", "need"),
+    [
+        pytest.param(89, 101376, 128, 128, torch.float16, None, id="sm89-fp16-128"),
+        pytest.param(89, 101376, 128, 256, torch.float16, 122880, id="sm89-fp16-128x256-refused"),
+        pytest.param(89, 101376, 128, 128, torch.float32, 147456, id="sm89-fp32-128-refused"),
+        pytest.param(89, 101376, 256, 64, torch.float16, 163840, id="sm89-fp16-256x64-refused"),
+        pytest.param(90, 232448, 128, 128, torch.float32, None, id="sm90-fp32-128"),
+    ],
+)
+def test_gla_fwd_refuses_what_no_placement_fits(
+    arch: int, budget: int, dim_k: int, dim_v: int, dtype: torch.dtype, need: int | None
+) -> None:
+    """At chunk 64 the 256 x 64 call is refused by what the output pass holds while A is summed,
+    the other two by what its GEMMs read."""
+    call = GLAChunkCall(
+        arch=arch,
+        sm_count=1,
+        smem_budget=budget,
+        batch=1,
+        seq_len=128,
+        heads=2,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        chunk_size=64,
+        dtype=dtype,
+    )
+    op = GLAChunkFwdOp(chunk_size=64)
+    if need is None:
+        assert op.select_implementation("gla_fwd", call) == "gla_fwd"
+    else:
+        with pytest.raises(ValueError, match=f"needs at least {need} bytes"):
+            op.select_implementation("gla_fwd", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("budget", "chunk_size", "dim_k", "dim_v", "stages"),
+    [
+        pytest.param(101376, 64, 128, 128, 3, id="sm89-c64"),
+        pytest.param(101376, 128, 64, 128, 2, id="sm89-c128"),
+        pytest.param(232448, 128, 64, 128, 3, id="sm90-c128"),
+    ],
+)
+def test_gla_fwd_stages_follow_the_shared_memory_budget(
+    budget: int, chunk_size: int, dim_k: int, dim_v: int, stages: int
+) -> None:
+    """The state pass takes the deepest of three pipeline stages its fp16 slice fits."""
+    config = GLAFwdKernel._default_config_for(budget, chunk_size, dim_k, dim_v, 2)
+    assert config["num_stages"] == stages
 
 
 def _fla_autograd_bwd(
