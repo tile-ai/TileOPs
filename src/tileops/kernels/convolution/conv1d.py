@@ -812,14 +812,40 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        block_m, block_n, block_k = 64, 128, 128
+        num_stages = conv_num_stages(self.device_index)
+        cap = get_shared_memory_optin(self.device_index)
+        while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
+            num_stages -= 1
         return {
-            "block_m": 64,
-            "block_n": 128,
-            "block_k": 128,
-            "num_stages": conv_num_stages(self.device_index),
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": num_stages,
             "threads": 128,
             "enable_rasterization": True,
         }
+
+    def _shared_bytes(self, block_m: int, block_n: int, block_k: int, num_stages: int) -> int:
+        """Upper bound on the program's shared memory. The pipeline buffers each weight
+        tile per stage, and each x tile too where the x load is a plain copy; otherwise the
+        masked gather holds one. The output tile is counted once."""
+        per_stage = block_m * block_k
+        once = block_m * block_n
+        if self._x_copied_per_stage(block_n, block_k):
+            per_stage += block_k * block_n
+        else:
+            once += block_k * block_n
+        return (num_stages * per_stage + once) * self.dtype.itemsize
+
+    def _x_tiles_inside(self, block_n: int) -> bool:
+        last = (self.out_l - 1) * self.stride_l + (self.kernel_l - 1) * self.dilation_l
+        return self.pad_left == 0 and self.out_l % block_n == 0 and last < self.l_in
+
+    def _x_copied_per_stage(self, block_n: int, block_k: int) -> bool:
+        """The x load is a plain copy where every x tile lies inside the input and the k
+        tiles divide ``k_total``."""
+        return self._x_tiles_inside(block_n) and self.k_total % block_k == 0
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -855,6 +881,10 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     @property
     def default_config(self) -> dict:
         return {**super().default_config, "taps": 1}
+
+    def _x_copied_per_stage(self, block_n: int, block_k: int) -> bool:
+        # A k tile holds one tap's channels, so its x copy is a rectangle even when they run short.
+        return self._x_tiles_inside(block_n)
 
     @property
     def autotune_configs(self) -> list[dict]:
