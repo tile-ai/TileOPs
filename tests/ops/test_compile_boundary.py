@@ -771,6 +771,7 @@ def _cases():
 for _op_cls in (
     GQADenseFwdOp,
     GQABwdOp,
+    GQAVarlenFwdOp,
     GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
