@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.convolution import Conv1dUnitStrideKernel
 from tileops.ops import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -375,22 +374,15 @@ def test_conv1d_dispatches_kernel(
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
 
 
-class _TwoTapConv1dKernel(Conv1dUnitStrideKernel):
-    """Pin two taps per k tile, which the untuned default never picks."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.config = {**self.default_config, "block_m": 32, "block_n": 32, "taps": 2}
-
-
-@pytest.mark.smoke
-@pytest.mark.cuda_only
-def test_conv1d_two_taps_per_k_tile_matches_torch() -> None:
-    """Two taps share a k tile: c_in = 130 puts each tap's weight columns off a 16-byte
-    boundary and needs two channel blocks, and the padding gives boundary CTAs."""
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_conv1d_unit_stride_under_tuning(tune: bool) -> None:
+    """c_in = 130 puts each tap's weight columns off a 16-byte boundary and needs two channel
+    blocks; the padding gives boundary CTAs, whichever taps per k tile tuning picks."""
     test = Conv1dTest(1, 130, 260, 67, 4, 1, 3, 2, 1, torch.float16)
-    op = Conv1dFwdOp(padding=3, dilation=2, kernel_map={"conv1d_unit_stride": _TwoTapConv1dKernel})
-    test.check(op, *test.gen_inputs())
+    test.check(Conv1dFwdOp(padding=3, dilation=2, tune=tune), *test.gen_inputs())
 
 
 class Conv2dFixture(FixtureBase):
