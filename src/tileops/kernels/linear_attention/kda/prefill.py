@@ -30,6 +30,7 @@ def packed_offsets(
         return cu_seqlens
     return torch.arange(0, (batch + 1) * seq_len, seq_len, dtype=torch.int64, device=device)
 
+
 CHUNK_SIZE = 64
 
 

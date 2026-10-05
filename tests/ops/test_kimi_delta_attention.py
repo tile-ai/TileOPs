@@ -244,3 +244,31 @@ def test_kimi_delta_attention_refuses_the_variants_it_does_not_serve() -> None:
     assert "use_gate_in_kernel" in KimiDeltaAttentionCall(**base, gate_in_kernel=True).chunk_refusal
     assert "lower_bound" in KimiDeltaAttentionCall(**base, bounded_gate=True).chunk_refusal
     assert KimiDeltaAttentionCall(**base).chunk_refusal is None
+
+
+def test_kimi_delta_attention_refuses_a_value_width_its_key_buffers_do_not_hold() -> None:
+    """K and V are separate dims in the contract, and this pair serves them equal.
+
+    The chunk-local half stages the value tile in the buffers it sized for a key
+    tile, so a wider V would run past them. The call is declined rather than served
+    from the wrong rows.
+    """
+    base = dict(
+        batch=1,
+        seq_len=256,
+        sequences=1,
+        heads=4,
+        value_heads=4,
+        dtype=torch.bfloat16,
+        scale=128**-0.5,
+        sm_count=132,
+        arch=90,
+        calibration=None,
+        smem_budget=0,
+    )
+    mixed = KimiDeltaAttentionCall(**base, dim_k=64, dim_v=128)
+    assert "K equal to V" in mixed.chunk_refusal
+    assert not KimiDeltaAttentionChunkPrefillFwdKernel.applies(mixed)
+    assert not KimiDeltaAttentionFusedPrefillFwdKernel.applies(mixed)
+    assert KimiDeltaAttentionCall(**base, dim_k=64, dim_v=64).chunk_refusal is None
+    assert KimiDeltaAttentionCall(**base, dim_k=128, dim_v=128).chunk_refusal is None
