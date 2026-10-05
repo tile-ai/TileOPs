@@ -105,15 +105,8 @@ def launch(
             f"bias presence is part of what the program is compiled for, so the op layer "
             f"builds one kernel per side"
         )
-    config = kernel.config
-    program = kernel.kernel(
-        config["block_m"],
-        config["block_n"],
-        config["block_k"],
-        config["num_stages"],
-        config["threads"],
-        config["enable_rasterization"],
-    )
+    # A config's keys are the builder's parameter names, as autotune binds them.
+    program = kernel.kernel(**kernel.config)
     if bias is None:
         return program(*tensors)
     return program(*tensors, bias)

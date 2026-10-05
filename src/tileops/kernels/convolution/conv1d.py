@@ -1,6 +1,7 @@
 """1-D convolution kernels: dense, grouped, and the pointwise (kernel size 1) form."""
 
 import functools
+import itertools
 from typing import Optional, Tuple
 
 import tilelang
@@ -20,6 +21,7 @@ from tileops.utils import get_shared_memory_optin
 __all__ = [
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
+    "Conv1dUnitStrideKernel",
     "DepthwiseConv1dKernel",
     "GroupConv1dKernel",
 ]
@@ -142,6 +144,171 @@ def _conv1d_kernel(
         return _conv1d_main
 
     return _conv1d_func
+
+
+@functools.lru_cache(maxsize=64)
+def _conv1d_unit_stride_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    if stride_l != 1:
+        raise ValueError(f"_conv1d_unit_stride_kernel serves stride 1, got {stride_l}")
+    accum_dtype = "float"
+    element_bytes = torch.tensor([], dtype=getattr(torch, dtype)).element_size()
+    out_l = l_in + pad_left + pad_right - dilation_l * (kernel_l - 1)
+    k_total = c_in * kernel_l
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _conv1d_unit_stride_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        taps: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        if taps not in (1, 2) or kernel_l % taps:
+            raise ValueError(f"taps={taps} must be 1 or 2 and divide kernel_l={kernel_l}")
+        channel_blocks = (c_in + block_k - 1) // block_k
+
+        @T.macro
+        def _load_tap(
+            x, weight_flat, weight_shared, data_shared, row0, kw, c0, by, bz, window_start, interior
+        ):
+            """Load tap ``kw``'s weight and x tiles into rows ``row0`` of the k tile."""
+            # A tap's weight columns start kw * c_in elements in, a TMA source only
+            # where that offset is 16-byte aligned.
+            T.copy(
+                weight_flat[by * block_m, kw * c_in + c0],
+                weight_shared[0:block_m, row0 : row0 + block_k],
+                disable_tma=c_in * element_bytes % 16 != 0,
+            )
+            if interior:
+                # A tap shifts the window by one element, where no TMA box starts.
+                T.copy(
+                    x[bz, c0, window_start + kw * dilation_l],
+                    data_shared[row0 : row0 + block_k, 0:block_n],
+                    disable_tma=True,
+                )
+            else:
+                for i, j in T.Parallel(block_k, block_n):
+                    ci = c0 + i
+                    il = window_start + kw * dilation_l + j
+                    data_shared[row0 + i, j] = T.if_then_else(
+                        (ci < c_in) & (il >= 0) & (il < l_in),
+                        x[bz, ci, il],
+                        T.cast(0.0, dtype),
+                    )
+
+        @T.macro
+        def _conv1d_unit_stride_body(x, weight_flat, out, bias):
+            with T.Kernel(
+                T.ceildiv(out_l, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, taps * block_k), dtype)
+                data_shared = T.alloc_shared((taps * block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.clear(out_local)
+
+                # A k tile is `taps` taps over block_k input channels each; each tap's x
+                # tile is the rectangle it shifts the output tile onto. Rows past c_in
+                # read as zero and cancel the next tap's weight columns.
+                # The copy guards columns per vector, not per element, so a tile whose
+                # window crosses either end of x loads element by element instead.
+                window_start = bx * block_n - pad_left
+                interior = (window_start >= 0) & (
+                    window_start + block_n + (kernel_l - 1) * dilation_l <= l_in
+                )
+                for k_iter in T.Pipelined(kernel_l // taps * channel_blocks, num_stages=num_stages):
+                    kw = k_iter // channel_blocks * taps
+                    c0 = k_iter % channel_blocks * block_k
+                    _load_tap(
+                        x,
+                        weight_flat,
+                        weight_shared,
+                        data_shared,
+                        0,
+                        kw,
+                        c0,
+                        by,
+                        bz,
+                        window_start,
+                        interior,
+                    )
+                    if taps == 2:
+                        _load_tap(
+                            x,
+                            weight_flat,
+                            weight_shared,
+                            data_shared,
+                            block_k,
+                            kw + 1,
+                            c0,
+                            by,
+                            bz,
+                            window_start,
+                            interior,
+                        )
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    ol = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (ol < out_l),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (ol < out_l),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv1d_unit_stride_bias_main(
+                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv1d_unit_stride_body(x, weight_flat, out, bias)
+
+            return _conv1d_unit_stride_bias_main
+
+        @T.prim_func
+        def _conv1d_unit_stride_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+        ):
+            _conv1d_unit_stride_body(x, weight_flat, out, None)
+
+        return _conv1d_unit_stride_main
+
+    return _conv1d_unit_stride_func
 
 
 @functools.lru_cache(maxsize=32)
@@ -569,10 +736,11 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
 
 class Conv1dKernel(Kernel, Conv1dFwdInterface):
-    """Dense Conv1d over the full kernel window; serves every ungrouped call."""
+    """Dense Conv1d over the full kernel window; serves every ungrouped call no narrower kernel does."""
 
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
+    _builder = staticmethod(_conv1d_kernel)
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
@@ -627,7 +795,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
-        self.kernel = _conv1d_kernel(
+        self.kernel = self._builder(
             n,
             c_in,
             l_in,
@@ -667,6 +835,55 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         # weights so inference tensors and graph replay need no version cache.
         weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
         return launch(self, x, weight_flat, bias=bias)
+
+
+class Conv1dUnitStrideKernel(Conv1dKernel):
+    """Dense stride-1 Conv1d whose k tiles are one tap over a run of input channels.
+
+    Each x tile is then a rectangle, copied asynchronously under the previous tile's
+    GEMM. It serves calls with at least one MMA's K of input channels per tap; with
+    fewer, ``Conv1dKernel`` packs several taps into one k tile.
+    """
+
+    general = False
+    _builder = staticmethod(_conv1d_unit_stride_kernel)
+
+    @classmethod
+    def applies(cls, call: Conv1dCall) -> bool:
+        return call.groups == 1 and call.stride_l == 1 and call.kernel_l > 1 and call.c_in >= 16
+
+    @property
+    def default_config(self) -> dict:
+        return {**super().default_config, "taps": 1}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # Short rows give few output tiles, so narrow tiles, deep pipelines and several
+        # taps per k step, which halve the steps a tile waits on, win there.
+        cap = get_shared_memory_optin(self.device_index)
+        configs = []
+        for bm, bn, bk, taps, num_stages in itertools.product(
+            (32, 64, 128),
+            (32, 64, 128),
+            (64, 128),
+            tuple(t for t in (1, 2) if self.kernel_l % t == 0),
+            (2, 4),
+        ):
+            stage = (bm + bn) * taps * bk
+            if (num_stages * stage + bm * bn) * self.dtype.itemsize > cap:
+                continue
+            configs.append(
+                {
+                    "block_m": bm,
+                    "block_n": bn,
+                    "block_k": bk,
+                    "taps": taps,
+                    "num_stages": num_stages,
+                    "threads": 256 if bm == 128 else 128,
+                    "enable_rasterization": False,
+                }
+            )
+        return configs
 
 
 class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
