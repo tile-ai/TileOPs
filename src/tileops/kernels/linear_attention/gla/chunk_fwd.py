@@ -14,6 +14,7 @@ from tileops.kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
+from tileops.utils import get_shared_memory_optin
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
 
@@ -309,17 +310,10 @@ def _gla_fwd_o_kernel(
                     k[i_b, chunk_start : chunk_start + chunk_size, i_h, :], k_s, disable_tma=True
                 )
                 T.copy(
-                    v[i_b, chunk_start : chunk_start + chunk_size, i_h, :], v_s, disable_tma=True
-                )
-                T.copy(
                     g_cumsum[i_b, chunk_start : chunk_start + chunk_size, i_h, :],
                     g_cumsum_s,
                     disable_tma=True,
                 )
-
-                # Load h[i_c] and cast to native dtype
-                for i_k, i_v in T.Parallel(dim_k, dim_v):
-                    h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
 
                 # ---- Gated q (inter-chunk term, exp(g_cumsum) <= 1) ----
                 for i_t, i_k in T.Parallel(chunk_size, dim_k):
@@ -342,6 +336,13 @@ def _gla_fwd_o_kernel(
                     A_s[i_t, i_j] = T.cast(
                         T.if_then_else(i_j <= i_t, A_frag[i_t, i_j] * scale, 0.0), dtype
                     )
+
+                # Loaded once q, k and g are spent, so they do not share the peak with them.
+                T.copy(
+                    v[i_b, chunk_start : chunk_start + chunk_size, i_h, :], v_s, disable_tma=True
+                )
+                for i_k, i_v in T.Parallel(dim_k, dim_v):
+                    h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
 
                 # ---- o = scale * q_gated @ h + A @ v ----
                 acc = T.alloc_fragment([chunk_size, dim_v], accum_dtype)
@@ -428,19 +429,52 @@ class GLAChunkedFwdKernel(Kernel):
             )
         return None
 
-    def _v_partitions(self, threads: int, candidates: list[int]) -> list[int]:
+    @staticmethod
+    def _v_partitions(dim_v: int, threads: int, candidates: list[int]) -> list[int]:
         """Return the candidates the recurrence can build at *threads*, widest first."""
         floor = max(GEMM_MIN_N, min_gemm_n(threads))
-        return [n for n in candidates if self.dim_v % n == 0 and self.dim_v // n >= floor]
+        return [n for n in candidates if dim_v % n == 0 and dim_v // n >= floor]
+
+    @staticmethod
+    def _output_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the output pass's shared memory: q, k, the fp32 gate and the gated q
+        while A is summed, then the gated q, A, v and the cast state for the two GEMMs."""
+        return max(c * k * (3 * elem + 4), (c * k + c * c + c * v + k * v) * elem)
+
+    @staticmethod
+    def _state_shared_bytes(c: int, k: int, v: int, elem: int, stages: int) -> int:
+        """Shared memory of the state pass over a k x v slice: the fp32 state, and k, v and the
+        fp32 gate once per stage."""
+        return stages * c * (k * (elem + 4) + v * elem) + k * v * 4
 
     @property
     def default_config(self) -> dict:
+        return self._default_config_for(
+            get_shared_memory_optin(),
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            getattr(torch, self.dtype_name).itemsize,
+        )
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
         threads = 64
+        num_v_partitions, num_k_partitions = cls._v_partitions(dim_v, threads, [4, 2, 1])[0], 2
+        k, v = dim_k // num_k_partitions, dim_v // num_v_partitions
+        # Only the state pass pipelines, so its size alone sets the stages.
+        stages = next(
+            (s for s in (3, 2) if cls._state_shared_bytes(chunk_size, k, v, elem, s) <= budget),
+            1,
+        )
         return {
-            "num_stages": 3,
+            "num_stages": stages,
             "threads": threads,
-            "num_v_partitions": self._v_partitions(threads, [4, 2, 1])[0],
-            "num_k_partitions": 2,
+            "num_v_partitions": num_v_partitions,
+            "num_k_partitions": num_k_partitions,
         }
 
     @property
@@ -449,7 +483,7 @@ class GLAChunkedFwdKernel(Kernel):
         for ns in [1, 2, 3]:
             for t_par in [64, 128, 256]:
                 for t_seq in [64, 128, 256]:
-                    for nvp in self._v_partitions(t_seq, [2, 4]):
+                    for nvp in self._v_partitions(self.dim_v, t_seq, [2, 4]):
                         for nkp in [1, 2]:
                             configs.append(
                                 {
@@ -600,8 +634,21 @@ class GLAFwdKernel(GLAChunkedFwdKernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
-        return head_count_refusal(call.heads) or cls.region_refusal(
+        """Why no program serves this call, or ``None``; the output pass's lower bound is above
+        the other passes' at their fewest stages, and a call above it that TileLang still cannot
+        place in the device's shared memory is built and fails at launch."""
+        reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size
+        )
+        if reason is not None or not call.smem_budget:
+            return reason
+        c, k, v = call.chunk_size, call.dim_k, call.dim_v
+        need = cls._output_live_bytes(c, k, v, call.dtype.itemsize)
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
+            f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
         )
 
     @classmethod
