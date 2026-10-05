@@ -137,24 +137,51 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return gated_deltanet_ref(
-            q,
-            k,
-            v,
-            g,
-            beta,
-            initial_state,
-            cu_seqlens,
-            cu_seqlens_cpu,
-            A_log,
-            dt_bias,
-            scale=self.scale,
-            raw_gate=self.raw_gate,
-            beta_sigmoid=self.beta_sigmoid,
-            allow_neg_eigval=self.allow_neg_eigval,
-            l2norm=self.l2norm,
-            state_v_first=self.state_v_first,
-        )
+        """A token-by-token FP32 recurrence, independent of the chunked kernels and of FLA.
+
+        The sequence boundaries come from the call's offsets, never from the fixture's
+        lengths, so a call whose offsets were rewritten in place is checked as it ran.
+        """
+        scale = q.shape[-1] ** -0.5 if self.scale is None else self.scale
+        group = v.shape[2] // q.shape[2]
+        if cu_seqlens is None:
+            spans = [(0, q.shape[1])] * q.shape[0]
+        else:
+            bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
+            spans = list(zip(bounds[:-1], bounds[1:], strict=True))
+        if self.raw_gate:
+            g = -torch.exp(A_log) * torch.nn.functional.softplus(g.float() + dt_bias)
+        if self.beta_sigmoid:
+            beta = torch.sigmoid(beta.float()) * (2.0 if self.allow_neg_eigval else 1.0)
+        states, output = [], torch.empty_like(v)
+        for sequence, (first, last) in enumerate(spans):
+            state = (
+                torch.zeros(v.shape[2], q.shape[-1], v.shape[-1], device=q.device)
+                if initial_state is None
+                else self._key_major(initial_state[sequence].float())
+            )
+            for token in range(last - first):
+                index = (0, first + token) if cu_seqlens is not None else (sequence, token)
+                # Value head h reads the key head its group shares.
+                q_t = q[index].float().repeat_interleave(group, dim=0)
+                k_t = k[index].float().repeat_interleave(group, dim=0)
+                if self.l2norm:
+                    q_t = q_t * torch.rsqrt(q_t.square().sum(-1, keepdim=True) + 1e-6)
+                    k_t = k_t * torch.rsqrt(k_t.square().sum(-1, keepdim=True) + 1e-6)
+                q_t = q_t * scale
+                decay = g[index].float().exp()
+                old_value = torch.einsum("hkv,hk->hv", state, k_t)
+                value = beta[index].float().unsqueeze(-1) * (
+                    v[index].float() - decay.unsqueeze(-1) * old_value
+                )
+                state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
+                output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
+            states.append(self._key_major(state))
+        return output, torch.stack(states)
+
+    def _key_major(self, state: torch.Tensor) -> torch.Tensor:
+        """*state* between the caller's layout and the ``[HV, K, V]`` the recurrence uses."""
+        return state.transpose(-1, -2) if self.state_v_first else state
 
     def verification(self, *inputs):
         return gated_verification(
@@ -251,10 +278,11 @@ def gated_deltanet_ref(
     l2norm=False,
     state_v_first=False,
 ):
-    """The GatedDeltaNet oracle shared by every workload adapter: FLA inference.
+    """FLA inference over a manifest row, which benchmarks also time as the comparator.
 
-    Input transforms and decode/prefill selection belong here, independently of
-    whether inputs came from a manifest row or a focused test case.
+    Focused fixtures check against the FP32 recurrence of ``GatedDeltaNetFwdWorkload``
+    instead, so that the kernels, which adapt FLA's chunked algorithm, are not checked
+    only against the same algorithm.
     """
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
 

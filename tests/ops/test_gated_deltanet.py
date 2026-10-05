@@ -93,11 +93,20 @@ def test_gated_deltanet_prefill_packs_ragged_sequences_with_grouped_value_heads(
         value_heads=8,
         sequence_lengths=(1, 63, 100, 192),
     )
-    inputs = list(test.gen_inputs())
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+def test_gated_deltanet_prefill_reads_offsets_rewritten_in_place() -> None:
+    """The same tensors, with the boundary between two sequences moved, compute the new split."""
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(
+        1, 0, 2, 64, torch.bfloat16, has_initial_state=True, sequence_lengths=(1, 63, 100, 192)
+    )
+    inputs = test.gen_inputs()
     op = GatedDeltaNetFwdOp()
-    test.check(op, *inputs)
-    # Reuse the buffers with a different split; the reference must read the call's
-    # offsets too, rather than reconstructing them from the fixture's lengths.
+    op(*inputs)
+    # A cache keyed by tensor identity would replay the first call's split here.
     inputs[6][2] = 66
     inputs[7][2] = 66
     test.check(op, *inputs)

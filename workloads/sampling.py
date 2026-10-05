@@ -2,8 +2,11 @@
 
 The references of the random ops draw their uniforms from Philox4x32-10 keyed by ``seed``
 and counted by ``(draw, row, offset)``, written in integer tensor arithmetic so that the
-draws are the same on every device, meta included. A kernel draws from its own Philox
-stream, so its samples are compared with these by distribution, never one by one.
+draws are the same on every device, meta included. A kernel draws categorical samples from
+its own Philox stream, so sampled tokens are compared with these by distribution. The in-tree
+chain speculative sampling kernel takes its acceptance uniforms from this stream and matches
+the accepted lengths exactly; the shared verification compares accepted lengths by
+distribution so that an implementation drawing its own stream can be checked too.
 """
 
 import torch
