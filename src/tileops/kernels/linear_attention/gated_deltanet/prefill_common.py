@@ -1,6 +1,3 @@
-# Copyright (c) 2026 The Qwen team, Alibaba Group.
-# Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
 """Gated DeltaNet private helpers shared by the prefill stages."""
 
 import tilelang.language as T

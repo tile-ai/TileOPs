@@ -238,6 +238,7 @@ A metadata tensor's type is in the signature; its values come from the generator
 - `requires` is a list of predicate calls on a metadata tensor's contents ([table 18](#t-predicates)). The constrained tensor's contents are the implicit first argument. Each predicate reads its tensor at a fixed rank, or at any rank for an elementwise bound.
 - A written argument may name another metadata tensor, so one predicate relates two tensors; that tensor is present wherever the constrained one is.
 - A row is checked against its predicates at instantiation. At run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
+- An op may check the caller's obligations on tensor contents at run time through a `validate_inputs: bool` parameter in `signature.params`, default `false`. When true, the op reads those contents on the CPU before the implementation runs, which synchronizes the device and cannot run inside CUDA Graph capture. The op's class docstring states what a violated obligation causes when the check is off.
 - A tensor with `requires` has `values`.
 
 ## Composition

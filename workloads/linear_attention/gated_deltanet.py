@@ -240,51 +240,99 @@ def gated_deltanet_ref(
     l2norm=False,
     state_v_first=False,
 ):
-    """A token-by-token FP32 recurrence, independent of the chunked kernels and of FLA.
+    """The delta rule evaluated independently of the chunked kernels and of FLA.
 
-    The sequence boundaries come from the call's offsets, never from the fixture's
-    lengths, so a call whose offsets were rewritten in place is checked as it ran.
+    A decode call, one token per sequence, runs the FP32 recurrence token by token. A
+    longer call evaluates the same recurrence chunk by chunk in FP64: within a chunk the
+    written values solve the unit lower-triangular system exactly, with no truncated
+    inverse, and the outputs and final state follow in closed form. The sequence
+    boundaries come from the call's offsets, never from the fixture's lengths, and every
+    sequence still running advances in the same step.
     """
     scale = q.shape[-1] ** -0.5 if scale is None else scale
     group = v.shape[2] // q.shape[2]
     if cu_seqlens is None:
-        spans = [(0, q.shape[1])] * q.shape[0]
+        rows = list(range(q.shape[0]))
+        starts, lengths = [0] * q.shape[0], [q.shape[1]] * q.shape[0]
     else:
         bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
-        spans = list(zip(bounds[:-1], bounds[1:], strict=True))
+        rows, starts = [0] * (len(bounds) - 1), bounds[:-1]
+        lengths = [end - start for start, end in zip(bounds[:-1], bounds[1:], strict=True)]
     if raw_gate:
         g = -torch.exp(a_log) * torch.nn.functional.softplus(g.float() + dt_bias)
     if beta_sigmoid:
         beta = torch.sigmoid(beta.float()) * (2.0 if allow_neg_eigval else 1.0)
-    states, output = [], torch.empty_like(v)
-    for sequence, (first, last) in enumerate(spans):
-        state = (
-            torch.zeros(v.shape[2], q.shape[-1], v.shape[-1], device=q.device, dtype=torch.float32)
-            if initial_state is None
-            else (
-                initial_state[sequence].float().transpose(-1, -2)
-                if state_v_first
-                else initial_state[sequence].float()
-            )
+    longest = max(lengths, default=0)
+    chunk, dtype = (1, torch.float32) if longest <= 1 else (64, torch.float64)
+    # Longest first, so the sequences still running at a step are a prefix.
+    order = sorted(range(len(lengths)), key=lambda sequence: -lengths[sequence])
+    row = torch.tensor([rows[s] for s in order], dtype=torch.long, device=q.device)
+    start = torch.tensor([starts[s] for s in order], dtype=torch.long, device=q.device)
+    length = torch.tensor([lengths[s] for s in order], dtype=torch.long, device=q.device)
+    if initial_state is None:
+        state = torch.zeros(
+            len(order), v.shape[2], q.shape[-1], v.shape[-1], dtype=dtype, device=q.device
         )
-        for token in range(last - first):
-            index = (0, first + token) if cu_seqlens is not None else (sequence, token)
-            # Value head h reads the key head its group shares.
-            q_t = q[index].float().repeat_interleave(group, dim=0)
-            k_t = k[index].float().repeat_interleave(group, dim=0)
-            if l2norm:
-                q_t = q_t * torch.rsqrt(q_t.square().sum(-1, keepdim=True) + 1e-6)
-                k_t = k_t * torch.rsqrt(k_t.square().sum(-1, keepdim=True) + 1e-6)
-            q_t = q_t * scale
-            decay = g[index].float().exp()
-            old_value = torch.einsum("hkv,hk->hv", state, k_t)
-            value = beta[index].float().unsqueeze(-1) * (
-                v[index].float() - decay.unsqueeze(-1) * old_value
+    else:
+        state = initial_state[order].to(dtype)
+        state = state.transpose(-1, -2).contiguous() if state_v_first else state
+    output = torch.empty_like(v)
+    offset = torch.arange(chunk, device=q.device)
+    inclusive = torch.ones(chunk, chunk, dtype=torch.bool, device=q.device).tril()
+    strict = inclusive.tril(-1)
+    running = len(order)
+    for first in range(0, longest, chunk):
+        while lengths[order[running - 1]] <= first:
+            running -= 1
+        r = row[:running, None]
+        valid = first + offset < length[:running, None]
+        t = (start[:running, None] + first + offset).clamp(max=q.shape[1] - 1)
+        mask = valid.to(dtype)[..., None]
+        # [running, chunk, value heads, ...]; value head h reads the key head its group shares.
+        q_c = q[r, t].to(dtype).repeat_interleave(group, dim=2)
+        k_c = k[r, t].to(dtype).repeat_interleave(group, dim=2)
+        if l2norm:
+            q_c = q_c * torch.rsqrt(q_c.square().sum(-1, keepdim=True) + 1e-6)
+            k_c = k_c * torch.rsqrt(k_c.square().sum(-1, keepdim=True) + 1e-6)
+        live = state[:running]
+        if chunk == 1:
+            q_t, k_t = q_c[:, 0] * scale, k_c[:, 0]
+            decay = g[r, t][:, 0].float().exp()
+            old_value = torch.einsum("nhkv,nhk->nhv", live, k_t)
+            value = beta[r, t][:, 0].float().unsqueeze(-1) * (
+                v[r, t][:, 0].float() - decay.unsqueeze(-1) * old_value
             )
-            state = decay[:, None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
-            output[index] = torch.einsum("hk,hkv->hv", q_t, state).to(q.dtype)
-        states.append(state.transpose(-1, -2) if state_v_first else state)
-    return output, torch.stack(states)
+            live = decay[..., None, None] * live + k_t.unsqueeze(-1) * value.unsqueeze(-2)
+            out = torch.einsum("nhk,nhkv->nhv", q_t, live)[:, None]
+        else:
+            # Padding carries no key, value or step size and no decay, so it leaves the state.
+            q_c, k_c = (x.transpose(1, 2) for x in (q_c * scale, k_c * mask[..., None]))
+            v_c = (v[r, t].to(dtype) * mask[..., None]).transpose(1, 2)
+            log_decay = (g[r, t].to(dtype) * mask).transpose(1, 2).cumsum(-1)
+            step = (beta[r, t].to(dtype) * mask).transpose(1, 2)
+            gap = log_decay[..., :, None] - log_decay[..., None, :]
+            system = (
+                step[..., None]
+                * gap.masked_fill(~strict, -torch.inf).exp()
+                * (k_c @ k_c.transpose(-1, -2))
+            )
+            rhs = step[..., None] * (v_c - log_decay.exp()[..., None] * (k_c @ live))
+            written = torch.linalg.solve_triangular(system, rhs, upper=False, unitriangular=True)
+            attention = gap.masked_fill(~inclusive, -torch.inf).exp() * (
+                q_c @ k_c.transpose(-1, -2)
+            )
+            out = (log_decay.exp()[..., None] * (q_c @ live) + attention @ written).transpose(1, 2)
+            carry = (log_decay[..., -1:] - log_decay).exp()[..., None]
+            live = (
+                log_decay[..., -1].exp()[..., None, None] * live
+                + (k_c * carry).transpose(-1, -2) @ written
+            )
+        state[:running] = live
+        output[r.expand_as(t)[valid], t[valid]] = out[valid].to(q.dtype)
+    final = torch.empty_like(state)
+    final[order] = state
+    final = final.transpose(-1, -2) if state_v_first else final
+    return output, final.float()
 
 
 def gated_verification(
