@@ -11,11 +11,13 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.elementwise import (
     AddFwdKernel,
     DivTruncFwdKernel,
     FloorDivideFwdKernel,
     MaximumFwdKernel,
+    RemainderFwdKernel,
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise import (
@@ -308,16 +310,16 @@ class AddStrategyFixture(FixtureBase):
 @AddStrategyFixture
 def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
     """Binary strategies selected via the config dict produce correct results."""
+
+    class Pinned(AddFwdKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "config": {"strategy": strategy}})
+
     test = AddSameShapeTest(n_total, dtype)
-    kernel = AddFwdKernel(
-        (n_total,),
-        (n_total,),
-        dtype,
-        config={"strategy": strategy},
-    )
-    assert kernel.strategy == strategy
-    assert kernel.config["strategy"] == strategy
-    test.check(AddFwdOp(), *test.gen_inputs(), runs=kernel)
+    op = AddFwdOp(kernel_map={"add": Pinned}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is Pinned and kernel.strategy == strategy
 
 
 # Generic binary test helper
@@ -408,6 +410,53 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
     op = FloorDivideFwdOp()
     test.check(op, *test.gen_inputs())
+
+
+class _WidestFold:
+    """Pin the top of the fold sweep: 128 threads, each holding two 16-byte vectors."""
+
+    def __init__(self, a_shape, b_shape, dtype, **kwargs):
+        config = {"threads": 128, "num_per_thread": 32 // dtype.itemsize}
+        super().__init__(a_shape, b_shape, dtype, config=config, **kwargs)
+
+
+class _WidestRemainderKernel(_WidestFold, RemainderFwdKernel):
+    pass
+
+
+class _WidestFloorDivideKernel(_WidestFold, FloorDivideFwdKernel):
+    pass
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "key", "kernel_cls", "make_test"),
+    [
+        pytest.param(
+            RemainderFwdOp, "remainder", _WidestRemainderKernel, RemainderTest, id="remainder"
+        ),
+        pytest.param(
+            FloorDivideFwdOp,
+            "floor_divide",
+            _WidestFloorDivideKernel,
+            FloorDivideTest,
+            id="floor_divide",
+        ),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_floored_ops_stay_exact_at_the_widest_tuned_fold(
+    op_cls, key, kernel_cls, make_test, dtype
+) -> None:
+    """The floored bodies build and stay exact where a thread holds more than one vector."""
+    npt = 32 // dtype.itemsize
+    test = make_test(128 * npt, dtype)
+    op = op_cls(kernel_map={key: kernel_cls}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is kernel_cls
+    assert (kernel.config["threads"], kernel.config["num_per_thread"]) == (128, npt)
 
 
 @pytest.mark.smoke

@@ -1,4 +1,4 @@
-"""The shared verifier's correctness protocol, independent of Op attribution."""
+"""The shared verifier's correctness protocol, and what ``check()`` accepts to run it."""
 
 import pytest
 import torch
@@ -106,6 +106,40 @@ def test_in_place_output_is_copied_before_restoration():
     with pytest.raises(AssertionError):
         verify(lambda v: {"out": v.add_(1)}, (x,), reference=lambda v: {"out": v}, evidence=Exact())
     torch.testing.assert_close(x, torch.ones(2))
+
+
+@pytest.mark.cuda_only
+def test_an_unwritten_output_element_does_not_read_back_as_expected():
+    """A subject that writes half its output is rejected.
+
+    The reference's result stays allocated while the subject runs, so the subject's
+    output cannot be carved from memory that already holds the expected values.
+    """
+    from workloads.device import run_device
+
+    x = torch.randn(1 << 16, device=run_device())
+
+    def half_written(v):
+        out = torch.empty_like(v)
+        out[: v.numel() // 2] = v[: v.numel() // 2] * 2
+        return out
+
+    with pytest.raises(AssertionError):
+        verify(half_written, (x,), reference=lambda v: v * 2, evidence=Exact())
+
+
+def test_a_reference_returning_a_cached_buffer_keeps_its_expected_values():
+    """The subject overwriting a buffer the reference returned does not change what it is held to."""
+    cache = torch.zeros(1)
+
+    def reference(v):
+        cache.copy_(v * 3)
+        return cache
+
+    with pytest.raises(AssertionError):
+        verify(
+            lambda v: cache.zero_(), (torch.full((1,), 2.0),), reference=reference, evidence=Exact()
+        )
 
 
 def test_argument_aliases_are_preserved_and_subject_arguments_are_isolated():
@@ -276,3 +310,21 @@ def test_batch_norm_rejects_correct_output_without_running_stat_updates():
             reference=workload.ref_program,
             evidence=workload.verification(*inputs),
         )
+
+
+def test_check_refuses_a_kernel_in_place_of_the_op_path():
+    """A result is reported under an Op and runs what a caller reaches, before any reference."""
+    import types
+
+    from tests.test_base import TestBase
+    from tileops.kernels.elementwise import ReluFwdKernel
+    from tileops.ops.elementwise import ReluFwdOp
+
+    def reference(x):
+        raise AssertionError("the reference ran")
+
+    workload = types.SimpleNamespace(ref_program=reference, verification=lambda *inputs: Exact())
+    kernel = ReluFwdKernel.__new__(ReluFwdKernel)
+    for op, runs in ((kernel, None), (ReluFwdOp(), kernel), (ReluFwdOp(), kernel.forward)):
+        with pytest.raises(AssertionError, match="runs="):
+            TestBase.check(workload, op, torch.ones(1), runs=runs)

@@ -1,13 +1,13 @@
 import pytest
 import torch
-import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
+from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.device import run_device
-from workloads.norm import GroupNormWorkload, normalization_verification
-from workloads.numerics import compare_outputs
+from workloads.norm import GroupNormWorkload
 
 
 class GroupNormTest(GroupNormWorkload, TestBase):
@@ -72,56 +72,21 @@ def test_group_norm_non_contiguous(
     n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype
 ) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    shape = (n, c * 2, *spatial)
-    x_full = torch.randn(shape, dtype=dtype, device=run_device())
-    x = x_full[:, :c]  # non-contiguous slice
-    weight = torch.randn(c, dtype=dtype, device=run_device())
-    bias = torch.randn(c, dtype=dtype, device=run_device())
-
-    op = GroupNormFwdOp(num_groups=g)
-
-    y_ref = F.group_norm(
-        x.contiguous().float(),
-        g,
-        weight=weight.float(),
-        bias=bias.float(),
-        eps=1e-5,
-    ).to(dtype)
-
-    y = op(x, weight, bias)
-    compare_outputs(y, y_ref, normalization_verification("GroupNormFwdOp", x.dtype))
+    test = GroupNormTest(n, c, spatial, g, dtype)
+    _, weight, bias = test.gen_inputs()
+    x = torch.randn((n, c * 2, *spatial), dtype=dtype, device=run_device())[:, :c]
+    test.check(GroupNormFwdOp(num_groups=g), x, weight, bias)
 
 
-@pytest.mark.smoke
-def test_group_norm_no_affine_matches_torch() -> None:
-    """Omitting the affine pair is the torch.nn.GroupNorm(affine=False) path."""
-    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
-    y = op(x)
-    y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    compare_outputs(y, y_ref, normalization_verification("GroupNormFwdOp", x.dtype))
-
-
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     """One op instance reuses identical specs and caches changed specs."""
     op = GroupNormFwdOp(num_groups=4)
 
     def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
-        x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
-        weight = torch.randn((c,), dtype=dtype, device=run_device())
-        bias = torch.randn((c,), dtype=dtype, device=run_device())
-
-        y = op(x, weight, bias)
-        y_ref = F.group_norm(
-            x.float(),
-            4,
-            weight=weight.float(),
-            bias=bias.float(),
-            eps=1e-5,
-        ).to(dtype)
-        compare_outputs(y, y_ref, normalization_verification("GroupNormFwdOp", x.dtype))
+        test = GroupNormTest(n, c, spatial, 4, dtype)
+        test.check(op, *test.gen_inputs())
 
     run_case(2, 16, (4, 4), torch.float16)
     assert len(op.built_kernels("group_norm")) == 1
@@ -188,11 +153,9 @@ def test_group_norm_no_affine_op(
     n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype
 ) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
-    op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
-    y = op(x)
-    y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    compare_outputs(y, y_ref, normalization_verification("GroupNormFwdOp", x.dtype))
+    test = GroupNormTest(n, c, spatial, g, dtype)
+    x, _, _ = test.gen_inputs()
+    test.check(GroupNormFwdOp(num_groups=g), x)
 
 
 @pytest.mark.smoke
@@ -211,16 +174,10 @@ def test_group_norm_forward_signature() -> None:
 @pytest.mark.parametrize("give", ["weight", "bias"])
 def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
     """weight and bias are independent, as in ``torch.nn.functional.group_norm``."""
-    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
-    t = torch.randn((c,), dtype=dtype, device=run_device())
-    kwargs = {give: t}
-    compare_outputs(
-        op(x, **kwargs),
-        F.group_norm(x, g, **kwargs),
-        normalization_verification("GroupNormFwdOp", x.dtype),
-    )
+    test = GroupNormTest(2, 32, (8, 8), 8, torch.float16)
+    x, weight, bias = test.gen_inputs()
+    inputs = (x, weight) if give == "weight" else (x, None, bias)
+    test.check(GroupNormFwdOp(num_groups=8), *inputs)
 
 
 @pytest.mark.smoke
@@ -235,12 +192,61 @@ def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
 )
 def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int) -> None:
     """No-affine GroupNorm handles a row count smaller than one grid block."""
-    dtype = torch.float16
-    op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
-    y = op(x)
-    y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    compare_outputs(y, y_ref, normalization_verification("GroupNormFwdOp", x.dtype))
+    test = GroupNormTest(n, c, spatial, g, torch.float16)
+    x, _, _ = test.gen_inputs()
+    test.check(GroupNormFwdOp(num_groups=g), x)
+
+
+class _MultiRowGroupNormKernel(GroupNormKernel):
+    """Pin a four-row block, which the untuned default never picks."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config = {"block_m": 4, "threads": 128}
+
+
+class _MultiRowGroupNormNoAffineKernel(GroupNormNoAffineKernel):
+    """Pin a four-row block, which the untuned default never picks."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config = {"block_m": 4, "threads": 128}
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.parametrize(
+    "n, c, spatial, g, affine",
+    [
+        # M = 9 rows of D = 256: the tail row block runs past M with aligned columns.
+        (3, 24, (4, 8), 3, True),
+        (3, 24, (4, 8), 3, False),
+        # M = 9, D = 200: the tail row block and the column padding together.
+        (3, 24, (5, 5), 3, True),
+        (3, 24, (5, 5), 3, False),
+        # M = 3 < block_m: the only block is a partial one.
+        (1, 24, (4, 8), 3, False),
+    ],
+)
+def test_group_norm_multi_row_block_runs_past_m(
+    n: int, c: int, spatial: tuple, g: int, affine: bool
+) -> None:
+    """A block of several rows stays correct where it runs past the last row.
+
+    ``block_m`` above one is an autotune candidate; the op reaches it through dispatch
+    with the key's implementation pinned to that block.
+    """
+    key, cls = (
+        ("group_norm", _MultiRowGroupNormKernel)
+        if affine
+        else ("group_norm_no_affine", _MultiRowGroupNormNoAffineKernel)
+    )
+    test = GroupNormTest(n, c, spatial, g, torch.float16)
+    x, weight, bias = test.gen_inputs()
+    op = GroupNormFwdOp(num_groups=g, kernel_map={key: cls}, target=BUILTIN)
+    test.check(op, *((x, weight, bias) if affine else (x,)))
+    (kernel,) = op.built_kernels("group_norm").values()
+    assert type(kernel) is cls and kernel.config["block_m"] == 4
 
 
 @pytest.mark.smoke

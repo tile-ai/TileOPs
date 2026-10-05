@@ -419,12 +419,16 @@ def verify(
 
     try:
         try:
-            expected = _copy_outputs(oracle(*inputs))
+            reference = oracle(*inputs)
+            expected = _copy_outputs(reference)
         except torch.OutOfMemoryError:
             return CheckResult(0, None, None, "reference ran out of memory")
         restore()
         with torch.no_grad():
             produced = _copy_outputs(subject(*args))
+        # Freed before the subject ran, the reference's own buffers could be handed to it
+        # as its output, and an element it never writes would read back as expected.
+        del reference
         restore()
         result = compare_outputs(produced, expected, evidence)
         del produced

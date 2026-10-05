@@ -202,6 +202,34 @@ def test_bmm_persistent_region_holds_manifest_workloads() -> None:
         assert BmmPersistentKernel.applies(call) is claimed, call
 
 
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(16, 512, 512, 512, id="one-wave"),
+        pytest.param(32, 512, 512, 512, id="two-waves"),
+        # Neither output extent is a whole number of tiles.
+        pytest.param(3, 1000, 1000, 1024, id="ragged-tiles"),
+    ],
+)
+def test_bmm_runs_the_persistent_path_where_it_claims_the_call(
+    batch: int, m: int, n: int, k: int, dtype: torch.dtype
+) -> None:
+    """A call the persistent path claims runs its template through dispatch."""
+    shape = {"batch": batch, "m": m, "n": n, "k": k}
+    call = BmmCall(**shape, dtype=dtype, device=torch.device(run_device()))
+    if not BmmPersistentKernel.applies(call):
+        pytest.skip("the persistent path serves only a calibrated board")
+    test = BmmTest(*shape.values(), dtype)
+    op = BmmFwdOp()
+    test.check(op, *test.gen_inputs())
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("bmm").values()
+        assert type(kernel) is BmmPersistentKernel
+
+
 class BmmFP8Fixture(FixtureBase):
     PARAMS = [
         (

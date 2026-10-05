@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
@@ -173,14 +174,11 @@ def test_each_implementation_matches_the_reference(kernel_cls, seq_lens) -> None
     calls the op leaves the other unexercised on any given machine.
     """
     inputs = mla_varlen_inputs(seq_lens, 4, 128, 64, 128, torch.bfloat16)
-    kernel = kernel_cls(
-        batch=len(seq_lens),
-        heads=4,
-        dim_nope=128,
-        dim_pe=64,
-        dim_v=128,
-        is_causal=True,
-        dtype=torch.bfloat16,
-    )
     workload = MLAVarlenWorkload(seq_lens, 4, 128, 64, 128, torch.bfloat16)
-    TestBase.check(workload, MLAVarlenFwdOp(is_causal=True), *inputs, runs=kernel.forward)
+    # Where the WS kernel serves the call, its key runs whichever one is under test.
+    op = MLAVarlenFwdOp(
+        is_causal=True, kernel_map={"mla_varlen_fwd_ws": kernel_cls}, target=BUILTIN
+    )
+    TestBase.check(workload, op, *inputs)
+    (kernel,) = op.built_kernels("mla_varlen_fwd").values()
+    assert type(kernel) is kernel_cls

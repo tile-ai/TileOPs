@@ -18,19 +18,26 @@ _logger = logging.getLogger("tileops.ops")
 _check_result = threading.local()
 
 
-def _refuse_non_op(op: object, op_name: str) -> None:
-    """Raise unless *op* is an Op, which is what the result is reported under.
+def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
+    """Raise unless *op* is an Op and *runs* is not a kernel.
 
-    Raised before the reference runs, so a test handing check() a kernel or a
-    compiled callable is told where that belongs -- in ``runs=`` -- rather than
-    producing a result filed under a name that is not an op.
+    The result is reported under *op*, and what executes reaches the kernel the way a
+    caller does: through the op's dispatch. ``runs`` takes a compiled or wrapped form of
+    the op; a kernel is pinned through ``kernel_map`` instead. Raised before the reference
+    runs.
     """
+    from tileops.kernels.kernel_base import Kernel
     from tileops.ops.op_base import Op
 
     if not isinstance(op, Op):
         raise AssertionError(
             f"check() takes the Op the result belongs to, got {op_name}; "
-            f"pass what to execute as runs="
+            f"pass a compiled or wrapped form of it as runs="
+        )
+    if isinstance(getattr(runs, "__self__", runs), Kernel):
+        raise AssertionError(
+            "runs= takes a compiled or wrapped form of the op; reach a kernel through the "
+            "op's dispatch, pinning it with kernel_map"
         )
 
 
@@ -74,14 +81,14 @@ class TestBase(WorkloadBase):
         """Verify a workload's declaration and attribute the result to its Op.
 
         Numerical policy belongs to verification(), never to the call site.
-        runs supplies a kernel or compiled implementation owned by the Op.
+        runs supplies a compiled or wrapped form of the op.
         """
         _check_result.op_name = None
         _check_result.op_module = None
         _check_result.max_abs_err = None
         _check_result.checked_outputs = 0
         name, module = type(op).__name__, type(op).__module__
-        _refuse_non_op(op, name)
+        _refuse_non_op(op, name, runs)
         _check_result.op_name = name
         _check_result.op_module = module
         result = verify(

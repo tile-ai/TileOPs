@@ -805,12 +805,16 @@ def test_gemm_fp8_builds_from_the_calls_device_facts(arch: int) -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     """The shared-memory epilogue publishes the whole tile."""
+
+    class SharedEpilogue(GemmFP81D2DFwdKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "shared_epilogue": True})
+
     test = GemmFP8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128")
-    kernel = GemmFP81D2DFwdKernel(
-        128, 256, 512, torch.float8_e4m3fn, torch.bfloat16, shared_epilogue=True
-    )
-    inputs = test.gen_inputs()
-    test.check(GemmFP8FwdOp(), *inputs, runs=kernel)
+    op = GemmFP8FwdOp(kernel_map={"gemm_fp8_1d2d": SharedEpilogue}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("gemm_fp8").values()
+    assert type(kernel) is SharedEpilogue
 
 
 @pytest.mark.sm90
@@ -977,24 +981,23 @@ def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int
     """
     m, n, k = 1536, 3072, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
-    a, b = test.gen_inputs()
-    kernel = GemmTMAKernel(
-        m,
-        n,
-        k,
-        torch.bfloat16,
-        trans_a=False,
-        trans_b=True,
-        config={
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": num_stages,
-            "group_size_m": 16,
-            "stage_n": stage_n,
-        },
-    )
-    test.check(GemmFwdOp(trans_b=True), a, b, runs=kernel.forward)
+    config = {
+        "coop2": True,
+        "block_n": 256,
+        "block_k": 64,
+        "num_stages": num_stages,
+        "group_size_m": 16,
+        "stage_n": stage_n,
+    }
+
+    class Coop2(GemmTMAKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "config": config})
+
+    op = GemmFwdOp(trans_b=True, kernel_map={"gemm_tma": Coop2}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("gemm").values()
+    assert type(kernel) is Coop2
 
 
 @pytest.mark.smoke

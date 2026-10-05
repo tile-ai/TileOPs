@@ -69,11 +69,17 @@ class ReluStrategyFixture(FixtureBase):
 @ReluStrategyFixture
 def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
     """All 3 unary strategies selected via the config dict produce correct results."""
+    from tileops.backend import BUILTIN
+
+    class Pinned(ReluFwdKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **{**kwargs, "config": {"strategy": strategy}})
+
     test = ReluTest(n_total, dtype)
-    kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
-    assert kernel.strategy == strategy
-    assert kernel.config["strategy"] == strategy
-    test.check(ReluFwdOp(), *test.gen_inputs(), runs=kernel)
+    op = ReluFwdOp(kernel_map={"relu": Pinned}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is Pinned and kernel.strategy == strategy
 
 
 # Template-based activation ops
@@ -253,6 +259,33 @@ def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
         _randn,
         LeakyReluFwdOp,
     )
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(("threads", "npt"), [(128, 4), (256, 4), (512, 8)])
+def test_leaky_relu_writes_every_element_under_a_tuned_config(threads: int, npt: int) -> None:
+    """Every element is written whatever ``threads * npt`` the selected config asks for.
+
+    The builder is handed the default config and the JIT the actual one, so a block extent
+    taken from the builder's arguments leaves part of each block untouched.
+    """
+    from tileops.backend import BUILTIN
+    from tileops.kernels.elementwise import LeakyReluFwdKernel
+    from tileops.ops.elementwise import LeakyReluFwdOp
+
+    config = {"threads": threads, "num_per_thread": npt}
+
+    class Tuned(LeakyReluFwdKernel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, config=config, **kwargs)
+
+    test = UnaryActivationTest(4096 * 7 + 13, torch.float16, "LeakyReluFwdOp", gen_fn=_randn)
+    op = LeakyReluFwdOp(kernel_map={"leaky_relu": Tuned}, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_kernels("elementwise").values()
+    assert type(kernel) is Tuned
+    assert {k: kernel.config[k] for k in config} == config
 
 
 @ActivationFixture

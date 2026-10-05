@@ -148,6 +148,7 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_cumsum_dynamic_shape_kernel_cache() -> None:
     from tileops.ops.reduction.cumulative import CumsumFwdOp

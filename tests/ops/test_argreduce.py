@@ -613,6 +613,7 @@ def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(

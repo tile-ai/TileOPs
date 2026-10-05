@@ -175,6 +175,7 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
 
     _TYPES: dict[tuple[str, Optional[str], Optional[str]], GemmType] = {
         ("contiguous", "tight", "physical_psum"): GemmType.M_GROUPED_TIGHT_PSUM,
+        ("contiguous", "tight", "per_row"): GemmType.M_GROUPED_TIGHT_PER_ROW,
         ("contiguous", "aligned", "physical_psum"): GemmType.M_GROUPED_ALIGNED_PSUM,
         ("contiguous", "aligned", "per_row"): GemmType.M_GROUPED_ALIGNED_PER_ROW,
         ("masked", None, None): GemmType.M_GROUPED_MASKED,
@@ -223,6 +224,12 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
 
     supported_archs: list[int] = [80, 86, 89]
     preferred_over = frozenset()
+    # A tile here holds one group's rows, which a tight per-row layout does not guarantee.
+    _TYPES = {
+        key: gtype
+        for key, gtype in MoEGroupedGemmKernel._TYPES.items()
+        if gtype is not GemmType.M_GROUPED_TIGHT_PER_ROW
+    }
 
     def __init__(self, call: MGroupedGemmCall) -> None:
         device_index = call.device.index if call.device is not None else None

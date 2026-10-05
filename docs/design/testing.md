@@ -1,182 +1,163 @@
 # Testing and Benchmarking
 
-Tests and benchmarks are separated by concern: `pytest tests/` validates correctness only; `pytest benchmarks/` validates the shared correctness contract, profiles execution, and generates `profile_run.log`.
+`pytest tests/` checks correctness. `pytest benchmarks/` checks the same correctness contract, then times each case and writes `profile_run.log`.
 
 ## Core Abstractions
 
-| Class              | Location                                                             | Role                                                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()` and `verification(*inputs)`. Concrete operator workloads supply `ref_program()` and own numerical policy.                               |
-| `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                     |
-| `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Declares `ref_program()` abstract and adds `check()`. Each op subclasses this for correctness testing.                                     |
-| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Takes `(flops, bytes)` from `op.eval_roofline()`. Provides `profile()`. |
-| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                          |
+| Class              | Role                                                                                                                              |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`     | Declares `gen_inputs()` and `verification(*inputs)`. A concrete operator workload adds `ref_program()` and owns numerical policy. |
+| `FixtureBase`      | Applies `pytest.mark.parametrize` from a `PARAMS` attribute or a `get_params()` classmethod.                                      |
+| `TestBase`         | Adds `check()`, which runs the shared verifier under pytest.                                                                      |
+| `BenchmarkBase[W]` | Times a case. Generic over the workload type.                                                                                     |
+| `BenchmarkReport`  | Collects every row and writes the report.                                                                                         |
 
 ## Wiring
 
-Workload is defined once; test and benchmark each reference it but do not depend on each other:
+A workload is defined once. A test and a benchmark each use it, and never each other.
 
-- **Workload** (`workloads/`) — `WorkloadBase` subclass: `ref_program()`, `verification(*inputs)`, and input construction the rows do not determine
-- **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adapts the shared verifier to pytest; supplies no reference or numerical overrides
-- **Benchmark** (`benchmarks/ops/`) — composes workload and op via `ManifestBenchmark(op, workload)`
+| Layer                         | Holds                                                                                             |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| Workload (`workloads/`)       | `ref_program()`, `verification(*inputs)`, and the input construction the manifest rows do not fix |
+| Test (`tests/ops/`)           | `(Workload, TestBase)`; no reference and no numerical override                                    |
+| Benchmark (`benchmarks/ops/`) | `ManifestBenchmark(op, workload)`                                                                 |
 
-Rules:
-
-- **Fixture usage**: every semantic call a benchmark publishes comes from a manifest workload row and its `dtype_cases`; fixture parameters are reserved for controls that change no call
-- **Dependency direction**: benchmark imports workload, never test
-- **ref_program locality**: the reference lives on the narrowest shared class that names one operator — a concrete workload, including when its base describes only an input shape
+- A benchmark imports workloads, never tests.
+- The reference lives on the narrowest class that names one operator, even when its base describes only an input shape.
+- Every call a benchmark publishes comes from a manifest workload row and its `dtype_cases`. Fixture parameters only set controls that change no call.
 
 ## Tests
 
 → Boundary: [layer-boundaries.md §Test](layer-boundaries.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
 
-**Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
+**Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
-**Target:** the suite tests the in-tree kernels. A pytest run defaults to `BUILTIN`, so a backend installed in the environment does not serve it; `--tileops-target=detect` restores device detection and `--tileops-target=<name>` selects that target. A test of target dispatch names its target or isolates the registry. A test whose assertion depends on the op having built the in-tree kernels — `iter_kernels`, `built_kernels`, a kernel's `.config`, `autotune_configs`, the selected kernel class, a `kernel_map` pin — carries `pytest.mark.in_tree_kernels` and is deselected when the target is not `builtin`.
+**Location:**
 
-**Device:** tests and workloads place tensors on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`); a backend run names its target and its device. A test that needs CUDA whatever the target — it builds an in-tree kernel or kernel call record directly, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `pytest.mark.cuda_only`, writes `"cuda"`, and is deselected on any other device. An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
+- [`tests/ops/`](../../tests/ops/): every test that compares computed values. It reaches the kernel through the op's dispatch, the only path a caller has.
+- [`tests/kernels/`](../../tests/kernels/): what runs no op — configuration selection, autotune orchestration, build-time rejection.
 
-### File checklist
+**Reachability:**
 
-1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs()` and, when the class is named for one op, `ref_program()`.
-1. **Fixture class** — subclass `FixtureBase`, define `PARAMS` with `smoke`/`full` marks.
-1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`. Keep `ref_program()` and `verification()` in the concrete workload.
-1. **Test function** — `@YourFixture` decorated, call `test.check(op, *test.gen_inputs())`.
+- A path dispatch does not take for the test's input — a non-default config, an implementation another device would pick — is pinned through `kernel_map`, and the test asserts dispatch built the pin.
+- `check(runs=...)` takes only a compiled or wrapped form of the op; it refuses a kernel.
+- A condition no op call can produce is not tested. Code serving only such a condition is removed, or an op exposes it.
+
+**Target:**
+
+- A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
+- A test of target dispatch names its target or isolates the registry.
+- An assertion about the in-tree implementation — the kernel class, strategy or config chosen, how a cache key folds a shape — is gated on `served_in_tree(op)`, so the rest of the test also runs against a backend.
+- A test whose core depends on in-tree internals either pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
+
+**Device:**
+
+- Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
+- A test that needs CUDA whatever the target — it builds an in-tree kernel or call record directly, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
+- An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### Shared correctness contract
 
-The concrete workload's `verification(*inputs)` returns an `Exact`, `Partial`, or
-`Custom` declaration from `workloads.numerics`. Tests and benchmark tags use the
-same reference, output coverage, dtype checks and tolerances. Change this method
-when operator semantics require a different numerical rule; change the shared
-verifier only when the protocol changes. `check()` and `compare()` do not accept
-per-call comparators, tolerances or alternative evidence maps.
-
-Reference OOM records no verification. Subject failures propagate. Partial checks
-state what remains unchecked; absent evidence never becomes a valid ratio. JUnit
-records `checked_outputs` explicitly, including when error is zero. Framework
-self-tests call the shared verifier directly and do not impersonate an operator.
+- A concrete workload's `verification(*inputs)` returns an `Exact`, `Partial` or `Custom` declaration from `workloads.numerics`. Tests and every benchmark tag share its reference, output coverage, structural checks (shape, dtype, device) and tolerance.
+- `check()` and `compare()` take no comparator, tolerance or evidence override. Operator semantics change `verification()`; only a protocol change touches the shared verifier.
+- A reference out of memory records no verification. A subject failure propagates.
+- `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
+- Framework self-tests call the shared verifier directly and impersonate no operator.
 
 ### Tolerance
 
-- Use `torch.testing.assert_close` for floating-point verification. The standard per-dtype
-  tolerances are below; `reference_tolerance(dtype)` in `workloads/numerics.py` returns them.
-  - **FP32**: `rtol=1e-5`, `atol=1e-5`
-  - **FP16**: `rtol=1e-3`, `atol=1e-3`
-  - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
-- Use exact comparison (`torch.equal`) for non-floating outputs (bool, masks, index tensors).
-- Size `atol` by the summation order, not the reduction length. Where a kernel sums differently from
-  the reference (GEMV, cross-thread allreduce, split-K), cancellation puts outputs far below the
-  typical magnitude and only `atol` covers their error; order-matching kernels (dense GEMM, BMM
-  against cuBLAS) come out bit-exact. Measure before loosening.
+The default bound is per output dtype, from `reference_tolerance(dtype)`:
+
+| Dtype | `rtol` | `atol` |
+| ----- | ------ | ------ |
+| FP32  | 1e-5   | 1e-5   |
+| FP16  | 1e-3   | 1e-3   |
+| BF16  | 1.6e-2 | 1.6e-2 |
+
+- Non-floating outputs (bool, masks, indices) compare exactly.
+- A workload declares another bound in `verification()` only when its semantics need one, and measures before loosening.
+- `atol` follows summation order, not reduction length. A kernel that sums in another order than the reference (GEMV, cross-thread allreduce, split-K) leaves cancelled outputs that only `atol` covers; an order-matching kernel (dense GEMM, BMM against cuBLAS) is bit-exact.
 
 ### Coverage rules
 
-- Tests cover the dtype domain the signature declares.
-- Tests must parameterize over common shapes (batch size, heads, sequence length).
-- Tests must encode the dtype contract: supported dtypes are covered, unsupported dtypes are rejected, output dtypes are asserted when they differ from input.
-- GPU-dependent tests must run on a real machine with host-visible CUDA devices. Sandbox-only results are not final correctness evidence.
-- An assertion about the in-tree implementation — which kernel class, strategy or config was chosen, how the in-tree cache key folds a shape — is gated on `served_in_tree(op)`, so the rest of the test also runs against a backend that serves the op. A whole test whose core depends on in-tree internals either pins `target=BUILTIN`, and then runs the in-tree kernels under any target, or carries `in_tree_kernels` and is deselected off the builtin target.
+- Tests cover the dtype domain the signature declares: supported dtypes pass, unsupported ones are rejected, and an output dtype that differs from the input is asserted.
+- GPU results come from a real machine with CUDA devices. A sandbox result is not correctness evidence.
 
 ### Test case policy
 
-Each parameterized case must serve one of:
+Each parameterized case serves exactly one purpose:
 
-1. **Dtype correctness** — verify a supported dtype.
-1. **Shape coverage** — verify a distinct code path (boundary, tile edge, alignment).
-1. **Feature coverage** — verify a feature flag or mode (`causal=True`, `tune=True`).
-1. **Regression** — reproduce a fixed bug. The docstring states the fault the case
-   guards; an issue or PR number is a review-process reference and
-   `scripts/lint/shipped_refs_lint.py` rejects one in shipped source.
+1. **Dtype correctness**: a supported dtype.
+1. **Shape coverage**: a distinct code path (boundary, tile edge, alignment).
+1. **Feature coverage**: a flag or mode (`causal=True`, `tune=True`).
+1. **Regression**: a fixed bug. The docstring states the fault it guards; an issue or PR number does not belong in shipped source (`scripts/lint/shipped_refs_lint.py`).
 
-No performance exploration, autotune sweeps, or duplicate code-path coverage.
+No performance exploration, autotune sweep or duplicate code path.
 
-**Dtype coverage:** All supported dtypes must be tested. Smoke: cover each dtype with one typical shape. Full: cross-combinations only when the implementer can name the code path each guards.
+**Tier:** every case carries exactly one of `smoke`, `full` and `nightly`; collection fails otherwise.
 
-**Shape coverage:** UT shapes target kernel implementation branches, not workload representativeness. Common kernel branch conditions:
+**Dtype:** every supported dtype. Smoke covers each with one typical shape; full adds cross-combinations only where each guards a named code path.
 
-- **Tile boundary** — shape not divisible by tile size (tail handling)
-- **Vectorization alignment** — shape not aligned to vector width (scalar fallback)
-- **Degenerate dimension** — size=1 (broadcast, squeeze paths)
-- **Dispatch branch** — different shape ranges triggering different kernel variants
+**Shape:** the smallest shape that triggers each kernel branch. These cases are separate from the manifest contract cases, which come from the entry's workload rows. Typical branches:
 
-The implementer selects the smallest shape that triggers each branch. These cases are separate from the manifest contract cases, which are instantiated from the entry's workload rows.
+- Tile boundary: a shape the tile does not divide.
+- Vector alignment: a shape off the vector width.
+- Degenerate dimension: a size of 1.
+- Dispatch range: shapes that select different kernels.
 
-**Growth rules:**
+**Growth:**
 
-- Each new case must state its purpose (dtype / shape / feature / regression) in a comment or PR description.
-- Over 20 cases per test function: justify which code paths require the count.
-- Prefer a new test function over inflating an existing one when testing genuinely different behavior.
-
-### Test node growth detection
-
-[`scripts/test_node_delta.py`](../../scripts/test_node_delta.py) compares **pytest collected node count** (test cases after parametrize expansion) between current branch and main. Always exits 0 (non-blocking).
-
-```bash
-python scripts/test_node_delta.py                    # auto-detect changed test files
-python scripts/test_node_delta.py tests/ops/test_foo.py  # specific files
-python scripts/test_node_delta.py --base origin/release   # different base branch
-```
-
-- **No growth on existing files**: nothing to report.
-- **Growth on existing files**: include script output and a one-line justification in the PR validation comment.
-- **New test files only**: no delta to report — follow the policy above.
+- Each new case states its purpose in a comment or the PR.
+- A function with over 20 cases justifies the count by code path.
+- Different behavior gets a new function rather than more cases.
+- [`scripts/test_node_delta.py`](../../scripts/test_node_delta.py) compares collected nodes against the base branch and never fails. Growth in an existing file puts its output and a one-line justification in the PR validation comment; otherwise there is nothing to report.
 
 ### Testing layers
 
 | Layer             | Responsibility                                      | Shape source                                                     |
 | ----------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
-| UT smoke/full     | Guard PR correctness                                | Implementer selects based on kernel code paths                   |
+| UT smoke/full     | Guard PR correctness                                | The implementer, by kernel code path                             |
 | Nightly benchmark | Performance regression + typical/stress correctness | [`src/tileops/manifest/`](../../src/tileops/manifest/) workloads |
-| Local dev         | Performance tuning verification                     | Developer decides ad-hoc                                         |
+| Local dev         | Performance tuning verification                     | The developer, ad hoc                                            |
 
 ### Infrastructure rules
 
-- Changes to shared test infrastructure ([`tests/test_base.py`](../../tests/test_base.py), common fixtures, shared comparators) must preserve existing default semantics unless all affected tests are migrated in the same PR.
-- If a PR touches shared test infrastructure, run a broader `pytest -m smoke` pass before merge.
-- Run full targeted test files for the affected op family on a real GPU before claiming readiness.
+- A change to shared test infrastructure (`tests/test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates in the same PR, and runs a broad `pytest -m smoke` before merge.
+- Before claiming readiness, run the affected op family's test files on a real GPU.
 
 ## Benchmarks
 
 → Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
 
-**Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../../benchmarks/ops/).
+**Location:** [`benchmarks/ops/`](../../benchmarks/ops/), one `bench_<op>.py` per op module with its variants (inference, decode, paged, end-to-end). `pytest benchmarks/` writes `profile_run.log`.
 
-**Execution:** `pytest benchmarks/` auto-generates `profile_run.log` (markdown format).
+**Target and device:**
 
-**Target and device:** the repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike, so a benchmark run defaults to `BUILTIN` and a backend measuring itself names its target. The timer is CUDA events and CUPTI, so a benchmark run refuses any device but `cuda`.
-
-### Workloads
-
-Import the op's workload from `workloads/`. `BenchmarkBase[W]` is generic over
-workload type and reads no attribute off it — `ManifestBenchmark(op, workload)`
-takes its roofline from `op.eval_roofline()` and its report name from the op's
-class — so a workload needs nothing beyond the fields its own benchmark reads.
+- The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
+- The timer is CUDA events and CUPTI, so a benchmark refuses any device but `cuda`.
 
 ### File checklist
 
-1. **Workload** — import the op's class from `workloads/`. If the op has none, add it there first: a benchmark must not author `gen_inputs`.
-1. **Fixture class** — use `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize` directly.
-1. **Benchmark class** in `benchmarks/ops/bench_<op>.py`, one file per op module with its variants (inference, decode, paged, end-to-end) — subclass `ManifestBenchmark`, which takes its roofline off the op.
-1. **Benchmark function** — `@YourFixture` decorated, construct the op, then the benchmark over it (`bm = YourBenchmark(op, workload)`), call `inputs = workload.gen_inputs()`, then `bm.compare({...}, *inputs)`. Every row it publishes carries the op the benchmark was built for, and what distinguishes the case is read off that op and its workload rather than passed in.
-1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). Profile the workload's `ref_program` for the torch baseline. Another idiom for the same computation, or a different implementation, takes its own tag next to it, is asserted against the reference before the case is timed, and raises when unavailable. Never import a baseline from `tests/`.
-1. **Library baselines** — resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): `flaggems_op`, `flashinfer_op` and `vllm_op` for the kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row that has a library kernel for its op times it, so the nightly's ratio is against the strongest implementation available rather than against eager torch alone.
+1. **Workload**: import the op's workload from `workloads/`, adding it there first if it is missing. A benchmark never authors `gen_inputs`, and reads only the workload fields it uses.
+1. **Cases**: a `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize`.
+1. **Class**: subclass `ManifestBenchmark`. It takes the roofline from `op.eval_roofline()` and the report name from the op's class.
+1. **Function**: build the op, then `bm = YourBenchmark(op, workload)`, then `bm.compare({...}, *workload.gen_inputs())`. Every row carries that op; what distinguishes a case is read off the op and its workload.
+1. **Independent baseline**: at least one tag outside the `tileops` family. `"torch"` times the workload's `ref_program`. Another idiom or implementation takes its own tag, is asserted against the reference before it is timed, and raises when unavailable. An external implementation with other semantics is declared in `noncomparable={tag: reason}` instead: it is timed and publishes no ratio. Never import a baseline from `tests/`.
+1. **Library baselines**: resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py) — `flaggems_op`, `flashinfer_op` and `vllm_op` for kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row with a library kernel for its op times it, so the ratio is against the strongest implementation available.
 
-Correctness uses the timed callables during per-case warmup. Release reference results and
-restore inputs before sampling; `--tileops-verify` is a diagnostic mode, not a second nightly
-sweep. A row without an applicable reference carries an explicit verification gap and no ratio.
+### Verification
+
+- Correctness checks the timed callables during per-case warmup. Reference results are released and inputs restored before sampling.
+- `--tileops-verify` is a diagnostic mode, not a second nightly sweep.
+- A row with no applicable reference carries an explicit verification gap and no ratio.
 
 ### Metrics
 
-- Latency (ms)
-- TFLOPS (Tera Floating-point Operations Per Second)
-- DRAM Bandwidth (GB/s)
+Latency (ms), TFLOPS, and DRAM bandwidth (TB/s).
 
 ### Reporting rules
 
-- Numbers must come from a real GPU machine, not a sandbox.
-- Include small, medium, and large representative shapes.
-- Do not cherry-pick favorable shapes; report regressions as-is.
-- Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
-- Every row of the report is one op's measurement: `BenchmarkReport.record()` takes the Op, and the benchmark names it once, at construction. A comparison that measures something else — a kernel strategy, a field of library implementations — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
-- Use existing baseline tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`); introducing an ad-hoc tag means updating the downstream consumers with it.
+- Numbers come from a real GPU, after the targeted correctness suite has passed on the same GPU.
+- Report small, medium and large representative shapes. Do not cherry-pick; report regressions as they are.
+- Each row is one op's measurement: `BenchmarkReport.record()` takes the op, which the benchmark names once at construction. A comparison of anything else — kernel strategies, a field of libraries — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
+- Use an existing baseline tag. A new tag means updating its downstream consumers.

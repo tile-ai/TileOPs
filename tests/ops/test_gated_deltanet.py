@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import TestBase
-from tileops.backend import TensorSpec, registry
+from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention.gated_deltanet import GatedDeltaNetFwdWorkload
@@ -67,23 +67,9 @@ def test_gated_deltanet_partitioned_prefill_carries_a_value_major_state() -> Non
     test = GatedDeltaNetFwdTest(
         1, 512, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True
     )
-    # 8 chunks split into partitions of 4.
-    kernel = GatedDeltaNetDensePrefillFwdKernel(
-        1,
-        2,
-        2,
-        512,
-        1,
-        False,
-        128,
-        128**-0.5,
-        torch.bfloat16,
-        state_v_first=True,
-        config={"max_local_chunks": 4},
-    )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, runs=kernel)
+    _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
 
 
 @pytest.mark.sm90
@@ -178,21 +164,27 @@ def test_gated_deltanet_partitioned_prefill_normalizes_the_key_it_stages() -> No
     """The warmup pass stages the key itself, so partitioning normalizes it a second time."""
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16, l2norm=True)
-    kernel = GatedDeltaNetDensePrefillFwdKernel(
-        1,
-        2,
-        2,
-        512,
-        1,
-        False,
-        128,
-        128**-0.5,
-        torch.bfloat16,
-        l2norm=True,
-        config={"max_local_chunks": 4},
-    )
     q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
-    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, runs=kernel)
+    _check_partitioned(test, q, k, v, g * 0.01, beta, use_qk_l2norm_in_kernel=True)
+
+
+class _FourChunkPartitionsKernel(GatedDeltaNetDensePrefillFwdKernel):
+    """Partition every four chunks, so a short sequence crosses partitions."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **{**kwargs, "config": {"max_local_chunks": 4}})
+
+
+def _check_partitioned(test, *inputs, **params) -> None:
+    """Run the op with four-chunk partitions and check it against the workload."""
+    op = GatedDeltaNetFwdOp(
+        **params,
+        kernel_map={"gated_deltanet_dense_prefill": _FourChunkPartitionsKernel},
+        target=BUILTIN,
+    )
+    test.check(op, *inputs)
+    (kernel,) = op.built_kernels("gated_deltanet").values()
+    assert type(kernel) is _FourChunkPartitionsKernel
 
 
 @pytest.mark.sm90
@@ -204,13 +196,9 @@ def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     """Exercise warmup, state correction, and partitioned forward together."""
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16, has_initial_state=has_initial_state)
-    # 8 chunks split into partitions of 4.
-    kernel = GatedDeltaNetDensePrefillFwdKernel(
-        1, 2, 2, 512, 1, False, 128, 128**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
-    )
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
-    test.check(GatedDeltaNetFwdOp(), q, k, v, g * 0.01, beta, *state, runs=kernel)
+    _check_partitioned(test, q, k, v, g * 0.01, beta, *state)
 
 
 @pytest.mark.sm90

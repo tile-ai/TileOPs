@@ -69,6 +69,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
         forget_device_properties()
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:

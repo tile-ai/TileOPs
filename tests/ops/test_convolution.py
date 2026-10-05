@@ -1194,6 +1194,7 @@ def test_conv3d_ndhwc_guard_rejects_float32() -> None:
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     op = Conv2dFwdOp(stride=1, padding=1)

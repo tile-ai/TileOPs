@@ -1,8 +1,4 @@
-"""Elementwise kernel config policy: an explicit config, and the default a shape and dtype pick.
-
-The Op takes no config and builds on its first call, so a config it did not choose, and the
-default for a shape too large to allocate cheaply, are reachable only on the kernel.
-"""
+"""Elementwise default config policy: the launch config a shape and dtype select."""
 
 from unittest.mock import patch
 
@@ -13,39 +9,12 @@ from tileops.kernels.elementwise import (
     AddFwdKernel,
     BitwiseAndFwdKernel,
     EluFwdKernel,
-    FloorDivideFwdKernel,
     HardtanhFwdKernel,
     LeakyReluFwdKernel,
     PowFwdKernel,
-    RemainderFwdKernel,
     SiluAndMulFwdKernel,
 )
 from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
-
-# Regression: a parametric kernel's block extent has to follow the config it is given
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("threads", "npt"),
-    [(128, 4), (256, 4), (512, 8), (1024, 8)],
-)
-def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -> None:
-    """Every element is written whatever ``threads * npt`` the config asks for.
-
-    The builder is handed the default config and the JIT the actual one, so a block
-    extent taken from the builder's arguments leaves part of each block untouched.
-    """
-    n = 4096 * 7 + 13
-    x = torch.randn(n, device="cuda", dtype=torch.float16)
-    kernel = LeakyReluFwdKernel(
-        n, torch.float16, 0.01, config={"threads": threads, "num_per_thread": npt}
-    )
-    torch.testing.assert_close(
-        kernel.forward(x), torch.nn.functional.leaky_relu(x, 0.01), rtol=1e-3, atol=1e-3
-    )
-
 
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
 
@@ -202,31 +171,3 @@ def test_fused_gated_explicit_config_follows_the_work():
             c["num_per_thread"] == cfg["num_per_thread"] and c["threads"] == cfg["threads"]
             for c in kernel.autotune_configs
         )
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("kernel_cls", "ref_fn"),
-    [
-        pytest.param(RemainderFwdKernel, torch.remainder, id="remainder"),
-        pytest.param(FloorDivideFwdKernel, torch.floor_divide, id="floor_divide"),
-    ],
-)
-@pytest.mark.parametrize(
-    ("dtype", "npt"),
-    [
-        # The top of each dtype's sweep: twice the elements its bytes a thread give.
-        pytest.param(torch.float16, 16, id="float16"),
-        pytest.param(torch.bfloat16, 16, id="bfloat16"),
-        pytest.param(torch.float32, 8, id="float32"),
-    ],
-)
-def test_floored_kernels_build_at_the_widest_tuned_fold(kernel_cls, ref_fn, dtype, npt) -> None:
-    """The floored bodies build and stay exact where a thread holds more than one vector."""
-    threads = 128
-    n = threads * npt
-    a = torch.rand(n, device="cuda", dtype=dtype) + 0.5
-    b = torch.rand(n, device="cuda", dtype=dtype) + 0.5
-    kernel = kernel_cls(a.shape, b.shape, dtype, config={"threads": threads, "num_per_thread": npt})
-    torch.testing.assert_close(kernel.forward(a, b), ref_fn(a, b), atol=0.0, rtol=0.0)
