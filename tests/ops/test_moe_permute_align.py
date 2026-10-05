@@ -10,7 +10,7 @@ Reference: SGLang moe_align_block_size
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from workloads.device import run_device
 from workloads.moe import MoEPermuteAlignWorkload, moe_call

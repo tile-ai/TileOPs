@@ -159,9 +159,9 @@ GemmW4A16FwdOp:
   - {M: 1, N: 8192, K: 81920, dtype_cases: [{T: float16}], label: decode-long-k}
   # The token axis at one shape. Server batching lands here, and the kernel picks a different
   # tile at each of these counts.
-  - {M: 2, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch2}
-  - {M: 8, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch8}
-  - {M: 32, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch32}
+  - {M: 2, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b2}
+  - {M: 8, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b8}
+  - {M: 32, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b32}
   - {M: 128, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: chunked-prefill-tile}
   - {M: 512, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: prefill-mlp-up}
   # Hidden sizes other than 8192, where the decode rows above do not predict the result: the

@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-from tests.test_base import served_in_tree
+from tests.workload_test_base import served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (

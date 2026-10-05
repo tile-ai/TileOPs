@@ -8,7 +8,7 @@ Output has the same shape as input.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import CumulativeWorkload

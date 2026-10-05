@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,

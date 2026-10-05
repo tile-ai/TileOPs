@@ -28,8 +28,8 @@ __all__ = [
     "GLAFwdInterface",
     "GatedDeltaNetCall",
     "GatedDeltaNetFwdInterface",
-    "KimiDeltaAttentionCall",
-    "KimiDeltaAttentionFwdInterface",
+    "KDACall",
+    "KDAFwdInterface",
     "head_count_refusal",
 ]
 
@@ -138,8 +138,8 @@ class GatedDeltaNetCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class KimiDeltaAttentionCall(CallSpec):
-    """One Kimi Delta Attention call, with the recurrence semantics the op fixed.
+class KDACall(CallSpec):
+    """One Kimi Delta Attention (KDA) call, with the recurrence semantics the op fixed.
 
     Kimi Delta Attention is the gated delta rule whose decay is one log-space
     value per key channel, so ``g`` is as wide as the state's key axis rather
@@ -488,10 +488,10 @@ class GatedDeltaNetFwdInterface(KernelInterface):
         """
 
 
-class KimiDeltaAttentionFwdInterface(KernelInterface):
+class KDAFwdInterface(KernelInterface):
     """Kimi Delta Attention for inference: prefill or decode over caller-owned state."""
 
-    request = KimiDeltaAttentionCall
+    request = KDACall
 
     @abstractmethod
     def forward(

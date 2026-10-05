@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.backend import BUILTIN, OpNotAvailableError
 from tileops.kernels.quantization import (
     INT8QuantPerChannelFwdKernel,

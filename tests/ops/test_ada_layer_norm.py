@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.norm.ada_layer_norm import (
     AdaLayerNormKernel,
     _should_use_cp_async,

@@ -269,7 +269,7 @@ GatedDeltaNetFwdOp:
       + (B * S * HV * 5 + 2 * HV if use_gate_in_kernel else 0)
       + (B * S * HV * (5 if allow_neg_eigval else 4) if use_beta_sigmoid_in_kernel else 0)
 
-KimiDeltaAttentionFwdOp:
+KDAFwdOp:
   # Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay g
   # (log space), one contract for equal-length, packed-varlen and single-token calls, with
   # GatedDeltaNetFwdOp's state layout; final_state is always returned. With
@@ -277,7 +277,7 @@ KimiDeltaAttentionFwdOp:
   # -exp(A_log) * softplus(g + dt_bias), or lower_bound * sigmoid(exp(A_log) * (g + dt_bias))
   # when lower_bound is passed (FLA fused_recurrent_kda).
   family: linear_attention
-  status: spec-only
+  status: implemented
   ref_api: fla.ops.kda.fused_recurrent_kda
   signature:
     types:
@@ -321,10 +321,33 @@ KimiDeltaAttentionFwdOp:
     - "not present(dt_bias) or use_gate_in_kernel"
     - "not present(lower_bound) or use_gate_in_kernel"
   workloads:
-  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(1024, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens], dtype_cases: [{T: bfloat16}, {T: float16}], label: kimi-linear-4k}
-  - {B: 1, S: 32768, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(8192, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens], dtype_cases: [{T: bfloat16}], label: kimi-linear-32k}
-  - {B: 1, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kimi-linear-decode-b1}
-  - {B: 64, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kimi-linear-decode-b64}
+  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(1024, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}, {T: float16}], label: kda-tp1-4x1024}
+  - {B: 1, S: 32768, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(8192, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens], dtype_cases: [{T: bfloat16}], label: kda-tp1-4x8192}
+  - {B: 1, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b1}
+  - {B: 64, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b64}
+  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kda-tp1-raw-gate-4096}
+  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-4096}
+  - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-16384}
+  - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-65536}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp2-4096}
+  - {B: 1, S: 16384, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp2-16384}
+  - {B: 1, S: 65536, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp2-65536}
+  - {B: 1, S: 4096, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp4-4096}
+  - {B: 1, S: 16384, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp4-16384}
+  - {B: 1, S: 65536, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp4-65536}
+  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp8-4096}
+  - {B: 1, S: 16384, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp8-16384}
+  - {B: 1, S: 65536, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp8-65536}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-tp1-1024-7168}
+  - {B: 1, S: 131072, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-tp1-16x8192}
+  - {B: 1, S: 8192, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, seq_lens: [1024, 7168], some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-tp8-1024-7168}
+  - {B: 1, S: 131072, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, seq_lens: "repeat(8192, 16)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-tp8-16x8192}
+  - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b8}
+  - {B: 32, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b32}
+  - {B: 128, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b128}
+  - {B: 256, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b256}
+  - {B: 32, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp8-decode-b32}
+  - {B: 256, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp8-decode-b256}
   roofline:
     # The per-token recurrence (the signature carries no chunk size). Per token and value
     # head: exp(g), the decay, k^T S, v - k^T S and beta, the rank-1 update and the q^T S

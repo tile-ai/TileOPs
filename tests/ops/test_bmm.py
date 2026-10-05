@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.gemm.bmm import BmmFP8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp

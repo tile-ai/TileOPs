@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.backend import BUILTIN
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp

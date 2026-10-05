@@ -1,4 +1,4 @@
-"""The two TileLang programs the chunked Kimi Delta Attention forward runs.
+"""The two TileLang programs the chunked Kimi Delta Attention (KDA) forward runs.
 
 ``chunk_prepare`` is chunk-local: nothing in it carries state from one chunk to
 the next, so one CTA takes one (chunk, value head) and the launch covers the

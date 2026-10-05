@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.attention import FP8LightningIndexerCall, FP8LightningIndexerKernel
 from tileops.ops import FP8LightningIndexerFwdOp
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload

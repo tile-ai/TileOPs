@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 from tileops.ops._signature_codegen import CheckError

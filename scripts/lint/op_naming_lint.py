@@ -51,6 +51,8 @@ ABBREVIATIONS = {
     "SSD": r"Ssd",
     "MHA": r"Mha",
     "DSA": r"Dsa",
+    "GLA": r"Gla",
+    "KDA": r"Kda",
     "RoPE": r"Rope",
     "YaRN": r"Yarn",
     "WS": r"Ws(?=[A-Z0-9]|$)",

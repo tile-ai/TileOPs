@@ -1,7 +1,7 @@
-"""Kimi Delta Attention operator (L2 Op layer).
+"""Kimi Delta Attention (KDA) operator (L2 Op layer).
 
 Provides:
-  - KimiDeltaAttentionFwdOp: the gated delta rule whose decay is one log-space
+  - KDAFwdOp: the gated delta rule whose decay is one log-space
     value per key channel, returning the output and the FP32 final state.
 """
 
@@ -12,19 +12,19 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
-    KimiDeltaAttentionCall,
-    KimiDeltaAttentionChunkPrefillFwdKernel,
-    KimiDeltaAttentionFusedPrefillFwdKernel,
-    KimiDeltaAttentionFwdInterface,
-    KimiDeltaAttentionRecurrentDecodeFwdKernel,
+    KDACall,
+    KDAChunkPrefillFwdKernel,
+    KDAFusedPrefillFwdKernel,
+    KDAFwdInterface,
+    KDARecurrentDecodeFwdKernel,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["KimiDeltaAttentionFwdOp"]
+__all__ = ["KDAFwdOp"]
 
 
-class KimiDeltaAttentionFwdOp(Op):
+class KDAFwdOp(Op):
     """Kimi Delta Attention: the gated delta rule with a per-key-channel decay.
 
     ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``beta`` and the output use
@@ -58,13 +58,11 @@ class KimiDeltaAttentionFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "kimi_delta_attention_chunk_prefill": KimiDeltaAttentionChunkPrefillFwdKernel,
-        "kimi_delta_attention_fused_prefill": KimiDeltaAttentionFusedPrefillFwdKernel,
-        "kimi_delta_attention_recurrent_decode": KimiDeltaAttentionRecurrentDecodeFwdKernel,
+        "kda_chunk_prefill": KDAChunkPrefillFwdKernel,
+        "kda_fused_prefill": KDAFusedPrefillFwdKernel,
+        "kda_recurrent_decode": KDARecurrentDecodeFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "kimi_delta_attention": KimiDeltaAttentionFwdInterface
-    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"kda": KDAFwdInterface}
 
     def __init__(
         self,
@@ -165,7 +163,7 @@ class KimiDeltaAttentionFwdOp(Op):
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        call = KimiDeltaAttentionCall(
+        call = KDACall(
             batch=batch,
             seq_len=seq_len,
             sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
@@ -185,4 +183,4 @@ class KimiDeltaAttentionFwdOp(Op):
             bounded_gate=self.lower_bound is not None,
             device=q.device,
         )
-        return self.kernel_for("kimi_delta_attention", call)(*inputs)
+        return self.kernel_for("kda", call)(*inputs)

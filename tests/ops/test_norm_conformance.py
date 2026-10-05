@@ -1,4 +1,4 @@
-"""Behavior-level conformance tests for the ``normalization`` family.
+"""Behavior-level conformance tests for the ``norm`` family.
 
 These tests anchor the manifest-aligned ctor surface (``normalized_shape``,
 ``num_groups``, ``training``-in-ctor) and verify forward calls produce

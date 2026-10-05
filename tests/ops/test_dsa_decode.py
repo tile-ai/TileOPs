@@ -3,7 +3,7 @@ import dataclasses
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeCall
 from tileops.ops import DSADecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DSADecodeWorkload

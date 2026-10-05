@@ -11,7 +11,7 @@ Verifies:
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.kernels.gemm.dense import GemmTMAKernel
 from tileops.kernels.gemm.persistent.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel

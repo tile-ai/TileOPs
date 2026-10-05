@@ -1,13 +1,15 @@
-"""Scalar-input conformance tests for status-implemented reduction ops.
+"""Spec-conformance tests for scalar (0-D) reduction inputs.
 
-Asserts that each of ``Sum/Mean/Amax/Amin/Var/Std/VarMean/All/Any/CountNonzero``
-accepts a 0-D input tensor paired with each ``dim`` form PyTorch accepts
-(``None``, ``0``, ``-1``, ``()``, ``[]``) and returns a result that matches
-the corresponding ``torch.<op>`` reference in both value and shape.
+A 0-D input is answered by the op itself — every family's kernel is undefined at that
+extent — so what is under test is the closed form each one returns and its agreement with
+PyTorch.
 
-For the Welford family (``VarFwdOp``, ``StdFwdOp``, ``VarMeanFwdOp``) the
-scalar input with default ``correction=1`` produces ``nan`` and emits a
-``UserWarning`` matching PyTorch's behavior.
+``keepdim`` cannot add an axis to a 0-D result and the element type reaches no branch, so
+neither is crossed with ``dim``; each is swept once. ``dim`` is crossed with nothing but
+carries every form ``_validate_scalar_dim`` accepts.
+
+The axis ops (softmax, logsumexp, argmax, vector norm) answer a 0-D input the same way and
+are checked against PyTorch once each.
 """
 
 from __future__ import annotations
@@ -17,213 +19,160 @@ import warnings
 import pytest
 import torch
 
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.values import convert
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
 from workloads.reduction import reduction_verification
 
-pytestmark = [
-    pytest.mark.skipif(not run_device_available(), reason="the run device is not available"),
-    # The Welford tests assert on this warning inside their own
-    # ``catch_warnings`` blocks; silence only what the reference calls
-    # outside those blocks emit.
-    pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning"),
+pytestmark = pytest.mark.skipif(
+    not run_device_available(), reason="the run device is not available"
+)
+
+_MANIFEST = load_manifest()
+_ADTS = load_adts()
+
+_FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
+_DTYPE_IDS = ["fp16", "bf16", "fp32"]
+_DIMS = [None, 0, -1, (), []]
+_DIM_IDS = ["dim=None", "dim=0", "dim=-1", "dim=()", "dim=[]"]
+
+#: A 0-D input and the reference each op must match on it. ``prod`` takes no ``None``
+#: dim, so it is asked about an int one.
+_ARITHMETIC = [
+    pytest.param("SumFwdOp", torch.sum, id="sum"),
+    pytest.param("MeanFwdOp", torch.mean, id="mean"),
+    pytest.param("AmaxFwdOp", torch.amax, id="amax"),
+    pytest.param("AminFwdOp", torch.amin, id="amin"),
+]
+_WELFORD = ["VarFwdOp", "StdFwdOp", "VarMeanFwdOp"]
+_LOGICAL = [
+    pytest.param("AllFwdOp", torch.all, torch.bool, id="all"),
+    pytest.param("AnyFwdOp", torch.any, torch.bool, id="any"),
+    pytest.param("CountNonzeroFwdOp", torch.count_nonzero, torch.int64, id="count-nonzero"),
 ]
 
 
-_DIM_FORMS = [None, 0, -1, (), []]
+def _op(name: str, **kwargs):
+    import tileops.ops.reduction.logical_reduce as logical
+    import tileops.ops.reduction.reduce as reduce_ops
+
+    module = logical if hasattr(logical, name) else reduce_ops
+    return getattr(module, name)(**kwargs)
 
 
-def _ids(prefix: str):
-    return [f"{prefix}-dim={d!r}" for d in _DIM_FORMS]
+def _as_tuple(value):
+    return value if isinstance(value, tuple) else (value,)
 
 
-# Arithmetic + logical reductions on scalar input
+def _welford_ref(name: str, x, dim, keepdim):
+    fn = {"VarFwdOp": torch.var, "StdFwdOp": torch.std, "VarMeanFwdOp": torch.var_mean}[name]
+    out = fn(x.float(), dim=dim, keepdim=keepdim, correction=1)
+    return tuple(t.to(x.dtype) for t in _as_tuple(out))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("sum"))
-def test_sum_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+@pytest.mark.parametrize("op_name, torch_fn", _ARITHMETIC)
+@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
+def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_fn, dim) -> None:
+    x = torch.tensor(1.5, dtype=torch.float16, device=run_device())
 
-    x = torch.tensor(3.5, dtype=torch.float32, device=run_device())
-    op = SumFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.sum(x, dim=dim) if dim is not None else torch.sum(x)
-    assert y.shape == ref.shape
+    y = _op(op_name, dim=dim)(x)
+
+    ref = torch_fn(x.float(), dim=dim).to(x.dtype)
+    assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
     compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("mean"))
-def test_mean_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import MeanFwdOp
+@pytest.mark.parametrize("dtype", _FLOAT_DTYPES, ids=_DTYPE_IDS)
+@pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
+def test_the_scalar_path_honours_dtype_and_keepdim(dtype, keepdim) -> None:
+    """Swept rather than crossed: neither reaches a branch ``dim`` does not."""
+    x = torch.tensor(1.5, dtype=dtype, device=run_device())
 
-    x = torch.tensor(2.0, dtype=torch.float32, device=run_device())
-    op = MeanFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.mean(x, dim=dim) if dim is not None else torch.mean(x)
+    y = _op("SumFwdOp", dim=None, keepdim=keepdim)(x)
+
+    ref = torch.sum(x.float(), dim=None, keepdim=keepdim).to(dtype)
     assert y.shape == ref.shape
+    assert y.dtype == dtype
     compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("amax"))
-def test_amax_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import AmaxFwdOp
+@pytest.mark.parametrize("dim", [0, -1], ids=["dim=0", "dim=-1"])
+def test_prod_of_one_element_is_that_element(dim) -> None:
+    """``ProdFwdOp`` narrows ``dim`` to an int, so it is asked about the two it takes."""
+    x = torch.tensor(1.5, dtype=torch.float16, device=run_device())
 
-    x = torch.tensor(-1.5, dtype=torch.float32, device=run_device())
-    op = AmaxFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.amax(x, dim=dim) if dim is not None else torch.amax(x)
+    y = _op("ProdFwdOp", dim=dim)(x)
+
+    ref = torch.prod(x.float(), dim=dim).to(x.dtype)
     assert y.shape == ref.shape
     compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("amin"))
-def test_amin_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import AminFwdOp
-
-    x = torch.tensor(4.25, dtype=torch.float32, device=run_device())
-    op = AminFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.amin(x, dim=dim) if dim is not None else torch.amin(x)
-    assert y.shape == ref.shape
-    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", [0, -1], ids=["prod-dim=0", "prod-dim=-1"])
-def test_prod_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import ProdFwdOp
-
-    x = torch.tensor(3.0, dtype=torch.float32, device=run_device())
-    op = ProdFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.prod(x, dim=dim)
-    assert y.shape == ref.shape
-    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("all"))
-def test_all_scalar_input(dim) -> None:
-    from tileops.ops.reduction.logical_reduce import AllFwdOp
-
-    x = torch.tensor(1.0, dtype=torch.float32, device=run_device())
-    op = AllFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.all(x, dim=dim) if dim is not None else torch.all(x)
-    assert y.shape == ref.shape
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("any"))
-def test_any_scalar_input(dim) -> None:
-    from tileops.ops.reduction.logical_reduce import AnyFwdOp
-
-    x = torch.tensor(0.0, dtype=torch.float32, device=run_device())
-    op = AnyFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.any(x, dim=dim) if dim is not None else torch.any(x)
-    assert y.shape == ref.shape
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("count_nonzero"))
-def test_count_nonzero_scalar_input(dim) -> None:
-    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
-
-    x = torch.tensor(2.5, dtype=torch.float32, device=run_device())
-    op = CountNonzeroFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.count_nonzero(x, dim=dim) if dim is not None else torch.count_nonzero(x)
-    assert y.shape == ref.shape
-    assert y.dtype == ref.dtype
-    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
-
-
-# Welford-family reductions on scalar input -> nan + UserWarning
-
-
-def _expect_var_warning() -> bool:
-    """Return whether PyTorch emits a UserWarning for var on scalar input.
-
-    PyTorch raises a "degrees of freedom is <= 0" UserWarning when
-    ``correction >= N``. We probe the reference path so the test stays
-    aligned with the local PyTorch build's exact warning emission.
-    """
-    x = torch.tensor(1.0, dtype=torch.float32)
+def _warns_dof(fn) -> tuple[object, bool]:
+    """Call *fn*; return its result and whether it warned about degrees of freedom."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        torch.var(x)
-    return any(issubclass(w.category, UserWarning) for w in caught)
+        out = fn()
+    return out, any(
+        issubclass(w.category, UserWarning) and "degrees of freedom" in str(w.message)
+        for w in caught
+    )
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("var"))
-def test_var_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+@pytest.mark.parametrize("op_name", _WELFORD)
+@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
+def test_a_welford_reduction_of_one_element_matches_torch(op_name, dim) -> None:
+    """``correction=1`` over one element is undefined: PyTorch warns and calls it ``nan``."""
+    x = torch.tensor(1.5, dtype=torch.float16, device=run_device())
 
-    x = torch.tensor(1.5, dtype=torch.float32, device=run_device())
-    op = VarFwdOp(dim=dim)
-    expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as op_caught:
-        warnings.simplefilter("always")
-        y = op(x)
-    ref = torch.var(x, dim=dim) if dim is not None else torch.var(x)
-    assert y.shape == ref.shape == ()
-    assert torch.isnan(y).item()
-    assert torch.isnan(ref).item()
-    if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in op_caught)
+    got, op_warned = _warns_dof(lambda: _as_tuple(_op(op_name, dim=dim)(x)))
+    want, ref_warned = _warns_dof(lambda: _welford_ref(op_name, x, dim, False))
+
+    assert op_warned == ref_warned, f"{op_name} dim={dim}: warned {op_warned}, torch {ref_warned}"
+    for g, w in zip(got, want, strict=True):
+        assert g.shape == w.shape, f"{op_name} dim={dim}: {g.shape} vs {w.shape}"
+        compare_outputs(g, w, reduction_verification((w).dtype, scalar=True))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("std"))
-def test_std_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import StdFwdOp
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
+@pytest.mark.parametrize("op_name", _WELFORD)
+@pytest.mark.parametrize(
+    ("shape", "dim"),
+    [((1,), None), ((1,), 0), ((2, 1), -1)],
+    ids=["1d-full", "1d-axis", "2d-inner-axis"],
+)
+def test_a_reduction_with_no_degrees_of_freedom_matches_torch(op_name, shape, dim) -> None:
+    """A length-1 axis with ``correction=1``: the kernel cannot be built for it."""
+    x = torch.ones(shape, dtype=torch.float32, device=run_device()).cumsum(0)
 
-    x = torch.tensor(-0.75, dtype=torch.float32, device=run_device())
-    op = StdFwdOp(dim=dim)
-    expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as op_caught:
-        warnings.simplefilter("always")
-        y = op(x)
-    ref = torch.std(x, dim=dim) if dim is not None else torch.std(x)
-    assert y.shape == ref.shape == ()
-    assert torch.isnan(y).item()
-    assert torch.isnan(ref).item()
-    if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in op_caught)
+    got = _as_tuple(_op(op_name, dim=dim)(x))
+
+    for g, w in zip(got, _welford_ref(op_name, x, dim, False), strict=True):
+        compare_outputs(g, w, reduction_verification((w).dtype, scalar=True))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("var_mean"))
-def test_var_mean_scalar_input(dim) -> None:
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
+@pytest.mark.parametrize("op_name, torch_fn, out_dtype", _LOGICAL)
+@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
+@pytest.mark.parametrize("value", [0.0, 1.5], ids=["zero", "nonzero"])
+def test_a_logical_reduction_of_one_element_matches_torch(
+    op_name, torch_fn, out_dtype, dim, value
+) -> None:
+    """Both truth values, because the predicate is what these ops compute."""
+    x = torch.tensor(value, dtype=torch.float16, device=run_device())
 
-    x = torch.tensor(2.25, dtype=torch.float32, device=run_device())
-    op = VarMeanFwdOp(dim=dim)
-    expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as op_caught:
-        warnings.simplefilter("always")
-        var_out, mean_out = op(x)
-    var_ref, mean_ref = torch.var_mean(x, dim=dim) if dim is not None else torch.var_mean(x)
-    assert var_out.shape == var_ref.shape == ()
-    assert mean_out.shape == mean_ref.shape == ()
-    assert torch.isnan(var_out).item()
-    assert torch.isnan(var_ref).item()
-    compare_outputs(mean_out, mean_ref, reduction_verification((mean_ref).dtype, scalar=True))
-    if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in op_caught)
+    y = _op(op_name, dim=dim)(x)
 
-
-# Aliasing sequences on a 0-D tensor are refused, as torch refuses them.
+    ref = torch_fn(x, dim=dim)
+    assert y.dtype == out_dtype, f"{op_name}: {y.dtype}"
+    assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
+    compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
 @pytest.mark.smoke
@@ -232,50 +181,25 @@ def test_var_mean_scalar_input(dim) -> None:
     [[0, 0], [0, -1], [-1, -1], [-1, 0], (0, -1)],
     ids=["dim=[0,0]", "dim=[0,-1]", "dim=[-1,-1]", "dim=[-1,0]", "dim=(0,-1)"],
 )
-def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
-
+def test_an_aliasing_dim_on_a_scalar_is_refused_as_torch_refuses_it(dim) -> None:
     x = torch.tensor(1.5, dtype=torch.float32, device=run_device())
     with pytest.raises(RuntimeError, match="appears multiple times"):
         torch.sum(x, dim=list(dim))
-    op = SumFwdOp(dim=list(dim))
     with pytest.raises(ValueError, match="unique_axes"):
-        op(x)
-
-
-# Welford requires_grad regression — the invalid-DOF (NaN) fast path must
-# return a tensor with autograd history matching PyTorch so backward works.
+        _op("SumFwdOp", dim=list(dim))(x)
 
 
 @pytest.mark.smoke
-def test_var_scalar_requires_grad_preserves_grad_fn() -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
-
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
+@pytest.mark.parametrize("op_name", ["VarFwdOp", "VarMeanFwdOp"])
+def test_a_welford_scalar_keeps_autograd_history(op_name) -> None:
+    """The ``nan`` fast path returns a tensor backward can run through, as PyTorch's does."""
     x = torch.tensor(0.5, dtype=torch.float32, device=run_device(), requires_grad=True)
-    op = VarFwdOp(dim=None)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        y = op(x)
-        ref = torch.var(x)
-    assert y.shape == ref.shape == ()
-    assert torch.isnan(y).item()
-    assert y.requires_grad and ref.requires_grad
-    assert y.grad_fn is not None and ref.grad_fn is not None
 
+    got = _as_tuple(_op(op_name, dim=None)(x))
 
-@pytest.mark.smoke
-def test_var_mean_scalar_requires_grad_preserves_grad_fn() -> None:
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
-
-    x = torch.tensor(1.25, dtype=torch.float32, device=run_device(), requires_grad=True)
-    op = VarMeanFwdOp(dim=None)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        var_out, mean_out = op(x)
-        var_ref, mean_ref = torch.var_mean(x)
-    assert var_out.requires_grad and var_ref.requires_grad
-    assert mean_out.requires_grad and mean_ref.requires_grad
-    assert var_out.grad_fn is not None and mean_out.grad_fn is not None
+    assert got[0].shape == () and torch.isnan(got[0]).item(), op_name
+    assert all(g.requires_grad and g.grad_fn is not None for g in got), op_name
 
 
 @pytest.mark.smoke
@@ -293,8 +217,67 @@ def test_a_scalar_input_to_an_axis_op_matches_torch(name: str, ref) -> None:
     import tileops.reduction as reduction
 
     x = torch.tensor(-1.5, dtype=torch.float32, device=run_device())
+    want = ref(x)
     compare_outputs(
-        getattr(reduction, name)(dim=0)(x),
-        ref(x),
-        reduction_verification((ref(x)).dtype, scalar=True),
+        getattr(reduction, name)(dim=0)(x), want, reduction_verification(want.dtype, scalar=True)
     )
+
+
+#: How each op's manifest formula prices a scalar: one element read, then what it
+#: writes. ``all``/``any`` write one byte, ``count_nonzero`` one int64, the rest one
+#: element of the input dtype; ``var_mean`` writes two.
+_SCALAR_WRITE_BYTES = {
+    "SumFwdOp": lambda e: e,
+    "MeanFwdOp": lambda e: e,
+    "AmaxFwdOp": lambda e: e,
+    "AminFwdOp": lambda e: e,
+    "ProdFwdOp": lambda e: e,
+    "VarFwdOp": lambda e: e,
+    "StdFwdOp": lambda e: e,
+    "VarMeanFwdOp": lambda e: 2 * e,
+    "AllFwdOp": lambda e: 1,
+    "AnyFwdOp": lambda e: 1,
+    "CountNonzeroFwdOp": lambda e: 8,
+}
+
+#: Every dim form a scalar reduction can be given, the singleton sequences included: each
+#: one reaches ``dim % x.ndim`` in the manifest formula by a different branch.
+_SCALAR_ROOFLINE_DIMS = [None, 0, -1, (), [], [0], [-1], (0,), (-1,)]
+_SCALAR_ROOFLINE_DIM_IDS = [
+    "dim=None", "dim=0", "dim=-1", "dim=()", "dim=[]",
+    "dim=[0]", "dim=[-1]", "dim=(0,)", "dim=(-1,)",
+]  # fmt: skip
+
+
+def _dim_legal(op_name: str, dim) -> bool:
+    """Whether the op's manifest ``dim`` type admits *dim*."""
+    try:
+        convert(dim, _MANIFEST[op_name]["signature"]["params"]["dim"]["type"], _ADTS)
+    except ValueError:
+        return False
+    return True
+
+
+_SCALAR_ROOFLINE_CASES = [
+    pytest.param(op_name, dim, id=f"{dim_id}-{op_name}")
+    for dim, dim_id in zip(_SCALAR_ROOFLINE_DIMS, _SCALAR_ROOFLINE_DIM_IDS, strict=True)
+    for op_name in sorted(_SCALAR_WRITE_BYTES)
+    if _dim_legal(op_name, dim)
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
+@pytest.mark.parametrize("op_name, dim", _SCALAR_ROOFLINE_CASES)
+def test_the_scalar_path_prices_one_element_whatever_dim_names(op_name, dim) -> None:
+    """A 0-D input has no axis to reduce, so every legal ``dim`` form prices one element.
+
+    The manifest formulas take ``dim % x.ndim``, which is a division by zero at this
+    extent; the entries carry the guard that makes it one element instead.
+    """
+    op = _op(op_name, dim=dim)
+    x = torch.tensor(3.0, device=run_device(), dtype=torch.float32)
+    op(x)
+
+    _, nbytes = op.eval_roofline()
+    assert nbytes == x.element_size() + _SCALAR_WRITE_BYTES[op_name](x.element_size())

@@ -1,4 +1,4 @@
-"""The seam between an op and a target's kernels.
+"""What an op passes to a target's kernels.
 
 What a third-party backend gets, observed from the op side: its builder is called with the
 manifest's inputs and params, its kernel is memoized under the input signature, and
@@ -9,7 +9,7 @@ happens. Uses a fake target, so no vendor hardware is involved.
 import pytest
 import torch
 
-from tests.test_base import served_in_tree
+from tests.workload_test_base import served_in_tree
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
@@ -473,7 +473,7 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
 
 # --------------------------------------------------------------------------------------
-# Two optional inputs at the seam: ClampTensorFwdOp's min and max
+# Two optional inputs passed to a target: ClampTensorFwdOp's min and max
 # --------------------------------------------------------------------------------------
 
 
@@ -582,7 +582,7 @@ def test_an_elementwise_op_without_a_builder_for_this_target_raises():
 
 
 # --------------------------------------------------------------------------------------
-# An optional input at the seam: Conv2dFwdOp's bias
+# An optional input passed to a target: Conv2dFwdOp's bias
 # --------------------------------------------------------------------------------------
 
 
@@ -704,7 +704,7 @@ def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
 
 
 # --------------------------------------------------------------------------------------
-# Five inputs, two of them written: BatchNormFwdOp at the seam
+# Five inputs, two of them written: BatchNormFwdOp passed to a target
 # --------------------------------------------------------------------------------------
 
 
@@ -742,7 +742,7 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
 
 
 # --------------------------------------------------------------------------------------
-# A reduction op at the seam: the declared rank, and the axes as a param
+# A reduction op passed to a target: the declared rank, and the axes as a param
 # --------------------------------------------------------------------------------------
 
 

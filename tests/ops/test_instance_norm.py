@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops._signature_codegen import CheckError
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device

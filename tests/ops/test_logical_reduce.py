@@ -9,7 +9,7 @@ Uses exact match (torch.equal) for comparison.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.call_spec import LogicalReduceCall
 from tileops.kernels.reduction.logical_reduce import (

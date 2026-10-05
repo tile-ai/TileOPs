@@ -1,17 +1,17 @@
-"""Kimi Delta Attention: the gated delta rule with a per-key-channel decay."""
+"""Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay."""
 
 from tileops.kernels.linear_attention.kda.decode import (
-    KimiDeltaAttentionRecurrentDecodeFwdKernel,
+    KDARecurrentDecodeFwdKernel,
 )
 from tileops.kernels.linear_attention.kda.prefill import (
-    KimiDeltaAttentionChunkPrefillFwdKernel,
+    KDAChunkPrefillFwdKernel,
 )
 from tileops.kernels.linear_attention.kda.prefill_fused import (
-    KimiDeltaAttentionFusedPrefillFwdKernel,
+    KDAFusedPrefillFwdKernel,
 )
 
 __all__ = [
-    "KimiDeltaAttentionChunkPrefillFwdKernel",
-    "KimiDeltaAttentionFusedPrefillFwdKernel",
-    "KimiDeltaAttentionRecurrentDecodeFwdKernel",
+    "KDAChunkPrefillFwdKernel",
+    "KDAFusedPrefillFwdKernel",
+    "KDARecurrentDecodeFwdKernel",
 ]

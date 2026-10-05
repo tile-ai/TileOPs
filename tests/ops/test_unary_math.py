@@ -7,7 +7,7 @@ L4 edge cases for numerically sensitive ops.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import (
     AbsFwdOp,
     CeilFwdOp,

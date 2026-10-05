@@ -1,4 +1,4 @@
-"""Chunked Kimi Delta Attention prefill: chunk-local work, then one scan."""
+"""Chunked Kimi Delta Attention (KDA) prefill: chunk-local work, then one scan."""
 
 from typing import Optional, Tuple
 
@@ -6,15 +6,15 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    KimiDeltaAttentionCall,
-    KimiDeltaAttentionFwdInterface,
+    KDACall,
+    KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.kda.chunk_programs import (
     chunk_prepare_program,
     chunk_scan_program,
 )
 
-__all__ = ["KimiDeltaAttentionChunkPrefillFwdKernel"]
+__all__ = ["KDAChunkPrefillFwdKernel"]
 
 
 def packed_offsets(
@@ -34,7 +34,7 @@ def packed_offsets(
 CHUNK_SIZE = 64
 
 
-class KimiDeltaAttentionChunkPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInterface):
+class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
     """SM90 prefill over a 64-token chunk, equal-length or packed varlen.
 
     The chunk-local half runs one CTA per (chunk, value head) and the scan one
@@ -46,11 +46,11 @@ class KimiDeltaAttentionChunkPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: KimiDeltaAttentionCall) -> bool:
+    def applies(cls, call: KDACall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: KimiDeltaAttentionCall) -> Optional[str]:
+    def refusal(cls, call: KDACall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal
         if chunked is not None:
@@ -60,7 +60,7 @@ class KimiDeltaAttentionChunkPrefillFwdKernel(Kernel, KimiDeltaAttentionFwdInter
         return None
 
     @classmethod
-    def entry_for(cls, call: KimiDeltaAttentionCall) -> Entry:
+    def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.batch,

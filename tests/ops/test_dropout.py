@@ -11,7 +11,7 @@ Covers:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.ops.elementwise.dropout import DropoutFwdOp
 from workloads.device import run_device

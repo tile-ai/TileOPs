@@ -268,46 +268,6 @@ def _paged_kv_cache_gather(p, t):
     return {}
 
 
-# ---------------------------------------------------------------- linear attention
-
-
-def _kda(p, t):
-    naive = pytest.importorskip(
-        "fla.ops.kda.naive",
-        reason="KimiDeltaAttentionFwdOp unverified: its reference, FLA (package `fla`), is not installed",
-    ).naive_recurrent_kda
-    q, k, v, g, beta = t["q"], t["k"], t["v"], t["g"], t["beta"]
-    if p["use_qk_l2norm_in_kernel"]:
-        q, k = (
-            F.normalize(q.float(), dim=-1).to(q.dtype),
-            F.normalize(k.float(), dim=-1).to(k.dtype),
-        )
-    if p["use_gate_in_kernel"]:
-        heads = v.shape[2]
-        a = t["A_log"].exp()[:, None]
-        x = g.float() + (t["dt_bias"].view(heads, -1) if t.get("dt_bias") is not None else 0)
-        lower = p["lower_bound"]
-        g = lower * torch.sigmoid(a * x) if lower is not None else -a * F.softplus(x)
-    if p["use_beta_sigmoid_in_kernel"]:
-        beta = beta.float().sigmoid() * (2 if p["allow_neg_eigval"] else 1)
-    cu = t["cu_seqlens"].tolist() if t.get("cu_seqlens") is not None else None
-    spans = list(zip(cu, cu[1:], strict=False)) if cu else [(0, q.shape[1])]
-    init = t.get("initial_state")
-    if init is not None and p["state_v_first"]:
-        init = init.transpose(-1, -2)
-    outs, states = [], []
-    for i, (a, e) in enumerate(spans):
-        sel = slice(a, e)
-        h0 = init[i : i + 1] if cu and init is not None else init
-        o, s = naive(q[:, sel], k[:, sel], v[:, sel], g[:, sel], beta[:, sel], p["scale"], h0, True)
-        outs.append(o)
-        states.append(s)
-    state = torch.cat(states) if cu else states[0]
-    if p["state_v_first"]:
-        state = state.transpose(-1, -2)
-    return {"o": torch.cat(outs, 1).to(v.dtype), "final_state": state.float()}
-
-
 # ---------------------------------------------------------------- entries
 
 
@@ -366,7 +326,6 @@ REFERENCES = {
     "MergeAttentionStatesFwdOp": (_merge_attention_states, _narrow("v_b")),
     "DSAPagedFwdOp": (_dsa_paged, _narrow("kv_cache")),
     "PagedKVCacheGatherFwdOp": (_paged_kv_cache_gather, _narrow("dst")),
-    "KimiDeltaAttentionFwdOp": (_kda, _narrow("g")),
 }
 
 

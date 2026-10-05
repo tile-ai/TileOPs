@@ -51,6 +51,7 @@ from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops.ops.linear_attention.kda import KDAFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -470,6 +471,17 @@ def _linear_attention_cases():
             _x(_B, _S, _H).sigmoid(),
         )
 
+    def kda():
+        # A 128-wide square state with a precomputed gate, which the in-tree prefill serves.
+        k = torch.nn.functional.normalize(_x(_B, _S, _H, 128, dtype=torch.float32), dim=-1)
+        return KDAFwdOp(), (
+            _x(_B, _S, _H, 128) * 0.1,
+            k.to(_DTYPE),
+            _x(_B, _S, _H, 128) * 0.1,
+            -_x(_B, _S, _H, 128).abs() * 0.1,
+            _x(_B, _S, _H).sigmoid(),
+        )
+
     return (
         ("gla-fwd", gla_fwd),
         ("gla-bwd", gla_bwd),
@@ -480,6 +492,7 @@ def _linear_attention_cases():
         ("gla-inference", gla_inference),
         ("deltanet-inference", deltanet_inference),
         ("gated-deltanet", gated_deltanet),
+        ("kda", kda),
     )
 
 
@@ -788,6 +801,7 @@ for _op_cls in (
     DeltaNetRecurrentFwdOp,
     DeltaNetInferenceFwdOp,
     GatedDeltaNetFwdOp,
+    KDAFwdOp,
     FFTC2CFwdOp,
     FP8QuantFwdOp,
     ChainSpeculativeSamplingFwdOp,

@@ -17,7 +17,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
 from tileops.kernels.reduction.softmax import SoftmaxSplitKernel
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp

@@ -122,7 +122,7 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### Infrastructure rules
 
-- A change to shared test infrastructure (`tests/test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates in the same PR, and runs a broad `pytest -m smoke` before merge.
+- A change to shared test infrastructure (`tests/workload_test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates in the same PR, and runs a broad `pytest -m smoke` before merge.
 - Before claiming readiness, run the affected op family's test files on a real GPU.
 
 ## Benchmarks

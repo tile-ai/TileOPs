@@ -8,7 +8,7 @@ Philox stream need not match the reference's.
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.backend import OpNotAvailableError
 from tileops.kernels.sampling import SamplingCall
 from tileops.kernels.sampling.radix_select import cluster_plan

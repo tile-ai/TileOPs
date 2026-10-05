@@ -1,4 +1,4 @@
-"""Conformance tests for elementwise multi-input ops.
+"""Conformance tests for the where, clamp and masked_fill ops.
 
 Covers PyTorch-aligned signatures, broadcasting semantics, and split
 variants (Tensor-bound clamp / masked_fill, single-bound clamp_min /
@@ -10,7 +10,7 @@ manifest spec rules (.claude/domain-rules/manifest-spec.md).
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.workload_test_base import TestBase
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload

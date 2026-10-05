@@ -14,7 +14,7 @@ Test cases cover:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.device import run_device
 from workloads.moe import FusedTopKWorkload, moe_call

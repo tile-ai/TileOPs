@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
 from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 

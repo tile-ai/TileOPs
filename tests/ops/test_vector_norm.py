@@ -8,7 +8,7 @@ Uses torch.linalg.vector_norm as the reference implementation.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.workload_test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.device import run_device
