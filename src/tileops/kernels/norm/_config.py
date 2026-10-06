@@ -112,6 +112,7 @@ def select_row_configs(
     num_buffers: int = 1,
     widths: tuple = _CANDIDATE_THREADS,
     block_ms: tuple = _CANDIDATE_BLOCK_M,
+    every_width_past_budget: bool = False,
 ) -> list[dict]:
     """Autotune space: *block_ms* x the thread counts *widths* admits.
 
@@ -127,6 +128,8 @@ def select_row_configs(
         num_buffers: Row-sized shared buffers the kernel holds live at once.
         widths: Block widths to draw from.
         block_ms: Rows-per-block values to offer.
+        every_width_past_budget: Offer every admitted width, one row a block, for a row
+            no offered block_m fits; otherwise such a row gets the single default.
     """
 
     def _feasible_threads(
@@ -157,9 +160,9 @@ def select_row_configs(
         if block_m <= max_block_m
         for t in threads
     ]
-    # A row so wide that no offered block_m fits the budget is held one to a block, at
-    # every width that divides it: past the budget the best width still varies with the row.
-    return configs or [{"block_m": 1, "threads": t} for t in threads] or [select_row_config()]
+    if not configs and every_width_past_budget:
+        configs = [{"block_m": 1, "threads": t} for t in threads]
+    return configs or [select_row_config()]
 
 
 def make_row_reduce(block_m, n, n_padded, eps):
