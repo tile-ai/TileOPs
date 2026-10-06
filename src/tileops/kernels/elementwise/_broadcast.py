@@ -4,8 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-# CUDA caps grid.y at 65535, and one grid axis carries the rows.
-_CUDA_MAX_GRID_Y = 65535
+from tileops.kernels.constants import MAX_GRID_YZ_BLOCKS
 
 
 def flat(t):
@@ -122,7 +121,8 @@ def row_broadcast_split(coalesced_shape, a_strides, b_strides):
     rows = 1
     for d in coalesced_shape[:-1]:
         rows *= d
-    if rows > _CUDA_MAX_GRID_Y:
+    # The rows run along grid y.
+    if rows > MAX_GRID_YZ_BLOCKS:
         return None
     return rows, inner
 
