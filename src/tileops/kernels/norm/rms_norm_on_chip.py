@@ -119,6 +119,9 @@ def _rms_norm_on_chip_kernel(
                                 remote_barrier=received[0],
                             )
                     T.mbarrier_wait_parity(received[0], 0)
+                    # Every inbound copy has landed. A CTA leaves only once every peer says
+                    # the same, so no copy still reads the shared memory of one that left.
+                    T.cluster_arrive()
                     total[0] = T.cast(0, "float32")
                     for peer in T.unroll(cluster):
                         total[0] += sums[own + _SLOT * (1 + peer)]
@@ -142,6 +145,8 @@ def _rms_norm_on_chip_kernel(
                         piece[i] = T.cast(normalize(piece[i], rrms, scale[i]), dtype)
                     for i in T.vectorized(vec):
                         y[cta, held + (v * threads + tx) * vec + i] = piece[i]
+                if clustered:
+                    T.cluster_wait()
 
         return main
 
