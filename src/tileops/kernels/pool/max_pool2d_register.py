@@ -114,8 +114,8 @@ def _max_pool2d_register_kernel(
                         for i in T.unroll(after):
                             window[pad_w + run + i] = element(x, plane, ih, start + run + i)
                     # Taps in torch's order, row by row, left to right; a NaN wins and
-                    # stays. Written in the prim_func, the test is one select; a nested
-                    # T.if_then_else became branches and ran up to 40% slower.
+                    # stays. Written here the test lowers to FSEL; built from nested
+                    # T.if_then_else in a helper it did not, and ran up to 40% slower.
                     for e in T.unroll(outputs):
                         for kw in T.unroll(kernel_w):
                             tap = window[e * stride_w + kw]
