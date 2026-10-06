@@ -1061,6 +1061,20 @@ def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
 
 
 @pytest.mark.smoke
+def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
+    """Two batches of 1125 output positions: a tile of positions runs from one batch into
+    the next, and each position lands in its own batch of the NCDHW result."""
+    op = Conv3dFwdOp(stride=1, padding=1)
+    x = torch.randn(2, 32, 5, 15, 15, device=run_device(), dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
+
+    out = op(x, weight)
+
+    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
+    compare_outputs(out, ref, convolution_verification(out.dtype))
+
+
+@pytest.mark.smoke
 def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
     """The channels-last kernel stages input, weight and output. Those buffers are
     intermediates of one implementation, and the roofline is the algorithm's minimum
