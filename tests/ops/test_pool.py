@@ -571,6 +571,26 @@ def test_avg_pool1d_staged_windows_match_the_reference(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l",
+    [
+        pytest.param(4096, 3, 2, 1, id="s2-pad-before"),
+        pytest.param(1024, 5, 1, 2, id="s1-pad-both-sides"),
+        pytest.param(512, 4, 4, 0, id="s4-one-output-a-load"),
+        pytest.param(1024, 6, 2, 0, id="s2-reach-past-the-load"),
+    ],
+)
+def test_avg_pool1d_float32_windows_read_into_registers(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int
+) -> None:
+    """float32 windows a 16-byte load covers whole outputs of, read with the elements they
+    reach past it on either side, the row's ends included."""
+    _run_avg_pool_case(
+        1, (2, 3, l_in), kernel_l, stride_l, pad_l, False, True, None, torch.float32, False
+    )
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("l_in, kernel_l", [(15, 16), (31, 32), (100, 128), (1000, 1024)])
 def test_max_pool1d_window_wider_than_the_row(l_in: int, kernel_l: int) -> None:
     """Ceil mode admits a window wider than the row; PyTorch pads the missing taps with -inf
