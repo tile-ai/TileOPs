@@ -249,35 +249,27 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "M, N, dtype, backend",
+    "M, N, dtype",
     [
-        (64, 16384, torch.float32, "CumulativeRowScanKernel"),
-        (64, 32768, torch.bfloat16, "CumulativeRowScanKernel"),
-        # A padded width the row scan declines, at both element widths.
-        (64, 8200, torch.float32, "CumsumParallelScanKernel"),
-        (64, 8200, torch.bfloat16, "CumsumParallelScanKernel"),
-        # 65 elements per thread is not a whole number of vector accesses
-        (64, 16640, torch.bfloat16, "CumsumParallelScanKernel"),
+        # Widths the row scan stages exactly, at a chunk of whole vector accesses.
+        pytest.param(64, 16384, torch.float32, id="row-scan-fp32"),
+        pytest.param(64, 32768, torch.bfloat16, id="row-scan-bf16"),
+        # A width the alignment would pad, which the parallel scan takes.
+        pytest.param(64, 8200, torch.float32, id="parallel-scan-padded-fp32"),
+        pytest.param(64, 8200, torch.bfloat16, id="parallel-scan-padded-bf16"),
+        # 65 elements a thread is not a whole number of vector accesses.
+        pytest.param(64, 16640, torch.bfloat16, id="parallel-scan-misaligned-chunk"),
     ],
 )
-def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: str) -> None:
-    """Each shape takes the expected backend and matches torch.cumsum.
-
-    The row scan takes every width it can stage exactly at a chunk whose bytes are a
-    whole number of vector accesses, which is where it measures fastest; the parallel
-    scan is left the widths the alignment would pad and the chunks it would misalign.
-    """
+def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype) -> None:
+    """Rows of the widths each scan serves match torch.cumsum."""
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(M, N, dtype=dtype, device=run_device())
-    op = CumsumFwdOp(dim=-1)
-    y = op(x)
+    y = CumsumFwdOp(dim=-1)(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
-
-    # The kernel the call built, not one refetched by a key: the key is a read-back of
-    # the arguments and says nothing about which backend was chosen.
 
 
 @pytest.mark.smoke
