@@ -26,28 +26,9 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["ArgreduceKernel", "ArgreduceSplitKernel", "ArgreduceStridedKernel"]
 
-_ARGREDUCE_KINDS = {"argmax", "argmin"}
+# Independent (key, index) slots a thread folds into, which every program's pair ops,
+# launch shapes and merges assume.
 _NUM_ACCUMULATORS = 4
-
-# Magnitude bits of a float32 pattern -- everything but the sign; see _ordering_key.
-_KEY_MAGNITUDE = 0x7FFFFFFF
-
-# The key every NaN takes: int32's largest, so no number outranks one and two NaNs tie.
-_KEY_NAN = 0x7FFFFFFF
-
-# Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
-_KEY_IDENTITY = -(2**31)
-# A row shorter than this is a handful of passes; splitting cannot save more
-# than the second pass costs.
-_SPLIT_MIN_N = 32768
-# Above this many rows the blocks already queue, and splitting only adds the
-# final pass.
-_ROWS_SATURATED = 512
-# A chunk shorter than this cannot amortize its share of the final pass.
-_MIN_CHUNK = 512
-# Output-parallel gives a thread the whole axis to walk, so it pays only while
-# that walk is short; it loses from N=32 up.
-_STRIDED_AXIS_MAX_N = 16
 
 
 def _lanes_per_row(n: int) -> int:
@@ -82,9 +63,11 @@ def _ordering_key(op_kind: str):
         oriented = -cast if negate else cast
         bits = T.reinterpret(oriented, "int32")
         sign = bits >> 31
-        magnitude = T.bitwise_and(bits, T.int32(_KEY_MAGNITUDE))
+        # Everything but the sign bit.
+        magnitude = T.bitwise_and(bits, T.int32(0x7FFFFFFF))
         ordered = T.bitwise_xor(magnitude, sign) - sign
-        return T.if_then_else(oriented != oriented, T.int32(_KEY_NAN), ordered)
+        # int32's largest, so no number outranks a NaN and two NaNs tie.
+        return T.if_then_else(oriented != oriented, T.int32(0x7FFFFFFF), ordered)
 
     return key_of
 
@@ -103,7 +86,8 @@ def _make_pair_ops(op_kind: str, n: int):
 
     @T.macro
     def set_identity(keys, indices, slot):
-        keys[slot] = T.int32(_KEY_IDENTITY)
+        # Below every float's key, so it loses to any candidate: -inf keys to -0x7F800000.
+        keys[slot] = T.int32(-(2**31))
         indices[slot] = T.int32(n)
 
     @T.macro
@@ -552,9 +536,9 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
 
     def __init__(self, call: ArgreduceCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
-        if call.op_kind not in _ARGREDUCE_KINDS:
+        if call.op_kind not in ("argmax", "argmin"):
             raise ValueError(
-                f"Unsupported op_kind '{call.op_kind}'. Expected one of {sorted(_ARGREDUCE_KINDS)}."
+                f"Unsupported op_kind '{call.op_kind}'. Expected one of ['argmax', 'argmin']."
             )
         if call.n <= 0:
             raise ValueError(
@@ -677,7 +661,10 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
 
     @classmethod
     def applies(cls, call: ArgreduceCall) -> bool:
-        return call.n >= _SPLIT_MIN_N and call.m < _ROWS_SATURATED
+        # A row shorter than 32768 is a handful of passes, so splitting cannot save more
+        # than the second pass costs; past 512 rows the blocks already queue, and
+        # splitting only adds the final pass.
+        return call.n >= 32768 and call.m < 512
 
     def _program(self, call: ArgreduceCall) -> object:
         return _argreduce_multicta_partial_kernel(call.m, call.n, call.op_kind, self.dtype_str)
@@ -686,13 +673,18 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
     def default_config(self) -> dict:
         # Only a default: the best split moves with the shape by more than an order of
         # magnitude.
-        split = max(1, min(16, self.N // _MIN_CHUNK))
+        split = min(16, self._max_split())
         return self._knobs({"block_m": 1, "threads": 256, "ctas_per_row": split})
 
     def _candidates(self) -> list[dict]:
-        ceiling = max(1, self.N // _MIN_CHUNK)
+        ceiling = self._max_split()
         splits = sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
         return [{"threads": t, "ctas_per_row": c} for t in (128, 256, 512) for c in splits]
+
+    def _max_split(self) -> int:
+        """The most blocks a row may split into: a chunk shorter than 512 cannot
+        amortize its share of the final pass."""
+        return max(1, self.N // 512)
 
     def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         ctas_per_row = self.config.get("ctas_per_row", 1)
@@ -710,7 +702,9 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
 
     @classmethod
     def applies(cls, call: ArgreduceCall) -> bool:
-        return call.inner_stride > 1 and call.n <= _STRIDED_AXIS_MAX_N
+        # A thread walks the whole axis, which pays only while the walk is short; it loses
+        # from 32 positions up.
+        return call.inner_stride > 1 and call.n <= 16
 
     def _program(self, call: ArgreduceCall) -> object:
         return _argreduce_output_kernel(
