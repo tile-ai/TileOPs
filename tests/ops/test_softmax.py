@@ -237,6 +237,10 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="tiled"
         ),
+        # An odd row: no access wider than one element starts every row.
+        pytest.param(
+            SoftmaxFwdOp, F.softmax, (512, 40001), marks=pytest.mark.full, id="tiled-odd-width"
+        ),
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (64, 40000), marks=pytest.mark.full, id="split"
         ),

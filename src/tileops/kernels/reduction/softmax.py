@@ -24,8 +24,9 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
@@ -52,7 +53,137 @@ from tileops.utils import WARP_LANES
 __all__ = [
     "SoftmaxKernel",
     "SoftmaxSplitKernel",
+    "SoftmaxStreamingKernel",
 ]
+
+
+@functools.lru_cache(maxsize=32)
+def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm, held_bytes):
+    """Build the two-pass softmax/log_softmax for rows no CTA holds on chip.
+
+    ``ctas`` resident CTAs walk the rows in turn. The first pass reads a row in tiles of
+    ``threads * accesses`` vectors and folds each thread's running ``(max, sum)`` with the
+    online recurrence; the pairs then fold across the warp by shuffles and across warps
+    through shared memory. The second pass reads the row again from the far end, where
+    the tiles read last are likeliest still in L2, and writes the result. The first
+    tiles of a row, as many whole ones as ``held_bytes`` of shared memory take, are kept
+    from the first pass, so the second reads them from shared memory instead.
+    """
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
+    while N % vec:
+        vec //= 2
+    neg_inf = float("-inf")
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads, accesses):
+        tile = threads * accesses * vec
+        tiles = -(-N // tile)
+        warps = threads // WARP_LANES
+        kept = min(N // tile, held_bytes // (tile * DataType(dtype).bits // 8))
+
+        def row_scale(total):
+            """What a row's result takes from its sum: its reciprocal, or its log."""
+            if op_kind == "softmax":
+                return 1.0 / total
+            return T.log(total)
+
+        def fold(m, s, other_m, other_s):
+            """The ``(max, sum)`` of two partial pairs; two empty ones stay empty."""
+            top = T.max(m, other_m)
+            both = s * exp_shifted(m, top) + other_s * exp_shifted(other_m, top)
+            return top, T.if_then_else(top == neg_inf, T.cast(0, "float32"), both)
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), out_dtype],
+        ):
+            with T.Kernel(ctas, threads=threads) as cta:
+                # Held to the registers that leave room for every CTA an SM is given.
+                T.annotate_min_blocks_per_sm(ctas_per_sm)
+                tx = T.get_thread_binding()
+                held = T.alloc_local([accesses * vec], dtype)
+                out = T.alloc_local([vec], out_dtype)
+                stat = T.alloc_local([2], "float32")  # this thread's (max, sum)
+                peer = T.alloc_local([2], "float32")
+                tile_max = T.alloc_local([1], "float32")
+                # Two slots, so a row's pairs never overwrite the ones still being read.
+                warp_stats = T.alloc_shared([2, 2, warps], "float32")
+                head = T.alloc_shared([max(kept, 1) * tile], dtype)
+
+                for step in T.serial(T.ceildiv(M - cta, ctas)):
+                    row = cta + step * ctas
+                    stat[0] = T.cast(neg_inf, "float32")
+                    stat[1] = T.cast(0, "float32")
+                    for t in T.serial(tiles):
+                        for a in T.unroll(accesses):
+                            col = t * tile + (a * threads + tx) * vec
+                            if col < N:
+                                for i in T.vectorized(vec):
+                                    held[a * vec + i] = x[row, col + i]
+                            else:
+                                for i in T.vectorized(vec):
+                                    held[a * vec + i] = T.cast(neg_inf, dtype)
+                            if t < kept:
+                                for i in T.vectorized(vec):
+                                    head[t * tile + (a * threads + tx) * vec + i] = held[
+                                        a * vec + i
+                                    ]
+                        tile_max[0] = T.cast(neg_inf, "float32")
+                        for j in T.unroll(accesses * vec):
+                            tile_max[0] = T.max(tile_max[0], T.cast(held[j], "float32"))
+                        top = T.max(stat[0], tile_max[0])
+                        stat[1] = T.if_then_else(
+                            top == neg_inf,
+                            T.cast(0, "float32"),
+                            stat[1] * exp_shifted(stat[0], top),
+                        )
+                        stat[0] = top
+                        for j in T.unroll(accesses * vec):
+                            stat[1] += T.if_then_else(
+                                top == neg_inf,
+                                T.cast(0, "float32"),
+                                exp_shifted(T.cast(held[j], "float32"), top),
+                            )
+                    for k in T.unroll(WARP_LANES.bit_length() - 1):
+                        peer[0] = T.shfl_xor(stat[0], T.shift_left(1, k))
+                        peer[1] = T.shfl_xor(stat[1], T.shift_left(1, k))
+                        stat[0], stat[1] = fold(stat[0], stat[1], peer[0], peer[1])
+                    if tx % WARP_LANES == 0:
+                        warp_stats[step % 2, 0, tx // WARP_LANES] = stat[0]
+                        warp_stats[step % 2, 1, tx // WARP_LANES] = stat[1]
+                    T.sync_threads()
+                    stat[0] = T.cast(neg_inf, "float32")
+                    stat[1] = T.cast(0, "float32")
+                    for w in T.unroll(warps):
+                        stat[0], stat[1] = fold(
+                            stat[0], stat[1], warp_stats[step % 2, 0, w], warp_stats[step % 2, 1, w]
+                        )
+                    scale = row_scale(stat[1])
+
+                    for t_back in T.serial(tiles):
+                        t = tiles - 1 - t_back
+                        for a in T.unroll(accesses):
+                            col = t * tile + (a * threads + tx) * vec
+                            if col < N:
+                                if t < kept:
+                                    for i in T.vectorized(vec):
+                                        held[a * vec + i] = head[col + i]
+                                else:
+                                    for i in T.vectorized(vec):
+                                        held[a * vec + i] = x[row, col + i]
+                                for i in T.unroll(vec):
+                                    v = T.cast(held[a * vec + i], "float32")
+                                    if op_kind == "softmax":
+                                        out[i] = T.cast(exp_shifted(v, stat[0]) * scale, out_dtype)
+                                    else:
+                                        out[i] = T.cast(v - stat[0] - scale, out_dtype)
+                                for i in T.vectorized(vec):
+                                    y[row, col + i] = out[i]
+
+        return main
+
+    return _func
 
 
 # Single-tile kernel (N fits in shared memory) -- original fast path
@@ -786,6 +917,67 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
         else:
             seg_max, seg_sum = self.partials(rows)
             y = self.finalize(rows, seg_max, seg_sum)
+        return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+
+class SoftmaxStreamingKernel(_SoftmaxKernelBase):
+    """Softmax / log-softmax of rows no shared-memory tile holds, from resident CTAs.
+
+    Resident CTAs walk the rows in turn; each row is read twice, the second time from
+    the far end, except its first tiles, which wait in shared memory between the passes.
+    Serves the rows :class:`SoftmaxKernel` would tile, except those
+    :class:`SoftmaxSplitKernel` splits.
+
+    A tile is 16384 elements, four 16-byte vectors a thread: 512 threads of a 16-bit
+    dtype, 1024 of fp32. Each SM is given 1024 threads, which leaves every thread 64
+    registers, and its CTAs share its shared memory for the kept tiles.
+    """
+
+    preferred_over = frozenset({"softmax_fwd"})
+    _TILE_ELEMENTS = 16384
+    _ACCESSES = 4
+    _THREADS_PER_SM = 1024
+    # Shared memory a CTA keeps for the warps' statistics rather than row tiles.
+    _STATS_BYTES = 1024
+
+    @classmethod
+    def applies(cls, call: SoftmaxCall) -> bool:
+        return cls.row_plan(call)[1] != 0 and cls.split_seg_n(call) == 0
+
+    def __init__(self, call: SoftmaxCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        ctas_per_sm = self._THREADS_PER_SM // self.default_config["threads"]
+        self.kernel = _softmax_streaming_kernel(
+            call.m,
+            call.n,
+            call.op_kind,
+            self.dtype_str,
+            self.dtype_to_str(call.out_dtype),
+            min(call.m, ctas_per_sm * call.sm_count),
+            ctas_per_sm,
+            call.smem_budget // ctas_per_sm - self._STATS_BYTES,
+        )
+        self.init_config(None)
+
+    @property
+    def default_config(self) -> dict:
+        vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
+        return {
+            "threads": self._TILE_ELEMENTS // (self._ACCESSES * vec),
+            "accesses": self._ACCESSES,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """The default alone: tuning repeats one candidate back to back, which reads the
+        row out of L2 and ranks a schedule this kernel never runs as."""
+        return [self.default_config]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize ``call.axis`` of the contiguous input *x*."""
+        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
