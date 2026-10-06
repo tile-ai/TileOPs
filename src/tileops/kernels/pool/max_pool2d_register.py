@@ -14,7 +14,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import MaxPool2dFwdInterface, MaxPoolCall
 
 __all__ = ["MaxPool2dRegisterKernel"]
@@ -216,6 +216,6 @@ class MaxPool2dRegisterKernel(Kernel, MaxPool2dFwdInterface):
         self._require_cuda(x=x)
         x = x.contiguous()
         # The kernel reads 16-byte vectors from the start of each row.
-        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
+        x = vector_aligned(x)
         y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])
