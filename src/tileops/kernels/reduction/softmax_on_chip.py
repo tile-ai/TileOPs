@@ -26,12 +26,19 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["SoftmaxOnChipKernel"]
 
-# One MUFU.EX2. ``exp2f`` and ``__expf`` reach the same instruction, but ptxas guards
-# each with a test and two multiplies so that a subnormal result stays subnormal.
+# ``tl_approx_exp2`` is one MUFU.EX2 and flushes a subnormal result to zero; ``exp2f``
+# guards the same instruction with a test and two multiplies to keep it, as
+# ``tl_exp2`` does.
 _PRELUDE = r"""
 static __device__ __forceinline__ float tl_approx_exp2(float x) {
   float r;
   asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
+  return r;
+}
+
+static __device__ __forceinline__ float tl_exp2(float x) {
+  float r;
+  asm("ex2.approx.f32 %0, %1;" : "=f"(r) : "f"(x));
   return r;
 }
 
@@ -90,7 +97,8 @@ def _softmax_on_chip_kernel(
             return top, T.if_then_else(top == neg_inf, T.cast(0, "float32"), both)
 
         def term(value, peak):
-            """``exp(value - peak)`` of one element; a subnormal result reads as zero."""
+            """``exp(value - peak)`` of one element for the sum, which is at least one: a
+            subnormal term reads as zero."""
             return T.call_extern(
                 "float32", "tl_approx_exp2", (T.cast(value, "float32") - peak) * LOG2E
             )
@@ -107,9 +115,7 @@ def _softmax_on_chip_kernel(
                 # The division is one more term of the exponent, which the scaling
                 # takes in the same FFMA.
                 return T.call_extern(
-                    "float32",
-                    "tl_approx_exp2",
-                    (T.cast(value, "float32") - peak) * LOG2E - scale,
+                    "float32", "tl_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
                 )
             return T.cast(value, "float32") - peak - scale
 

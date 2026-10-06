@@ -859,4 +859,27 @@ def test_rows_read_once_across_a_cluster(op, reference, shape: tuple, dtype) -> 
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype, low",
+    [
+        pytest.param(torch.float32, -100.0, id="float32"),
+        pytest.param(torch.bfloat16, -88.0, id="bfloat16"),
+    ],
+)
+def test_subnormal_probabilities_survive(dtype, low: float) -> None:
+    """A probability below the smallest normal float comes back as torch returns it.
+
+    Every row is one zero and the rest ``low``, so all but one probability is subnormal
+    in float32. A tolerance check cannot see them flushed to zero, so they are compared
+    exactly against torch.
+    """
+    x = torch.full((264, 65536), low, dtype=dtype, device=run_device())
+    x[:, 0] = 0
+    y = SoftmaxFwdOp(dim=-1)(x)
+    expected = F.softmax(x, dim=-1)
+    assert torch.equal(y[:, 1:] != 0, expected[:, 1:] != 0)
+    torch.testing.assert_close(y, expected, rtol=1e-2, atol=0)
+
+
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}
