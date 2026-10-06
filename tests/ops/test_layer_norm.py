@@ -292,6 +292,15 @@ def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool)
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
+def test_fused_add_layer_norm_large_offset() -> None:
+    """A padded row whose mean far outgrows its spread keeps the pad out of the variance."""
+    workload = LayerNormLargeOffsetWorkload(4, 3000, torch.float32)
+    x, weight, bias = workload.gen_inputs()
+    y, _ = FusedAddLayerNormFwdOp()(x, torch.zeros_like(x), weight, bias)
+    compare_outputs(y, workload.ref_program(x, weight, bias), workload.verification(x))
+
+
 class FusedAddLayerNormNonContigFixture(FixtureBase):
     PARAMS = [
         (
