@@ -19,19 +19,6 @@ from tileops.kernels.pool.call_spec import MaxPool2dFwdInterface, MaxPoolCall
 
 __all__ = ["MaxPool2dRegisterKernel"]
 
-_ACCUM = "float32"
-_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-# Elements a thread's windows may reach past its load on either side of a row; each is a
-# load of its own.
-_MAX_REACH = 1
-# Window rows a thread walks; the row loop is unrolled, so taller windows stay on
-# MaxPool2dKernel.
-_MAX_ROWS = 16
-# Inputs up to this size are read evict-first in L2: (2048, 56, 56) fp32 measured 10.85 to
-# 10.08 us and (2048, 112, 112) fp32 35.7 to 33.8, while (8192, 112, 112) fp32 slowed
-# from 121.4 to 125.6.
-_EVICT_FIRST_BYTES = 128 << 20
-
 
 @functools.lru_cache(maxsize=32)
 def _max_pool2d_register_kernel(
@@ -57,6 +44,7 @@ def _max_pool2d_register_kernel(
     maximum is unchanged.
     """
     run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
+    accum_dtype = "float32"
     outputs = run // stride_w
     out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
     out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
@@ -70,7 +58,7 @@ def _max_pool2d_register_kernel(
             """``x[plane, ih, iw]`` in float32, a position past the plane read at its edge."""
             row = T.max(T.min(ih, h_in - 1), 0)
             column = T.max(T.min(iw, w_in - 1), 0)
-            return T.cast(x[plane, row, column], _ACCUM)
+            return T.cast(x[plane, row, column], accum_dtype)
 
         @T.prim_func
         def main(
@@ -87,11 +75,11 @@ def _max_pool2d_register_kernel(
                 plane = index // (groups * out_h)
                 start = group * run
                 values = T.alloc_local([run], dtype)
-                window = T.alloc_local([pad_w + run + after], _ACCUM)
-                peaks = T.alloc_local([outputs], _ACCUM)
+                window = T.alloc_local([pad_w + run + after], accum_dtype)
+                peaks = T.alloc_local([outputs], accum_dtype)
                 maxima = T.alloc_local([outputs], dtype)
                 for e in T.unroll(outputs):
-                    peaks[e] = -T.infinity(_ACCUM)
+                    peaks[e] = -T.infinity(accum_dtype)
                 for kh in T.unroll(kernel_h):
                     ih = oh * stride_h - pad_h + kh
                     row = T.max(T.min(ih, h_in - 1), 0)
@@ -106,7 +94,7 @@ def _max_pool2d_register_kernel(
                         for i in T.vectorized(run):
                             values[i] = x[plane, row, start + i]
                     for i in T.unroll(run):
-                        window[pad_w + i] = T.cast(values[i], _ACCUM)
+                        window[pad_w + i] = T.cast(values[i], accum_dtype)
                     if pad_w:
                         for i in T.unroll(pad_w):
                             window[i] = element(x, plane, ih, start - pad_w + i)
@@ -137,17 +125,19 @@ class MaxPool2dRegisterKernel(Kernel, MaxPool2dFwdInterface):
     Serves windows without dilation or ``ceil_mode``. Along the width, the stride must
     divide the elements of a 16-byte load, so that one covers whole outputs; the outputs
     must divide into those loads, stay within the padded row, and reach at most
-    ``_MAX_REACH`` element past a load on either side.
+    one element past a load on either side.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"max_pool2d_kernel"})
 
-    _THREADS = 128
-
     @classmethod
     def applies(cls, call: MaxPoolCall) -> bool:
-        if call.dtype not in _DTYPES or len(call.size) != 2:
+        # The window-row loop is unrolled, so a window of more than 16 rows stays on
+        # MaxPool2dKernel. A thread reads at most one element past its load on either
+        # side of a row, each a load of its own.
+        max_rows, max_reach = 16, 1
+        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32) or len(call.size) != 2:
             return False
         (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
         (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
@@ -157,9 +147,9 @@ class MaxPool2dRegisterKernel(Kernel, MaxPool2dFwdInterface):
         out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
         out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
         return (
-            kernel_h <= _MAX_ROWS
-            and pad_w <= _MAX_REACH
-            and kernel_w - stride_w - pad_w <= _MAX_REACH
+            kernel_h <= max_rows
+            and pad_w <= max_reach
+            and kernel_w - stride_w - pad_w <= max_reach
             and out_h > 0
             and out_w > 0
             and out_w % (run // stride_w) == 0
@@ -194,7 +184,10 @@ class MaxPool2dRegisterKernel(Kernel, MaxPool2dFwdInterface):
     ) -> None:
         super().__init__()
         self.planes, self.h_in, self.w_in, self.dtype = planes, h_in, w_in, dtype
-        evict_first = planes * h_in * w_in * dtype.itemsize <= _EVICT_FIRST_BYTES
+        # Inputs up to 128 MiB are read evict-first in L2: (2048, 56, 56) fp32 measured 10.85
+        # to 10.08 us and (2048, 112, 112) fp32 35.7 to 33.8, while (8192, 112, 112) fp32 slowed
+        # from 121.4 to 125.6.
+        evict_first = planes * h_in * w_in * dtype.itemsize <= 128 << 20
         self.kernel = _max_pool2d_register_kernel(
             planes,
             h_in,
@@ -206,8 +199,8 @@ class MaxPool2dRegisterKernel(Kernel, MaxPool2dFwdInterface):
             pad_h,
             pad_w,
             self.dtype_str,
-            self._THREADS,
-            evict_first,
+            threads=128,
+            evict_first=evict_first,
         )
         self.init_config()
 
