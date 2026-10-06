@@ -444,6 +444,15 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    def _rows(self, x: torch.Tensor) -> torch.Tensor:
+        """``call.axis`` of *x* as ``(M, N)`` rows starting on a 16-byte boundary.
+
+        Every kernel of the family loads 16-byte vectors, so rows a contiguous view
+        starts off that boundary are copied first.
+        """
+        rows = rows_for_axes(x, (self.call.axis,))
+        return rows.clone() if rows.data_ptr() % VECTOR_ACCESS_BYTES else rows
+
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
         """Row-sized shared buffers a row block is planned with.
@@ -561,7 +570,7 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = rows_for_axes(x, (self.call.axis,))
+        rows = self._rows(x)
         if self.fused is not None:
             stats = torch.empty(
                 2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
@@ -629,7 +638,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
+        y = self.kernel(**self.config)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
@@ -685,6 +694,6 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
         program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(rows_for_axes(x, (self.call.axis,)))
+        y = program(self._rows(x))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))

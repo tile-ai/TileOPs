@@ -19,7 +19,6 @@ from tileops.kernels.reduction._primitives import (
     LOG2E,
     exp_shifted,
     restore_same_shape,
-    rows_for_axes,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall
 from tileops.kernels.reduction.softmax import _SoftmaxKernelBase
@@ -327,7 +326,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = rows_for_axes(x, (self.call.axis,))
+        rows = self._rows(x)
         m = rows.shape[0]
         chunk = self.call.n // self.cluster
         y = self.kernel()(rows.reshape(m * self.cluster, chunk))
