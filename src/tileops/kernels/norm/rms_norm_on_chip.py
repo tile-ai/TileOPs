@@ -188,6 +188,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs = [90]
+    aligned_inputs = ("x", "weight")
     preferred_over = frozenset({"rms_norm", "rms_norm_streaming"})
 
     _THREADS = 1024

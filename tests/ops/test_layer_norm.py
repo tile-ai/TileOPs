@@ -231,6 +231,30 @@ def test_either_affine_tensor_alone_matches_torch(give: str, n: int) -> None:
     )
 
 
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n", [pytest.param(4096, id="aligned-row"), pytest.param(1000, id="warp-row")]
+)
+def test_layer_norm_reads_inputs_off_the_vector_boundary(n: int) -> None:
+    """A contiguous input, weight and bias may start anywhere in their storage."""
+    dtype = torch.bfloat16
+    x = _misaligned(torch.randn(2, n, dtype=dtype, device=run_device()))
+    weight = _misaligned(torch.randn(n, dtype=dtype, device=x.device))
+    bias = _misaligned(torch.randn(n, dtype=dtype, device=x.device))
+    compare_outputs(
+        LayerNormFwdOp(normalized_shape=(n,))(x, weight, bias),
+        F.layer_norm(x.float(), (n,), weight.float(), bias.float()).to(dtype),
+        normalization_verification("LayerNormFwdOp", dtype),
+    )
+
+
 class FusedAddLayerNormTest(FusedAddLayerNormWorkload, TestBase):
     pass
 

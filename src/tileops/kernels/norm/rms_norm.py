@@ -138,6 +138,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("x", "weight")
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

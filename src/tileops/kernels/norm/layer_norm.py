@@ -199,6 +199,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("x", "weight", "bias")
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

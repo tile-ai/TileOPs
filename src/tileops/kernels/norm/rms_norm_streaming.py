@@ -106,6 +106,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     """Reduce a row in tiles, then reread it from the far end to normalize it."""
 
     supported_archs = [80, 86, 89, 90]
+    aligned_inputs = ("x", "weight")
     preferred_over = frozenset({"rms_norm"})
 
     @classmethod
