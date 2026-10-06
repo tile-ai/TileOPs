@@ -114,7 +114,7 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
 
 class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     """LayerNorm with one warp per row, for rows that split into 16-byte vectors, at most
-    eight to a lane, but not into 256-element blocks.
+    twelve fp32 or fifteen 16-bit vectors to a lane, but not into 256-element blocks.
 
     Supports SM80+ architectures.
     """
@@ -134,9 +134,9 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
             return f"serves rows that do not split into {ALIGNMENT}-element blocks"
         if call.n % vec:
             return f"reads the row in 16-byte vectors of {vec} elements"
-        # Vectors one lane holds at most. Past eight, the fp32 copy of the row costs a
-        # 4096-row call more than the padded block it replaces.
-        widest = WARP_LANES * 8 * vec
+        # Vectors one lane holds at most: past twelve fp32 or fifteen 16-bit vectors the
+        # padded block is faster at 1024 and 4096 rows.
+        widest = WARP_LANES * (12 if call.dtype.itemsize == 4 else 15) * vec
         if call.n > widest:
             return f"holds a row of at most {widest} elements in one warp's registers"
         return None
