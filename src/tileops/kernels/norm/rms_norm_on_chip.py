@@ -20,8 +20,28 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["RMSNormOnChipKernel"]
 
-# Floats a CTA's partial sum takes in a peer's shared memory: one 16-byte bulk copy.
-_SLOT = 4
+# Store a CTA's partial sum from registers into peer ``peer``'s ``slot``; the store
+# completes its four bytes of the transaction on the peer's ``bar``.
+_PRELUDE = r"""
+static __device__ __forceinline__ void tl_send_partial(
+    void* slot, void* bar, int peer, float total) {
+  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(slot));
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  asm volatile(
+      "{\n\t.reg .b32 rs, rm;\n\t"
+      "mapa.shared::cluster.u32 rs, %0, %2;\n\t"
+      "mapa.shared::cluster.u32 rm, %1, %2;\n\t"
+      "st.async.shared::cluster.mbarrier::complete_tx::bytes.f32 [rs], %3, [rm];\n\t}"
+      :: "r"(s), "r"(m), "r"(peer), "f"(total) : "memory");
+}
+
+// Arrive on ``bar`` once, expecting ``bytes`` from the peers' stores.
+static __device__ __forceinline__ void tl_expect_partials(void* bar, unsigned bytes) {
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;"
+               :: "r"(m), "r"(bytes) : "memory");
+}
+"""
 
 
 @functools.lru_cache(maxsize=32)
@@ -40,8 +60,8 @@ def _rms_norm_on_chip_kernel(
     staged = chunk - held
     staged_vectors = staged // (threads * vec)
     warps = threads // WARP_LANES
-    # The CTA's own partial sum, then one slot a peer: 16-byte aligned after the warp sums.
-    own = -(-warps // _SLOT) * _SLOT
+    # Warp sums, then one slot a CTA of the cluster; a CTA's own stays unused.
+    own = warps
     clustered = cluster > 1
 
     @tilelang.jit(out_idx=[2])
@@ -57,7 +77,9 @@ def _rms_norm_on_chip_kernel(
             weight: T.Tensor[(cluster if has_weight else 1, chunk if has_weight else 1), dtype],
             y: T.Tensor[(M * cluster, chunk), dtype],
         ):
-            with T.ClusterKernel(M * cluster, threads=threads, cluster_dims=cluster) as cta:
+            with T.ClusterKernel(
+                M * cluster, threads=threads, cluster_dims=cluster, prelude=_PRELUDE
+            ) as cta:
                 tx = T.get_thread_binding()
                 rank = cta % cluster
                 values = T.alloc_local([held_vectors * vec], dtype)
@@ -67,10 +89,18 @@ def _rms_norm_on_chip_kernel(
                 tile = T.alloc_shared((1, staged), dtype)
                 # One buffer for the warp sums and the partials: a peer writes its partial
                 # while this CTA still folds its warps, so no slot may share their storage.
-                sums = T.alloc_shared([own + _SLOT * (1 + cluster)], "float32")
+                sums = T.alloc_shared([own + cluster], "float32")
                 if clustered:
-                    # Each peer's bulk copy arrives once on it and carries its bytes.
-                    received = T.alloc_barrier([cluster])
+                    # One arrival, here; the peers' stores complete its bytes. A store reads
+                    # registers, so a CTA may leave once it has received every partial.
+                    received = T.alloc_barrier([1])
+                    if tx == 0:
+                        T.call_extern(
+                            "handle",
+                            "tl_expect_partials",
+                            T.address_of(received[0]),
+                            4 * (cluster - 1),
+                        )
                     # Peers may write here once this CTA's barrier is initialized; their wait
                     # for that overlaps the loads below.
                     T.cluster_arrive_relaxed()
@@ -106,25 +136,23 @@ def _rms_norm_on_chip_kernel(
                     total[0] += sums[w]
 
                 if clustered:
-                    if tx == 0:
-                        sums[own] = total[0]
-                    T.sync_threads()
+                    # Every peer's barrier is initialized past this wait.
                     T.cluster_wait()
-                    for peer in T.serial(cluster):
-                        if tx == 0:
-                            T.copy_cluster(
-                                sums[own : own + _SLOT],
-                                sums[own + _SLOT * (1 + rank) : own + _SLOT * (2 + rank)],
-                                dst_block=peer,
-                                remote_barrier=received[0],
-                            )
+                    # st.async takes a peer's memory only, so a CTA keeps its own sum in
+                    # registers.
+                    if tx < cluster and tx != rank:
+                        T.call_extern(
+                            "handle",
+                            "tl_send_partial",
+                            T.address_of(sums[own + rank]),
+                            T.address_of(received[0]),
+                            tx,
+                            total[0],
+                        )
                     T.mbarrier_wait_parity(received[0], 0)
-                    # Every inbound copy has landed. A CTA leaves only once every peer says
-                    # the same, so no copy still reads the shared memory of one that left.
-                    T.cluster_arrive()
-                    total[0] = T.cast(0, "float32")
                     for peer in T.unroll(cluster):
-                        total[0] += sums[own + _SLOT * (1 + peer)]
+                        if peer != rank:
+                            total[0] += sums[own + peer]
                 rrms = T.rsqrt(total[0] / float(N) + eps)
 
                 for v in T.unroll(held_vectors):
@@ -145,8 +173,6 @@ def _rms_norm_on_chip_kernel(
                         piece[i] = T.cast(normalize(piece[i], rrms, scale[i]), dtype)
                     for i in T.vectorized(vec):
                         y[cta, held + (v * threads + tx) * vec + i] = piece[i]
-                if clustered:
-                    T.cluster_wait()
 
         return main
 
