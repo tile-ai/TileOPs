@@ -122,14 +122,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"layer_norm"})
 
-    # Vectors one lane holds at most. Past eight, the fp32 copy of the row costs a 4096-row
-    # call more than the padded block it replaces.
-    _MAX_LANE_VECTORS = 8
-
-    # Warps, and so rows, in one CTA.
-    _WARP_CANDIDATES = (1, 2, 4, 8)
-    _DEFAULT_WARPS = 4
-
     @classmethod
     def applies(cls, call: LayerNormCall) -> bool:
         return cls.refusal(call) is None
@@ -141,7 +133,9 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
             return f"serves rows that do not split into {ALIGNMENT}-element blocks"
         if call.n % vec:
             return f"reads the row in 16-byte vectors of {vec} elements"
-        widest = WARP_LANES * cls._MAX_LANE_VECTORS * vec
+        # Vectors one lane holds at most. Past eight, the fp32 copy of the row costs a
+        # 4096-row call more than the padded block it replaces.
+        widest = WARP_LANES * 8 * vec
         if call.n > widest:
             return f"holds a row of at most {widest} elements in one warp's registers"
         return None
@@ -173,11 +167,12 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {"warps": self._DEFAULT_WARPS}
+        # Warps, and so rows, in one CTA.
+        return {"warps": 4}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [{"warps": warps} for warps in self._WARP_CANDIDATES]
+        return [{"warps": warps} for warps in (1, 2, 4, 8)]
 
     def forward(
         self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]

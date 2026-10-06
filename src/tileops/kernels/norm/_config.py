@@ -146,13 +146,13 @@ def select_row_configs(
             dtype: Element type the row is stored in.
             widths: Block widths to draw from.
         """
-        min_elements = VECTOR_ACCESS_BYTES // torch.tensor([], dtype=dtype).element_size()
+        min_elements = VECTOR_ACCESS_BYTES // dtype.itemsize
         candidates = [t for t in widths if n_padded % t == 0]
         vectorizable = [t for t in candidates if n_padded // t >= min_elements]
         return vectorizable or candidates
 
     threads = _feasible_threads(n_padded, dtype, widths)
-    smem_per_row = n_padded * torch.tensor([], dtype=dtype).element_size()
+    smem_per_row = n_padded * dtype.itemsize
     max_block_m = _ROW_SMEM_BUDGET_BYTES // (num_buffers * smem_per_row)
     configs = [
         {"block_m": block_m, "threads": t}

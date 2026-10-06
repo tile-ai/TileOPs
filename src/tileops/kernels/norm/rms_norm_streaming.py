@@ -110,7 +110,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
 
     @classmethod
     def applies(cls, call: LayerNormCall) -> bool:
-        element_bytes = torch.empty((), dtype=call.dtype).element_size()
+        element_bytes = call.dtype.itemsize
         budget = torch.cuda.get_device_properties(call.device).shared_memory_per_block_optin
         return align_up(call.n, ALIGNMENT) * element_bytes > budget
 
@@ -118,9 +118,6 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     def entry_for(cls, call: LayerNormCall) -> Entry:
         identity = (call.n, call.eps, call.dtype)
         return identity, lambda: cls(*identity)
-
-    # CTAs launched per SM, each walking its share of the rows.
-    _CTAS_PER_SM = 2
 
     def __init__(self, n: int, eps: float, dtype: torch.dtype) -> None:
         super().__init__()
@@ -141,7 +138,8 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)
         m = rows.shape[0]
         # The device the input is on, not whichever is current.
-        ctas = min(m, self._CTAS_PER_SM * get_sm_count(x.device.index))
+        # Two CTAs an SM, each walking its share of the rows.
+        ctas = min(m, 2 * get_sm_count(x.device.index))
         self.kernel = _rms_norm_streaming_kernel(
             m, self.n, self.eps, self.dtype_str, has_weight, ctas
         )

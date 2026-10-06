@@ -29,7 +29,7 @@ __all__ = ["LayerNormKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_elements, sm_count):
+def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
 
@@ -37,14 +37,15 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_eleme
     def _func(block_m, threads):
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
-        # a grid that oversubscribes the device is paid back for the walk.
+        # a grid that oversubscribes the device is paid back for the walk, and
+        # only once a thread owns 64 elements: twice RMSNorm's, for two walks.
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
         per_thread_partial = (
             -(-M // block_m) > sm_count
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
-            and N_padded // threads >= partial_min_elements
+            and N_padded // threads >= 64
             # An odd walk faults in the generated code at some widths, 95 elements a
             # thread among them; the fragment path serves those rows.
             and N_padded // threads % 2 == 0
@@ -199,10 +200,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # Row elements a thread must own before the walk pays. Two reductions here,
-    # so two walks, so twice the row RMSNorm needs.
-    PARTIAL_MIN_ELEMENTS_PER_THREAD = 64
-
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
         identity = (call.n, call.eps, call.dtype)
@@ -275,7 +272,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             self.dtype_str,
             has_weight,
             has_bias,
-            self.PARTIAL_MIN_ELEMENTS_PER_THREAD,
             # The device the input is on, not whichever is current.
             get_sm_count(rows.device.index),
         )
