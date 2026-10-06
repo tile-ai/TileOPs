@@ -162,26 +162,31 @@ def _adaptive_max_pool2d_kernel(
         # split's index arithmetic costs more than it saves.
         lanes = _bin_lanes(threads, planes) if out_plane == 1 else 1
         taps = max_kh * max_kw
+        run_taps = -(-taps // lanes)
 
         @T.macro
         def _keep(run, v):
-            # NaN enters `run` and never leaves, since a later value fails `v > NaN`.
+            # NaN enters `run` and never leaves, since a later value fails `v > NaN`. Of
+            # two equal values the one held stays, which keeps the earlier of +0.0 and
+            # -0.0 when values arrive in tap order.
             run[0] = T.if_then_else(T.isnan(v) or (v > run[0]), v, run[0])
 
         @T.macro
         def _max_bin_over_lanes(src, src_plane, dst, dst_plane, oh, ow, lane, active):
             """Store the max over one adaptive bin, its taps split over ``lanes`` threads.
 
-            Every thread of the block takes part in the shuffle; one past the last bin
-            reads nothing and stores nothing.
+            A thread takes a contiguous run of taps, so a lower lane holds earlier taps. Lane
+            0, which stores, is the lower of every pair it folds, so torch's first-of-equal
+            choice holds. Every thread of the block takes part in the shuffle; one past the
+            last bin reads nothing and stores nothing.
             """
             ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
             iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
             run = T.alloc_local([1], accum_dtype)
             other = T.alloc_local([1], accum_dtype)
             run[0] = -T.infinity(accum_dtype)
-            for step in T.unroll(-(-taps // lanes)):
-                tap = step * lanes + lane
+            for step in T.unroll(run_taps):
+                tap = lane * run_taps + step
                 ih = ih_start + tap // max_kw
                 iw = iw_start + tap % max_kw
                 if (

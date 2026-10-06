@@ -1782,3 +1782,15 @@ def test_adaptive_max_pool2d_global_nan_plane() -> None:
     x[1, 10, 0, 0] = float("nan")
     out = AdaptiveMaxPool2dFwdOp(output_size=(1, 1))(x)
     torch.testing.assert_close(out, F.adaptive_max_pool2d(x, (1, 1)), equal_nan=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("first_sign", [1.0, -1.0], ids=["positive-first", "negative-first"])
+def test_adaptive_max_pool2d_global_zero_keeps_first_sign(first_sign: float) -> None:
+    """Of +0.0 and -0.0, the one torch meets first is the max, across the threads of a plane."""
+    x = torch.full((1, 1, 33), -1.0, device=run_device(), dtype=torch.float16)
+    x[0, 0, 1] = 0.0 * first_sign
+    x[0, 0, 32] = -0.0 * first_sign
+    out = AdaptiveMaxPool2dFwdOp(output_size=(1, 1))(x)
+    expected = F.adaptive_max_pool2d(x, (1, 1))
+    assert torch.equal(torch.signbit(out), torch.signbit(expected))
