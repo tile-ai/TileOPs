@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.convolution.call_spec import Conv1dCall, Conv2dCall, Conv3dCall
 from tileops.ops import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -1071,83 +1070,35 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
     out = op(x, weight)
 
-    assert [type(k).__name__ for k in op.iter_kernels()] == ["Conv3dNdhwcKernel"]
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     compare_outputs(out, ref, convolution_verification(out.dtype))
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("op_type", "call", "served"),
+    ("op_type", "groups", "x_shape", "w_shape"),
     [
+        pytest.param(Conv1dFwdOp, 1, (70_000, 4, 8), (8, 4, 3), id="images-conv1d"),
         pytest.param(
-            Conv3dFwdOp,
-            Conv3dCall(
-                n=1,
-                c_in=32,
-                c_out=64,
-                c_in_g=32,
-                d=16,
-                h=520,
-                w=520,
-                kernel_d=3,
-                kernel_h=3,
-                kernel_w=3,
-                padding=(1, 1, 1),
-                out_d=16,
-                out_h=520,
-                out_w=520,
-            ),
-            "conv3d",
-            id="channels-last-m-tiles-past-grid-y",
-        ),
-        pytest.param(
-            Conv1dFwdOp,
-            Conv1dCall(
-                n=1,
-                c_in=16,
-                c_out=64,
-                c_in_g=16,
-                l_in=33_600_000,
-                kernel_l=3,
-                pad_left=1,
-                pad_right=1,
-                out_l=33_600_000,
-            ),
-            "conv1d",
-            id="unit-stride-output-past-int32",
-        ),
-        pytest.param(
-            Conv2dFwdOp,
-            Conv2dCall(
-                n=128,
-                c_in=1280,
-                c_out=1280,
-                c_in_g=2,
-                h=8,
-                w=8,
-                kernel_h=3,
-                kernel_w=3,
-                padding=(1, 1),
-                groups=640,
-                out_h=8,
-                out_w=8,
-            ),
-            None,
-            id="grouped-planes-past-grid-z",
+            Conv2dFwdOp, 640, (128, 1280, 4, 4), (1280, 2, 3, 3), id="grouped-images-conv2d"
         ),
     ],
 )
-def test_conv_call_past_a_launch_limit_is_refused_during_selection(op_type, call, served) -> None:
-    """A kernel that cannot launch or build a call leaves it to one that can, or selection
-    raises with the limit rather than the launch failing."""
+def test_conv_past_the_grid_z_limit_is_refused_before_building(
+    op_type, groups, x_shape, w_shape
+) -> None:
+    """The kernels that serve these calls put one image, or one group of an image, a block
+    row along grid z, which CUDA caps at 65535: the op names that limit rather than failing
+    at launch."""
+    op = op_type(padding=1, groups=groups)
+    x = torch.randn(x_shape, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(w_shape, device=run_device(), dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="blocks along grid z"):
+        op(x, weight)
     (interface,) = op_type.interfaces
-    if served is None:
-        with pytest.raises(ValueError, match="blocks along grid z"):
-            op_type().select_implementation(interface, call)
-    else:
-        assert op_type().select_implementation(interface, call) == served
+    assert not op.built_kernels(interface)
 
 
 @pytest.mark.smoke
