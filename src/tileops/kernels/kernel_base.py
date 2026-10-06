@@ -1,8 +1,11 @@
+import inspect
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
+
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 
 __all__ = ["Entry", "Kernel", "KernelInterface"]
 
@@ -60,6 +63,18 @@ class Kernel(ABC):
                 names.append(str(param.name))
         return names
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        params = list(inspect.signature(cls.forward).parameters.values())[1:]
+        cls._forward_positions = {
+            p.name: i for i, p in enumerate(params) if p.kind is p.POSITIONAL_OR_KEYWORD
+        }
+        # A family base declares names its subclasses' forward takes.
+        concrete = not getattr(cls.forward, "__isabstractmethod__", False)
+        unknown = set(cls.aligned_inputs) - cls._forward_positions.keys()
+        if concrete and unknown:
+            raise TypeError(f"{cls.__name__}.aligned_inputs names no forward parameter: {unknown}")
+
     def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
         self.device_index = device_index
         self._check_arch()
@@ -82,6 +97,13 @@ class Kernel(ABC):
     # The keys of implementations of the same interface this one wins over where both are
     # available and apply. Transitive.
     preferred_over: ClassVar[frozenset[str]] = frozenset()
+
+    # Forward parameters this kernel loads in 16-byte vectors; ``__call__`` copies one that
+    # starts off a 16-byte boundary. Never name a tensor the kernel writes: the write would
+    # land in the copy. An instance that loads them narrower sets ``()``.
+    aligned_inputs: tuple[str, ...] = ()
+    # Position of each ``forward`` parameter, resolved once per class.
+    _forward_positions: ClassVar[Dict[str, int]] = {}
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -240,6 +262,8 @@ class Kernel(ABC):
         raise NotImplementedError
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self.aligned_inputs:
+            args, kwargs = self._align_inputs(list(args), kwargs)
         result = self.forward(*args, **kwargs)
         if self._tune_pending:
             # Tuning was requested before the program existed; the launch has built it.
@@ -253,6 +277,22 @@ class Kernel(ABC):
             else:
                 self.autotune()
         return result
+
+    def _align_inputs(self, args: list, kwargs: Dict[str, Any]) -> tuple:
+        """*args* and *kwargs* with each ``aligned_inputs`` tensor that starts off a 16-byte
+        boundary replaced by a copy."""
+
+        def aligned(t: Any) -> Any:
+            misaligned = isinstance(t, torch.Tensor) and t.data_ptr() % VECTOR_ACCESS_BYTES
+            return t.clone() if misaligned else t
+
+        for name in self.aligned_inputs:
+            pos = self._forward_positions[name]
+            if pos < len(args):
+                args[pos] = aligned(args[pos])
+            elif name in kwargs:
+                kwargs[name] = aligned(kwargs[name])
+        return args, kwargs
 
     @property
     def autotune_supply_prog(self) -> Optional[Callable]:
