@@ -26,19 +26,12 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["SoftmaxOnChipKernel"]
 
-# ``tl_approx_exp2`` is one MUFU.EX2 and flushes a subnormal result to zero; ``exp2f``
-# guards the same instruction with a test and two multiplies to keep it, as
-# ``tl_exp2`` does.
+# One MUFU.EX2, which flushes a subnormal result to zero. ``exp2f`` guards the same
+# instruction with a test and two multiplies to keep it.
 _PRELUDE = r"""
 static __device__ __forceinline__ float tl_approx_exp2(float x) {
   float r;
   asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
-  return r;
-}
-
-static __device__ __forceinline__ float tl_exp2(float x) {
-  float r;
-  asm("ex2.approx.f32 %0, %1;" : "=f"(r) : "f"(x));
   return r;
 }
 
@@ -63,6 +56,10 @@ static __device__ __forceinline__ void tl_expect_partials(void* bar, unsigned by
                :: "r"(m), "r"(bytes) : "memory");
 }
 """
+
+# The output's exponent is raised by this many before ``tl_approx_exp2`` and the result
+# scaled back by a multiply, which keeps a subnormal probability.
+_EXP_BIAS = 64
 
 # Floats a CTA's partial (max, sum) takes in a peer's shared memory.
 _SLOT = 2
@@ -104,9 +101,10 @@ def _softmax_on_chip_kernel(
             )
 
         def row_scale(total):
-            """What a row's result takes from its sum: ``log2(sum)``, or ``log(sum)``."""
+            """What a row's result takes from its sum: ``log2(sum)`` less the exponent
+            bias, or ``log(sum)``."""
             if op_kind == "softmax":
-                return T.log2(total)
+                return T.log2(total) - float(_EXP_BIAS)
             return T.log(total)
 
         def finish(value, peak, scale):
@@ -114,9 +112,10 @@ def _softmax_on_chip_kernel(
             if op_kind == "softmax":
                 # The division is one more term of the exponent, which the scaling
                 # takes in the same FFMA.
-                return T.call_extern(
-                    "float32", "tl_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
+                biased = T.call_extern(
+                    "float32", "tl_approx_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
                 )
+                return biased * (2.0**-_EXP_BIAS)
             return T.cast(value, "float32") - peak - scale
 
         @T.prim_func
