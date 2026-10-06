@@ -13,35 +13,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.utils import WARP_LANES
 
 __all__ = ["RMSNormOnChipKernel"]
-
-# Store a CTA's partial sum from registers into peer ``peer``'s ``slot``; the store
-# completes its four bytes of the transaction on the peer's ``bar``.
-_PRELUDE = r"""
-static __device__ __forceinline__ void tl_send_partial(
-    void* slot, void* bar, int peer, float total) {
-  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(slot));
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile(
-      "{\n\t.reg .b32 rs, rm;\n\t"
-      "mapa.shared::cluster.u32 rs, %0, %2;\n\t"
-      "mapa.shared::cluster.u32 rm, %1, %2;\n\t"
-      "st.async.shared::cluster.mbarrier::complete_tx::bytes.f32 [rs], %3, [rm];\n\t}"
-      :: "r"(s), "r"(m), "r"(peer), "f"(total) : "memory");
-}
-
-// Arrive on ``bar`` once, expecting ``bytes`` from the peers' stores.
-static __device__ __forceinline__ void tl_expect_partials(void* bar, unsigned bytes) {
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;"
-               :: "r"(m), "r"(bytes) : "memory");
-}
-"""
 
 
 @functools.lru_cache(maxsize=32)
@@ -64,7 +42,7 @@ def _rms_norm_on_chip_kernel(
     own = warps
     clustered = cluster > 1
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=["-include", csrc_path("cluster_partials.h")])
     def build():
         def normalize(value, rrms, scale):
             """*value* scaled by the row's reciprocal RMS and, where there is one, the weight."""
@@ -77,9 +55,7 @@ def _rms_norm_on_chip_kernel(
             weight: T.Tensor[(cluster if has_weight else 1, chunk if has_weight else 1), dtype],
             y: T.Tensor[(M * cluster, chunk), dtype],
         ):
-            with T.ClusterKernel(
-                M * cluster, threads=threads, cluster_dims=cluster, prelude=_PRELUDE
-            ) as cta:
+            with T.ClusterKernel(M * cluster, threads=threads, cluster_dims=cluster) as cta:
                 tx = T.get_thread_binding()
                 rank = cta % cluster
                 values = T.alloc_local([held_vectors * vec], dtype)
@@ -97,7 +73,7 @@ def _rms_norm_on_chip_kernel(
                     if tx == 0:
                         T.call_extern(
                             "handle",
-                            "tl_expect_partials",
+                            "tl::tileops_expect_partials",
                             T.address_of(received[0]),
                             4 * (cluster - 1),
                         )
@@ -143,7 +119,7 @@ def _rms_norm_on_chip_kernel(
                     if tx < cluster and tx != rank:
                         T.call_extern(
                             "handle",
-                            "tl_send_partial",
+                            "tl::tileops_send_partial",
                             T.address_of(sums[own + rank]),
                             T.address_of(received[0]),
                             tx,

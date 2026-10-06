@@ -14,6 +14,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.reduction._primitives import (
     LOG2E,
@@ -33,27 +34,6 @@ static __device__ __forceinline__ float tl_approx_exp2(float x) {
   float r;
   asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
   return r;
-}
-
-// Store a partial (max, sum) from registers into peer ``peer``'s ``slot``; the store
-// completes its eight bytes of the transaction on the peer's ``bar``.
-static __device__ __forceinline__ void tl_send_partial(
-    void* slot, void* bar, int peer, float peak, float total) {
-  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(slot));
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile(
-      "{\n\t.reg .b32 rs, rm;\n\t"
-      "mapa.shared::cluster.u32 rs, %0, %2;\n\t"
-      "mapa.shared::cluster.u32 rm, %1, %2;\n\t"
-      "st.async.shared::cluster.mbarrier::complete_tx::bytes.v2.f32 [rs], {%3, %4}, [rm];\n\t}"
-      :: "r"(s), "r"(m), "r"(peer), "f"(peak), "f"(total) : "memory");
-}
-
-// Arrive on ``bar`` once, expecting ``bytes`` from the peers' stores.
-static __device__ __forceinline__ void tl_expect_partials(void* bar, unsigned bytes) {
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;"
-               :: "r"(m), "r"(bytes) : "memory");
 }
 """
 
@@ -85,7 +65,7 @@ def _softmax_on_chip_kernel(
     own = 2 * warps
     neg_inf = float("-inf")
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=["-include", csrc_path("cluster_partials.h")])
     def build():
         def fold(peak, total, other_peak, other_total):
             """The ``(max, sum)`` of two partial pairs; two empty ones stay empty."""
@@ -145,7 +125,7 @@ def _softmax_on_chip_kernel(
                 if tx == 0:
                     T.call_extern(
                         "handle",
-                        "tl_expect_partials",
+                        "tl::tileops_expect_partials",
                         T.address_of(received[0]),
                         8 * (cluster - 1),
                     )
@@ -202,7 +182,7 @@ def _softmax_on_chip_kernel(
                 if tx < cluster and tx != rank:
                     T.call_extern(
                         "handle",
-                        "tl_send_partial",
+                        "tl::tileops_send_partial2",
                         T.address_of(sums[own + _SLOT * rank]),
                         T.address_of(received[0]),
                         tx,
