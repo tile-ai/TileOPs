@@ -34,7 +34,6 @@ from tileops.kernels.reduction._primitives import (
     exp_shifted,
     restore_same_shape,
     rows_for_axes,
-    vector_aligned,
 )
 from tileops.kernels.reduction._split_softmax import (
     SPLIT_BLOCKS_PER_SM,
@@ -444,11 +443,7 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     """The softmax family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-
-    def _rows(self, x: torch.Tensor) -> torch.Tensor:
-        """``call.axis`` of *x* as ``(M, N)`` rows on a 16-byte boundary, which every
-        kernel of the family loads vectors from."""
-        return vector_aligned(rows_for_axes(x, (self.call.axis,)))
+    aligned_inputs = ("x",)
 
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
@@ -567,7 +562,7 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = self._rows(x)
+        rows = rows_for_axes(x, (self.call.axis,))
         if self.fused is not None:
             stats = torch.empty(
                 2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
@@ -628,7 +623,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel(**self.config)(self._rows(x))
+        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
@@ -684,6 +679,6 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
         program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(self._rows(x))
+        y = program(rows_for_axes(x, (self.call.axis,)))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))

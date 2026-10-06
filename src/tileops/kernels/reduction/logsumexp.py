@@ -37,7 +37,6 @@ from tileops.kernels.reduction._primitives import (
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
-    vector_aligned,
 )
 from tileops.kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
@@ -434,6 +433,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     """The logsumexp family: the policy the row candidates' regions and plans read."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
 
     @classmethod
     def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
@@ -509,7 +509,7 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        seg_max, seg_sum = self.partials(vector_aligned(x.reshape(self.view)))
+        seg_max, seg_sum = self.partials(x.reshape(self.view))
         return restore_reduced(
             self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
         )
@@ -549,7 +549,7 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        y = self.kernel()(vector_aligned(rows_for_axes(x, self.call.axes)))
+        y = self.kernel()(rows_for_axes(x, self.call.axes))
         return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
 
 
@@ -577,7 +577,7 @@ class LogSumExpSplitKernel(_LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        seg_max, seg_sum = self.partials(vector_aligned(rows_for_axes(x, self.call.axes)))
+        seg_max, seg_sum = self.partials(rows_for_axes(x, self.call.axes))
         return restore_reduced(
             self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
         )
@@ -635,5 +635,5 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
         program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(vector_aligned(rows_for_axes(x, self.call.axes)))
+        y = program(rows_for_axes(x, self.call.axes))
         return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)

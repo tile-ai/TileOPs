@@ -54,7 +54,6 @@ __all__ = [
     "rows_for_axes",
     "torch_dtype_nbytes",
     "tune_by_forward",
-    "vector_aligned",
 ]
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
@@ -562,12 +561,6 @@ def rows_for_axes(x: torch.Tensor, axes: "tuple[int, ...]") -> torch.Tensor:
     n = prod(x.shape[a] for a in axes)
     m = prod(x.shape[i] for i in kept)
     return x.permute(kept + list(axes)).contiguous().reshape(m, n)
-
-
-def vector_aligned(t: torch.Tensor) -> torch.Tensor:
-    """*t*, copied when it starts off a 16-byte boundary: a kernel loading 16-byte
-    vectors faults on such a start, which a contiguous view can have."""
-    return t.clone() if t.data_ptr() % VECTOR_ACCESS_BYTES else t
 
 
 def restore_reduced(

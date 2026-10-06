@@ -21,7 +21,6 @@ from tileops.kernels.reduction._primitives import (
     restore_same_shape,
     rows_for_axes,
     torch_dtype_nbytes,
-    vector_aligned,
 )
 from tileops.kernels.reduction.call_spec import (
     CumprodFwdInterface,
@@ -403,6 +402,7 @@ class _CumulativeKernelBase(Kernel):
         return staged <= smem_budget and _row_scan_chunk_ok(chunk, elem_bytes, threads)
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
 
     @classmethod
     def stages_whole_row(cls, call: CumulativeCall) -> bool:
@@ -447,7 +447,7 @@ class _CumulativeKernelBase(Kernel):
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
         axes = (self.scan_axis,)
-        y = self._scan_rows(vector_aligned(rows_for_axes(x, axes)))
+        y = self._scan_rows(rows_for_axes(x, axes))
         # The prim_func may write an alignment-padded row; the surplus columns are trimmed.
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, in_shape, axes)
