@@ -7,7 +7,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, conv_autotune_configs, launch
+from tileops.kernels.convolution._common import (
+    CONV_SWIZZLE_PANEL,
+    conv_autotune_configs,
+    grid_refusal,
+    launch,
+)
 from tileops.kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_version
@@ -733,6 +738,11 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         )
 
     @classmethod
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        m_tiles = -(-call.n * call.out_hw // min(cls.block_m_candidates))
+        return super().refusal(call) or grid_refusal(y=m_tiles)
+
+    @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
         """The cache identity and the thunk that builds this class for *call*.
 
@@ -877,6 +887,10 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
         return call.groups == 1
+
+    @classmethod
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
@@ -1026,6 +1040,10 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
         return call.groups > 1
+
+    @classmethod
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n * call.groups)
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
@@ -1189,6 +1207,11 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
     def applies(cls, call: Conv2dCall) -> bool:
         return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
 
+    @classmethod
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        # One block row per image, not per group: skip the grouped GEMM's grid.
+        return super(GroupConv2dKernel, cls).refusal(call) or grid_refusal(z=call.n)
+
     def _build_program(self) -> None:
         self.kernel = _conv2d_depthwise_kernel(
             self.n,
@@ -1252,6 +1275,10 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             and call.padding_end in (None, (0, 0))
             and call.dilation == (1, 1)
         )
+
+    @classmethod
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:

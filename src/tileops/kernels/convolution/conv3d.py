@@ -11,6 +11,7 @@ from tileops.kernels.convolution._common import (
     CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
+    grid_refusal,
     launch,
 )
 from tileops.kernels.convolution.call_spec import Conv3dCall, Conv3dFwdInterface
@@ -613,6 +614,10 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
         return call.groups == 1
 
     @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
+
+    @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(
@@ -768,6 +773,10 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
         return call.groups > 1
+
+    @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n * call.groups)
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:
@@ -967,8 +976,8 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # The m tiles this kernel builds. The default configuration and the autotune filter
-    # read the same tuple.
+    # The m tiles this kernel builds. The grid check, the default configuration and the
+    # autotune filter read the same tuple.
     block_m_candidates: tuple[int, ...] = (64, 128)
 
     # Columns padding the shared output tile: two put a column's consecutive rows on
@@ -991,6 +1000,13 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
             and call.output_spatial >= 1024
             and call.kernel_volume > 1
         )
+
+    @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        # The GEMM tiles the output positions along y; the two layout copies run one
+        # image, then one output channel, a block row along z.
+        m_tiles = -(-call.output_spatial // min(cls.block_m_candidates))
+        return super().refusal(call) or grid_refusal(y=m_tiles, z=max(call.n, call.c_out))
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:

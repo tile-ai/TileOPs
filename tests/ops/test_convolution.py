@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.kernels.convolution.call_spec import Conv2dCall, Conv3dCall
 from tileops.ops import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -1072,6 +1073,64 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     compare_outputs(out, ref, convolution_verification(out.dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.parametrize(
+    ("op_type", "call", "served"),
+    [
+        pytest.param(
+            Conv3dFwdOp,
+            Conv3dCall(
+                n=1,
+                c_in=32,
+                c_out=64,
+                c_in_g=32,
+                d=16,
+                h=520,
+                w=520,
+                kernel_d=3,
+                kernel_h=3,
+                kernel_w=3,
+                padding=(1, 1, 1),
+                out_d=16,
+                out_h=520,
+                out_w=520,
+            ),
+            "conv3d",
+            id="channels-last-m-tiles-past-grid-y",
+        ),
+        pytest.param(
+            Conv2dFwdOp,
+            Conv2dCall(
+                n=128,
+                c_in=1280,
+                c_out=1280,
+                c_in_g=2,
+                h=8,
+                w=8,
+                kernel_h=3,
+                kernel_w=3,
+                padding=(1, 1),
+                groups=640,
+                out_h=8,
+                out_w=8,
+            ),
+            None,
+            id="grouped-planes-past-grid-z",
+        ),
+    ],
+)
+def test_conv_call_past_a_launch_limit_is_refused_during_selection(op_type, call, served) -> None:
+    """A kernel that cannot launch a call leaves it to one that can, or selection raises
+    with the limit rather than the launch failing."""
+    (interface,) = op_type.interfaces
+    if served is None:
+        with pytest.raises(ValueError, match="blocks along grid z"):
+            op_type().select_implementation(interface, call)
+    else:
+        assert op_type().select_implementation(interface, call) == served
 
 
 @pytest.mark.smoke

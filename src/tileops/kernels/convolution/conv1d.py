@@ -12,6 +12,7 @@ from tileops.kernels.convolution._common import (
     CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
+    grid_refusal,
     launch,
 )
 from tileops.kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
@@ -653,6 +654,10 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         )
 
     @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
+
+    @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
@@ -745,6 +750,10 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups == 1
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -930,6 +939,10 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         return call.groups > 1
 
     @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n * call.groups)
+
+    @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(
@@ -1068,6 +1081,11 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        # One block row per image, not per group: skip the grouped GEMM's grid.
+        return super(GroupConv1dKernel, cls).refusal(call) or grid_refusal(z=call.n)
 
     def _build_program(self) -> None:
         self.kernel = _conv1d_direct_kernel(
