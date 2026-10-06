@@ -24,6 +24,8 @@ class CumulativeBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
+                # A whole-row chunk of 33 elements, too odd for any vector width
+                pytest.param(128, 8448, torch.float16, marks=pytest.mark.full),
                 # Non-aligned N (non-pow2)
                 pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.bfloat16, marks=pytest.mark.full),
