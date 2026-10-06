@@ -59,17 +59,19 @@ def _vllm_rms_norm(x: torch.Tensor, eps: float):
 
 
 def _in_place_fused_add(fn, args: tuple, eps: float):
-    """Reset private inputs per call, excluding reset copies from kernel timing."""
+    """Run *fn* on private inputs, refilled before each call's L2 flush."""
     x, residual, weight = args
-    private = (x.clone(), residual.clone(), weight)
+    x_i, residual_i = x.clone(), residual.clone()
 
-    def baseline_fn(x_i, residual_i, weight_i):
+    def refill():
         x_i.copy_(x)
         residual_i.copy_(residual)
+
+    def baseline_fn(x_i, residual_i, weight_i):
         fn(x_i, residual_i, weight_i, eps)
         return x_i, residual_i
 
-    return baseline_fn, private
+    return baseline_fn, (x_i, residual_i, weight), refill
 
 
 @pytest.mark.parametrize("call", manifest_calls(RMSNormFwdOp))

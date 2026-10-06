@@ -3,8 +3,8 @@
 - A benchmark asserts only what it needs to trust its own numbers: that an implementation it is about to time matches the reference, or that a comparison which decides something came out the way the code assumes. It never becomes the place an op's behaviour is established.
 - A library a row *selects* raises when it is missing — a degraded environment fails the row rather than reporting torch under a library's tag. One a row merely *prefers* keeps its guarded import and drops the tag.
 - Where a library cannot express the case at all, drop its tag and say why.
-- A baseline that overwrites an input gets a private buffer for it, refilled inside the timed callable. Refilled outside, every iteration after the first reads the one before it.
-- That refill is not the baseline's work: leave `count_copies` false. No other tag reads that buffer.
+- A baseline that overwrites an input gets a private buffer for it, passed to `compare` as `(callable, args, refill)`. `bench_kernel` runs `refill` before each call's L2 flush. Refilled inside the timed callable, the buffer sits in L2 when the call reads it; never refilled, every iteration after the first reads the one before it.
+- That refill is not the baseline's work and is never timed. No other tag reads that buffer.
 - `OpBenchmark.compare` reads `workload.verification(*inputs)` once for every tag and uses the shared verifier. A baseline adapter must return the workload's output structure, shape and dtype; convert a foreign API at that boundary. Do not add tag-specific tolerances or reference overrides.
 - A known external semantic difference is explicit in `noncomparable={tag: reason}`: timing is retained without a correctness-backed ratio. This cannot exempt the TileOPs subject.
 - A torch-compile row proves it compiled: `compiled_reference` fails the case unless dynamo built one graph with no break.

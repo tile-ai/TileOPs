@@ -248,14 +248,16 @@ class OpBenchmark(BenchmarkBase[W]):
     ) -> dict[str, dict]:
         """Verify, time in both tag orders, and record results under this op.
 
-        Values are callables on ``inputs`` or ``(callable, args)`` pairs. Timing runs
+        Values are callables on ``inputs``, ``(callable, args)`` pairs, or
+        ``(callable, args, refill)`` triples whose ``refill`` restores the args the callable
+        overwrites; ``bench_kernel`` runs it before each flush of L2. Timing runs
         under ``no_grad``; backward baselines must invoke their autograd node directly.
         ``count_copies`` includes device copies consistently across all tags.
 
         Every tag uses the workload's verification declaration. Verification
         temporaries are released before sampling; --tileops-verify omits timing."""
         plan = {
-            tag: value if isinstance(value, tuple) else (value, inputs)
+            tag: (*value, None)[:3] if isinstance(value, tuple) else (value, inputs, None)
             for tag, value in functors.items()
         }
         noncomparable = noncomparable or {}
@@ -265,7 +267,9 @@ class OpBenchmark(BenchmarkBase[W]):
             raise ValueError("noncomparable must name existing external baseline tags")
         evidence = self.workload.verification(*inputs)
         verification = {}
-        for tag, (subject, args) in plan.items():
+        for tag, (subject, args, refill) in plan.items():
+            if refill is not None:
+                refill()
             if tag in noncomparable:
                 reason = noncomparable[tag]
                 if not reason:
@@ -296,12 +300,13 @@ class OpBenchmark(BenchmarkBase[W]):
         samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
         meta: dict[str, dict] = {}
         for tag in order:
-            functor, args = plan[tag]
+            functor, args, refill = plan[tag]
             with torch.no_grad():
                 samples[tag].extend(
                     bench_kernel(
                         functor,
                         args=args,
+                        refill=refill,
                         dry_run_ms=DRY_RUN_MS / passes,
                         repeat_ms=REPEAT_MS / passes,
                         max_iters=_MAX_ITERS // passes,

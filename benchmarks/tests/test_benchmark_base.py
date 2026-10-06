@@ -217,6 +217,33 @@ def test_a_copy_counts_only_where_the_case_asks_for_copies():
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_a_refill_runs_before_each_flush_and_is_not_timed(monkeypatch):
+    """A refilled buffer is read from memory, as every other tag's input is."""
+    import benchmarks.timing as timing
+
+    x = torch.zeros(1024 * 1024, device="cuda")
+    events = []
+    flush = timing._reset_persisting_l2_cache
+    monkeypatch.setattr(
+        timing, "_reset_persisting_l2_cache", lambda: (events.append("flush"), flush())
+    )
+
+    def refill():
+        events.append("refill")
+        x.zero_()
+
+    def scale():
+        events.append("call")
+        return x.mul_(2)
+
+    samples = bench_kernel(scale, refill=refill)
+    assert all(s.n_kernels == 1 for s in samples)
+    calls = [i for i, event in enumerate(events) if event == "call"]
+    assert all(events[i - 2 : i] == ["refill", "flush"] for i in calls)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_kernel_runtime_error_propagates():
     """Genuine RuntimeErrors must reach the caller, not the fallback path."""
 

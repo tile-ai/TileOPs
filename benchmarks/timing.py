@@ -603,6 +603,7 @@ def bench_kernel(
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
     allow_events_fallback: Optional[bool] = None,
+    refill: Optional[Callable[[], Any]] = None,
 ) -> list[Sample]:
     """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
@@ -619,6 +620,10 @@ def bench_kernel(
     implementations compute part of the result with one. It is off by default because a
     staging copy is not the arithmetic being timed; turn it on for every tag in a row or
     for none, since the two sides are otherwise read off different instruments.
+
+    ``refill`` restores the inputs *fn* overwrites. It runs before each call's L2 flush and
+    is not timed, so *fn* reads its inputs from memory as every other tag does; refilled
+    inside *fn*, they would sit in L2.
 
     Everything runs on the device the first CUDA tensor in *args* lives on, or the
     current device when there is none.
@@ -642,6 +647,7 @@ def bench_kernel(
             min_iters,
             count_copies,
             allow_events_fallback,
+            refill,
         )
 
 
@@ -654,6 +660,7 @@ def _bench_kernel(
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
     allow_events_fallback: Optional[bool] = None,
+    refill: Optional[Callable[[], Any]] = None,
 ) -> list[Sample]:
     allow_fallback = (
         events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
@@ -664,6 +671,8 @@ def _bench_kernel(
     cache = _get_l2_flush_cache()
 
     def _flush_l2():
+        if refill is not None:
+            refill()
         _reset_persisting_l2_cache()
         cache.zero_()
 

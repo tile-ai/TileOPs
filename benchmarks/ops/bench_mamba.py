@@ -199,12 +199,7 @@ def test_ssd_decode_bench(call) -> None:
 
     def reset_state(fn):
         private = state.clone()
-
-        def run(A, dt, x, B, C, source_state):
-            private.copy_(source_state)
-            return fn(A, dt, x, B, C, private)
-
-        return run
+        return fn, (A, dt, x, B_in, C_in, private), lambda: private.copy_(state)
 
     functors = {
         "tileops": reset_state(lambda *args: ssd_decode_result(op, *args)),

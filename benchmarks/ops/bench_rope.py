@@ -71,10 +71,11 @@ def _vllm_rope(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ):
-    """Return vllm's rotary_embedding and the arguments it rotates.
+    """Return vllm's rotary_embedding, the arguments it rotates, and their refill.
 
     It rewrites its query in place and takes it flattened to
-    ``[num_tokens, num_heads * head_dim]``, so it gets its own copy; its cache is
+    ``[num_tokens, num_heads * head_dim]``, so it gets its own copy, refilled before each
+    call; its cache is
     the half-width cos and sin concatenated, not the doubled tables the reference
     indexes; and ``is_neox=True`` is the same half-split rotation.
     """
@@ -85,12 +86,14 @@ def _vllm_rope(
     positions = position_ids.long()
     query = x.reshape(num_tokens, -1).clone()
 
+    def refill():
+        query.copy_(x.reshape_as(query))
+
     def baseline_fn(positions_i, query_i):
-        query_i.copy_(x.reshape_as(query_i))
         fn(positions_i, query_i, None, head_dim, cache, True)
         return query_i
 
-    return baseline_fn, (positions, query)
+    return baseline_fn, (positions, query), refill
 
 
 def _bench_rope(op_cls, call) -> None:
@@ -183,8 +186,8 @@ def test_rope_neox_position_ids_bench(call) -> None:
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
-    vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
-    vllm_shaped = (lambda *a, _f=vllm_fn: _f(*a).view(x.shape), vllm_args)
+    vllm_fn, vllm_args, vllm_refill = _vllm_rope(x, position_ids, head_dim, cos, sin)
+    vllm_shaped = (lambda *a, _f=vllm_fn: _f(*a).view(x.shape), vllm_args, vllm_refill)
     bm.compare(
         {
             "tileops": op,
