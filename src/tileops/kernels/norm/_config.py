@@ -157,9 +157,9 @@ def select_row_configs(
         if block_m <= max_block_m
         for t in threads
     ]
-    # A row so wide that no offered block_m fits the budget still needs one
-    # config to tune over.
-    return configs or [select_row_config()]
+    # A row so wide that no offered block_m fits the budget is held one to a block, at
+    # every width that divides it: past the budget the best width still varies with the row.
+    return configs or [{"block_m": 1, "threads": t} for t in threads] or [select_row_config()]
 
 
 def make_row_reduce(block_m, n, n_padded, eps):
