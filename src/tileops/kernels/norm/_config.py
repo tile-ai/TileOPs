@@ -168,8 +168,8 @@ def select_row_configs(
 def make_row_reduce(block_m, n, n_padded, eps):
     """Create the macro reducing a loaded fp32 row block to mean and rstd.
 
-    Consumes ``x_f32`` and overwrites it with the centered squares. The load
-    stays at the call sites, which read the row block in the dtype the tensor
+    Consumes ``x_f32`` and overwrites it with the centered squares, zero past the row;
+    ``acc`` is left holding their sum over the row. The load stays at the call sites, which read the row block in the dtype the tensor
     holds and keep it for the output pass.
 
     Args:
