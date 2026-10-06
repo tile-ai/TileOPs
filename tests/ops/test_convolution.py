@@ -1076,7 +1076,7 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
-    """The channels-last kernel stages input, weight and output. Those buffers are
+    """The channels-last kernel stages input and weight. Those buffers are
     intermediates of one implementation, and the roofline is the algorithm's minimum
     traffic, so the number does not move with them."""
     op = Conv3dFwdOp(stride=1, padding=1)

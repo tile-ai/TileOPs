@@ -31,13 +31,15 @@ def conv_autotune_configs(
     num_stages=(2, 3),
     threads=(128, 256),
     enable_rasterization=(False, True),
+    out_pad_cols: int = 0,
 ) -> list[dict]:
     """Search space filtered to combinations that fit in shared memory.
 
     ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It
     is searched rather than fixed because which way wins follows the grid a shape
     produces, and both ways win on some shapes. Callers narrow the other axes to keep
-    the search the size it was before this one joined it.
+    the search the size it was before this one joined it. ``out_pad_cols`` is the
+    number of columns a kernel pads its shared output tile with.
     """
 
     def conv_shared_memory_bytes(
@@ -49,7 +51,7 @@ def conv_autotune_configs(
     ) -> int:
         dtype_bytes = torch.tensor([], dtype=dtype).element_size()
         per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
-        out_shared_bytes = block_m * block_n * dtype_bytes
+        out_shared_bytes = block_m * (block_n + out_pad_cols) * dtype_bytes
         return per_stage_bytes * max(1, num_stages) + out_shared_bytes
 
     limit = get_shared_memory_optin(device_index)

@@ -22,6 +22,10 @@ __all__ = [
     "GroupConv3dKernel",
 ]
 
+# Columns padding the NDHWC kernel's shared output tile; two put a column's
+# consecutive rows on consecutive banks.
+_OUT_PAD_COLS = 2
+
 
 @functools.lru_cache(maxsize=64)
 def _conv3d_kernel(
@@ -427,7 +431,7 @@ def _conv3d_ndhwc_kernel(
         enable_rasterization: bool,
     ):
         @T.macro
-        def transpose_spatial_channel(
+        def to_channels_last(
             src: T.Tensor,
             dst: T.Tensor,
             batch_size: int,
@@ -438,17 +442,12 @@ def _conv3d_ndhwc_kernel(
             spatial_block: int,
             channel_block: int,
             channel_lanes: int,
-            channel_fastest: bool,
-            is_nchw_to_nhwc: bool,
         ):
+            """Copy ``src[b, c, d, h, w]`` to ``dst[b, d, h, w, c]``."""
             assert spatial_block * channel_lanes == 256, (
                 "spatial_block * channel_lanes must equal 256"
             )
             assert channel_block % channel_lanes == 0, "channel_lanes must divide channel_block"
-            if not channel_fastest:
-                assert channel_block * spatial_block == 256, (
-                    "channel_block * spatial_block must equal 256 when channel_fastest=False"
-                )
 
             with T.Kernel(
                 T.ceildiv(spatial_size, spatial_block),
@@ -456,39 +455,18 @@ def _conv3d_ndhwc_kernel(
                 batch_size,
                 threads=256,
             ) as (bx, by, bz):
-                if channel_fastest:
-                    values_per_thread = channel_block // channel_lanes
-                    for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
-                        spatial = bx * spatial_block + spatial_inner
-                        d_idx = spatial // hw_size
-                        rem = spatial - d_idx * hw_size
-                        h_idx = rem // width
-                        w_idx = rem - h_idx * width
-                        channel_base = by * channel_block
-                        for channel_offset in T.serial(values_per_thread):
-                            c = channel_base + channel_offset * channel_lanes + channel_lane
-                            if (spatial < spatial_size) & (c < channel_size):
-                                if is_nchw_to_nhwc:
-                                    dst[bz, d_idx, h_idx, w_idx, c] = src[
-                                        bz, c, d_idx, h_idx, w_idx
-                                    ]
-                                else:
-                                    dst[bz, c, d_idx, h_idx, w_idx] = src[
-                                        bz, d_idx, h_idx, w_idx, c
-                                    ]
-                else:
-                    for channel_inner, spatial_inner in T.Parallel(channel_block, spatial_block):
-                        spatial = bx * spatial_block + spatial_inner
-                        d_idx = spatial // hw_size
-                        rem = spatial - d_idx * hw_size
-                        h_idx = rem // width
-                        w_idx = rem - h_idx * width
-                        c = by * channel_block + channel_inner
+                values_per_thread = channel_block // channel_lanes
+                for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
+                    spatial = bx * spatial_block + spatial_inner
+                    d_idx = spatial // hw_size
+                    rem = spatial - d_idx * hw_size
+                    h_idx = rem // width
+                    w_idx = rem - h_idx * width
+                    channel_base = by * channel_block
+                    for channel_offset in T.serial(values_per_thread):
+                        c = channel_base + channel_offset * channel_lanes + channel_lane
                         if (spatial < spatial_size) & (c < channel_size):
-                            if is_nchw_to_nhwc:
-                                dst[bz, d_idx, h_idx, w_idx, c] = src[bz, c, d_idx, h_idx, w_idx]
-                            else:
-                                dst[bz, c, d_idx, h_idx, w_idx] = src[bz, d_idx, h_idx, w_idx, c]
+                            dst[bz, d_idx, h_idx, w_idx, c] = src[bz, c, d_idx, h_idx, w_idx]
 
         @T.macro
         def conv_ndhwc_implicit_gemm(x_ndhwc, weight_kdrsc, out, bias):
@@ -500,9 +478,8 @@ def _conv3d_ndhwc_kernel(
                 data_shared = T.alloc_shared((block_m, block_k), dtype)
                 weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                # Two extra columns put a column's consecutive rows on consecutive banks,
-                # which the store below reads down.
-                out_shared = T.alloc_shared((block_m, block_n + 2), dtype)
+                # The store below reads the tile down its columns.
+                out_shared = T.alloc_shared((block_m, block_n + _OUT_PAD_COLS), dtype)
 
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_kdrsc.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
@@ -572,7 +549,7 @@ def _conv3d_ndhwc_kernel(
 
         @T.macro
         def _conv3d_ndhwc_body(x, weight, x_ndhwc, weight_kdrsc, out, bias):
-            transpose_spatial_channel(
+            to_channels_last(
                 x,
                 x_ndhwc,
                 batch_size=n,
@@ -583,10 +560,8 @@ def _conv3d_ndhwc_kernel(
                 spatial_block=32,
                 channel_block=32,
                 channel_lanes=8,
-                channel_fastest=True,
-                is_nchw_to_nhwc=True,
             )
-            transpose_spatial_channel(
+            to_channels_last(
                 weight,
                 weight_kdrsc,
                 batch_size=c_out,
@@ -597,8 +572,6 @@ def _conv3d_ndhwc_kernel(
                 spatial_block=16,
                 channel_block=32,
                 channel_lanes=16,
-                channel_fastest=True,
-                is_nchw_to_nhwc=True,
             )
             conv_ndhwc_implicit_gemm(x_ndhwc, weight_kdrsc, out, bias)
 
@@ -1145,6 +1118,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
             block_m=[64, 128],
             block_k=[16, 32, 64, 128, 256],
             threads=[128],
+            out_pad_cols=_OUT_PAD_COLS,
         )
         return [c for c in configs if self.c_in % c["block_k"] == 0]
 
