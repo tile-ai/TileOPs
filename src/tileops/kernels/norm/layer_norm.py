@@ -46,8 +46,12 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
             and N_padded // threads >= 64
-            # An odd walk faults in the generated code at some widths, 95 elements a
-            # thread among them; the fragment path serves those rows.
+            # FIXME(staged-rollout): an odd walk is routed to the fragment path
+            #
+            # Broken invariant: the shared-memory walk serves every count it divides.
+            # Why: TileLang generates an out-of-bounds shared read for some odd counts,
+            #      95 elements a thread at 256 threads among them.
+            # Cleanup: drop this clause once tile-ai/tilelang#3438 is fixed.
             and N_padded // threads % 2 == 0
         )
 

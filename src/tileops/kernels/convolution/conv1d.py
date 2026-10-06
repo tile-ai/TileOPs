@@ -948,8 +948,13 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         return call.groups > 1
 
     @classmethod
+    def _grid_z(cls, call: Conv1dCall) -> int:
+        """Blocks the program launches along grid z: one per image and group."""
+        return call.n * call.groups
+
+    @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
-        return super().refusal(call) or grid_refusal(z=call.n * call.groups)
+        return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -1092,9 +1097,9 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
         return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
 
     @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
-        # One block row per image, not per group: skip the grouped GEMM's grid.
-        return super(GroupConv1dKernel, cls).refusal(call) or grid_refusal(z=call.n)
+    def _grid_z(cls, call: Conv1dCall) -> int:
+        """One block row per image, not per group."""
+        return call.n
 
     def _build_program(self) -> None:
         self.kernel = _conv1d_direct_kernel(

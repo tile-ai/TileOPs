@@ -284,8 +284,9 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = x.contiguous()
         if self._wide:
             x = vector_aligned(x)
         kernel = self.kernel(self.config["threads"])
-        volumes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
+        volumes = kernel(x.view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)

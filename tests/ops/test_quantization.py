@@ -289,9 +289,9 @@ def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
         pytest.param(1000, 999, torch.bfloat16, 0, False, id="odd-k"),
         # Whole vectors that do not split evenly over the threads: the last ones idle.
         pytest.param(37, 264, torch.float16, 0, False, id="aligned-inexact"),
-        # A copy of smooth in a view that starts one element into its storage, off the
-        # 16-byte vector boundary.
-        pytest.param(64, 1024, torch.bfloat16, 1, False, id="misaligned-smooth"),
+        # Copies of x and smooth in views that start one element into their storage, off
+        # the 16-byte vector boundary.
+        pytest.param(64, 1024, torch.bfloat16, 1, False, id="misaligned-inputs"),
         # Factors below 2**-60 and an all-zero row, which IEEE division serves.
         pytest.param(64, 1024, torch.bfloat16, 0, True, id="ieee-division"),
     ],
@@ -311,6 +311,8 @@ def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
     sign = torch.where(torch.rand(cols, device=smooth.device) < 0.5, -1.0, 1.0)
     shifted = torch.empty(cols + offset, dtype=smooth.dtype, device=smooth.device)[offset:]
     shifted.copy_(smooth * sign)
+    if offset:
+        x = _misaligned(x)
     test.check(SmoothQuantFwdOp(), x, shifted)
 
 
