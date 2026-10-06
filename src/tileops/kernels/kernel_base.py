@@ -66,8 +66,11 @@ class Kernel(ABC):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         params = list(inspect.signature(cls.forward).parameters.values())[1:]
+        # A keyword-only parameter has no position; it is only ever passed by name.
         cls._forward_positions = {
-            p.name: i for i, p in enumerate(params) if p.kind is p.POSITIONAL_OR_KEYWORD
+            p.name: i if p.kind is p.POSITIONAL_OR_KEYWORD else None
+            for i, p in enumerate(params)
+            if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
         }
         # A family base declares names its subclasses' forward takes.
         concrete = not getattr(cls.forward, "__isabstractmethod__", False)
@@ -102,8 +105,9 @@ class Kernel(ABC):
     # starts off a 16-byte boundary. Never name a tensor the kernel writes: the write would
     # land in the copy. An instance that loads them narrower sets ``()``.
     aligned_inputs: tuple[str, ...] = ()
-    # Position of each ``forward`` parameter, resolved once per class.
-    _forward_positions: ClassVar[Dict[str, int]] = {}
+    # Position of each named ``forward`` parameter, ``None`` if keyword-only; resolved
+    # once per class.
+    _forward_positions: ClassVar[Dict[str, Optional[int]]] = {}
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -288,7 +292,7 @@ class Kernel(ABC):
 
         for name in self.aligned_inputs:
             pos = self._forward_positions[name]
-            if pos < len(args):
+            if pos is not None and pos < len(args):
                 args[pos] = aligned(args[pos])
             elif name in kwargs:
                 kwargs[name] = aligned(kwargs[name])

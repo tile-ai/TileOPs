@@ -10,10 +10,12 @@ pytestmark = pytest.mark.smoke
 
 
 class _Recorder(Kernel):
-    aligned_inputs = ("x", "y")
+    aligned_inputs = ("x", "y", "w")
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor) -> tuple:
-        return x, y, z
+    def forward(
+        self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor, *, w: torch.Tensor
+    ) -> tuple:
+        return x, y, z, w
 
 
 def _off_boundary() -> torch.Tensor:
@@ -22,10 +24,11 @@ def _off_boundary() -> torch.Tensor:
 
 
 def test_declared_inputs_off_a_vector_boundary_arrive_copied() -> None:
-    x, y, z = _off_boundary(), _off_boundary(), _off_boundary()
-    got_x, got_y, got_z = _Recorder()(x, z=z, y=y)
-    # Declared, positional or keyword: a copy with the same values on the boundary.
-    for sent, got in ((x, got_x), (y, got_y)):
+    x, y, z, w = _off_boundary(), _off_boundary(), _off_boundary(), _off_boundary()
+    got_x, got_y, got_z, got_w = _Recorder()(x, z=z, y=y, w=w)
+    # Declared, positional, keyword or keyword-only: a copy with the same values on the
+    # boundary.
+    for sent, got in ((x, got_x), (y, got_y), (w, got_w)):
         assert got is not sent and torch.equal(got, sent)
         assert got.data_ptr() % VECTOR_ACCESS_BYTES == 0
     # Undeclared: handed over as is.
@@ -33,7 +36,7 @@ def test_declared_inputs_off_a_vector_boundary_arrive_copied() -> None:
 
     narrow = _Recorder()
     narrow.aligned_inputs = ()
-    assert narrow(x, y, z)[0] is x
+    assert narrow(x, y, z, w=w)[0] is x
 
     with pytest.raises(TypeError, match="names no forward parameter"):
 
