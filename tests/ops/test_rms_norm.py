@@ -213,6 +213,9 @@ def test_no_weight_and_no_eps_match_torch() -> None:
         pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight"),
         # More rows than resident CTAs: each CTA walks several rows.
         pytest.param(600, 131072, torch.bfloat16, True, id="rows-per-cta"),
+        # One CTA a row, read synchronously; and a row with no weight.
+        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16"),
+        pytest.param(3, 65536, torch.bfloat16, False, id="on-chip-no-weight"),
     ],
 )
 def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> None:

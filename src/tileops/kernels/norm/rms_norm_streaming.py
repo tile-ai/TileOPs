@@ -35,6 +35,11 @@ def _rms_norm_streaming_kernel(M, N, eps, dtype, has_weight, ctas):
         tiles = -(-N // tile)
         warps = threads // WARP_LANES
 
+        def normalize(value, rrms, scale):
+            """*value* scaled by the row's reciprocal RMS and, where there is one, the weight."""
+            normed = T.cast(value, "float32") * rrms
+            return normed * T.cast(scale, "float32") if has_weight else normed
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -86,10 +91,9 @@ def _rms_norm_streaming_kernel(M, N, eps, dtype, has_weight, ctas):
                                     for i in T.vectorized(vec):
                                         scale[i] = weight[col + i]
                                 for i in T.unroll(vec):
-                                    normed = T.cast(held[a * vec + i], "float32") * rrms
-                                    if has_weight:
-                                        normed = normed * T.cast(scale[i], "float32")
-                                    held[a * vec + i] = T.cast(normed, dtype)
+                                    held[a * vec + i] = T.cast(
+                                        normalize(held[a * vec + i], rrms, scale[i]), dtype
+                                    )
                                 for i in T.vectorized(vec):
                                     y[row, col + i] = held[a * vec + i]
 

@@ -19,6 +19,7 @@ from tileops.kernels.norm.instance_norm import (
 )
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.kernels.norm.rms_norm import RMSNormKernel
+from tileops.kernels.norm.rms_norm_on_chip import RMSNormOnChipKernel
 from tileops.kernels.norm.rms_norm_streaming import RMSNormStreamingKernel
 
 __all__: list[str] = [
@@ -42,5 +43,6 @@ __all__: list[str] = [
     "InstanceNormNoAffineKernel",
     "LayerNormKernel",
     "RMSNormKernel",
+    "RMSNormOnChipKernel",
     "RMSNormStreamingKernel",
 ]
