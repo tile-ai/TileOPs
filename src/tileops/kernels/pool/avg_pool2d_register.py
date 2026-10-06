@@ -118,6 +118,7 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
     preferred_over = frozenset({"avg_pool2d_kernel"})
 
     _THREADS = 128
@@ -199,7 +200,5 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
         x = x.contiguous()
-        # The kernel reads 16-byte vectors from the start of each row.
-        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
         y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])

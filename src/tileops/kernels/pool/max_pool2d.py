@@ -359,6 +359,8 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     down them. A tile of 1 by 1 is the plain one-output-per-thread schedule.
     """
 
+    aligned_inputs = ("x",)
+
     @staticmethod
     def _launch_max_pool2d(
         n: int,

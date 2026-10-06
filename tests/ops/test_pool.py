@@ -1522,6 +1522,28 @@ def test_avg_pool2d_windows_read_into_registers(
     torch.testing.assert_close(out, F.avg_pool2d(x, kernel, stride, padding), rtol=0, atol=0)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "make_op, shape",
+    [
+        pytest.param(lambda: AvgPool1dFwdOp(7, 1, 3), (2, 64, 4096), id="avg-pool1d"),
+        pytest.param(lambda: MaxPool1dFwdOp(3, 2, 1), (2, 64, 4096), id="max-pool1d"),
+        pytest.param(lambda: AvgPool3dFwdOp(2, 2, 0), (2, 16, 16, 64, 64), id="avg-pool3d"),
+        pytest.param(lambda: MaxPool2dFwdOp((1, 8), (1, 8), 0), (2, 64, 32, 256), id="max-pool2d"),
+    ],
+)
+def test_pool_serves_an_input_off_a_vector_boundary(make_op, shape) -> None:
+    """A contiguous input starting one element into its storage, which 16-byte loads
+    cannot read in place, gives the result an aligned copy of it gives."""
+    numel = 1
+    for extent in shape:
+        numel *= extent
+    storage = torch.randn(1 + numel, device=run_device(), dtype=torch.float16)
+    x = storage[1:].view(shape)
+    op = make_op()
+    torch.testing.assert_close(op(x), op(x.clone()), rtol=0, atol=0)
+
+
 class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
     supported_archs = None
 

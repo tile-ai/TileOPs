@@ -535,6 +535,7 @@ class _MaxPool1dKernelBase(Kernel):
     _with_indices: ClassVar[bool]
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
 
     _BLOCK_OUTPUTS: ClassVar[int] = 256
     _FALLBACK_THREADS: ClassVar[int] = 128

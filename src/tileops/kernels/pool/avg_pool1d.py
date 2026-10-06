@@ -224,6 +224,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:

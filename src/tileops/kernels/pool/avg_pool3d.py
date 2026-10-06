@@ -209,6 +209,7 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
     """Average pooling over an NCDHW volume, with every PyTorch flag combination."""
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    aligned_inputs = ("x",)
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
     # Why a policy and not a tuned knob: these launches are too short for the autotuner
