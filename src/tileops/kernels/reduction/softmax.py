@@ -595,12 +595,6 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
     registers, and its CTAs share its shared memory for the kept tiles.
     """
 
-    _TILE_ELEMENTS = 16384
-    _ACCESSES = 4
-    _THREADS_PER_SM = 1024
-    # Shared memory a CTA keeps for the warps' statistics rather than row tiles.
-    _STATS_BYTES = 1024
-
     @classmethod
     def applies(cls, call: SoftmaxCall) -> bool:
         return cls.row_plan(call)[1] != 0 and cls.split_seg_n(call) == 0
@@ -609,7 +603,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
         super().__init__(device_index=call.device.index)
         self.call = call
         self.dtype = call.dtype
-        ctas_per_sm = self._THREADS_PER_SM // self.default_config["threads"]
+        ctas_per_sm = 1024 // self.default_config["threads"]
         self.kernel = _softmax_streaming_kernel(
             call.m,
             call.n,
@@ -618,17 +612,16 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
             self.dtype_to_str(call.out_dtype),
             min(call.m, ctas_per_sm * call.sm_count),
             ctas_per_sm,
-            call.smem_budget // ctas_per_sm - self._STATS_BYTES,
+            # A CTA keeps 1 KB for the warps' statistics rather than row tiles.
+            call.smem_budget // ctas_per_sm - 1024,
         )
         self.init_config(None)
 
     @property
     def default_config(self) -> dict:
+        accesses = 4
         vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
-        return {
-            "threads": self._TILE_ELEMENTS // (self._ACCESSES * vec),
-            "accesses": self._ACCESSES,
-        }
+        return {"threads": 16384 // (accesses * vec), "accesses": accesses}
 
     @property
     def autotune_configs(self) -> list[dict]:

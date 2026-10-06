@@ -27,23 +27,6 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["SoftmaxOnChipKernel"]
 
-# One MUFU.EX2, which flushes a subnormal result to zero. ``exp2f`` guards the same
-# instruction with a test and two multiplies to keep it.
-_PRELUDE = r"""
-static __device__ __forceinline__ float tl_approx_exp2(float x) {
-  float r;
-  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
-  return r;
-}
-"""
-
-# The output's exponent is raised by this many before ``tl_approx_exp2`` and the result
-# scaled back by a multiply, which keeps a subnormal probability.
-_EXP_BIAS = 64
-
-# Floats a CTA's partial (max, sum) takes in a peer's shared memory.
-_SLOT = 2
-
 
 @functools.lru_cache(maxsize=32)
 def _softmax_on_chip_kernel(
@@ -61,9 +44,23 @@ def _softmax_on_chip_kernel(
     staged = chunk - held
     staged_vectors = staged // (threads * vec)
     warps = threads // WARP_LANES
+    # Floats a CTA's partial (max, sum) takes in a peer's shared memory.
+    slot = 2
     # Warp maxima and sums, then one slot a CTA of the cluster; a CTA's own stays unused.
     own = 2 * warps
     neg_inf = float("-inf")
+    # The output's exponent is raised by this many before the exp2 and the result scaled
+    # back by a multiply, which keeps a subnormal probability.
+    exp_bias = 64
+    # One MUFU.EX2, which flushes a subnormal result to zero. ``exp2f`` guards the same
+    # instruction with a test and two multiplies to keep it.
+    prelude = r"""
+static __device__ __forceinline__ float tl_approx_exp2(float x) {
+  float r;
+  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
+  return r;
+}
+"""
 
     @tilelang.jit(out_idx=[1], compile_flags=["-include", csrc_path("cluster_partials.h")])
     def build():
@@ -84,7 +81,7 @@ def _softmax_on_chip_kernel(
             """What a row's result takes from its sum: ``log2(sum)`` less the exponent
             bias, or ``log(sum)``."""
             if op_kind == "softmax":
-                return T.log2(total) - float(_EXP_BIAS)
+                return T.log2(total) - float(exp_bias)
             return T.log(total)
 
         def finish(value, peak, scale):
@@ -95,7 +92,7 @@ def _softmax_on_chip_kernel(
                 biased = T.call_extern(
                     "float32", "tl_approx_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
                 )
-                return biased * (2.0**-_EXP_BIAS)
+                return biased * (2.0**-exp_bias)
             return T.cast(value, "float32") - peak - scale
 
         @T.prim_func
@@ -104,7 +101,7 @@ def _softmax_on_chip_kernel(
             y: T.Tensor[(M * cluster, chunk), out_dtype],
         ):
             with T.ClusterKernel(
-                M * cluster, threads=threads, cluster_dims=cluster, prelude=_PRELUDE
+                M * cluster, threads=threads, cluster_dims=cluster, prelude=prelude
             ) as cta:
                 T.annotate_min_blocks_per_sm(ctas_per_sm)
                 tx = T.get_thread_binding()
@@ -118,7 +115,7 @@ def _softmax_on_chip_kernel(
                 tile = T.alloc_shared((1, staged), dtype)
                 # One buffer for the warp pairs and the partials: a peer writes its pair while
                 # this CTA still folds its warps, so no slot may share their storage.
-                sums = T.alloc_shared([own + _SLOT * cluster], "float32")
+                sums = T.alloc_shared([own + slot * cluster], "float32")
                 # One arrival, here; the peers' stores complete its bytes. A store reads
                 # registers, so a CTA may leave once it has received every partial.
                 received = T.alloc_barrier([1])
@@ -183,7 +180,7 @@ def _softmax_on_chip_kernel(
                     T.call_extern(
                         "handle",
                         "tl::tileops_send_partial2",
-                        T.address_of(sums[own + _SLOT * rank]),
+                        T.address_of(sums[own + slot * rank]),
                         T.address_of(received[0]),
                         tx,
                         stat[0],
@@ -195,8 +192,8 @@ def _softmax_on_chip_kernel(
                         stat[0], stat[1] = fold(
                             stat[0],
                             stat[1],
-                            sums[own + _SLOT * p],
-                            sums[own + _SLOT * p + 1],
+                            sums[own + slot * p],
+                            sums[own + slot * p + 1],
                         )
                 scale = row_scale(stat[1])
 
@@ -224,53 +221,45 @@ def _softmax_on_chip_kernel(
 class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     """Softmax / log-softmax reading each row once from registers and shared memory.
 
-    A row is split across the smallest power-of-two cluster of at least two CTAs, at most
-    ``_MAX_CLUSTER``, whose CTAs each take at most ``_CTA_BYTES`` of their element size.
-    Several CTAs share an SM, so one computes its exponentials while another loads or
-    stores. Rows narrower than ``_MIN_ROW_ELEMENTS``, and rows :class:`SoftmaxSplitKernel`
-    splits, stay with the other kernels.
+    A row is split across the smallest power-of-two cluster of two to eight CTAs whose
+    CTAs each take at most 64 KB of a 16-bit row or 32 KB of an fp32 one. Several CTAs
+    share an SM, so one computes its exponentials while another loads or stores. Rows
+    narrower than 32768 elements, and rows :class:`SoftmaxSplitKernel` splits, stay with
+    the other kernels.
     """
 
     supported_archs = [90]
     preferred_over = frozenset({"softmax_streaming"})
 
-    # A 16384-element fp32 row runs faster on SoftmaxKernel.
-    _MIN_ROW_ELEMENTS = 32768
-    # A 16-bit element costs the same exponential as a 32-bit one in half the bytes, so a
-    # 16-bit CTA takes twice the bytes for the same work.
-    _CTA_BYTES = {2: 64 * 1024, 4: 32 * 1024}
-    _MIN_CLUSTER = 2
-    _MAX_CLUSTER = 8
-    # Shared memory a CTA keeps for its sums and barrier rather than the row.
-    _RESERVED_BYTES = 1024
-    # (largest share a CTA takes, threads, bytes a CTA holds in registers, CTAs an SM);
-    # the last line takes every larger share. The rest of a share is staged in shared
-    # memory.
-    _TIERS = (
-        (32 * 1024, 128, 16 * 1024, 4),
-        (64 * 1024, 256, 32 * 1024, 3),
-        (None, 128, 64 * 1024, 1),
-    )
-
     @classmethod
     def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
         """``(cluster, threads, held_vectors, ctas_per_sm)`` for *call*'s rows, or ``None``."""
         elem = call.dtype.itemsize
-        if call.n < cls._MIN_ROW_ELEMENTS or cls.split_seg_n(call) != 0:
+        # A 16384-element fp32 row runs faster on SoftmaxKernel.
+        if call.n < 32768 or cls.split_seg_n(call) != 0:
             return None
-        cluster = cls._MIN_CLUSTER
-        while call.n * elem > cluster * cls._CTA_BYTES[elem] and cluster < cls._MAX_CLUSTER:
+        # A 16-bit element costs the same exponential as a 32-bit one in half the bytes,
+        # so a 16-bit CTA takes twice the bytes for the same work.
+        cta_bytes = 64 * 1024 if elem == 2 else 32 * 1024
+        cluster = 2
+        while call.n * elem > cluster * cta_bytes and cluster < 8:
             cluster *= 2
         if call.n % cluster:
             return None
         share = call.n // cluster * elem
-        _, threads, held_bytes, ctas_per_sm = next(
-            tier for tier in cls._TIERS if tier[0] is None or share <= tier[0]
-        )
+        # (threads, bytes a CTA holds in registers, CTAs an SM) by the share a CTA takes;
+        # the rest of a share is staged in shared memory.
+        if share <= 32 * 1024:
+            threads, held_bytes, ctas_per_sm = 128, 16 * 1024, 4
+        elif share <= 64 * 1024:
+            threads, held_bytes, ctas_per_sm = 256, 32 * 1024, 3
+        else:
+            threads, held_bytes, ctas_per_sm = 128, 64 * 1024, 1
         staged = share - held_bytes
         if staged <= 0 or share % (threads * VECTOR_ACCESS_BYTES):
             return None
-        if staged * ctas_per_sm > call.smem_budget - ctas_per_sm * cls._RESERVED_BYTES:
+        # Each CTA keeps 1 KB for its sums and barrier rather than the row.
+        if staged * ctas_per_sm > call.smem_budget - ctas_per_sm * 1024:
             return None
         return cluster, threads, held_bytes // (threads * VECTOR_ACCESS_BYTES), ctas_per_sm
 
