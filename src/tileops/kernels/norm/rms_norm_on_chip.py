@@ -15,7 +15,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.utils import WARP_LANES
 
@@ -164,7 +164,6 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs = [90]
-    aligned_inputs = ("x", "weight")
     preferred_over = frozenset({"rms_norm", "rms_norm_streaming"})
 
     _THREADS = 1024
@@ -223,6 +222,8 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
         rows = x.reshape(-1, self.n)
         m = rows.shape[0]
         has_weight = weight is not None

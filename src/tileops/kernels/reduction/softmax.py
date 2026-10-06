@@ -21,7 +21,7 @@ import torch
 from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -443,7 +443,10 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     """The softmax family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
+
+    def _rows(self, x: torch.Tensor) -> torch.Tensor:
+        """The rows of *x* along ``call.axis``, starting on a 16-byte vector boundary."""
+        return rows_for_axes(vector_aligned(x), (self.call.axis,))
 
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
@@ -562,7 +565,7 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = rows_for_axes(x, (self.call.axis,))
+        rows = self._rows(x)
         if self.fused is not None:
             stats = torch.empty(
                 2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
@@ -623,7 +626,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
+        y = self.kernel(**self.config)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
@@ -679,6 +682,6 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
         program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(rows_for_axes(x, (self.call.axis,)))
+        y = program(self._rows(x))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))

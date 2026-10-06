@@ -18,7 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
@@ -138,7 +138,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("x", "weight")
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -207,6 +206,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         Raises:
             ValueError: Either input is not on a CUDA device.
         """
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
         if not (x.is_cuda and (weight is None or weight.is_cuda)):
             weight_device = None if weight is None else weight.device
             raise ValueError(

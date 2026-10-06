@@ -13,7 +13,7 @@ from tileops.kernels.constants import (
     SM_RESIDENT_BLOCKS,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import (
     DequantizeCall,
     INT8DequantPerBlockFwdInterface,
@@ -115,7 +115,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("q",)
 
     general: bool = True
 
@@ -184,6 +183,8 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_cuda(q=q, scale=scale)
+        # The vector loads need a storage start on a vector boundary.
+        q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
         return x.view(q.shape)
 
@@ -292,7 +293,6 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
     # The bulk copy from shared memory lowers to cp.async.bulk on SM90, to plain stores
     # before it.
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("q",)
 
     general: bool = True
 
@@ -355,6 +355,8 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_cuda(q=q, scale=scale)
+        # The vector loads need a storage start on a vector boundary.
+        q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
         return x.view(q.shape)
 
@@ -583,7 +585,6 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("q",)
 
     general: bool = True
 
@@ -648,6 +649,8 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_cuda(q=q, scale=scale)
+        # The vector loads need a storage start on a vector boundary.
+        q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale.view(-1))
         return x.view(q.shape)
 

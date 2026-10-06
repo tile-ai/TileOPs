@@ -13,7 +13,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
 from tileops.kernels.sampling.radix_select import (
     BRACKET_SIGMAS,
@@ -692,9 +692,6 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         self.call = call
         self.dtype = call.dtype
         self.kernel = _top_k_top_p_mask_kernel(call.batch, call.vocab, self.dtype_str)
-        # A row of whole 16-byte vectors is read as vectors; any other row element by element.
-        vectors = call.vocab % (VECTOR_ACCESS_BYTES // call.dtype.itemsize) == 0
-        self.aligned_inputs = ("logits",) if vectors else ()
         self.init_config(config, tune)
 
     @property
@@ -706,5 +703,10 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         out = torch.empty_like(logits)
         if logits.numel() == 0:
             return out
+        # A row that is a whole number of 16-byte vectors is read as vectors, from the
+        # start of the storage; any other row is read element by element.
+        vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
+        if self.call.vocab % vec == 0:
+            logits = vector_aligned(logits)
         self.kernel(**self.config)(logits.view(-1), k, p, out.view(-1))
         return out

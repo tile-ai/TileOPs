@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
     ceildiv_int,
@@ -533,7 +533,6 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
-    aligned_inputs = ("x",)
 
     def __init__(self, call: ArgreduceCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
@@ -594,6 +593,7 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         if self.M == 0:
             empty = torch.empty((0,), dtype=torch.int64, device=x.device)
@@ -735,5 +735,6 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         y = self.kernel(self.config["block_m"], self.config["threads"])(x.reshape(-1))
         return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)

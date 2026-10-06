@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE
 
@@ -110,7 +110,6 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
     preferred_over = frozenset({"avg_pool2d_kernel"})
 
     @classmethod
@@ -195,6 +194,7 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         x = x.contiguous()
         y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])

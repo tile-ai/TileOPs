@@ -9,7 +9,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import QUANT_SCALE_BLOCK, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import INT8QuantPerBlockFwdInterface, QuantizeCall
 from tileops.kernels.quantization.int8_codes import (
     INV_QMAX,
@@ -341,7 +341,6 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
     """What the two per-block kernels share: the calls they refuse and how they launch."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
     # The one integer tensor is ``q``, written before anything reads it.
     autotune_accepts_random_int_inputs = True
 
@@ -374,6 +373,8 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
             dtype=torch.float32,
             device=x.device,
         )
+        # The kernel reads 16-byte vectors from the start of the storage.
+        x = vector_aligned(x)
         self.kernel(**self.config)(x.view(-1), q.view(-1), scale.view(-1))
         return q, scale
 

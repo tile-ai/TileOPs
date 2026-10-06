@@ -19,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
@@ -199,7 +199,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("x", "weight", "bias")
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -257,6 +256,9 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(x=x, weight=weight, bias=bias)
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
+        bias = vector_aligned(bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

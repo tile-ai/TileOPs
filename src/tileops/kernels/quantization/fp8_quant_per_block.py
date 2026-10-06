@@ -13,7 +13,7 @@ from tileops.kernels.constants import (
     QUANT_SCALE_BLOCK,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import FP8QuantPerBlockFwdInterface, QuantizeCall
 from tileops.kernels.quantization.int8_codes import SMALL_SCALE, widen
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
@@ -249,6 +249,9 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
             dtype=torch.float32,
             device=w.device,
         )
+        # The aligned kernel reads 16-byte vectors from the start of the storage.
+        if self._aligned:
+            w = vector_aligned(w)
         self.kernel(**self.config)(w.view(-1), q.view(-1), scale.view(-1))
         return q, scale
 
@@ -269,7 +272,6 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     """
 
     _aligned = True
-    aligned_inputs = ("w",)
 
     @classmethod
     def applies(cls, call: QuantizeCall) -> bool:

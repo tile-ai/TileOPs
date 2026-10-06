@@ -14,7 +14,7 @@ import torch
 from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES, get_sm_count
@@ -106,7 +106,6 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     """Reduce a row in tiles, then reread it from the far end to normalize it."""
 
     supported_archs = [80, 86, 89, 90]
-    aligned_inputs = ("x", "weight")
     preferred_over = frozenset({"rms_norm"})
 
     @classmethod
@@ -134,6 +133,8 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
         rows = x.reshape(-1, self.n)
         has_weight = weight is not None
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)

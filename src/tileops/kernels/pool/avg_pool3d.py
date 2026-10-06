@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
@@ -209,7 +209,6 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
     """Average pooling over an NCDHW volume, with every PyTorch flag combination."""
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
     # Why a policy and not a tuned knob: these launches are too short for the autotuner
@@ -269,10 +268,9 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
         )
-        wide = _wide_run(self.window, self.dtype_str) is not None
-        build = _avg_pool3d_wide_kernel if wide else _avg_pool3d_kernel
         # Only the wide-run program reads x in 16-byte vectors.
-        self.aligned_inputs = ("x",) if wide else ()
+        self._wide = _wide_run(self.window, self.dtype_str) is not None
+        build = _avg_pool3d_wide_kernel if self._wide else _avg_pool3d_kernel
         self.kernel = build(self.window, self.dtype_str)
         self.init_config(config, tune)
 
@@ -286,6 +284,8 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        if self._wide:
+            x = vector_aligned(x)
         kernel = self.kernel(self.config["threads"])
         volumes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)

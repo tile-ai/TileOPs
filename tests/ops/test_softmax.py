@@ -275,6 +275,14 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
         pytest.param(
             LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
         ),
+        pytest.param(
+            LogSumExpCase,
+            LogSumExpFwdOp,
+            (0, 2),
+            (8, 64, 1024),
+            marks=pytest.mark.full,
+            id="logsumexp-edge-split",
+        ),
     ],
 )
 def test_contiguous_input_off_a_vector_boundary(case_cls, op_cls, dim, shape: tuple) -> None:

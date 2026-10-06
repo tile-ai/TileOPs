@@ -14,7 +14,7 @@ from tileops.kernels.constants import (
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     align_up,
@@ -402,7 +402,6 @@ class _CumulativeKernelBase(Kernel):
         return staged <= smem_budget and _row_scan_chunk_ok(chunk, elem_bytes, threads)
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
 
     @classmethod
     def stages_whole_row(cls, call: CumulativeCall) -> bool:
@@ -445,6 +444,7 @@ class _CumulativeKernelBase(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         axes = (self.scan_axis,)
         y = self._scan_rows(rows_for_axes(x, axes))

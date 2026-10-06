@@ -13,7 +13,7 @@ from tileops.kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import MinPMaskFwdInterface, SamplingCall
 from tileops.kernels.sampling.row_tiles import (
     INF_BITS,
@@ -200,7 +200,6 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    aligned_inputs = ("logits",)
     general: ClassVar[bool] = True
 
     # Threads of a block, one block per SM so that a split row's barrier has the grid
@@ -259,6 +258,8 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
 
     def forward(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
         self._require_cuda(logits=logits, min_p=min_p)
+        # The kernel reads 16-byte vectors from the start of each row.
+        logits = vector_aligned(logits)
         partial = torch.empty(
             self.call.batch * self._parts, dtype=torch.float32, device=logits.device
         )

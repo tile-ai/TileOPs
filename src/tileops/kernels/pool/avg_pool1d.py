@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import (
     ACCUM_DTYPE,
@@ -224,7 +224,6 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-    aligned_inputs = ("x",)
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:
@@ -284,6 +283,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         kernel = self.kernel(self.config["block_ol"], self.config["threads"])
         rows = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return rows.view(self.n, self.c_in, *self.window.out)

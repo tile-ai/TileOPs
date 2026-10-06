@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
@@ -360,8 +360,6 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     down them. A tile of 1 by 1 is the plain one-output-per-thread schedule.
     """
 
-    aligned_inputs = ("x",)
-
     @staticmethod
     def _launch_max_pool2d(
         n: int,
@@ -381,6 +379,7 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
         config: dict,
         x: torch.Tensor,
     ) -> torch.Tensor:
+        x = vector_aligned(x)
         out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
         kernel = _max_pool2d_kernel(
