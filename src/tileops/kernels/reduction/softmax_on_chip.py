@@ -81,7 +81,7 @@ def _softmax_on_chip_kernel(
     staged = chunk - held
     staged_vectors = staged // (threads * vec)
     warps = threads // WARP_LANES
-    # Warp maxima and sums, then one slot a peer.
+    # Warp maxima and sums, then one slot a CTA of the cluster; a CTA's own stays unused.
     own = 2 * warps
     neg_inf = float("-inf")
 
@@ -148,7 +148,7 @@ def _softmax_on_chip_kernel(
                         "handle",
                         "tl_expect_partials",
                         T.address_of(received[0]),
-                        8 * cluster,
+                        8 * (cluster - 1),
                     )
                 # Peers may write here once this CTA's barrier is initialized; their wait
                 # for that overlaps the loads below.
@@ -201,7 +201,9 @@ def _softmax_on_chip_kernel(
 
                 # Every peer's barrier is initialized past this wait.
                 T.cluster_wait()
-                if tx < cluster:
+                # st.async takes a peer's memory only, so a CTA keeps its own pair in
+                # registers.
+                if tx < cluster and tx != rank:
                     T.call_extern(
                         "handle",
                         "tl_send_partial",
@@ -212,15 +214,14 @@ def _softmax_on_chip_kernel(
                         stat[1],
                     )
                 T.mbarrier_wait_parity(received[0], 0)
-                stat[0] = T.cast(neg_inf, "float32")
-                stat[1] = T.cast(0, "float32")
                 for p in T.unroll(cluster):
-                    stat[0], stat[1] = fold(
-                        stat[0],
-                        stat[1],
-                        sums[own + _SLOT * p],
-                        sums[own + _SLOT * p + 1],
-                    )
+                    if p != rank:
+                        stat[0], stat[1] = fold(
+                            stat[0],
+                            stat[1],
+                            sums[own + _SLOT * p],
+                            sums[own + _SLOT * p + 1],
+                        )
                 scale = row_scale(stat[1])
 
                 for v in T.unroll(held_vectors):
