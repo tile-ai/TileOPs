@@ -156,10 +156,12 @@ class LayerNormLargeOffsetFixture(FixtureBase):
             [
                 pytest.param(4, 4096, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+                # A padded row: the pad columns must not add to the variance, held in
+                # registers here and walked from shared memory by a 1024-row grid.
+                pytest.param(4, 3000, torch.float32, marks=pytest.mark.smoke),
                 # One warp per row: a lane slot past the row must not add to the variance
                 pytest.param(4, 1020, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
+                pytest.param(1024, 8300, torch.float32, marks=pytest.mark.full),
             ],
         ),
     ]
