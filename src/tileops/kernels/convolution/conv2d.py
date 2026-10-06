@@ -739,7 +739,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
-        m_tiles = -(-call.n * call.out_hw // min(cls.block_m_candidates))
+        m_tiles = -(-(call.n * call.out_hw) // min(cls.block_m_candidates))
         return super().refusal(call) or grid_refusal(y=m_tiles)
 
     @classmethod

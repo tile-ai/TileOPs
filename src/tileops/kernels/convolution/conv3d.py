@@ -777,10 +777,15 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
-        x_elements = call.n * call.c_in * call.d * call.h * call.w
+        operands = (
+            call.n * call.c_in * call.d * call.h * call.w,
+            call.c_out * call.c_in_g * call.kernel_volume,
+            # output_spatial spans the batch.
+            call.c_out * call.output_spatial,
+        )
         return (
             super().refusal(call)
-            or operand_refusal(max(x_elements, call.c_out * call.output_spatial))
+            or operand_refusal(max(operands))
             or grid_refusal(z=call.n * call.groups)
         )
 
@@ -1009,8 +1014,8 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
-        # The GEMM tiles the output positions along y; the two layout copies run one
-        # image, then one output channel, a block row along z.
+        # The GEMM tiles the batch's output positions (output_spatial) along y; the two
+        # layout copies run one image, then one output channel, a block row along z.
         m_tiles = -(-call.output_spatial // min(cls.block_m_candidates))
         return super().refusal(call) or grid_refusal(y=m_tiles, z=max(call.n, call.c_out))
 

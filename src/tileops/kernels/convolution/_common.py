@@ -27,10 +27,10 @@ def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
 
 
 def operand_refusal(elements: int) -> Optional[str]:
-    """Why a program whose largest operand holds ``elements`` cannot build, or ``None``.
+    """Why a program with an operand of ``elements`` elements cannot build, or ``None``.
 
-    TileLang fails to build the programs that ask once an index into an operand passes
-    int32.
+    TileLang fails to build the programs that ask once an index into that operand passes
+    int32. Each caller passes the largest of the operands its program fails on.
     """
     if elements > 2**31 - 1:
         return f"builds only for operands of at most 2**31 - 1 elements, and one holds {elements}"
