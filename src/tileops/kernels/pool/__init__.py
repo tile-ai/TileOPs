@@ -4,6 +4,7 @@ from tileops.kernels.pool.adaptive_max_pool2d import (
     AdaptiveMaxPool2dWithIndicesKernel,
 )
 from tileops.kernels.pool.avg_pool1d import AvgPool1dKernel
+from tileops.kernels.pool.avg_pool1d_register import AvgPool1dRegisterKernel
 from tileops.kernels.pool.avg_pool2d import AvgPool2dKernel
 from tileops.kernels.pool.avg_pool3d import AvgPool3dKernel
 from tileops.kernels.pool.call_spec import (
@@ -40,6 +41,7 @@ __all__ = [
     "AdaptivePool2dCall",
     "AvgPool1dFwdInterface",
     "AvgPool1dKernel",
+    "AvgPool1dRegisterKernel",
     "AvgPool2dFwdInterface",
     "AvgPool2dKernel",
     "AvgPool3dFwdInterface",

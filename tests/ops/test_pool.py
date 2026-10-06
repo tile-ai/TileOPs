@@ -571,6 +571,30 @@ def test_avg_pool1d_staged_windows_match_the_reference(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype, offset",
+    [
+        pytest.param(4096, 3, 2, 1, torch.float16, 0, id="s2-pad-before-fp16"),
+        pytest.param(4096, 3, 2, 1, torch.float16, 1, id="misaligned-fp16"),
+        pytest.param(1024, 3, 1, 1, torch.float32, 0, id="s1-pad-both-sides-fp32"),
+        pytest.param(512, 4, 4, 0, torch.bfloat16, 0, id="s4-one-output-a-load-bf16"),
+        pytest.param(1024, 5, 4, 0, torch.float32, 0, id="s4-reach-past-the-load-fp32"),
+    ],
+)
+def test_avg_pool1d_windows_read_into_registers(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: torch.dtype, offset: int
+) -> None:
+    """Windows a 16-byte load covers whole outputs of, read with the elements they reach
+    past it on either side and divided as torch divides, so the result matches it bit for
+    bit; an input starting ``offset`` elements into its storage is served too."""
+    storage = torch.randn(offset + 2 * 3 * l_in, device=run_device(), dtype=dtype)
+    x = storage[offset:].view(2, 3, l_in)
+    out = AvgPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)(x)
+    expected = F.avg_pool1d(x, kernel_l, stride_l, pad_l)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("l_in, kernel_l", [(15, 16), (31, 32), (100, 128), (1000, 1024)])
 def test_max_pool1d_window_wider_than_the_row(l_in: int, kernel_l: int) -> None:
     """Ceil mode admits a window wider than the row; PyTorch pads the missing taps with -inf
