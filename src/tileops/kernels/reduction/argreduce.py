@@ -20,6 +20,7 @@ from tileops.kernels.reduction._primitives import (
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
+    vector_aligned,
 )
 from tileops.kernels.reduction.call_spec import ArgreduceCall, ArgreduceFwdInterface
 from tileops.utils import WARP_LANES
@@ -597,7 +598,7 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
         if self.M == 0:
             empty = torch.empty((0,), dtype=torch.int64, device=x.device)
             return restore_reduced(empty, in_shape, self.reduce_axes, self.keepdim)
-        y = self._argreduce_rows(rows_for_axes(x, self.reduce_axes))
+        y = self._argreduce_rows(vector_aligned(rows_for_axes(x, self.reduce_axes)))
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
 
     def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
@@ -734,5 +735,7 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
         self._require_cuda(x=x)
-        y = self.kernel(self.config["block_m"], self.config["threads"])(x.reshape(-1))
+        y = self.kernel(self.config["block_m"], self.config["threads"])(
+            vector_aligned(x.reshape(-1))
+        )
         return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)

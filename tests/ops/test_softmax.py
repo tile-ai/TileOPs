@@ -13,6 +13,8 @@ All operators use the spec-conformant interface:
   LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 """
 
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -265,28 +267,70 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
 
 
 @pytest.mark.parametrize(
-    "op_cls, ref_fn, shape",
+    "case_cls, op_cls, dim, shape",
     [
-        pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
         pytest.param(
-            LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="streaming"
+            SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
         ),
         pytest.param(
-            LogSoftmaxFwdOp, F.log_softmax, (64, 40000), marks=pytest.mark.full, id="split"
+            LogSoftmaxCase,
+            LogSoftmaxFwdOp,
+            -1,
+            (512, 40000),
+            marks=pytest.mark.full,
+            id="softmax-streaming",
         ),
-        pytest.param(SoftmaxFwdOp, F.softmax, (264, 32768), marks=pytest.mark.full, id="on-chip"),
+        pytest.param(
+            LogSoftmaxCase,
+            LogSoftmaxFwdOp,
+            -1,
+            (64, 40000),
+            marks=pytest.mark.full,
+            id="softmax-split",
+        ),
+        pytest.param(
+            SoftmaxCase,
+            SoftmaxFwdOp,
+            -1,
+            (264, 32768),
+            marks=pytest.mark.full,
+            id="softmax-on-chip",
+        ),
+        pytest.param(
+            LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
+        ),
+        pytest.param(
+            LogSumExpCase,
+            LogSumExpFwdOp,
+            -1,
+            (256, 16384),
+            marks=pytest.mark.full,
+            id="logsumexp-streaming",
+        ),
+        pytest.param(
+            LogSumExpCase,
+            LogSumExpFwdOp,
+            -1,
+            (4, 262144),
+            marks=pytest.mark.full,
+            id="logsumexp-split",
+        ),
+        pytest.param(
+            LogSumExpCase,
+            LogSumExpFwdOp,
+            (0, 2),
+            (8, 64, 1024),
+            marks=pytest.mark.full,
+            id="logsumexp-edge-split",
+        ),
     ],
 )
-def test_softmax_contiguous_input_off_a_vector_boundary(op_cls, ref_fn, shape: tuple) -> None:
+def test_contiguous_input_off_a_vector_boundary(case_cls, op_cls, dim, shape: tuple) -> None:
     """A contiguous input starting one element past a 16-byte boundary matches torch."""
-    numel = shape[0] * shape[1]
-    x = torch.randn(numel + 1, device=run_device(), dtype=torch.float16)[1:].view(shape)
-    y = op_cls(dim=-1)(x)
-    compare_outputs(
-        y,
-        ref_fn(x.float(), dim=-1).to(x.dtype),
-        softmax_verification(x.dtype, logarithmic=op_cls is LogSoftmaxFwdOp),
-    )
+    x = torch.randn(math.prod(shape) + 1, device=run_device(), dtype=torch.float16)[1:]
+    x = x.view(shape)
+    case = case_cls(shape, x.dtype, dim=dim)
+    compare_outputs(op_cls(dim=dim)(x), case.ref_program(x), case.verification(x))
 
 
 # LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)

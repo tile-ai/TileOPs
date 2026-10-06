@@ -34,6 +34,7 @@ from tileops.kernels.reduction._primitives import (
     exp_shifted,
     restore_same_shape,
     rows_for_axes,
+    vector_aligned,
 )
 from tileops.kernels.reduction._split_softmax import (
     SPLIT_BLOCKS_PER_SM,
@@ -445,13 +446,9 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def _rows(self, x: torch.Tensor) -> torch.Tensor:
-        """``call.axis`` of *x* as ``(M, N)`` rows starting on a 16-byte boundary.
-
-        Every kernel of the family loads 16-byte vectors, so rows a contiguous view
-        starts off that boundary are copied first.
-        """
-        rows = rows_for_axes(x, (self.call.axis,))
-        return rows.clone() if rows.data_ptr() % VECTOR_ACCESS_BYTES else rows
+        """``call.axis`` of *x* as ``(M, N)`` rows on a 16-byte boundary, which every
+        kernel of the family loads vectors from."""
+        return vector_aligned(rows_for_axes(x, (self.call.axis,)))
 
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
