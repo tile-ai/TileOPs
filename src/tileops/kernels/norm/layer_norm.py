@@ -30,7 +30,7 @@ __all__ = ["LayerNormKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
+def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_elements, sm_count):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
@@ -49,11 +49,19 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
             and N_padded // threads >= partial_min_elements
         )
 
+        def affine(normed, weight, bias, j):
+            """*normed* scaled by the weight and shifted by the bias the call passed."""
+            if has_weight:
+                normed = normed * T.cast(weight[j], "float32")
+            if has_bias:
+                normed = normed + T.cast(bias[j], "float32")
+            return normed
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            weight: T.Tensor[(N,), dtype],
-            bias: T.Tensor[(N,), dtype],
+            weight: T.Tensor[(N if has_weight else 1,), dtype],
+            bias: T.Tensor[(N if has_bias else 1,), dtype],
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
@@ -149,23 +157,31 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
                     # merely to slice it in the Op layer.
                     for i, j in T.Parallel(block_m, N_padded):
                         if T.And(pid_m * block_m + i < M, j < N):
-                            y[pid_m * block_m + i, j] = (
-                                T.cast(shared_buf[i, j], "float32") - mean_val[i]
-                            ) * rstd[i] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
+                            y[pid_m * block_m + i, j] = affine(
+                                (T.cast(shared_buf[i, j], "float32") - mean_val[i]) * rstd[i],
+                                weight,
+                                bias,
+                                j,
+                            )
                 elif needs_pad:
                     for i, j in T.Parallel(block_m, N_padded):
                         if T.And(pid_m * block_m + i < M, j < N):
-                            y[pid_m * block_m + i, j] = (
-                                T.cast(x_local[i, j], "float32") - mean_val[i]
-                            ) * rstd[i] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
+                            y[pid_m * block_m + i, j] = affine(
+                                (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
+                                weight,
+                                bias,
+                                j,
+                            )
                 else:
                     for i, j in T.Parallel(block_m, N_padded):
                         if (not row_guard) or pid_m * block_m + i < M:
                             y[pid_m * block_m + i, j] = T.cast(
-                                (T.cast(x_local[i, j], "float32") - mean_val[i])
-                                * rstd[i]
-                                * T.cast(weight[j], "float32")
-                                + T.cast(bias[j], "float32"),
+                                affine(
+                                    (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
+                                    weight,
+                                    bias,
+                                    j,
+                                ),
                                 dtype,
                             )
 
@@ -222,7 +238,9 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return select_row_configs(self.N_padded, self.dtype)
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
         Flattening to 2-D rows and a flat weight and bias happens here; the prim_func
@@ -230,8 +248,10 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
         Args:
             x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
-            weight: Affine scale holding ``N`` elements, contiguous, on the same device.
-            bias: Affine shift holding ``N`` elements, contiguous, on the same device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device, or
+                ``None`` to scale by one.
+            bias: Affine shift holding ``N`` elements, contiguous, on the same device, or
+                ``None`` to shift by zero.
 
         Returns:
             Tensor shaped like *x*.
@@ -243,8 +263,10 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
-        weight = weight.reshape(self.N)
-        bias = bias.reshape(self.N)
+        has_weight, has_bias = weight is not None, bias is not None
+        # An absent tensor is a one-element placeholder the program never reads.
+        weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
+        bias = bias.reshape(self.N) if has_bias else rows.new_empty(1)
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _layer_norm_kernel(
@@ -252,6 +274,8 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             self.N,
             self.eps,
             self.dtype_str,
+            has_weight,
+            has_bias,
             self.PARTIAL_MIN_ELEMENTS_PER_THREAD,
             # The device the input is on, not whichever is current.
             get_sm_count(rows.device.index),

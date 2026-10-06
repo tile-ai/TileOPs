@@ -278,15 +278,17 @@ class LayerNormFwdInterface(KernelInterface):
     request = LayerNormCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         """Normalize each run of ``call.n`` trailing elements; nothing is written in place.
 
         Every tensor is contiguous on ``call.device``.
 
         Args:
             x: Any shape whose trailing axes hold ``call.n`` elements, in ``call.dtype``.
-            weight: ``call.n`` elements of scale in ``call.dtype``.
-            bias: ``call.n`` elements of shift in ``call.dtype``.
+            weight: ``call.n`` elements of scale in ``call.dtype``, or ``None`` for one.
+            bias: ``call.n`` elements of shift in ``call.dtype``, or ``None`` for zero.
 
         Returns:
             A new output shaped like *x*, in ``call.dtype``.

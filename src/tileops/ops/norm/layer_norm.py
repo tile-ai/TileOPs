@@ -7,9 +7,8 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm import LayerNormKernel
+from tileops.kernels.norm import LayerNormKernel, LayerNormWarpRowKernel
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
-from tileops.ops.norm.affine import affine_or_constant
 from tileops.ops.op_base import Op
 
 __all__ = ["LayerNormFwdOp"]
@@ -33,7 +32,10 @@ class LayerNormFwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"layer_norm": LayerNormKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "layer_norm": LayerNormKernel,
+        "layer_norm_warp_row": LayerNormWarpRowKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "layer_norm": LayerNormFwdInterface
     }
@@ -91,9 +93,9 @@ class LayerNormFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        ns = tuple(self.normalized_shape)
-        weight = affine_or_constant(weight, ns, 1.0, x.dtype, x.device)
-        bias = affine_or_constant(bias, ns, 0.0, x.dtype, x.device)
         x = x.contiguous()
-        call = LayerNormCall(device=x.device, n=math.prod(ns), eps=self.eps, dtype=x.dtype)
+        weight = None if weight is None else weight.contiguous()
+        bias = None if bias is None else bias.contiguous()
+        n = math.prod(self.normalized_shape)
+        call = LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
         return self.kernel_for("layer_norm", call)(x, weight, bias)

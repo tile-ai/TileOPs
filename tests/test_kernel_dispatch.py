@@ -366,7 +366,7 @@ class _NarrowTorchLayerNorm(_TorchLayerNorm):
 
     @classmethod
     def applies(cls, call: LayerNormCall) -> bool:
-        return call.n <= 64
+        return call.n <= 256
 
 
 def _layer_norm(op, n: int):
@@ -378,14 +378,14 @@ def _layer_norm(op, n: int):
 
 
 def test_a_replacement_needs_only_the_published_contract() -> None:
-    op = LayerNormFwdOp((32,), kernel_map={"layer_norm": _TorchLayerNorm}, target=BUILTIN)
-    assert _layer_norm(op, 32) == ["_TorchLayerNorm"]
+    op = LayerNormFwdOp((256,), kernel_map={"layer_norm": _TorchLayerNorm}, target=BUILTIN)
+    assert _layer_norm(op, 256) == ["_TorchLayerNorm"]
 
 
 @pytest.mark.cuda_only
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
     register_implementation("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
-    assert _layer_norm(LayerNormFwdOp((32,)), 32) == ["_NarrowTorchLayerNorm"]
+    assert _layer_norm(LayerNormFwdOp((256,)), 256) == ["_NarrowTorchLayerNorm"]
     assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
 
 

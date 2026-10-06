@@ -32,6 +32,8 @@ class LayerNormFixture(FixtureBase):
                 pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # A DiT row: narrow, unaligned, one warp per row; a tail CTA holds one row
+                pytest.param(1025, 1152, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(8192, 8192, torch.float32, False, marks=pytest.mark.full),
                 # Standard aligned shapes -- fp16
@@ -50,6 +52,8 @@ class LayerNormFixture(FixtureBase):
                 # Tail-M: M not divisible by block_m
                 pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # fp32, one warp per row: 250 vectors, so six lanes hold one fewer
+                pytest.param(1025, 1000, torch.float32, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -153,6 +157,8 @@ class LayerNormLargeOffsetFixture(FixtureBase):
                 pytest.param(4, 4096, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+                # One warp per row: a lane slot past the row must not add to the variance
+                pytest.param(4, 1020, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
             ],
         ),
@@ -208,9 +214,10 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("n", [256, 1152])
 @pytest.mark.parametrize("give", ["weight", "bias", "neither"])
-def test_either_affine_tensor_alone_matches_torch(give: str) -> None:
-    n, dtype = 256, torch.float16
+def test_either_affine_tensor_alone_matches_torch(give: str, n: int) -> None:
+    dtype = torch.float16
     x = torch.randn(8, n, dtype=dtype, device=run_device())
     kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device=run_device())}
     got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)

@@ -76,6 +76,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         BatchNormFwdTrainKernel,
         GroupNormKernel,
         LayerNormKernel,
+        LayerNormWarpRowKernel,
         RMSNormKernel,
     )
     from tileops.kernels.pool import (
@@ -179,6 +180,7 @@ _LAZY = {
     "GroupedGemmPersistentKernel": ".gemm.grouped",
     "Kernel": ".kernel_base",
     "LayerNormKernel": ".norm",
+    "LayerNormWarpRowKernel": ".norm",
     "MHCPostKernel": ".sequence_modeling.mhc",
     "MHCPreKernel": ".sequence_modeling.mhc",
     "MLADecodeWSKernel": ".attention",
