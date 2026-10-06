@@ -32,7 +32,7 @@ from tileops.kernels.attention.varlen_rope import rope_channel_pair
 from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_shared_memory_optin
+from tileops.utils import get_shared_memory_optin, get_sm_version
 
 __all__ = ["GQAPagedFwdKernel"]
 
@@ -55,6 +55,7 @@ def _make_tile_parts(
     fuse_rope,
     rotary_dim,
     rope_layout,
+    specialized,
 ):
     """The key-tile pieces the unsplit and the split program share.
 
@@ -65,6 +66,12 @@ def _make_tile_parts(
     # whole, and only then is it contiguous. A tile spanning several pages is gathered row by
     # row, not copied per page: FlashAttention-3 draws the same line at page_size % kBlockN.
     one_page_holds_tile = page_size % block_N == 0
+    # Only the contiguous copy reads past the cache end; a gather clamps its rows. Warp
+    # specialization cannot pipeline two loops over one set of buffers, so a warp
+    # specialized scan keeps one loop and zeroes the cut tile's stale V rows in ``scan_tile``.
+    copies_tile = one_page_holds_tile and not fuse_rope
+    separate_cut = copies_tile and not specialized
+    zero_cut_rows = copies_tile and specialized
 
     @T.macro
     def load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, kv_head, align):
@@ -97,13 +104,28 @@ def _make_tile_parts(
 
     @T.macro
     def load_kv(
-        K, V, page_table, rope_cos, rope_sin, k_shared, v_shared, request, kv_head, key0, kv_len
+        K,
+        V,
+        page_table,
+        rope_cos,
+        rope_sin,
+        k_shared,
+        v_shared,
+        request,
+        kv_head,
+        key0,
+        kv_len,
+        cut,
     ):
-        """Read one key tile through the page table.
+        """Read one key tile through the page table, copied where one page holds it and
+        otherwise gathered with each row clamped to the cache end.
 
-        The non-RoPE contiguous copy keeps its full vector width and relies on finite
-        padded values. Gathered rows, including every RoPE read, clamp to the final
-        valid row before the attention mask excludes their scores.
+        Rows a page holds past the cache keep stale values. The mask sends their scores to
+        -inf, so K may carry them, but a NaN or infinity in V would survive its zero weight
+        in the value sum, so the tile the cache end *cuts* clamps V's rows to it, as the
+        gather's do. The clamp costs every load its address arithmetic, so the cut tile
+        takes a loop of its own. Under warp specialization the clamp would also turn V's copy
+        into one the producer releases with K's, before the value sum reads V.
         """
         if fuse_rope:
             # Positions belong to logical cache rows, not to the physical page pool.
@@ -131,7 +153,11 @@ def _make_tile_parts(
         elif one_page_holds_tile:
             base = page_table[request, key0 // page_size] * page_size + key0 % page_size
             T.copy(K[base : base + block_N, kv_head, :], k_shared)
-            T.copy(V[base : base + block_N, kv_head, :], v_shared)
+            if cut:
+                for j, d in T.Parallel(block_N, dim):
+                    v_shared[j, d] = V[base + T.min(j, kv_len - 1 - key0), kv_head, d]
+            else:
+                T.copy(V[base : base + block_N, kv_head, :], v_shared)
         else:
             for j, d in T.Parallel(block_N, dim):
                 key = T.min(key0 + j, kv_len - 1)
@@ -184,7 +210,54 @@ def _make_tile_parts(
         if softcap > 0.0
         else None
     )
-    return load_q, load_kv, apply_softcap, apply_mask, online_softmax, make_rescale(block_M, dim)
+    rescale = make_rescale(block_M, dim)
+
+    @T.macro
+    def scan_tile(
+        q_shared,
+        k_shared,
+        v_shared,
+        acc_s,
+        acc_s_cast,
+        acc_o,
+        scores_max,
+        scores_max_prev,
+        scores_scale,
+        scores_sum,
+        logsum,
+        key0,
+        row0,
+        rows,
+        align,
+        kv_len,
+    ):
+        """Fold one loaded key tile into the row tile's output and softmax statistics."""
+        T.clear(acc_s)
+        # The GEMM runs even for zero scores: it fixes the layout the row statistics share.
+        T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+        if zero_scores:
+            T.clear(acc_s)
+        elif softcap <= 0.0 and sm_scale < 0.0:
+            for i, j in T.Parallel(block_M, block_N):
+                acc_s[i, j] *= sm_scale
+        if softcap > 0.0:
+            apply_softcap(acc_s)
+        apply_mask(acc_s, key0, row0, rows, align, kv_len)
+        online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
+        T.copy(acc_s, acc_s_cast)
+        rescale(acc_o, scores_scale)
+        # Nested: `and` between a Python bool and a TIR comparison is not TIR.
+        if zero_cut_rows:  # noqa: SIM102
+            if key0 + block_N > kv_len:
+                # A select that reads the tile waits for its load; a plain store is placed
+                # before that wait, and the load lands over it.
+                for j, d in T.Parallel(block_N, dim):
+                    v_shared[j, d] = T.if_then_else(
+                        key0 + j < kv_len, v_shared[j, d], T.cast(0, dtype)
+                    )
+        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+    return load_q, load_kv, separate_cut, scan_tile
 
 
 @functools.lru_cache(maxsize=32)
@@ -205,6 +278,7 @@ def _gqa_paged_varlen_kernel(
     max_position: int,
     rotary_dim: int,
     rope_layout: str,
+    sm90: bool,
     producer_warpgroup: bool,
 ):
     """Build the paged packed-query attention program for one fixed set of call facts."""
@@ -251,8 +325,9 @@ def _gqa_paged_varlen_kernel(
             fuse_rope,
             rotary_dim,
             rope_layout,
+            sm90 and producer_warpgroup,
         )
-        load_q, load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
+        load_q, load_kv, separate_cut, scan_tile = parts
 
         @T.prim_func
         def gqa_paged_varlen(
@@ -321,9 +396,13 @@ def _gqa_paged_varlen_kernel(
                         key_start = 0
 
                     tile0 = key_start // block_N
-                    for t in T.Pipelined(
-                        T.max(0, T.ceildiv(key_end, block_N) - tile0), num_stages=num_stages
-                    ):
+                    span = T.max(0, T.ceildiv(key_end, block_N) - tile0)
+                    # A copied tile the cache end cuts, at most the last, takes its own loop.
+                    if separate_cut:
+                        whole = T.min(span, T.max(0, kv_len // block_N - tile0))
+                    else:
+                        whole = span
+                    for t in T.Pipelined(whole, num_stages=num_stages):
                         key0 = (tile0 + t) * block_N
                         load_kv(
                             K,
@@ -337,36 +416,61 @@ def _gqa_paged_varlen_kernel(
                             by,
                             key0,
                             kv_len,
+                            False,
                         )
-                        T.clear(acc_s)
-                        # The GEMM runs even for zero scores: it fixes the layout the row
-                        # statistics share.
-                        T.gemm(
+                        scan_tile(
                             q_shared,
                             k_shared,
+                            v_shared,
                             acc_s,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
-                        if zero_scores:
-                            T.clear(acc_s)
-                        elif softcap <= 0.0 and sm_scale < 0.0:
-                            for i, j in T.Parallel(block_M, block_N):
-                                acc_s[i, j] *= sm_scale
-                        if softcap > 0.0:
-                            apply_softcap(acc_s)
-                        apply_mask(acc_s, key0, row0, rows, align, kv_len)
-                        online_softmax(
-                            acc_s,
+                            acc_s_cast,
+                            acc_o,
                             scores_max,
                             scores_max_prev,
                             scores_scale,
                             scores_sum,
                             logsum,
+                            key0,
+                            row0,
+                            rows,
+                            align,
+                            kv_len,
                         )
-                        T.copy(acc_s, acc_s_cast)
-                        rescale(acc_o, scores_scale)
-                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if separate_cut:
+                        for t in T.Pipelined(span - whole, num_stages=num_stages):
+                            key0 = (tile0 + whole + t) * block_N
+                            load_kv(
+                                K,
+                                V,
+                                page_table,
+                                rope_cos,
+                                rope_sin,
+                                k_shared,
+                                v_shared,
+                                request,
+                                by,
+                                key0,
+                                kv_len,
+                                True,
+                            )
+                            scan_tile(
+                                q_shared,
+                                k_shared,
+                                v_shared,
+                                acc_s,
+                                acc_s_cast,
+                                acc_o,
+                                scores_max,
+                                scores_max_prev,
+                                scores_scale,
+                                scores_sum,
+                                logsum,
+                                key0,
+                                row0,
+                                rows,
+                                align,
+                                kv_len,
+                            )
 
                     # One reciprocal a row: a per-element divide by a row scalar is not.
                     for i in T.Parallel(block_M):
@@ -401,6 +505,7 @@ def _gqa_paged_varlen_split_kernel(
     max_position: int,
     rotary_dim: int,
     rope_layout: str,
+    sm90: bool,
 ):
     """The same scan with the key range cut into ``num_split`` chunks, combined afterwards.
 
@@ -452,8 +557,10 @@ def _gqa_paged_varlen_split_kernel(
             fuse_rope,
             rotary_dim,
             rope_layout,
+            # The split scan keeps its producer warpgroup.
+            sm90,
         )
-        load_q, load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
+        load_q, load_kv, separate_cut, scan_tile = parts
 
         @T.macro
         def scan(
@@ -520,8 +627,13 @@ def _gqa_paged_varlen_split_kernel(
                     span = T.max(0, T.ceildiv(key_end, block_N) - tile0)
                     per_split = T.ceildiv(span, num_split)
                     mine = T.max(0, T.min(per_split, span - bz * per_split))
-                    for t in T.Pipelined(mine, num_stages=num_stages):
-                        key0 = (tile0 + bz * per_split + t) * block_N
+                    first = tile0 + bz * per_split
+                    if separate_cut:
+                        whole = T.min(mine, T.max(0, kv_len // block_N - first))
+                    else:
+                        whole = mine
+                    for t in T.Pipelined(whole, num_stages=num_stages):
+                        key0 = (first + t) * block_N
                         load_kv(
                             K,
                             V,
@@ -534,29 +646,61 @@ def _gqa_paged_varlen_split_kernel(
                             by,
                             key0,
                             kv_len,
+                            False,
                         )
-                        T.clear(acc_s)
-                        T.gemm(
+                        scan_tile(
                             q_shared,
                             k_shared,
+                            v_shared,
                             acc_s,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
+                            acc_s_cast,
+                            acc_o,
+                            scores_max,
+                            scores_max_prev,
+                            scores_scale,
+                            scores_sum,
+                            logsum,
+                            key0,
+                            row0,
+                            rows,
+                            align,
+                            kv_len,
                         )
-                        if zero_scores:
-                            T.clear(acc_s)
-                        elif softcap <= 0.0 and sm_scale < 0.0:
-                            for i, j in T.Parallel(block_M, block_N):
-                                acc_s[i, j] *= sm_scale
-                        if softcap > 0.0:
-                            apply_softcap(acc_s)
-                        apply_mask(acc_s, key0, row0, rows, align, kv_len)
-                        online_softmax(
-                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                        )
-                        T.copy(acc_s, acc_s_cast)
-                        rescale(acc_o, scores_scale)
-                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if separate_cut:
+                        for t in T.Pipelined(mine - whole, num_stages=num_stages):
+                            key0 = (first + whole + t) * block_N
+                            load_kv(
+                                K,
+                                V,
+                                page_table,
+                                rope_cos,
+                                rope_sin,
+                                k_shared,
+                                v_shared,
+                                request,
+                                by,
+                                key0,
+                                kv_len,
+                                True,
+                            )
+                            scan_tile(
+                                q_shared,
+                                k_shared,
+                                v_shared,
+                                acc_s,
+                                acc_s_cast,
+                                acc_o,
+                                scores_max,
+                                scores_max_prev,
+                                scores_scale,
+                                scores_sum,
+                                logsum,
+                                key0,
+                                row0,
+                                rows,
+                                align,
+                                kv_len,
+                            )
 
                     for i in T.Parallel(block_M):
                         row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
@@ -775,6 +919,9 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             max_position,
             self.rotary_dim,
             rope_layout,
+            # A producer warpgroup specializes the scan on SM90 only, which decides how the
+            # key tile the cache end cuts drops its stale rows.
+            get_sm_version(device_index) >= 90,
         )
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
