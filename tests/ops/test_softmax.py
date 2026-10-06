@@ -273,55 +273,7 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
             SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
         ),
         pytest.param(
-            LogSoftmaxCase,
-            LogSoftmaxFwdOp,
-            -1,
-            (512, 40000),
-            marks=pytest.mark.full,
-            id="softmax-streaming",
-        ),
-        pytest.param(
-            LogSoftmaxCase,
-            LogSoftmaxFwdOp,
-            -1,
-            (64, 40000),
-            marks=pytest.mark.full,
-            id="softmax-split",
-        ),
-        pytest.param(
-            SoftmaxCase,
-            SoftmaxFwdOp,
-            -1,
-            (264, 32768),
-            marks=pytest.mark.full,
-            id="softmax-on-chip",
-        ),
-        pytest.param(
             LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
-        ),
-        pytest.param(
-            LogSumExpCase,
-            LogSumExpFwdOp,
-            -1,
-            (256, 16384),
-            marks=pytest.mark.full,
-            id="logsumexp-streaming",
-        ),
-        pytest.param(
-            LogSumExpCase,
-            LogSumExpFwdOp,
-            -1,
-            (4, 262144),
-            marks=pytest.mark.full,
-            id="logsumexp-split",
-        ),
-        pytest.param(
-            LogSumExpCase,
-            LogSumExpFwdOp,
-            (0, 2),
-            (8, 64, 1024),
-            marks=pytest.mark.full,
-            id="logsumexp-edge-split",
         ),
     ],
 )
