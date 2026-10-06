@@ -660,9 +660,8 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
     """Build a Welford-based reduce kernel for std/var/var_mean.
 
     Accepts an ``(M, N)`` input tensor.  Padding columns are filled with
-    ``0.0`` via masked loads when ``N`` is not aligned.  The padding
-    correction (subtracting ``pad_count * mean^2`` from the variance sum)
-    is applied analytically, so the result is exact regardless of padding.
+    ``0.0`` via masked loads when ``N`` is not aligned, and masked out of the
+    centered variance sum.
 
     ``op_kind="partials"`` writes each row's fp32 ``(M2, mean)`` undivided,
     for a cross-row merge; *correction* is unused there.
@@ -717,19 +716,16 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
                             dev = x_f32[i, j] - mean_val[i]
-                            sq_diff[i, j] = dev * dev
+                            sq_diff[i, j] = T.if_then_else(j < N, dev * dev, 0.0)
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
-                    # Correct for padding: padded elements contribute mean^2 each
-                    pad_count = N_padded - N
                     for i in T.Parallel(block_m):
-                        corrected_sum = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
                         if op_kind == "partials":
-                            out_v[i] = corrected_sum
+                            out_v[i] = var_sum[i]
                             out_m[i] = mean_val[i]
                         else:
-                            out_v[i] = T.cast(corrected_sum / float(N - correction), _out_dtype)
+                            out_v[i] = T.cast(var_sum[i] / float(N - correction), _out_dtype)
                             out_m[i] = T.cast(mean_val[i], _out_dtype)
 
                     T.copy(out_v, out_var[pid_m * block_m])
@@ -774,25 +770,16 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
                             dev = x_f32[i, j] - mean_val[i]
-                            sq_diff[i, j] = dev * dev
+                            sq_diff[i, j] = T.if_then_else(j < N, dev * dev, 0.0)
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
-                    pad_count = N_padded - N
                     if op_kind == "var":
                         for i in T.Parallel(block_m):
-                            corrected_sum = (
-                                var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            )
-                            out_local[i] = T.cast(corrected_sum / float(N - correction), dtype)
+                            out_local[i] = T.cast(var_sum[i] / float(N - correction), dtype)
                     else:  # std
                         for i in T.Parallel(block_m):
-                            corrected_sum = (
-                                var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            )
-                            out_local[i] = T.cast(
-                                T.sqrt(corrected_sum / float(N - correction)), dtype
-                            )
+                            out_local[i] = T.cast(T.sqrt(var_sum[i] / float(N - correction)), dtype)
 
                     T.copy(out_local, out[pid_m * block_m])
 
@@ -915,23 +902,18 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
-                                    p2_f32[i, j] - mean_val[i]
-                                )
+                                dev = p2_f32[i, j] - mean_val[i]
+                                sq_diff[i, j] = T.if_then_else(t * tile_n + j < N, dev * dev, 0.0)
                         T.reduce_sum(sq_diff, tile_sq, dim=1)
                         for i in T.Parallel(block_m):
                             var_sum[i] = var_sum[i] + tile_sq[i]
 
-                    # Correct for padding: out-of-bound elements were filled
-                    # with 0.0, so each contributes mean^2 to the sq_diff sum.
-                    pad_count = total_cols - N
                     for i in T.Parallel(block_m):
-                        corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
                         if op_kind == "partials":
-                            out_v[i] = corrected
+                            out_v[i] = var_sum[i]
                             out_m[i] = mean_val[i]
                         else:
-                            out_v[i] = T.cast(corrected / float(N - correction), _out_dtype)
+                            out_v[i] = T.cast(var_sum[i] / float(N - correction), _out_dtype)
                             out_m[i] = T.cast(mean_val[i], _out_dtype)
 
                     T.copy(out_v, out_var[pid_m * block_m])
@@ -1028,25 +1010,18 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
-                                    p2_f32[i, j] - mean_val[i]
-                                )
+                                dev = p2_f32[i, j] - mean_val[i]
+                                sq_diff[i, j] = T.if_then_else(t * tile_n + j < N, dev * dev, 0.0)
                         T.reduce_sum(sq_diff, tile_sq, dim=1)
                         for i in T.Parallel(block_m):
                             var_sum[i] = var_sum[i] + tile_sq[i]
 
-                    pad_count = total_cols - N
                     if op_kind == "var":
                         for i in T.Parallel(block_m):
-                            corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            out_local[i] = T.cast(corrected / float(N - correction), dtype)
+                            out_local[i] = T.cast(var_sum[i] / float(N - correction), dtype)
                     else:  # std
                         for i in T.Parallel(block_m):
-                            corrected = var_sum[i] - float(pad_count) * mean_val[i] * mean_val[i]
-                            out_local[i] = T.cast(
-                                T.sqrt(corrected / float(N - correction)),
-                                dtype,
-                            )
+                            out_local[i] = T.cast(T.sqrt(var_sum[i] / float(N - correction)), dtype)
 
                     T.copy(out_local, out[pid_m * block_m])
 
