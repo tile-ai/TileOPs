@@ -12,6 +12,7 @@ from tileops.kernels.pool.call_spec import (
 from tileops.kernels.pool.common import (
     AdaptivePool2dKernelBase,
     adaptive_bin,
+    dtype_itemsize,
     fits_static_shared,
     max_adaptive_bin_extent,
 )
@@ -29,23 +30,13 @@ def _spread(values: Tuple[int, ...], limit: int) -> Tuple[int, ...]:
 
 
 class _PlaneStaging:
-    """How many planes a block of these kernels stages, and how wide that block is.
-
-    These figures describe this kernel's access pattern, not the device, and are held
-    here so that a later kernel does not read them as general truths.
-    """
+    """How many planes a block of these kernels stages, and how wide that block is."""
 
     # A block staging more than this leaves the grid shorter than the device has
     # multiprocessors, and these shapes hold a megabyte or two in total.
     _TILE_BYTES = 4096
-    _TUNE_TILE_BYTES = 4 * _TILE_BYTES
-    # Elements one thread carries in the staging copy. That copy is the kernel's whole
-    # memory cost, so the block width follows from it and not from the output count.
-    _COPY_RUN = 8
     # Block widths offered, narrowest and widest also clamping the derived width.
     _THREAD_CHOICES = (128, 256, 512)
-    # Plane counts a tuning run tries.
-    _TUNED_PLANE_COUNTS = 4
 
     @staticmethod
     def _divisors(value: int) -> Tuple[int, ...]:
@@ -57,8 +48,7 @@ class _PlaneStaging:
         self._dtype = dtype
 
     def _tile_bytes(self, planes: int) -> int:
-        itemsize = 4 if self._dtype in ("float", "float32") else 2
-        return planes * self._plane * itemsize
+        return planes * self._plane * dtype_itemsize(self._dtype)
 
     def counts(self) -> Tuple[int, ...]:
         """Plane counts a block may take: divisors of ``rows`` whose tile fits shared.
@@ -77,7 +67,10 @@ class _PlaneStaging:
         )
 
     def threads(self, planes: int) -> int:
-        width = 1 << max(0, (planes * self._plane // self._COPY_RUN - 1).bit_length())
+        # Elements one thread carries in the staging copy. That copy is the kernel's whole
+        # memory cost, so the block width follows from it and not from the output count.
+        copy_run = 8
+        width = 1 << max(0, (planes * self._plane // copy_run - 1).bit_length())
         return min(max(width, self._THREAD_CHOICES[0]), self._THREAD_CHOICES[-1])
 
     def default(self) -> dict:
@@ -88,10 +81,11 @@ class _PlaneStaging:
 
     def tuned(self) -> list[dict]:
         counts = self.counts()
-        worth = tuple(p for p in counts if self._tile_bytes(p) <= self._TUNE_TILE_BYTES)
+        # Tuning tries tiles up to four times the default's, at four plane counts.
+        worth = tuple(p for p in counts if self._tile_bytes(p) <= 4 * self._TILE_BYTES)
         return [
             {"planes": planes, "threads": threads}
-            for planes in _spread(worth or counts[:1], self._TUNED_PLANE_COUNTS)
+            for planes in _spread(worth or counts[:1], 4)
             for threads in self._THREAD_CHOICES
         ]
 
