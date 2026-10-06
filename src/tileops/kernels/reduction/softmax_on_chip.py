@@ -135,8 +135,7 @@ def _softmax_on_chip_kernel(
                 out = T.alloc_local([vec], out_dtype)
                 stat = T.alloc_local([2], "float32")  # running (max, sum)
                 peer = T.alloc_local([2], "float32")
-                if staged:
-                    tile = T.alloc_shared((1, staged), dtype)
+                tile = T.alloc_shared((1, staged), dtype)
                 # One buffer for the warp pairs and the partials: a peer writes its pair while
                 # this CTA still folds its warps, so no slot may share their storage.
                 sums = T.alloc_shared([own + _SLOT * cluster], "float32")
@@ -157,8 +156,7 @@ def _softmax_on_chip_kernel(
                 for v in T.unroll(held_vectors):
                     for i in T.vectorized(vec):
                         values[v * vec + i] = x[cta, (v * threads + tx) * vec + i]
-                if staged:
-                    T.copy(x[cta : cta + 1, held:chunk], tile)
+                T.copy(x[cta : cta + 1, held:chunk], tile)
 
                 # The maximum is one of the values: taken in their own type, two 16-bit
                 # elements a lane-wide instruction.
@@ -167,12 +165,11 @@ def _softmax_on_chip_kernel(
                 for v in T.unroll(1, held_vectors):
                     for i in T.vectorized(vec):
                         peaks[i] = T.max(peaks[i], values[v * vec + i])
-                if staged:
-                    for v in T.serial(staged_vectors):
-                        for i in T.vectorized(vec):
-                            piece[i] = tile[0, (v * threads + tx) * vec + i]
-                        for i in T.vectorized(vec):
-                            peaks[i] = T.max(peaks[i], piece[i])
+                for v in T.serial(staged_vectors):
+                    for i in T.vectorized(vec):
+                        piece[i] = tile[0, (v * threads + tx) * vec + i]
+                    for i in T.vectorized(vec):
+                        peaks[i] = T.max(peaks[i], piece[i])
                 stat[0] = T.cast(peaks[0], "float32")
                 for i in T.unroll(1, vec):
                     stat[0] = T.max(stat[0], T.cast(peaks[i], "float32"))
@@ -180,12 +177,11 @@ def _softmax_on_chip_kernel(
                 if stat[0] != neg_inf:
                     for j in T.unroll(held_vectors * vec):
                         stat[1] += term(values[j], stat[0])
-                    if staged:
-                        for v in T.serial(staged_vectors):
-                            for i in T.vectorized(vec):
-                                piece[i] = tile[0, (v * threads + tx) * vec + i]
-                            for i in T.unroll(vec):
-                                stat[1] += term(piece[i], stat[0])
+                    for v in T.serial(staged_vectors):
+                        for i in T.vectorized(vec):
+                            piece[i] = tile[0, (v * threads + tx) * vec + i]
+                        for i in T.unroll(vec):
+                            stat[1] += term(piece[i], stat[0])
                 for step in T.unroll(WARP_LANES.bit_length() - 1):
                     peer[0] = T.shfl_xor(stat[0], T.shift_left(1, step))
                     peer[1] = T.shfl_xor(stat[1], T.shift_left(1, step))
@@ -232,14 +228,13 @@ def _softmax_on_chip_kernel(
                         )
                     for i in T.vectorized(vec):
                         y[cta, (v * threads + tx) * vec + i] = out[i]
-                if staged:
-                    for v in T.serial(staged_vectors):
-                        for i in T.vectorized(vec):
-                            piece[i] = tile[0, (v * threads + tx) * vec + i]
-                        for i in T.unroll(vec):
-                            out[i] = T.cast(finish(piece[i], stat[0], scale), out_dtype)
-                        for i in T.vectorized(vec):
-                            y[cta, held + (v * threads + tx) * vec + i] = out[i]
+                for v in T.serial(staged_vectors):
+                    for i in T.vectorized(vec):
+                        piece[i] = tile[0, (v * threads + tx) * vec + i]
+                    for i in T.unroll(vec):
+                        out[i] = T.cast(finish(piece[i], stat[0], scale), out_dtype)
+                    for i in T.vectorized(vec):
+                        y[cta, held + (v * threads + tx) * vec + i] = out[i]
 
         return main
 
@@ -268,10 +263,11 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     _MAX_CLUSTER = 8
     # Shared memory a CTA keeps for its sums and barrier rather than the row.
     _RESERVED_BYTES = 1024
-    # (largest share a CTA takes, threads, bytes a CTA holds in registers, CTAs an SM).
-    # A share past the last bound takes its last line, the rest staged in shared memory.
+    # (largest share a CTA takes, threads, bytes a CTA holds in registers, CTAs an SM);
+    # the last line takes every larger share. The rest of a share is staged in shared
+    # memory.
     _TIERS = (
-        (32 * 1024, 128, 32 * 1024, 4),
+        (32 * 1024, 128, 16 * 1024, 4),
         (64 * 1024, 256, 32 * 1024, 3),
         (None, 128, 64 * 1024, 1),
     )
@@ -291,9 +287,9 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         _, threads, held_bytes, ctas_per_sm = next(
             tier for tier in cls._TIERS if tier[0] is None or share <= tier[0]
         )
-        held = min(share, held_bytes)
+        held = held_bytes
         staged = share - held
-        if share % (threads * VECTOR_ACCESS_BYTES) or held % (threads * VECTOR_ACCESS_BYTES):
+        if staged <= 0 or share % (threads * VECTOR_ACCESS_BYTES):
             return None
         if staged * ctas_per_sm > call.smem_budget - ctas_per_sm * cls._RESERVED_BYTES:
             return None
