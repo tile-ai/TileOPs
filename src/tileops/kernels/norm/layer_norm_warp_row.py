@@ -31,6 +31,14 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
 
     @tilelang.jit(out_idx=[3])
     def _func(warps):
+        def affine(normed, scale, shift, j):
+            """*normed* scaled by the weight and shifted by the bias the call passed."""
+            if has_weight:
+                normed = normed * T.cast(scale[j], "float32")
+            if has_bias:
+                normed = normed + T.cast(shift[j], "float32")
+            return normed
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -90,12 +98,12 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                 for k in T.unroll(per_lane):
                     if lane + k * WARP_LANES < vectors and row < M:
                         for i in T.unroll(vec):
-                            normed = (values[k * vec + i] - mean) * rstd
-                            if has_weight:
-                                normed = normed * T.cast(scale[k * vec + i], "float32")
-                            if has_bias:
-                                normed = normed + T.cast(shift[k * vec + i], "float32")
-                            held[k * vec + i] = T.cast(normed, dtype)
+                            held[k * vec + i] = T.cast(
+                                affine(
+                                    (values[k * vec + i] - mean) * rstd, scale, shift, k * vec + i
+                                ),
+                                dtype,
+                            )
                         for i in T.vectorized(vec):
                             y[row, (lane + k * WARP_LANES) * vec + i] = held[k * vec + i]
 
@@ -128,7 +136,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
 
     @classmethod
     def refusal(cls, call: LayerNormCall) -> Optional[str]:
-        vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=call.dtype).element_size()
+        vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         if call.n % ALIGNMENT == 0:
             return f"serves rows that do not split into {ALIGNMENT}-element blocks"
         if call.n % vec:

@@ -52,7 +52,8 @@ class LayerNormFixture(FixtureBase):
                 # Tail-M: M not divisible by block_m
                 pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(1024, 1152, torch.float32, False, marks=pytest.mark.full),
+                # fp32, one warp per row: 250 vectors, so six lanes hold one fewer
+                pytest.param(1025, 1000, torch.float32, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -156,7 +157,8 @@ class LayerNormLargeOffsetFixture(FixtureBase):
                 pytest.param(4, 4096, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(4, 1152, torch.bfloat16, marks=pytest.mark.smoke),
+                # One warp per row: a lane slot past the row must not add to the variance
+                pytest.param(4, 1020, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
             ],
         ),
