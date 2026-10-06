@@ -9,6 +9,7 @@ from tileops.kernels.pool import (
     AvgPool1dKernel,
     AvgPool2dFwdInterface,
     AvgPool2dKernel,
+    AvgPool2dRegisterKernel,
     AvgPool3dFwdInterface,
     AvgPool3dKernel,
     AvgPoolCall,
@@ -109,7 +110,10 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCHW inputs."""
 
     ndim = 2
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"avg_pool2d_kernel": AvgPool2dKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "avg_pool2d_kernel": AvgPool2dKernel,
+        "avg_pool2d_register": AvgPool2dRegisterKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"avg_pool": AvgPool2dFwdInterface}
 
     def __init__(

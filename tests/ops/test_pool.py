@@ -1471,6 +1471,25 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     assert_op_owns_graph_nodes(op, x)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "size, kernel, stride, padding, dtype",
+    [
+        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, id="pad-before-fp16"),
+        pytest.param((32, 32), (2, 2), (2, 2), (0, 0), torch.float32, id="no-reach-fp32"),
+        pytest.param((15, 16), (3, 2), (2, 2), (1, 0), torch.bfloat16, id="pad-rows-bf16"),
+        pytest.param((16, 32), (3, 3), (1, 1), (1, 1), torch.float32, id="reach-both-sides-fp32"),
+        pytest.param((17, 16), (4, 5), (3, 4), (0, 0), torch.float32, id="reach-after-fp32"),
+    ],
+)
+def test_avg_pool2d_windows_read_into_registers(size, kernel, stride, padding, dtype) -> None:
+    """Windows a 16-byte load of an input row covers whole outputs of, summed in torch's
+    order and divided as torch divides, so the result matches it bit for bit."""
+    x = torch.randn(2, 3, *size, device=run_device(), dtype=dtype)
+    out = AvgPool2dFwdOp(kernel_size=kernel, stride=stride, padding=padding)(x)
+    torch.testing.assert_close(out, F.avg_pool2d(x, kernel, stride, padding), rtol=0, atol=0)
+
+
 class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
     supported_archs = None
 
@@ -1490,7 +1509,8 @@ def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
         kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel}, target=BUILTIN
     )
 
-    op(torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16))
+    # A width no 16-byte load divides, so no implementation preferred over the key serves it.
+    op(torch.randn(1, 2, 8, 10, device="cuda", dtype=torch.float16))
 
     assert isinstance(op.kernel, _PassthroughGenericKernel)
 
