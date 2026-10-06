@@ -185,7 +185,9 @@ def _adaptive_max_pool2d_kernel(
             run = T.alloc_local([1], accum_dtype)
             other = T.alloc_local([1], accum_dtype)
             run[0] = -T.infinity(accum_dtype)
-            for step in T.unroll(run_taps):
+            # Unrolled 128 taps at a time: unrolling a plane past the shared budget whole
+            # multiplies its compile time for a few percent of run time.
+            for step in T.unroll(run_taps, unroll_factor=128):
                 tap = lane * run_taps + step
                 ih = ih_start + tap // max_kw
                 iw = iw_start + tap % max_kw
