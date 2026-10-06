@@ -92,9 +92,11 @@ def _max_pool2d_indices_register_kernel(
                 positions = T.alloc_local([outputs], _INDEX)
                 for i in T.unroll(span):
                     columns[i] = T.max(T.min(start - pad_w + i, w_in - 1), 0)
+                # A window of nothing but -inf reports its first tap, as torch does.
+                top = T.max(oh * stride_h - pad_h, 0)
                 for e in T.unroll(outputs):
                     peaks[e] = -T.infinity(_ACCUM)
-                    at[e] = 0
+                    at[e] = top * w_in + columns[e * stride_w]
                 for kh in T.unroll(kernel_h):
                     row = T.max(T.min(oh * stride_h - pad_h + kh, h_in - 1), 0)
                     if evict_first:
@@ -176,6 +178,8 @@ class MaxPool2dIndicesRegisterKernel(Kernel, MaxPool2dIndicesFwdInterface):
             and out_w % (run // stride_w) == 0
             and out_w * stride_w <= w_in
             and w_in % run == 0
+            # A position is held in int32.
+            and h_in * w_in <= 1 << 31
         )
 
     @classmethod

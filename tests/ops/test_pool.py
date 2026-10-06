@@ -1923,6 +1923,7 @@ def test_max_pool2d_windows_read_into_registers(
         pytest.param((2, 3, 112, 112), 3, 2, 1, torch.bfloat16, 1, "randn", id="misaligned-bf16"),
         pytest.param((2, 3, 32, 32), 2, 2, 0, torch.float32, 0, "nan", id="nan-fp32"),
         pytest.param((2, 3, 16, 32), 3, 1, 1, torch.float32, 0, "ties", id="reach-both-ties-fp32"),
+        pytest.param((2, 3, 16, 32), 3, 2, 1, torch.float32, 0, "-inf", id="all-neg-inf-fp32"),
         pytest.param(
             (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, "nan", id="reach-after-nan-fp32"
         ),
@@ -1934,12 +1935,15 @@ def test_max_pool2d_indices_windows_read_into_registers(
     shape, kernel, stride, padding, dtype, offset: int, fill: str
 ) -> None:
     """Windows a 16-byte load of an input row covers whole outputs of give torch's values
-    and positions: a tie keeps the first position, the last NaN in a window wins, and an
-    edge read in place of padding reports the edge. An input starting ``offset``
-    elements into its storage is served too."""
+    and positions: a tie keeps the first position, the last NaN in a window wins, a window
+    of nothing but -inf reports its first tap, and an edge read in place of padding
+    reports the edge. An input starting ``offset`` elements into its storage is served
+    too."""
     numel = math.prod(shape)
     if fill == "ties":
         storage = torch.randint(0, 3, (offset + numel,), device=run_device()).to(dtype)
+    elif fill == "-inf":
+        storage = torch.full((offset + numel,), float("-inf"), device=run_device(), dtype=dtype)
     else:
         storage = torch.randn(offset + numel, device=run_device(), dtype=dtype)
     x = storage[offset:].view(shape)
