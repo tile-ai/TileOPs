@@ -5,6 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import (
@@ -20,6 +21,10 @@ _NEG_INF = float("-inf")
 _NAN = float("nan")
 _ACCUM_DTYPE = "float"
 _JIT_FLAGS = ["-O3", "-DENABLE_BF16"]
+# Rows up to this size are read evict-first in L2 by the windowed body: (2560, 4096) fp32
+# measured 16.45 to 15.49 us and fp16 11.30 to 10.40; MaxPool2dRegisterKernel found the
+# hint slowing a 411 MB input.
+_EVICT_FIRST_BYTES = 128 << 20
 
 # Taps one row-reduce block may hold. It bounds the two f32 fragments together: 8192
 # taps is 64 KB over a 256-thread block, or 64 registers a thread.
@@ -135,8 +140,11 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
+    evict_first = rows * l_in * dtype_itemsize(dtype) <= _EVICT_FIRST_BYTES
 
-    @tilelang.jit(out_idx=[1], compile_flags=_JIT_FLAGS)
+    @tilelang.jit(
+        out_idx=[1], compile_flags=[*_JIT_FLAGS, "-include", csrc_path("streaming_load.h")]
+    )
     def _build(block_ol: int, threads: int):
         def _windowed_scan(
             l_in: int,
@@ -162,7 +170,16 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
                     has_nan = T.alloc_var(T.bool)
                     has_nan = False
                     for kw in T.serial(kernel_w):
-                        val = T.cast(x[row, ol * stride_w - pad_w + kw * dilation_w], _ACCUM_DTYPE)
+                        at = ol * stride_w - pad_w + kw * dilation_w
+                        if evict_first:
+                            val = T.cast(
+                                T.call_extern(
+                                    dtype, "tl::tileops_load_evict_first", T.address_of(x[row, at])
+                                ),
+                                _ACCUM_DTYPE,
+                            )
+                        else:
+                            val = T.cast(x[row, at], _ACCUM_DTYPE)
                         has_nan = has_nan | T.isnan(val)
                         max_val = T.max(max_val, val)
                     out[idx] = T.cast(
@@ -172,7 +189,17 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
                     for kw in T.serial(kernel_w):
                         iw = ol * stride_w - pad_w + kw * dilation_w
                         if (iw >= 0) and (iw < l_in):
-                            val = T.cast(x[row, iw], _ACCUM_DTYPE)
+                            if evict_first:
+                                val = T.cast(
+                                    T.call_extern(
+                                        dtype,
+                                        "tl::tileops_load_evict_first",
+                                        T.address_of(x[row, iw]),
+                                    ),
+                                    _ACCUM_DTYPE,
+                                )
+                            else:
+                                val = T.cast(x[row, iw], _ACCUM_DTYPE)
                             max_val = T.if_then_else(T.isnan(val) or (val > max_val), val, max_val)
                     out[idx] = T.cast(max_val, dtype)
 
