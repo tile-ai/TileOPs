@@ -1645,7 +1645,7 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-expanding-bins-fp16",
                 ),
-                # Five planes over sixteen threads each: the last warp is half idle.
+                # Five planes of sixteen threads in a block of 128: 48 threads idle.
                 pytest.param(
                     1,
                     5,
