@@ -54,6 +54,9 @@ class LayerNormFixture(FixtureBase):
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # fp32, one warp per row: 250 vectors, so six lanes hold one fewer
                 pytest.param(1025, 1000, torch.float32, False, marks=pytest.mark.full),
+                # Tuned over 128 and 256 threads: 256 leaves each thread an odd 95 elements
+                # of a row walked from shared memory by a 512-row grid.
+                pytest.param(512, 24320, torch.float16, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -62,7 +65,7 @@ class LayerNormFixture(FixtureBase):
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormFwdOp(normalized_shape=(n,))
+    op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
     test.check(op, *test.gen_inputs())
 
 

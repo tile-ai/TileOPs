@@ -45,6 +45,9 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_eleme
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
             and N_padded // threads >= partial_min_elements
+            # An odd walk faults in the generated code at some widths, 95 elements a
+            # thread among them; the fragment path serves those rows.
+            and N_padded // threads % 2 == 0
         )
 
         def affine(normed, weight, bias, j):
