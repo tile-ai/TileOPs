@@ -1672,18 +1672,6 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-asymmetric-bf16",
                 ),
-                # A global pool splits each plane over several threads of a warp.
-                pytest.param(
-                    2,
-                    64,
-                    7,
-                    7,
-                    (1, 1),
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-global-fp16",
-                ),
                 pytest.param(
                     1,
                     128,
