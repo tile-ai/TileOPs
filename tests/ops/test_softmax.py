@@ -65,14 +65,14 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, large-N (triggers N-tiling path)
+                # dim=-1, a few long rows (split kernel)
                 pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=-1, M×N both non-aligned (single-tile path)
                 pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
+                # dim=-1, M×N both non-aligned, long rows (split kernel)
                 pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, non-aligned M + large-N tiled path
+                # dim=-1, non-aligned M, long aligned rows (split kernel)
                 pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim — different M/N split)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
@@ -197,14 +197,14 @@ class LogSoftmaxFixture(FixtureBase):
                 pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, large-N (triggers N-tiling path)
+                # dim=-1, a few long rows (split kernel)
                 pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=-1, M×N both non-aligned (single-tile path)
                 pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
+                # dim=-1, M×N both non-aligned, long rows (split kernel)
                 pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, non-aligned M + large-N tiled path
+                # dim=-1, non-aligned M, long aligned rows (split kernel)
                 pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
@@ -235,7 +235,11 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     [
         pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
         pytest.param(
-            LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="tiled"
+            LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="streaming"
+        ),
+        # An odd row: no access wider than one element starts every row.
+        pytest.param(
+            SoftmaxFwdOp, F.softmax, (512, 40001), marks=pytest.mark.full, id="streaming-odd-width"
         ),
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (64, 40000), marks=pytest.mark.full, id="split"
@@ -243,6 +247,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
         pytest.param(
             SoftmaxFwdOp, F.softmax, (4, 128256), marks=pytest.mark.full, id="fused-split"
         ),
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 32768), marks=pytest.mark.full, id="on-chip"),
     ],
 )
 def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
@@ -797,22 +802,32 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
         pytest.param(LogSoftmaxFwdOp, lambda t: F.log_softmax(t, dim=-1), id="log_softmax"),
     ],
 )
-def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) -> None:
-    """A row whose first tiles hold only ``-inf`` still reduces its finite tail.
+@pytest.mark.parametrize(
+    "width, prefix",
+    [
+        # 16384-element tiles on the streaming kernel: the first tile and most of the
+        # second are the -inf prefix.
+        pytest.param(40000, 28672, id="streaming"),
+        # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
+        pytest.param(40960, 5120, id="on-chip"),
+    ],
+)
+def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(
+    op: type, reference, width: int, prefix: int
+) -> None:
+    """A row whose leading part holds only ``-inf`` still reduces its finite tail.
 
-    The tiled path folds one tile at a time and rescales the running sum by the change
-    in the row maximum. While that maximum is still ``-inf`` the rescale subtracts one
-    infinity from another, and the ``NaN`` reaches every later tile. The row below is
-    wide enough to tile, so its leading tiles are entirely ``-inf``; the second row is
-    ``-inf`` throughout and must still come back as torch returns it.
+    The streaming path folds one tile at a time and rescales the running sum by the change
+    in the row maximum; the on-chip path folds the partials of a row's CTAs. While a
+    maximum is still ``-inf`` the rescale subtracts one infinity from another, and the
+    ``NaN`` reaches the rest of the row. The second row is ``-inf`` throughout and must
+    still come back as torch returns it.
     """
     device = run_device()
     torch.manual_seed(1235)
-    # The shape has to reach the tiled body and fold more than one tile: too few rows
-    # dispatch to the split kernel instead, and a row that fits one tile never rescales.
-    # 264x40960 folds two tiles of 20480, so the first tile is exactly the -inf prefix.
-    x = torch.randn((264, 40960), dtype=torch.float32, device=device)
-    x[0, :20480] = float("-inf")
+    # Too few rows dispatch to the split kernel instead.
+    x = torch.randn((264, width), dtype=torch.float32, device=device)
+    x[0, :prefix] = float("-inf")
     x[1, :] = float("-inf")
 
     compare_outputs(
@@ -820,6 +835,52 @@ def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) 
         reference(x),
         softmax_verification(x.dtype, logarithmic=op is LogSoftmaxFwdOp),
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op, reference, shape, dtype",
+    [
+        # 32 KB shares: 16 KB in registers, the rest staged, four CTAs an SM.
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 32768), torch.bfloat16, id="share-32k"),
+        # 64 KB shares: 32 KB in registers, the rest staged, three CTAs an SM.
+        pytest.param(LogSoftmaxFwdOp, F.log_softmax, (264, 65536), torch.float16, id="share-64k"),
+        # Eight CTAs a row, each past the share a cluster is aimed at.
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 262144), torch.float32, id="widest"),
+    ],
+)
+def test_rows_read_once_across_a_cluster(op, reference, shape: tuple, dtype) -> None:
+    """Rows the on-chip kernel splits across a cluster match torch."""
+    torch.manual_seed(1235)
+    x = torch.randn(shape, dtype=dtype, device=run_device()) * 4
+    compare_outputs(
+        op(dim=-1)(x),
+        reference(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=op is LogSoftmaxFwdOp),
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype, low",
+    [
+        pytest.param(torch.float32, -100.0, id="float32"),
+        pytest.param(torch.bfloat16, -88.0, id="bfloat16"),
+    ],
+)
+def test_subnormal_probabilities_survive(dtype, low: float) -> None:
+    """A probability below the smallest normal float comes back as torch returns it.
+
+    Every row is one zero and the rest ``low``, so all but one probability is subnormal
+    in float32. A tolerance check cannot see them flushed to zero, so they are compared
+    exactly against torch.
+    """
+    x = torch.full((264, 65536), low, dtype=dtype, device=run_device())
+    x[:, 0] = 0
+    y = SoftmaxFwdOp(dim=-1)(x)
+    expected = F.softmax(x, dim=-1)
+    assert torch.equal(y[:, 1:] != 0, expected[:, 1:] != 0)
+    torch.testing.assert_close(y, expected, rtol=1e-2, atol=0)
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}

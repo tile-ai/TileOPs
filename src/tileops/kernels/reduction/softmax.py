@@ -1,22 +1,16 @@
 """Softmax / log-softmax forward kernels using TileLang.
 
-Implements a 2-pass online softmax algorithm for two operations:
+Kernels for two operations:
   - softmax:     y[i,j] = exp(x[i,j] - max_i) / sum_i(exp(x[i,j] - max_i))
   - log_softmax: y[i,j] = x[i,j] - max_i - log(sum_i(exp(x[i,j] - max_i)))
 
-Two implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
-split across blocks for a handful of long rows, and the general row kernel.
+Three implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
+split across blocks for a handful of long rows, resident CTAs streaming the other rows
+no shared-memory tile holds, and the general row kernel for rows one tile holds.
+``softmax_on_chip`` adds a cluster kernel for rows of 32768 elements or more on SM90.
 
-Supports arbitrarily large N dimensions by tiling over N when the full
-N_padded does not fit in shared memory.  Uses the online softmax recurrence
-(track running max and rescaled running sum) across N-tiles.
-
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions.  Boundary handling for non-aligned N is performed
-inside the kernel via masked loads and -inf fills, eliminating host-side
-``F.pad`` from the forward path.  In the multi-tile path, only the last
-tile uses element-wise masked loads; all preceding tiles use the fast
-vectorized T.copy path since their columns are fully in-bounds.
+Boundary handling for non-aligned N is performed inside the kernel via masked loads
+and -inf fills, eliminating host-side ``F.pad`` from the forward path.
 """
 
 import functools
@@ -24,8 +18,9 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
@@ -52,7 +47,137 @@ from tileops.utils import WARP_LANES
 __all__ = [
     "SoftmaxKernel",
     "SoftmaxSplitKernel",
+    "SoftmaxStreamingKernel",
 ]
+
+
+@functools.lru_cache(maxsize=32)
+def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm, held_bytes):
+    """Build the two-pass softmax/log_softmax for rows no CTA holds on chip.
+
+    ``ctas`` resident CTAs walk the rows in turn. The first pass reads a row in tiles of
+    ``threads * accesses`` vectors and folds each thread's running ``(max, sum)`` with the
+    online recurrence; the pairs then fold across the warp by shuffles and across warps
+    through shared memory. The second pass reads the row again from the far end, where
+    the tiles read last are likeliest still in L2, and writes the result. The first
+    tiles of a row, as many whole ones as ``held_bytes`` of shared memory take, are kept
+    from the first pass, so the second reads them from shared memory instead.
+    """
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
+    while N % vec:
+        vec //= 2
+    neg_inf = float("-inf")
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads, accesses):
+        tile = threads * accesses * vec
+        tiles = -(-N // tile)
+        warps = threads // WARP_LANES
+        kept = min(N // tile, held_bytes // (tile * DataType(dtype).bits // 8))
+
+        def row_scale(total):
+            """What a row's result takes from its sum: its reciprocal, or its log."""
+            if op_kind == "softmax":
+                return 1.0 / total
+            return T.log(total)
+
+        def fold(m, s, other_m, other_s):
+            """The ``(max, sum)`` of two partial pairs; two empty ones stay empty."""
+            top = T.max(m, other_m)
+            both = s * exp_shifted(m, top) + other_s * exp_shifted(other_m, top)
+            return top, T.if_then_else(top == neg_inf, T.cast(0, "float32"), both)
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), out_dtype],
+        ):
+            with T.Kernel(ctas, threads=threads) as cta:
+                # Held to the registers that leave room for every CTA an SM is given.
+                T.annotate_min_blocks_per_sm(ctas_per_sm)
+                tx = T.get_thread_binding()
+                held = T.alloc_local([accesses * vec], dtype)
+                out = T.alloc_local([vec], out_dtype)
+                stat = T.alloc_local([2], "float32")  # this thread's (max, sum)
+                peer = T.alloc_local([2], "float32")
+                tile_max = T.alloc_local([1], "float32")
+                # Two slots, so a row's pairs never overwrite the ones still being read.
+                warp_stats = T.alloc_shared([2, 2, warps], "float32")
+                head = T.alloc_shared([max(kept, 1) * tile], dtype)
+
+                for step in T.serial(T.ceildiv(M - cta, ctas)):
+                    row = cta + step * ctas
+                    stat[0] = T.cast(neg_inf, "float32")
+                    stat[1] = T.cast(0, "float32")
+                    for t in T.serial(tiles):
+                        for a in T.unroll(accesses):
+                            col = t * tile + (a * threads + tx) * vec
+                            if col < N:
+                                for i in T.vectorized(vec):
+                                    held[a * vec + i] = x[row, col + i]
+                            else:
+                                for i in T.vectorized(vec):
+                                    held[a * vec + i] = T.cast(neg_inf, dtype)
+                            if t < kept:
+                                for i in T.vectorized(vec):
+                                    head[t * tile + (a * threads + tx) * vec + i] = held[
+                                        a * vec + i
+                                    ]
+                        tile_max[0] = T.cast(neg_inf, "float32")
+                        for j in T.unroll(accesses * vec):
+                            tile_max[0] = T.max(tile_max[0], T.cast(held[j], "float32"))
+                        top = T.max(stat[0], tile_max[0])
+                        stat[1] = T.if_then_else(
+                            top == neg_inf,
+                            T.cast(0, "float32"),
+                            stat[1] * exp_shifted(stat[0], top),
+                        )
+                        stat[0] = top
+                        for j in T.unroll(accesses * vec):
+                            stat[1] += T.if_then_else(
+                                top == neg_inf,
+                                T.cast(0, "float32"),
+                                exp_shifted(T.cast(held[j], "float32"), top),
+                            )
+                    for k in T.unroll(WARP_LANES.bit_length() - 1):
+                        peer[0] = T.shfl_xor(stat[0], T.shift_left(1, k))
+                        peer[1] = T.shfl_xor(stat[1], T.shift_left(1, k))
+                        stat[0], stat[1] = fold(stat[0], stat[1], peer[0], peer[1])
+                    if tx % WARP_LANES == 0:
+                        warp_stats[step % 2, 0, tx // WARP_LANES] = stat[0]
+                        warp_stats[step % 2, 1, tx // WARP_LANES] = stat[1]
+                    T.sync_threads()
+                    stat[0] = T.cast(neg_inf, "float32")
+                    stat[1] = T.cast(0, "float32")
+                    for w in T.unroll(warps):
+                        stat[0], stat[1] = fold(
+                            stat[0], stat[1], warp_stats[step % 2, 0, w], warp_stats[step % 2, 1, w]
+                        )
+                    scale = row_scale(stat[1])
+
+                    for t_back in T.serial(tiles):
+                        t = tiles - 1 - t_back
+                        for a in T.unroll(accesses):
+                            col = t * tile + (a * threads + tx) * vec
+                            if col < N:
+                                if t < kept:
+                                    for i in T.vectorized(vec):
+                                        held[a * vec + i] = head[col + i]
+                                else:
+                                    for i in T.vectorized(vec):
+                                        held[a * vec + i] = x[row, col + i]
+                                for i in T.unroll(vec):
+                                    v = T.cast(held[a * vec + i], "float32")
+                                    if op_kind == "softmax":
+                                        out[i] = T.cast(exp_shifted(v, stat[0]) * scale, out_dtype)
+                                    else:
+                                        out[i] = T.cast(v - stat[0] - scale, out_dtype)
+                                for i in T.vectorized(vec):
+                                    y[row, col + i] = out[i]
+
+        return main
+
+    return _func
 
 
 # Single-tile kernel (N fits in shared memory) -- original fast path
@@ -155,347 +280,6 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
                         y[pid_m * block_m + i, j] = T.cast(x_f32[i, j], out_dtype)
 
         return main
-
-    return _func
-
-
-# Multi-tile kernel (N tiled over shared memory)
-
-
-@functools.lru_cache(maxsize=64)
-def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, tile_n: int):
-    """Build a multi-tile softmax/log_softmax kernel.
-
-    Uses online softmax recurrence across N-tiles:
-      Pass 1 (all tiles): compute running max and rescaled running sum.
-      Pass 2 (all tiles): normalize using global max and sum.
-
-    The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
-    Boundary handling for the last tile (where ``t * tile_n + j`` may
-    exceed ``N``) is performed inside the kernel via ``T.if_then_else``
-    masked loads.  Output columns are ``total_cols = num_tiles * tile_n``.
-
-    NOTE: Pass 2 uses a dedicated shared memory buffer AND dedicated register
-    fragments. TileLang's allocator may alias both shared buffers and register
-    fragments across T.Serial loop boundaries, corrupting pass-1 accumulators
-    (row_max, row_sum) if the same names are reused.  The dual-buffer shared
-    memory cost is accounted for by passing ``num_buffers=2`` to
-    ``compute_tile_n``. An *out_dtype* other than *dtype* stages the output tile in
-    a third buffer of its own.
-    """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    num_tiles = (N_padded + tile_n - 1) // tile_n
-    total_cols = num_tiles * tile_n
-    index_bits = 64 if M * total_cols >= 2**31 else 32
-    index_dtype = "int64" if index_bits == 64 else "int32"
-    # The last tile may extend beyond N; boundary masking is needed when
-    # total_cols > N (which is always true when N is not aligned, and also
-    # when tile_n does not evenly divide N_padded).
-    _needs_mask = total_cols > N
-    _neg_inf = float("-inf")
-
-    if op_kind == "softmax":
-
-        @tilelang.jit(out_idx=[1], pass_configs={"tl.config_index_bitwidth": index_bits})
-        def _func(block_m, threads):
-            @T.prim_func
-            def main(
-                x: T.Tensor[(T.cast(M, index_dtype), T.cast(N, index_dtype)), dtype],
-                y: T.Tensor[(T.cast(M, index_dtype), T.cast(total_cols, index_dtype)), out_dtype],
-            ):
-                with T.Kernel(T.cast(T.ceildiv(M, block_m), index_dtype), threads=threads) as pid_m:
-                    # --- Pass 1 fragments ---
-                    shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                    tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-
-                    row_max = T.alloc_fragment((block_m,), "float32")
-                    row_shift = T.alloc_fragment((block_m,), "float32")
-                    row_sum = T.alloc_fragment((block_m,), "float32")
-                    prev_max = T.alloc_fragment((block_m,), "float32")
-                    tile_max = T.alloc_fragment((block_m,), "float32")
-                    tile_sum = T.alloc_fragment((block_m,), "float32")
-
-                    T.fill(row_max, -T.infinity("float32"))
-                    T.fill(row_sum, 0.0)
-
-                    # Pass 1: compute global max and sum using online recurrence
-                    for t in T.Serial(num_tiles):
-                        if _needs_mask:
-                            # Only the last tile may have out-of-bounds columns.
-                            # Use fast vectorized T.copy for all earlier tiles,
-                            # and element-wise T.if_then_else only for the last.
-                            with T.If(t < num_tiles - 1):
-                                with T.Then():
-                                    T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                                with T.Else():
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.if_then_else(
-                                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                                T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j],
-                                                    "float32",
-                                                ),
-                                                T.cast(_neg_inf, "float32"),
-                                            )
-                        else:
-                            T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            for i in T.serial(block_m):
-                                for j in T.Parallel(tile_n):
-                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                        T.fill(tile_max, -T.infinity("float32"))
-                        T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
-
-                        for i in T.Parallel(block_m):
-                            prev_max[i] = row_max[i]
-                            row_max[i] = T.max(row_max[i], tile_max[i])
-                            # A tile of only -inf leaves the running maximum infinite;
-                            # shifting by it would subtract one infinity from another.
-                            # Shift by zero until a finite element has been seen.
-                            row_shift[i] = T.if_then_else(
-                                T.abs(row_max[i]) == T.infinity("float32"),
-                                T.cast(0.0, "float32"),
-                                row_max[i],
-                            )
-
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = exp_shifted(tile_f32[i, j], row_shift[i])
-                        T.reduce_sum(tile_f32, tile_sum, dim=1)
-
-                        for i in T.Parallel(block_m):
-                            # Rescaled by the maxima, not the shifts, and an unchanged
-                            # maximum scales by exactly one: exp2(-inf - -inf) is NaN and
-                            # would poison a row whose later tiles are finite.
-                            row_sum[i] = (
-                                row_sum[i]
-                                * T.exp2(
-                                    T.if_then_else(
-                                        prev_max[i] == row_max[i],
-                                        T.cast(0.0, "float32"),
-                                        prev_max[i] - row_max[i],
-                                    )
-                                    * LOG2E
-                                )
-                                + tile_sum[i]
-                            )
-
-                    # Precompute reciprocal to replace division with
-                    # multiplication in the per-element normalisation.
-                    inv_sum = T.alloc_fragment((block_m,), "float32")
-                    for i in T.Parallel(block_m):
-                        inv_sum[i] = 1.0 / row_sum[i]
-
-                    # --- Pass 2: dedicated shared + register fragments ---
-                    # TileLang's allocator aliases both shared buffers and
-                    # register fragments across T.Serial loop boundaries.
-                    # Using separate allocations for pass 2 prevents
-                    # corruption of pass-1 accumulators (row_max, row_sum).
-                    # compute_tile_n accounts for 2x shared memory via
-                    # num_buffers=2.
-                    p2_shared = T.alloc_shared((block_m, tile_n), dtype)
-                    p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                    if out_dtype == dtype:
-                        p2_out = p2_shared
-                    else:
-                        p2_out = T.alloc_shared((block_m, tile_n), out_dtype)
-
-                    # Pass 2: normalize, then cast the tile back into the shared
-                    # buffer it was read from
-                    for t in T.Serial(num_tiles):
-                        if _needs_mask:
-                            with T.If(t < num_tiles - 1):
-                                with T.Then():
-                                    T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            p2_f32[i, j] = (
-                                                exp_shifted(
-                                                    T.cast(p2_shared[i, j], "float32"),
-                                                    row_shift[i],
-                                                )
-                                                * inv_sum[i]
-                                            )
-                                with T.Else():
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            p2_f32[i, j] = T.if_then_else(
-                                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                                exp_shifted(
-                                                    T.cast(
-                                                        x[pid_m * block_m + i, t * tile_n + j],
-                                                        "float32",
-                                                    ),
-                                                    row_shift[i],
-                                                )
-                                                * inv_sum[i],
-                                                0.0,
-                                            )
-                        else:
-                            T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            for i in T.serial(block_m):
-                                for j in T.Parallel(tile_n):
-                                    p2_f32[i, j] = (
-                                        exp_shifted(
-                                            T.cast(p2_shared[i, j], "float32"), row_shift[i]
-                                        )
-                                        * inv_sum[i]
-                                    )
-
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                p2_out[i, j] = T.cast(p2_f32[i, j], out_dtype)
-                        T.copy(p2_out, y[pid_m * block_m, t * tile_n])
-
-            return main
-
-    else:  # log_softmax
-
-        @tilelang.jit(out_idx=[1], pass_configs={"tl.config_index_bitwidth": index_bits})
-        def _func(block_m, threads):
-            @T.prim_func
-            def main(
-                x: T.Tensor[(T.cast(M, index_dtype), T.cast(N, index_dtype)), dtype],
-                y: T.Tensor[(T.cast(M, index_dtype), T.cast(total_cols, index_dtype)), out_dtype],
-            ):
-                with T.Kernel(T.cast(T.ceildiv(M, block_m), index_dtype), threads=threads) as pid_m:
-                    # --- Pass 1 fragments ---
-                    shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                    tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-
-                    row_max = T.alloc_fragment((block_m,), "float32")
-                    row_shift = T.alloc_fragment((block_m,), "float32")
-                    row_sum = T.alloc_fragment((block_m,), "float32")
-                    prev_max = T.alloc_fragment((block_m,), "float32")
-                    tile_max = T.alloc_fragment((block_m,), "float32")
-                    tile_sum = T.alloc_fragment((block_m,), "float32")
-
-                    T.fill(row_max, -T.infinity("float32"))
-                    T.fill(row_sum, 0.0)
-
-                    # Pass 1: compute global max and sum
-                    for t in T.Serial(num_tiles):
-                        if _needs_mask:
-                            with T.If(t < num_tiles - 1):
-                                with T.Then():
-                                    T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                                with T.Else():
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            tile_f32[i, j] = T.if_then_else(
-                                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                                T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j],
-                                                    "float32",
-                                                ),
-                                                T.cast(_neg_inf, "float32"),
-                                            )
-                        else:
-                            T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            for i in T.serial(block_m):
-                                for j in T.Parallel(tile_n):
-                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                        T.fill(tile_max, -T.infinity("float32"))
-                        T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
-
-                        for i in T.Parallel(block_m):
-                            prev_max[i] = row_max[i]
-                            row_max[i] = T.max(row_max[i], tile_max[i])
-                            # A tile of only -inf leaves the running maximum infinite;
-                            # shifting by it would subtract one infinity from another.
-                            # Shift by zero until a finite element has been seen.
-                            row_shift[i] = T.if_then_else(
-                                T.abs(row_max[i]) == T.infinity("float32"),
-                                T.cast(0.0, "float32"),
-                                row_max[i],
-                            )
-
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = exp_shifted(tile_f32[i, j], row_shift[i])
-                        T.reduce_sum(tile_f32, tile_sum, dim=1)
-
-                        for i in T.Parallel(block_m):
-                            # Rescaled by the maxima, not the shifts, and an unchanged
-                            # maximum scales by exactly one: exp2(-inf - -inf) is NaN and
-                            # would poison a row whose later tiles are finite.
-                            row_sum[i] = (
-                                row_sum[i]
-                                * T.exp2(
-                                    T.if_then_else(
-                                        prev_max[i] == row_max[i],
-                                        T.cast(0.0, "float32"),
-                                        prev_max[i] - row_max[i],
-                                    )
-                                    * LOG2E
-                                )
-                                + tile_sum[i]
-                            )
-
-                    # Precompute log(sum) to avoid recomputing per-element
-                    log_sum = T.alloc_fragment((block_m,), "float32")
-                    for i in T.Parallel(block_m):
-                        log_sum[i] = T.log(row_sum[i])
-
-                    # --- Pass 2: dedicated shared + register fragments ---
-                    # (Same aliasing workaround as softmax -- see note above.)
-                    p2_shared = T.alloc_shared((block_m, tile_n), dtype)
-                    p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                    if out_dtype == dtype:
-                        p2_out = p2_shared
-                    else:
-                        p2_out = T.alloc_shared((block_m, tile_n), out_dtype)
-
-                    # Pass 2: log-normalize (cast + compute fused)
-                    for t in T.Serial(num_tiles):
-                        if _needs_mask:
-                            with T.If(t < num_tiles - 1):
-                                with T.Then():
-                                    T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            p2_f32[i, j] = (
-                                                T.cast(p2_shared[i, j], "float32")
-                                                - row_shift[i]
-                                                - log_sum[i]
-                                            )
-                                with T.Else():
-                                    for i in T.serial(block_m):
-                                        for j in T.Parallel(tile_n):
-                                            p2_f32[i, j] = T.if_then_else(
-                                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                                T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j],
-                                                    "float32",
-                                                )
-                                                - row_shift[i]
-                                                - log_sum[i],
-                                                T.cast(_neg_inf, "float32"),
-                                            )
-                        else:
-                            T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            for i in T.serial(block_m):
-                                for j in T.Parallel(tile_n):
-                                    p2_f32[i, j] = (
-                                        T.cast(p2_shared[i, j], "float32")
-                                        - row_shift[i]
-                                        - log_sum[i]
-                                    )
-
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                p2_out[i, j] = T.cast(p2_f32[i, j], out_dtype)
-                        T.copy(p2_out, y[pid_m * block_m, t * tile_n])
-
-            return main
 
     return _func
 
@@ -662,10 +446,10 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
 
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
-        """Row-sized shared buffers the tiled kernel holds.
+        """Row-sized shared buffers a row block is planned with.
 
-        Two, one per pass, since TileLang's allocator aliases one buffer across the
-        passes; an output of another dtype adds its stage.
+        Two, and an output of another dtype adds its stage. The plan this sizes decides
+        which rows one tile holds, and so where :class:`SoftmaxKernel` stops serving.
         """
         in_bytes = call.dtype.itemsize
         out_stage = 0 if call.out_dtype == call.dtype else -(-call.out_dtype.itemsize // in_bytes)
@@ -789,13 +573,71 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
-class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
-    """Softmax / log-softmax of rows, ``block_m`` rows a block.
+class SoftmaxStreamingKernel(_SoftmaxKernelBase):
+    """Softmax / log-softmax of rows no shared-memory tile holds, from resident CTAs.
 
-    The general implementation: it serves any call, and runs where no specialised one
-    applies. A row one shared-memory tile holds is normalized from that tile; a longer
-    row takes two passes over N-tiles with the online softmax recurrence (running max
-    and rescaled sum). Non-aligned N is masked inside the kernel. Tunes ``tile_n``,
+    Resident CTAs walk the rows in turn; each row is read twice, the second time from
+    the far end, except its first tiles, which wait in shared memory between the passes.
+    Serves the rows no shared-memory tile holds, except those :class:`SoftmaxSplitKernel`
+    splits.
+
+    A tile is 16384 elements, four 16-byte vectors a thread: 512 threads of a 16-bit
+    dtype, 1024 of fp32. Each SM is given 1024 threads, which leaves every thread 64
+    registers, and its CTAs share its shared memory for the kept tiles.
+    """
+
+    _TILE_ELEMENTS = 16384
+    _ACCESSES = 4
+    _THREADS_PER_SM = 1024
+    # Shared memory a CTA keeps for the warps' statistics rather than row tiles.
+    _STATS_BYTES = 1024
+
+    @classmethod
+    def applies(cls, call: SoftmaxCall) -> bool:
+        return cls.row_plan(call)[1] != 0 and cls.split_seg_n(call) == 0
+
+    def __init__(self, call: SoftmaxCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        ctas_per_sm = self._THREADS_PER_SM // self.default_config["threads"]
+        self.kernel = _softmax_streaming_kernel(
+            call.m,
+            call.n,
+            call.op_kind,
+            self.dtype_str,
+            self.dtype_to_str(call.out_dtype),
+            min(call.m, ctas_per_sm * call.sm_count),
+            ctas_per_sm,
+            call.smem_budget // ctas_per_sm - self._STATS_BYTES,
+        )
+        self.init_config(None)
+
+    @property
+    def default_config(self) -> dict:
+        vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
+        return {
+            "threads": self._TILE_ELEMENTS // (self._ACCESSES * vec),
+            "accesses": self._ACCESSES,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """The default alone: tuning repeats one candidate back to back, which reads the
+        row out of L2 and ranks a schedule this kernel never runs as."""
+        return [self.default_config]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize ``call.axis`` of the contiguous input *x*."""
+        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
+        return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+
+class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
+    """Softmax / log-softmax of rows one shared-memory tile holds, ``block_m`` rows a block.
+
+    The general implementation: it runs where no specialised one applies. Each row is
+    normalized from its tile; non-aligned N is masked inside the kernel. Tunes
     ``block_m`` and ``threads``.
 
     ``forward`` takes the tensor the op declares and normalizes over ``call.axis``;
@@ -808,7 +650,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
 
     @classmethod
     def applies(cls, call: SoftmaxCall) -> bool:
-        return True
+        return cls.row_plan(call)[1] == 0
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)
@@ -832,12 +674,9 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
     def _build_row_kernel(self, tile_n: int):
-        if tile_n == 0:
-            return _softmax_kernel_single(
-                self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
-            )
-        return _softmax_kernel_tiled(
-            self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str, tile_n
+        # ``applies`` admits one-tile rows only, so every candidate's tile_n is 0.
+        return _softmax_kernel_single(
+            self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
