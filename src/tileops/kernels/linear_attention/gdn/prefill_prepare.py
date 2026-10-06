@@ -503,50 +503,40 @@ def _prefill_blocksolve_A_bthd_tl(
                     a_s[6, i, j] = G30[i, j] * s30
                     a_s[7, i, j] = G31[i, j] * s31
                     a_s[8, i, j] = G32[i, j] * s32
-                    i_s[0, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
-                    i_s[1, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
-                    i_s[2, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
-                    i_s[3, i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
                 T.sync_threads()
 
-                # For a strictly lower triangular L, L**block_c = 0. Repeated
-                # doubling forms I + L + ... + L**(block_c - 1), the full inverse.
-                for _r in T.Serial((block_c - 1).bit_length()):
-                    T.clear(tmp)
-                    T.gemm(a_s[0, :, :], i_s[0, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[0, i, j] = i_s[0, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[0, :, :], a_s[0, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[0, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[2, :, :], i_s[1, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[1, i, j] = i_s[1, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[2, :, :], a_s[2, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[2, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[5, :, :], i_s[2, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[2, i, j] = i_s[2, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[5, :, :], a_s[5, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[5, i, j] = tmp[i, j]
-
-                    T.clear(tmp)
-                    T.gemm(a_s[9, :, :], i_s[3, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        i_s[3, i, j] = i_s[3, i, j] + tmp[i, j]
-                    T.clear(tmp)
-                    T.gemm(a_s[9, :, :], a_s[9, :, :], tmp)
-                    for i, j in T.Parallel(block_c, block_c):
-                        a_s[9, i, j] = tmp[i, j]
+                # Each diagonal block's inverse X solves X = I + a X, a being the block's
+                # negated strictly lower part, one row after another. A lane carries two
+                # adjacent columns of one block in float32 registers; they share each row of
+                # a, and each column sums odd and even terms apart to shorten its chain.
+                x0 = T.alloc_local([block_c], accum_dtype)
+                x1 = T.alloc_local([block_c], accum_dtype)
+                lane = T.get_thread_binding()
+                blk = lane // (block_c // 2)
+                col = lane % (block_c // 2) * 2
+                # Diagonal blocks sit at 0, 2, 5 and 9 of the packed lower triangle.
+                diag = blk * (blk + 3) // 2
+                for r in T.unroll(block_c):
+                    e0 = T.alloc_var(accum_dtype)
+                    o0 = T.alloc_var(accum_dtype)
+                    e1 = T.alloc_var(accum_dtype)
+                    o1 = T.alloc_var(accum_dtype)
+                    e0 = T.if_then_else(r == col, T.float32(1.0), T.float32(0.0))
+                    e1 = T.if_then_else(r == col + 1, T.float32(1.0), T.float32(0.0))
+                    o0 = T.float32(0.0)
+                    o1 = T.float32(0.0)
+                    for m in T.unroll(r):
+                        coef = T.cast(a_s[diag, r, m], accum_dtype)
+                        if m % 2 == 0:
+                            e0 += coef * x0[m]
+                            e1 += coef * x1[m]
+                        else:
+                            o0 += coef * x0[m]
+                            o1 += coef * x1[m]
+                    x0[r] = e0 + o0
+                    x1[r] = e1 + o1
+                    i_s[blk, r, col] = T.cast(x0[r], solve_dtype)
+                    i_s[blk, r, col + 1] = T.cast(x1[r], solve_dtype)
                 T.sync_threads()
 
                 T.clear(tmp)
