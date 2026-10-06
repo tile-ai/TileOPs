@@ -1473,19 +1473,27 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "size, kernel, stride, padding, dtype",
+    "size, kernel, stride, padding, dtype, offset",
     [
-        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, id="pad-before-fp16"),
-        pytest.param((32, 32), (2, 2), (2, 2), (0, 0), torch.float32, id="no-reach-fp32"),
-        pytest.param((15, 16), (3, 2), (2, 2), (1, 0), torch.bfloat16, id="pad-rows-bf16"),
-        pytest.param((16, 32), (3, 3), (1, 1), (1, 1), torch.float32, id="reach-both-sides-fp32"),
-        pytest.param((17, 16), (4, 5), (3, 4), (0, 0), torch.float32, id="reach-after-fp32"),
+        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, 0, id="pad-before-fp16"),
+        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, 1, id="misaligned-fp16"),
+        pytest.param((32, 32), (2, 2), (2, 2), (0, 0), torch.float32, 0, id="no-reach-fp32"),
+        pytest.param((15, 16), (3, 2), (2, 2), (1, 0), torch.bfloat16, 0, id="pad-rows-bf16"),
+        pytest.param(
+            (16, 32), (3, 3), (1, 1), (1, 1), torch.float32, 0, id="reach-both-sides-fp32"
+        ),
+        pytest.param((17, 16), (4, 5), (3, 4), (0, 0), torch.float32, 0, id="reach-after-fp32"),
     ],
 )
-def test_avg_pool2d_windows_read_into_registers(size, kernel, stride, padding, dtype) -> None:
+def test_avg_pool2d_windows_read_into_registers(
+    size, kernel, stride, padding, dtype, offset: int
+) -> None:
     """Windows a 16-byte load of an input row covers whole outputs of, summed in torch's
-    order and divided as torch divides, so the result matches it bit for bit."""
-    x = torch.randn(2, 3, *size, device=run_device(), dtype=dtype)
+    order and divided as torch divides, so the result matches it bit for bit; an input
+    starting ``offset`` elements into its storage is served too."""
+    numel = 2 * 3 * size[0] * size[1]
+    storage = torch.randn(offset + numel, device=run_device(), dtype=dtype)
+    x = storage[offset:].view(2, 3, *size)
     out = AvgPool2dFwdOp(kernel_size=kernel, stride=stride, padding=padding)(x)
     torch.testing.assert_close(out, F.avg_pool2d(x, kernel, stride, padding), rtol=0, atol=0)
 

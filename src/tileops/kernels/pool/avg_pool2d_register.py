@@ -23,7 +23,8 @@ _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 # Elements a thread's windows may reach past its load on either side of a row; each is a
 # load of its own.
 _MAX_REACH = 1
-# Window rows a thread walks.
+# Window rows a thread walks; the row loop is unrolled, so taller windows stay on
+# AvgPool2dKernel.
 _MAX_ROWS = 16
 
 
@@ -37,7 +38,7 @@ def _avg_pool2d_register_kernel(
     its windows span, ``pad_w`` elements before it and ``after`` past it, held in
     ``window`` in float32, zero outside the plane.
     """
-    run = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     outputs = run // stride_w
     out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
     out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
@@ -197,5 +198,8 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
-        y = self.kernel()(x.contiguous().view(self.planes, self.h_in, self.w_in))
+        x = x.contiguous()
+        # The kernel reads 16-byte vectors from the start of each row.
+        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
+        y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])
