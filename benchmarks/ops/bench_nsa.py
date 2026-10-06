@@ -6,16 +6,10 @@ passes also write LSE; its cached sequence metadata helpers run warm during timi
 
 import pytest
 
-from benchmarks.baselines import FLA_TAG, assert_output_spec, fla_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks import api as bench
+from benchmarks.baselines import FLA_TAG, fla_op
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
-
-
-def _setup(op_cls, workload_cls, call):
-    workload = workload_cls(call)
-    op = op_cls(**workload.arguments())
-    return workload, workload.gen_inputs(), ManifestBenchmark(op, workload), op
 
 
 def _fla_nsa_fwd(workload: NSAFwdCall):
@@ -84,27 +78,26 @@ def _fla_nsa_topk(workload: NSATopKCall):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(NSACompressedVarlenFwdOp))
-def test_nsa_compressed_fwd_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSACompressedVarlenFwdOp, NSACompressedFwdCall, call)
-    fla_fn = _fla_nsa_compressed_fwd(workload)
-    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
+@pytest.mark.parametrize("case", bench.cases(NSACompressedVarlenFwdOp), ids=lambda case: case.id)
+def test_nsa_compressed_fwd_varlen_bench(case) -> None:
+    op = NSACompressedVarlenFwdOp(**case.arguments)
+    fla_fn = _fla_nsa_compressed_fwd(case.workload)
+    bench.Runner(op, case).compare({FLA_TAG: fla_fn})
 
 
-@pytest.mark.parametrize("call", manifest_calls(NSATopKVarlenFwdOp))
-def test_nsa_topk_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSATopKVarlenFwdOp, NSATopKCall, call)
-    fla_fn = _fla_nsa_topk(workload)
+@pytest.mark.parametrize("case", bench.cases(NSATopKVarlenFwdOp), ids=lambda case: case.id)
+def test_nsa_topk_varlen_bench(case) -> None:
+    op = NSATopKVarlenFwdOp(**case.arguments)
+    fla_fn = _fla_nsa_topk(case.workload)
 
-    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
+    bench.Runner(op, case).compare({FLA_TAG: fla_fn})
 
 
-@pytest.mark.parametrize("call", manifest_calls(NSAVarlenFwdOp))
-def test_nsa_fwd_varlen_bench(call) -> None:
-    workload, inputs, bm, op = _setup(NSAVarlenFwdOp, NSAFwdCall, call)
-    fla_fn = _fla_nsa_fwd(workload)
+@pytest.mark.parametrize("case", bench.cases(NSAVarlenFwdOp), ids=lambda case: case.id)
+def test_nsa_fwd_varlen_bench(case) -> None:
+    op = NSAVarlenFwdOp(**case.arguments)
+    fla_fn = _fla_nsa_fwd(case.workload)
     if fla_fn is None:
-        bm.compare({"tileops": op, "torch-ref": workload.ref_program}, *inputs)
+        bench.Runner(op, case).compare({"torch-ref": case.reference})
         return
-    assert_output_spec(fla_fn(*inputs), call.specs["o_slc"], FLA_TAG)
-    bm.compare({"tileops": op, FLA_TAG: fla_fn}, *inputs)
+    bench.Runner(op, case).compare({FLA_TAG: fla_fn})

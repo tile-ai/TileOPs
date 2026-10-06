@@ -31,7 +31,7 @@ class WorkloadBase(ABC):
     Subclass must implement gen_inputs(). A subclass named for one op also
     defines that op's ref_program; a subclass describing only an input shape
     leaves ref_program to a concrete workload subclass.
-    Used by both tests (via TestBase) and benchmarks (via BenchmarkBase).
+    Used by both tests (via TestBase) and benchmarks (via benchmarks.api.Case).
 
     verification() owns numerical policy. Consumers own scheduling and reporting.
     """

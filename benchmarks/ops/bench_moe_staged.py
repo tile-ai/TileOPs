@@ -7,47 +7,32 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
     moe_unpermute,
 )
 
+from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, flashinfer_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import (
     MoEExpertMLPFwdOp,
     MoEGroupedGemmFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
 )
-from workloads.moe import (
-    MoEExpertMLPWorkload,
-    MoEGroupedGemmWorkload,
-    MoEPostPermuteWorkload,
-    MoEPrePermuteWorkload,
-    gated_activation,
-)
+from workloads.moe import gated_activation
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoEPrePermuteFwdOp))
-def test_moe_pre_permute_bench(call) -> None:
-    workload = MoEPrePermuteWorkload(call)
-    hidden_states, local_ids = workload.gen_inputs()
-    op = MoEPrePermuteFwdOp(**call.arguments({}))
-    benchmark = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(MoEPrePermuteFwdOp), ids=lambda case: case.id)
+def test_moe_pre_permute_bench(case) -> None:
+    op = MoEPrePermuteFwdOp(**case.arguments)
 
     def _vllm_reference(hidden: torch.Tensor, expert_ids: torch.Tensor):
         rows, _, offsets, inverse, _ = moe_permute(hidden, None, expert_ids, op.num_local_experts)
         return (rows, offsets[1:].int(), inverse)
 
-    benchmark.compare(
-        {"tileops": op, VLLM_TAG: _vllm_reference, "torch-ref": workload.ref_program},
-        hidden_states,
-        local_ids,
-    )
+    bench.Runner(op, case).compare({VLLM_TAG: _vllm_reference, "torch-ref": case.reference})
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoEPostPermuteFwdOp))
-def test_moe_post_permute_bench(call) -> None:
-    workload = MoEPostPermuteWorkload(call)
-    expert_output, weights, inverse = workload.gen_inputs()
-    op = MoEPostPermuteFwdOp(**call.arguments({}))
-    benchmark = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(MoEPostPermuteFwdOp), ids=lambda case: case.id)
+def test_moe_post_permute_bench(case) -> None:
+    expert_output, weights, _ = case.inputs
+    op = MoEPostPermuteFwdOp(**case.arguments)
     tokens, hidden = weights.shape[0], expert_output.shape[-1]
     out_vllm = torch.empty(tokens, hidden, dtype=expert_output.dtype, device=expert_output.device)
 
@@ -59,12 +44,7 @@ def test_moe_post_permute_bench(call) -> None:
         moe_unpermute(out_vllm, output, routing_weights, inverse_indices)
         return out_vllm
 
-    benchmark.compare(
-        {"tileops": op, VLLM_TAG: _vllm_reference, "torch-ref": workload.ref_program},
-        expert_output,
-        weights,
-        inverse,
-    )
+    bench.Runner(op, case).compare({VLLM_TAG: _vllm_reference, "torch-ref": case.reference})
 
 
 def _flashinfer_segment_gemm(ends: torch.Tensor):
@@ -91,13 +71,11 @@ def _tight_psum(op) -> bool:
     return layout.kind == "contiguous" and layout.packing.value == "tight"
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoEGroupedGemmFwdOp))
-def test_moe_grouped_gemm_bench(call) -> None:
-    workload = MoEGroupedGemmWorkload(call)
-    a, b, metadata = workload.gen_inputs()
-    op = MoEGroupedGemmFwdOp(**call.arguments({}))
-    benchmark = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGemmFwdOp), ids=lambda case: case.id)
+def test_moe_grouped_gemm_bench(case) -> None:
+    _, b, _ = case.inputs
+    op = MoEGroupedGemmFwdOp(**case.arguments)
+    implementations = {}
     if _tight_psum(op) and op.out_dtype is None:
         b_kn = b.transpose(1, 2).contiguous()
 
@@ -105,16 +83,14 @@ def test_moe_grouped_gemm_bench(call) -> None:
             output = torch._grouped_mm(a_, b_kn, offs=ends)
             return output if op.activation is None else gated_activation(output, op.activation)
 
-        functors["torch-grouped-mm"] = _torch_grouped_mm
-    benchmark.compare(functors, a, b, metadata)
+        implementations["torch-grouped-mm"] = _torch_grouped_mm
+    bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoEExpertMLPFwdOp))
-def test_moe_expert_mlp_bench(call) -> None:
-    workload = MoEExpertMLPWorkload(call)
-    x, w_gate_up, w_down, metadata = workload.gen_inputs()
-    op = MoEExpertMLPFwdOp(**call.arguments({}))
-    benchmark = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(MoEExpertMLPFwdOp), ids=lambda case: case.id)
+def test_moe_expert_mlp_bench(case) -> None:
+    _, w_gate_up, w_down, metadata = case.inputs
+    op = MoEExpertMLPFwdOp(**case.arguments)
     gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
     down_kn = w_down.transpose(1, 2).contiguous()
 
@@ -129,14 +105,9 @@ def test_moe_expert_mlp_bench(call) -> None:
     def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends):
         return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
 
-    benchmark.compare(
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
             "torch-grouped-mm": _torch_grouped_mlp,
             "flashinfer-segment-mlp": _flashinfer_mlp,
-        },
-        x,
-        w_gate_up,
-        w_down,
-        metadata,
+        }
     )

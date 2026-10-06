@@ -1,39 +1,33 @@
 """Benchmark for the per-block INT8 quantization op.
 
 Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`.
+byte counts come from the op's ``eval_roofline()``.
 """
 
 import functools
 
 import pytest
 
+from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT8QuantPerBlockFwdOp
-from workloads.quantization.quantize import INT8QuantPerBlockWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-@pytest.mark.parametrize("call", manifest_calls(INT8QuantPerBlockFwdOp))
-def test_int8_quant_per_block_bench(call) -> None:
-    workload = INT8QuantPerBlockWorkload.from_call(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(INT8QuantPerBlockFwdOp), ids=lambda case: case.id)
+def test_int8_quant_per_block_bench(case) -> None:
+    workload = case.workload
 
-    op = INT8QuantPerBlockFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, workload)
-
-    functors = {
-        "tileops": op,
-        "torch-ref": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-    }
-    noncomparable = {
-        TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes"
+    op = INT8QuantPerBlockFwdOp(**case.arguments, tune=_TUNE)
+    implementations = {
+        "torch-ref": case.reference,
+        TORCH_COMPILE_TAG: bench.Implementation(
+            run=compiled_reference(case.reference),
+            noncomparable_reason="Inductor lowering does not preserve the reference's exact INT8 codes",
+        ),
     }
     # vllm requires K to be a whole number of groups, so a ragged K has no vllm row.
     if workload.cols % 128 == 0:
@@ -47,8 +41,10 @@ def test_int8_quant_per_block_bench(call) -> None:
         )
         # vllm divides by ``max(amax, 1e-10) / 127`` and truncates the quotient, so a code
         # can sit one below the reference's in magnitude; the scales agree to float32 rounding.
-        functors[VLLM_TAG] = vllm_quant
-        noncomparable[VLLM_TAG] = (
-            "vendor truncates codes and clamps tiny scales; workload requires round-to-nearest"
+        implementations[VLLM_TAG] = bench.Implementation(
+            run=vllm_quant,
+            noncomparable_reason=(
+                "vendor truncates codes and clamps tiny scales; workload requires round-to-nearest"
+            ),
         )
-    bm.compare(functors, *inputs, noncomparable=noncomparable)
+    bench.Runner(op, case).compare(implementations)

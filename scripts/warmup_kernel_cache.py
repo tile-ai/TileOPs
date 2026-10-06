@@ -99,6 +99,7 @@ def main():
         "-p",
         "conftest_warmup",
         "--tileops-warmup=compile",
+        "--tileops-verify",
         f"--tileops-warmup-max-workers={args.max_workers}",
         "--override-ini=continue_on_collection_errors=true",
     ]
@@ -139,6 +140,7 @@ def main():
         "-p",
         "conftest_warmup",
         "--tileops-warmup=validate",
+        "--tileops-verify",
         "--override-ini=continue_on_collection_errors=true",
     ]
     # No -n flag: serial execution for accurate GPU profiling

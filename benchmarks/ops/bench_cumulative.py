@@ -10,47 +10,35 @@ compiled. cumprod has no flag_gems entry point in 5.0.2.
 
 import pytest
 
+from benchmarks import api as bench
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
-from workloads.reduction import CumulativeCall
 
 
-@pytest.mark.parametrize("call", manifest_calls(CumsumFwdOp))
-def test_cumsum_bench(call) -> None:
-    workload = CumulativeCall(call, "cumsum")
-    inputs = workload.gen_inputs()
-    op = CumsumFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(CumsumFwdOp), ids=lambda case: case.id)
+def test_cumsum_bench(case) -> None:
+    op = CumsumFwdOp(**case.arguments)
     flaggems_cumsum = flaggems_op("cumsum")
+    dim = case.workload.dim
 
     def flaggems_fn(x):
-        return flaggems_cumsum(x, workload.dim)
+        return flaggems_cumsum(x, dim)
 
-    bm.compare(
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
             FLAGGEMS_TAG: flaggems_fn,
-            "torch": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(CumprodFwdOp))
-def test_cumprod_bench(call) -> None:
-    workload = CumulativeCall(call, "cumprod")
-    inputs = workload.gen_inputs()
-
-    op = CumprodFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
-
-    bm.compare(
+@pytest.mark.parametrize("case", bench.cases(CumprodFwdOp), ids=lambda case: case.id)
+def test_cumprod_bench(case) -> None:
+    op = CumprodFwdOp(**case.arguments)
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
-            "torch": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )

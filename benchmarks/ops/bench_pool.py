@@ -11,12 +11,12 @@ from typing import Callable, Optional
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.cudnn_resample import cudnn_pool_fn
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
@@ -33,14 +33,7 @@ from tileops.ops import (
     MaxPool3dIndicesFwdOp,
 )
 from tileops.pool import MeanPoolingFwdOp
-from workloads.pool import (
-    AdaptiveAvgPool2dCall,
-    AdaptiveMaxPool2dCall,
-    AvgPoolCall,
-    MaxPoolCall,
-    MeanPoolingCallWorkload,
-    MeanPoolingWorkload,
-)
+from workloads.pool import MeanPoolingWorkload
 
 # Which library serves an op, and the pooling kind and rank its adapter needs. An op absent
 # here has none: no library covers 1D, adaptive pooling, or 3D max-pool indices. Every row
@@ -199,7 +192,7 @@ def _as_tuple(value, ndim: int) -> tuple:
     return (value,) * ndim
 
 
-def pool_baseline(op_name: str, workload, *inputs) -> tuple:
+def pool_baseline(op_name: str, workload) -> tuple:
     """Return (tag, callable) for op_name's baseline.
 
     An op this table does not name, and a case the selected library cannot express,
@@ -231,83 +224,81 @@ def pool_baseline(op_name: str, workload, *inputs) -> tuple:
     return choice, fn
 
 
-def _bench(op_cls: type, workload) -> None:
-    inputs = workload.gen_inputs()
-    op = op_cls(**workload.call.arguments({}), tune=True)
-    bm = ManifestBenchmark(op, workload)
+def _bench(op_cls: type, case: bench.Case) -> None:
+    op = op_cls(**case.arguments, tune=True)
 
-    _tag, _baseline_fn = pool_baseline(op_cls.__name__, workload, *inputs)
+    _tag, _baseline_fn = pool_baseline(op_cls.__name__, case.workload)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
     # its history were measured against, and both numbers belong in the same row.
-    bm.compare(
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
             _tag: _baseline_fn,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch-ref": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(AvgPool1dFwdOp))
-def test_avg_pool1d_bench(call) -> None:
-    _bench(AvgPool1dFwdOp, AvgPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(AvgPool1dFwdOp), ids=lambda case: case.id)
+def test_avg_pool1d_bench(case) -> None:
+    _bench(AvgPool1dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AvgPool2dFwdOp))
-def test_avg_pool2d_bench(call) -> None:
-    _bench(AvgPool2dFwdOp, AvgPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(AvgPool2dFwdOp), ids=lambda case: case.id)
+def test_avg_pool2d_bench(case) -> None:
+    _bench(AvgPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AvgPool3dFwdOp))
-def test_avg_pool3d_bench(call) -> None:
-    _bench(AvgPool3dFwdOp, AvgPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(AvgPool3dFwdOp), ids=lambda case: case.id)
+def test_avg_pool3d_bench(case) -> None:
+    _bench(AvgPool3dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool1dFwdOp))
-def test_max_pool1d_bench(call) -> None:
-    _bench(MaxPool1dFwdOp, MaxPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(MaxPool1dFwdOp), ids=lambda case: case.id)
+def test_max_pool1d_bench(case) -> None:
+    _bench(MaxPool1dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool1dIndicesFwdOp))
-def test_max_pool1d_indices_bench(call) -> None:
-    _bench(MaxPool1dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
+@pytest.mark.parametrize("case", bench.cases(MaxPool1dIndicesFwdOp), ids=lambda case: case.id)
+def test_max_pool1d_indices_bench(case) -> None:
+    _bench(MaxPool1dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool2dFwdOp))
-def test_max_pool2d_bench(call) -> None:
-    _bench(MaxPool2dFwdOp, MaxPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(MaxPool2dFwdOp), ids=lambda case: case.id)
+def test_max_pool2d_bench(case) -> None:
+    _bench(MaxPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool2dIndicesFwdOp))
-def test_max_pool2d_indices_bench(call) -> None:
-    _bench(MaxPool2dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
+@pytest.mark.parametrize("case", bench.cases(MaxPool2dIndicesFwdOp), ids=lambda case: case.id)
+def test_max_pool2d_indices_bench(case) -> None:
+    _bench(MaxPool2dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool3dFwdOp))
-def test_max_pool3d_bench(call) -> None:
-    _bench(MaxPool3dFwdOp, MaxPoolCall(call))
+@pytest.mark.parametrize("case", bench.cases(MaxPool3dFwdOp), ids=lambda case: case.id)
+def test_max_pool3d_bench(case) -> None:
+    _bench(MaxPool3dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaxPool3dIndicesFwdOp))
-def test_max_pool3d_indices_bench(call) -> None:
-    _bench(MaxPool3dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
+@pytest.mark.parametrize("case", bench.cases(MaxPool3dIndicesFwdOp), ids=lambda case: case.id)
+def test_max_pool3d_indices_bench(case) -> None:
+    _bench(MaxPool3dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AdaptiveAvgPool2dFwdOp))
-def test_adaptive_avg_pool2d_bench(call) -> None:
-    _bench(AdaptiveAvgPool2dFwdOp, AdaptiveAvgPool2dCall(call))
+@pytest.mark.parametrize("case", bench.cases(AdaptiveAvgPool2dFwdOp), ids=lambda case: case.id)
+def test_adaptive_avg_pool2d_bench(case) -> None:
+    _bench(AdaptiveAvgPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AdaptiveMaxPool2dFwdOp))
-def test_adaptive_max_pool2d_bench(call) -> None:
-    _bench(AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dCall(call))
+@pytest.mark.parametrize("case", bench.cases(AdaptiveMaxPool2dFwdOp), ids=lambda case: case.id)
+def test_adaptive_max_pool2d_bench(case) -> None:
+    _bench(AdaptiveMaxPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AdaptiveMaxPool2dIndicesFwdOp))
-def test_adaptive_max_pool2d_indices_bench(call) -> None:
-    _bench(AdaptiveMaxPool2dIndicesFwdOp, AdaptiveMaxPool2dCall(call, return_indices=True))
+@pytest.mark.parametrize(
+    "case", bench.cases(AdaptiveMaxPool2dIndicesFwdOp), ids=lambda case: case.id
+)
+def test_adaptive_max_pool2d_indices_bench(case) -> None:
+    _bench(AdaptiveMaxPool2dIndicesFwdOp, case)
 
 
 # MeanPoolingFwdOp, the chunked sequence mean.
@@ -331,15 +322,14 @@ def _torch_view_mean(workload: MeanPoolingWorkload):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(MeanPoolingFwdOp))
-def test_mean_pooling_bench(call) -> None:
-    workload = MeanPoolingCallWorkload(call)
-    op = MeanPoolingFwdOp(**call.arguments({}), tune=_TUNE)
+@pytest.mark.parametrize("case", bench.cases(MeanPoolingFwdOp), ids=lambda case: case.id)
+def test_mean_pooling_bench(case) -> None:
+    workload = case.workload
+    op = MeanPoolingFwdOp(**case.arguments, tune=_TUNE)
 
-    inputs = workload.gen_inputs()
-    bm = ManifestBenchmark(op, workload)
+    inputs = case.inputs
 
-    reference = workload.ref_program
+    reference = case.reference
     if len(inputs) > 1 and inputs[1] is not None:
         # Fixed chunk bounds permit full-graph compilation of ragged workloads.
         slices = workload.chunk_slices(*inputs)
@@ -348,8 +338,7 @@ def test_mean_pooling_bench(call) -> None:
             return workload.reference_slices(x, slices)
 
     functors = {
-        "tileops": op,
-        "torch-ref": workload.ref_program,
+        "torch-ref": case.reference,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)
@@ -367,4 +356,4 @@ def test_mean_pooling_bench(call) -> None:
             return out.to(x.dtype).transpose(0, 1).contiguous()
 
         functors["torch-segment-reduce"] = segmented_mean
-    bm.compare(functors, *inputs, count_copies=True)
+    bench.Runner(op, case).compare(functors)

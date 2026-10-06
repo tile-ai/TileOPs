@@ -1,32 +1,18 @@
 """Benchmark the TileOPs complex-to-complex FFT, one case per manifest call, against cuFFT through torch."""
 
 import pytest
-import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import FFTC2CFwdOp
-from workloads.fft import FFTWorkload
 
 
-@pytest.mark.parametrize("call", manifest_calls(FFTC2CFwdOp))
-def test_fft_bench(call) -> None:
-    shape, dtype = call.tensors["input"]
-    workload = FFTWorkload(shape[-1], getattr(torch, dtype), batch_shape=shape[:-1])
-    inputs = workload.gen_inputs()
-
-    op = FFTC2CFwdOp(**call.arguments({}), tune=True)
-
-    op(*inputs)
-    torch.cuda.synchronize()
-
-    bm = ManifestBenchmark(op, workload)
-
-    bm.compare(
+@pytest.mark.parametrize("case", bench.cases(FFTC2CFwdOp), ids=lambda case: case.id)
+def test_fft_bench(case) -> None:
+    op = FFTC2CFwdOp(**case.arguments, tune=True)
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
-            "torch-cufft": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch-cufft": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )

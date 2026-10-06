@@ -8,6 +8,7 @@ from workloads.numerics import (
     Exact,
     NegativeControl,
     Partial,
+    Request,
     Unestablished,
     assert_quantized,
     compare_outputs,
@@ -16,6 +17,14 @@ from workloads.numerics import (
 )
 
 pytestmark = pytest.mark.smoke
+
+
+def _verify_one(subject, inputs, *, reference, evidence, subject_inputs=None):
+    """Check one call the way ``verify`` checks each of its requests."""
+    args = inputs if subject_inputs is None else subject_inputs
+    return verify(
+        reference, inputs, evidence=evidence, requests={"subject": Request(subject, args)}
+    )["subject"]
 
 
 @pytest.mark.parametrize("fault", ["shape", "dtype", "arity", "value", "none", "nan", "inf"])
@@ -97,14 +106,16 @@ def test_inputs_are_restored_on_every_failure(failure):
         return value
 
     with pytest.raises((RuntimeError, AssertionError)):
-        verify(subject, (x,), reference=reference, evidence=Exact())
+        _verify_one(subject, (x,), reference=reference, evidence=Exact())
     torch.testing.assert_close(x, torch.ones(2))
 
 
 def test_in_place_output_is_copied_before_restoration():
     x = torch.ones(2)
     with pytest.raises(AssertionError):
-        verify(lambda v: {"out": v.add_(1)}, (x,), reference=lambda v: {"out": v}, evidence=Exact())
+        _verify_one(
+            lambda v: {"out": v.add_(1)}, (x,), reference=lambda v: {"out": v}, evidence=Exact()
+        )
     torch.testing.assert_close(x, torch.ones(2))
 
 
@@ -125,7 +136,7 @@ def test_an_unwritten_output_element_does_not_read_back_as_expected():
         return out
 
     with pytest.raises(AssertionError):
-        verify(half_written, (x,), reference=lambda v: v * 2, evidence=Exact())
+        _verify_one(half_written, (x,), reference=lambda v: v * 2, evidence=Exact())
 
 
 def test_a_reference_returning_a_cached_buffer_keeps_its_expected_values():
@@ -137,7 +148,7 @@ def test_a_reference_returning_a_cached_buffer_keeps_its_expected_values():
         return cache
 
     with pytest.raises(AssertionError):
-        verify(
+        _verify_one(
             lambda v: cache.zero_(), (torch.full((1,), 2.0),), reference=reference, evidence=Exact()
         )
 
@@ -149,7 +160,7 @@ def test_argument_aliases_are_preserved_and_subject_arguments_are_isolated():
         assert a is b
         return a.add_(1) - 1
 
-    result = verify(
+    result = _verify_one(
         subject,
         (x,),
         reference=lambda v: v,
@@ -164,16 +175,18 @@ def test_reference_oom_is_distinct_from_subject_failure():
     def oom(*_):
         raise torch.OutOfMemoryError("out of memory")
 
-    result = verify(lambda x: x, (torch.ones(1),), reference=oom, evidence=Exact())
+    result = _verify_one(lambda x: x, (torch.ones(1),), reference=oom, evidence=Exact())
     assert result.checked_outputs == 0 and "reference" in result.unchecked_reason
     with pytest.raises(torch.OutOfMemoryError):
-        verify(oom, (torch.ones(1),), reference=lambda x: x, evidence=Exact())
+        _verify_one(oom, (torch.ones(1),), reference=lambda x: x, evidence=Exact())
 
 
 def test_missing_oracle_requires_an_explicit_unestablished_declaration():
     with pytest.raises(ValueError, match="ref_program"):
-        verify(lambda: torch.ones(1), (), reference=None, evidence=Exact())
-    result = verify(lambda: pytest.fail("executed"), (), reference=None, evidence=Unestablished())
+        _verify_one(lambda: torch.ones(1), (), reference=None, evidence=Exact())
+    result = _verify_one(
+        lambda: pytest.fail("executed"), (), reference=None, evidence=Unestablished()
+    )
     assert result.checked_outputs == 0 and result.unchecked_reason
 
 
@@ -182,10 +195,10 @@ def test_negative_control_exposes_a_weak_contract(atol):
     evidence = Exact(atol=atol, rtol=0, controls=(zeroed_input(0, "dropped-input"),))
     if atol:
         with pytest.raises(ValueError, match="was accepted"):
-            verify(lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence)
+            _verify_one(lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence)
     else:
         assert (
-            verify(
+            _verify_one(
                 lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence
             ).checked_outputs
             == 1
@@ -197,7 +210,7 @@ def test_broken_negative_control_is_not_a_successful_rejection():
         raise RuntimeError("invalid control")
 
     with pytest.raises(RuntimeError, match="invalid control"):
-        verify(
+        _verify_one(
             lambda x: x,
             (torch.ones(1),),
             reference=lambda x: x,
@@ -212,7 +225,7 @@ def test_partial_control_must_change_the_checked_output():
         controls=(NegativeControl("state only", lambda ref, args: (args[0], args[0] + 9)),),
     )
     with pytest.raises(ValueError, match="was accepted"):
-        verify(lambda x: (x, x), (torch.ones(1),), reference=lambda x: (x, x), evidence=mark)
+        _verify_one(lambda x: (x, x), (torch.ones(1),), reference=lambda x: (x, x), evidence=mark)
 
 
 def test_custom_probe_failure_is_a_verification_failure():
@@ -220,7 +233,7 @@ def test_custom_probe_failure_is_a_verification_failure():
         raise AssertionError("distribution wrong")
 
     with pytest.raises(AssertionError, match="distribution"):
-        verify(
+        _verify_one(
             lambda x: x,
             (torch.ones(1),),
             reference=lambda x: x,
@@ -245,7 +258,7 @@ def test_broadcast_input_views_restore_shared_storage():
         value[0].add_(1)
         return value - 1
 
-    result = verify(subject, (expanded,), reference=lambda value: value, evidence=Exact())
+    result = _verify_one(subject, (expanded,), reference=lambda value: value, evidence=Exact())
     assert result.checked_outputs == 1
     assert expanded.stride(0) == 0
     torch.testing.assert_close(base, torch.ones(3))
@@ -304,7 +317,7 @@ def test_batch_norm_rejects_correct_output_without_running_stat_updates():
         return workload.ref_program(*args)[0]
 
     with pytest.raises(AssertionError):
-        verify(
+        _verify_one(
             lambda *args: batch_norm_forward_result(missing_update, *args),
             inputs,
             reference=workload.ref_program,

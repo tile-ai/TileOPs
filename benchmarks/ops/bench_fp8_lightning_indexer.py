@@ -3,18 +3,14 @@
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import FP8LightningIndexerFwdOp
-from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
 
 
-@pytest.mark.parametrize("call", manifest_calls(FP8LightningIndexerFwdOp))
-def test_fp8_lightning_indexer_bench(call) -> None:
-    workload = FP8LightningIndexerCall(call)
-    inputs = workload.gen_inputs()
-    op = FP8LightningIndexerFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(FP8LightningIndexerFwdOp), ids=lambda case: case.id)
+def test_fp8_lightning_indexer_bench(case) -> None:
+    op = FP8LightningIndexerFwdOp(**case.arguments)
     logits = deepgemm_op("fp8_mqa_logits")
 
     def deepgemm_fn(q, k, weights, start, end, k_scale):
@@ -41,8 +37,4 @@ def test_fp8_lightning_indexer_bench(call) -> None:
             batches.append(scores[0].unsqueeze(-1) if groups == 1 else torch.stack(scores, -1))
         return batches[0].unsqueeze(0) if len(batches) == 1 else torch.stack(batches)
 
-    bm.compare(
-        {"tileops": op, DEEPGEMM_TAG: deepgemm_fn, "torch-ref": workload.ref_program},
-        *inputs,
-        count_copies=True,
-    )
+    bench.Runner(op, case).compare({DEEPGEMM_TAG: deepgemm_fn, "torch-ref": case.reference})

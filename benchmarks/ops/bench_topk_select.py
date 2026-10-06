@@ -2,7 +2,7 @@
 
 Workload shapes, dtypes, and ``topk`` come from the ops manifest; roofline
 FLOP and byte counts come from the op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`.
+:class:`benchmarks.api.Runner`.
 
 The row is timed against torch eager, the same reference through inductor, and
 FlashInfer's top-k. flag_gems' top-k selects over the last dimension only, and this
@@ -13,13 +13,13 @@ but a single ``kv_group`` makes that dimension the last one.
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
     flashinfer_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import TopKSelectFwdOp
 from workloads.attention.topk_select import TopKSelectCall
 
@@ -49,24 +49,18 @@ def _flashinfer_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(TopKSelectFwdOp))
-def test_topk_select_bench(call) -> None:
-    workload = TopKSelectCall(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(TopKSelectFwdOp), ids=lambda case: case.id)
+def test_topk_select_bench(case) -> None:
+    inputs = case.inputs
 
-    op = TopKSelectFwdOp(**workload.arguments(), tune=_TUNE)
-    bm = ManifestBenchmark(op, workload)
+    op = TopKSelectFwdOp(**case.arguments, tune=_TUNE)
 
     functors = {
-        "tileops": op,
-        "torch": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+        "torch": case.reference,
+        TORCH_COMPILE_TAG: compiled_reference(case.reference),
     }
-    flashinfer_fn = _flashinfer_topk(workload, inputs[1], inputs[2])
+    flashinfer_fn = _flashinfer_topk(case.workload, inputs[1], inputs[2])
     if flashinfer_fn is not None:
         functors[FLASHINFER_TAG] = flashinfer_fn
 
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    bench.Runner(op, case).compare(functors)

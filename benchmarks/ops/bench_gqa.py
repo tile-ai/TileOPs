@@ -6,16 +6,14 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    backward_of,
     compiled_reference,
     flashinfer_op,
-)
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    backward_of,
-    manifest_calls,
+    private_inputs,
 )
 from tileops.ops import (
     GQABwdOp,
@@ -30,11 +28,7 @@ from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,
     GQADensePrefillCall,
 )
-from workloads.attention.gqa.paged import GQAPagedCall
-from workloads.attention.gqa.prefill_paged_kv_append import (
-    GQAPrefillPagedWithKVCacheFwdCall,
-    paged_prefill_result,
-)
+from workloads.attention.gqa.prefill_paged_kv_append import paged_prefill_result
 from workloads.attention.gqa.varlen import (
     GQAVarlenCall,
     GQAVarlenScaledCall,
@@ -93,15 +87,14 @@ def _torch_gqa_bwd(workload, q, k, v):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(GQABwdOp))
-def test_gqa_bwd_bench(call) -> None:
+@pytest.mark.parametrize("case", bench.cases(GQABwdOp), ids=lambda case: case.id)
+def test_gqa_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune."""
-    workload = GQABwdCall(call)
-    inputs = workload.gen_inputs()
+    workload = case.workload
+    inputs = case.inputs
 
-    op = GQABwdOp(**workload.arguments(), tune=True)
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+    op = GQABwdOp(**case.arguments, tune=True)
+    functors = {}
 
     fa3_fn = _fa3_gqa_bwd(workload, inputs)
     if fa3_fn is not None:
@@ -109,10 +102,7 @@ def test_gqa_bwd_bench(call) -> None:
     else:
         functors["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
 
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    bench.Runner(op, case).compare(functors)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
@@ -207,23 +197,8 @@ def _flashinfer_gqa_dense_decode(
     return run_fn
 
 
-def _dense_calls(*, optional_inputs: bool) -> list:
-    """The Dense calls that pass FP8 scales or RoPE tables, or those that pass neither."""
-    return [
-        param
-        for param in manifest_calls(GQADenseFwdOp)
-        if (param.values[0].present("q_scale") or param.values[0].present("rope_cos"))
-        is optional_inputs
-    ]
-
-
-@pytest.mark.parametrize("call", _dense_calls(optional_inputs=False))
-def test_gqa_dense_decode_bench(call) -> None:
-    workload = GQADenseDecodeCall(call)
-    inputs = workload.gen_inputs()
-    op = GQADenseFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+def _gqa_dense_decode_baselines(workload: GQADenseDecodeCall, inputs: tuple, reference) -> dict:
+    functors = {}
 
     fa3_fn = _fa3_gqa_dense_decode(workload)
     if fa3_fn is not None:
@@ -234,20 +209,12 @@ def test_gqa_dense_decode_bench(call) -> None:
         functors[FLASHINFER_TAG] = flashinfer_fn
 
     if fa3_fn is None and flashinfer_fn is None:
-        functors["torch-ref"] = workload.ref_program
+        functors["torch-ref"] = reference
+    return functors
 
-    bm.compare(functors, *inputs)
 
-
-@pytest.mark.parametrize("call", _dense_calls(optional_inputs=True))
-def test_gqa_dense_prefill_bench(call) -> None:
+def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, reference) -> dict:
     """Dense prefill with scaled inputs and caller-provided rotary tables."""
-    workload = GQADensePrefillCall(call)
-    if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
-        pytest.skip("native FP8 Dense GQA requires SM90")
-    inputs = workload.gen_inputs()
-    op = GQADenseFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
     from flash_attn_interface import flash_attn_func
 
     rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
@@ -301,13 +268,25 @@ def test_gqa_dense_prefill_bench(call) -> None:
             softcap=workload.softcap,
         )
 
-    functors = {
-        "tileops": op,
+    return {
         "fa3": fa3_fn,
-        "torch-ref": workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
+        "torch-ref": reference,
+        TORCH_COMPILE_TAG: compiled_reference(reference),
     }
-    bm.compare(functors, *inputs, count_copies=True)
+
+
+@pytest.mark.parametrize("case", bench.cases(GQADenseFwdOp), ids=lambda case: case.id)
+def test_gqa_dense_fwd_bench(case) -> None:
+    """Decode against FA3 and FlashInfer; prefill against FA3 and torch."""
+    workload = case.workload
+    if isinstance(workload, GQADensePrefillCall):
+        if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+            pytest.skip("native FP8 Dense GQA requires SM90")
+        functors = _gqa_dense_prefill_baselines(workload, case.inputs, case.reference)
+    else:
+        functors = _gqa_dense_decode_baselines(workload, case.inputs, case.reference)
+    op = GQADenseFwdOp(**case.arguments)
+    bench.Runner(op, case).compare(functors)
 
 
 def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):
@@ -441,63 +420,39 @@ def _flashinfer_gqa_varlen(
     return _run
 
 
-def _varlen_calls(*, scaled: bool) -> list:
-    """The packed-varlen calls that pass the FP8 scales, or those that do not.
+@pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
+def test_gqa_varlen_fwd_bench(case) -> None:
+    """Packed varlen, and packed varlen over FP8 Q/K/V dequantized by one scale per request
+    and KV head.
 
-    A rotating 16-bit call stays with the calls that pass neither: its rotation is a
-    baseline concern, which ``_varlen_rope`` covers there, not a different reference.
+    FlashAttention-3 dequantizes the same per-request scales inside its own kernel, so a
+    scaled call reads it against the same reference and times it on the same call.
+    FlashInfer's ragged prefill takes no FP8 query, and the per-request reference reads its
+    offsets on the host, so neither a FlashInfer nor a torch-compile tag can express a
+    scaled call.
     """
-    return [
-        param
-        for param in manifest_calls(GQAVarlenFwdOp)
-        if param.values[0].present("q_scale") is scaled
-    ]
-
-
-@pytest.mark.parametrize("call", _varlen_calls(scaled=False))
-def test_gqa_varlen_fwd_bench(call) -> None:
-    workload = GQAVarlenCall(call)
-    inputs = workload.gen_inputs()
-
-    op = GQAVarlenFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-
-    functors = {
-        "tileops": op,
-        "torch-ref": workload.ref_program,
-    }
-    rotate = _varlen_rope(workload, *inputs)
-    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr, rotate)
-    if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_varlen(
-        workload, workload.wl, workload.wr, *inputs, rotate=rotate
-    )
-    if flashinfer_fn is not None:
-        functors[FLASHINFER_TAG] = flashinfer_fn
-    bm.compare(functors, *inputs)
-
-
-@pytest.mark.parametrize("call", _varlen_calls(scaled=True))
-def test_gqa_varlen_scaled_bench(call) -> None:
-    """Packed varlen over FP8 Q/K/V, dequantized by one scale per request and KV head.
-
-    FlashAttention-3 dequantizes the same per-request scales inside its own kernel, so it
-    is read against the same reference and timed on the same call. FlashInfer's ragged
-    prefill takes no FP8 query, and the per-request reference reads its offsets on the
-    host, so neither a FlashInfer nor a torch-compile tag can express the row.
-    """
-    workload = GQAVarlenScaledCall(call)
-    if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+    workload = case.workload
+    scaled = isinstance(workload, GQAVarlenScaledCall)
+    if scaled and workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
         pytest.skip("FP8 packed-varlen GQA requires SM90")
-    inputs = workload.gen_inputs()
-    op = GQAVarlenFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op, "torch-ref": workload.ref_program}
-    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
-    if fa3_fn is not None:
-        functors["fa3"] = (fa3_fn, inputs[:8])
-    bm.compare(functors, *inputs)
+    inputs = case.inputs
+    functors = {"torch-ref": case.reference}
+    if scaled:
+        fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
+        if fa3_fn is not None:
+            functors["fa3"] = bench.Implementation(run=fa3_fn, args=inputs[:8])
+    else:
+        rotate = _varlen_rope(workload, *inputs)
+        fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr, rotate)
+        if fa3_fn is not None:
+            functors["fa3"] = fa3_fn
+        flashinfer_fn = _flashinfer_gqa_varlen(
+            workload, workload.wl, workload.wr, *inputs, rotate=rotate
+        )
+        if flashinfer_fn is not None:
+            functors[FLASHINFER_TAG] = flashinfer_fn
+    op = GQAVarlenFwdOp(**case.arguments)
+    bench.Runner(op, case).compare(functors)
 
 
 def _fa3_gqa_prefill_paged(workload, inputs):
@@ -569,22 +524,20 @@ def _fa3_gqa_prefill_paged(workload, inputs):
     return run
 
 
-@pytest.mark.parametrize("call", manifest_calls(GQAPrefillPagedWithKVCacheFwdOp))
-def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
-    workload = GQAPrefillPagedWithKVCacheFwdCall(call)
-    inputs = workload.gen_inputs()
-    op = GQAPrefillPagedWithKVCacheFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
-    # depends on what those slots held, so every tag shares the pages.
-    functors = {
-        "tileops": lambda *args: paged_prefill_result(op, *args),
-        "torch-ref": workload.ref_program,
-    }
-    fa3_fn = _fa3_gqa_prefill_paged(workload, inputs)
+@pytest.mark.parametrize(
+    "case", bench.cases(GQAPrefillPagedWithKVCacheFwdOp), ids=lambda case: case.id
+)
+def test_gqa_prefill_paged_with_kv_cache_fwd_bench(case) -> None:
+    inputs = case.inputs
+    op = GQAPrefillPagedWithKVCacheFwdOp(**case.arguments)
+    # Every implementation writes k_new and v_new into k_pages and v_pages.
+    functors = {"torch-ref": private_inputs(case.reference, inputs, 3, 4)}
+    fa3_fn = _fa3_gqa_prefill_paged(case.workload, inputs)
     if fa3_fn is not None:
-        functors["fa3"] = lambda *args: paged_prefill_result(fa3_fn, *args)
-    bm.compare(functors, *inputs)
+        functors["fa3"] = private_inputs(
+            lambda *args: paged_prefill_result(fa3_fn, *args), inputs, 3, 4
+        )
+    bench.Runner(op, case).compare(functors)
 
 
 def _fa3_gqa_paged(workload):
@@ -702,17 +655,16 @@ def _flashinfer_gqa_paged(workload, inputs):
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(GQAPagedFwdOp))
-def test_gqa_paged_fwd_bench(call) -> None:
-    workload = GQAPagedCall(call)
-    inputs = workload.gen_inputs()
-    op = GQAPagedFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op, "torch-ref": workload.ref_program}
+@pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp), ids=lambda case: case.id)
+def test_gqa_paged_fwd_bench(case) -> None:
+    workload = case.workload
+    inputs = case.inputs
+    op = GQAPagedFwdOp(**case.arguments)
+    functors = {"torch-ref": case.reference}
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
     flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
     if flashinfer_fn is not None:
         functors[FLASHINFER_TAG] = flashinfer_fn
-    bm.compare(functors, *inputs)
+    bench.Runner(op, case).compare(functors)

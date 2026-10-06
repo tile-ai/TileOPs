@@ -3,10 +3,9 @@
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import FLASHINFER_TAG
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MHADecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MHADecodePagedCall
 
 
 def _fa3_mha_decode_paged(workload, k, v):
@@ -88,15 +87,16 @@ def _flashinfer_mha_decode_paged(workload, q, k, v, real_seqlen_kv, block_table)
     return run_fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(MHADecodePagedWithKVCacheFwdOp))
-def test_mha_decode_paged_bench(call) -> None:
-    workload = MHADecodePagedCall(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize(
+    "case", bench.cases(MHADecodePagedWithKVCacheFwdOp), ids=lambda case: case.id
+)
+def test_mha_decode_paged_bench(case) -> None:
+    workload = case.workload
+    inputs = case.inputs
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = MHADecodePagedWithKVCacheFwdOp(**workload.arguments(), tune=True)
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+    op = MHADecodePagedWithKVCacheFwdOp(**case.arguments, tune=True)
+    functors = {}
 
     fa3_fn = _fa3_mha_decode_paged(workload, k, v)
     if fa3_fn is not None:
@@ -107,6 +107,6 @@ def test_mha_decode_paged_bench(call) -> None:
         functors[FLASHINFER_TAG] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        functors["torch-ref"] = workload.ref_program
+        functors["torch-ref"] = case.reference
 
-    bm.compare(functors, *inputs)
+    bench.Runner(op, case).compare(functors)

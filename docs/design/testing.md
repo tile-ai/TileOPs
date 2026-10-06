@@ -4,13 +4,13 @@
 
 ## Core Abstractions
 
-| Class              | Role                                                                                                                              |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | Declares `gen_inputs()` and `verification(*inputs)`. A concrete operator workload adds `ref_program()` and owns numerical policy. |
-| `FixtureBase`      | Applies `pytest.mark.parametrize` from a `PARAMS` attribute or a `get_params()` classmethod.                                      |
-| `TestBase`         | Adds `check()`, which runs the shared verifier under pytest.                                                                      |
-| `BenchmarkBase[W]` | Times a case. Generic over the workload type.                                                                                     |
-| `BenchmarkReport`  | Collects every row and writes the report.                                                                                         |
+| Class             | Role                                                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`    | Declares `gen_inputs()` and `verification(*inputs)`. A concrete operator workload adds `ref_program()` and owns numerical policy. |
+| `FixtureBase`     | Applies `pytest.mark.parametrize` from a `PARAMS` attribute or a `get_params()` classmethod.                                      |
+| `TestBase`        | Adds `check()`, which runs the shared verifier under pytest.                                                                      |
+| `bench.Runner`    | Verifies, times and records the TileOps op and the implementations compared with it on one `bench.Case`.                          |
+| `BenchmarkReport` | Collects every row and writes the report.                                                                                         |
 
 ## Wiring
 
@@ -20,7 +20,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
 | Workload (`workloads/`)       | `ref_program()`, `verification(*inputs)`, and the input construction the manifest rows do not fix |
 | Test (`tests/ops/`)           | `(Workload, TestBase)`; no reference and no numerical override                                    |
-| Benchmark (`benchmarks/ops/`) | `ManifestBenchmark(op, workload)`                                                                 |
+| Benchmark (`benchmarks/ops/`) | `bench.Runner(op, case).compare({...})` over `bench.cases(Op)`                                    |
 
 - A benchmark imports workloads, never tests.
 - The reference lives on the narrowest class that names one operator, even when its base describes only an input shape.
@@ -142,16 +142,15 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### File checklist
 
-1. **Workload**: import the op's workload from `workloads/`, adding it there first if it is missing. A benchmark never authors `gen_inputs`, and reads only the workload fields it uses.
-1. **Cases**: a `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize`.
-1. **Class**: subclass `ManifestBenchmark`. It takes the roofline from `op.eval_roofline()` and the report name from the op's class.
-1. **Function**: build the op, then `bm = YourBenchmark(op, workload)`, then `bm.compare({...}, *workload.gen_inputs())`. Every row carries that op; what distinguishes a case is read off the op and its workload.
-1. **Independent baseline**: at least one tag outside the `tileops` family. `"torch"` times the workload's `ref_program`. Another idiom or implementation takes its own tag, is asserted against the reference before it is timed, and raises when unavailable. An external implementation with other semantics is declared in `noncomparable={tag: reason}` instead: it is timed and publishes no ratio. Never import a baseline from `tests/`.
+1. **Cases**: `@pytest.mark.parametrize("case", bench.cases(Op), ids=lambda case: case.id)`, with `from benchmarks import api as bench`. A case is one manifest call; its workload comes from the op's entry in [`benchmarks/_cases/`](../../benchmarks/_cases/), added there with the workload in `workloads/` when either is missing. A benchmark never authors `gen_inputs`.
+1. **Function**: build the op from `case.arguments`, then `bench.Runner(op, case).compare({name: implementation})`. The runner adds the op as `tileops`, takes the roofline from `op.eval_roofline()` and the report name from the op's class, and records `case.params`.
+1. **Independent baseline**: at least one implementation outside the `tileops` name. `case.reference` timed under a name of its own times the workload's `ref_program`. Every other implementation is checked against the reference before it is timed, and raises when unavailable. An external implementation with other semantics carries `bench.Implementation(..., noncomparable_reason=...)`: it is timed and publishes no ratio. Never import a baseline from `tests/`.
+1. **Overwritten inputs**: an implementation called on `case.inputs` leaves them unchanged. One that overwrites an argument takes private copies and a `reset` that restores them (`benchmarks.baselines.private_inputs`); every round runs `reset`, the L2 flush, then the timed call.
 1. **Library baselines**: resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py) — `flaggems_op`, `flashinfer_op` and `vllm_op` for kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row with a library kernel for its op times it, so the ratio is against the strongest implementation available.
 
 ### Verification
 
-- Correctness checks the timed callables during per-case warmup. Reference results are released and inputs restored before sampling.
+- Every implementation is checked against one run of the reference before any is timed. Reference results are released and inputs restored before sampling.
 - `--tileops-verify` is a diagnostic mode, not a second nightly sweep.
 - A row with no applicable reference carries an explicit verification gap and no ratio.
 
@@ -163,5 +162,5 @@ Latency (ms), TFLOPS, and DRAM bandwidth (TB/s).
 
 - Numbers come from a real GPU, after the targeted correctness suite has passed on the same GPU.
 - Report small, medium and large representative shapes. Do not cherry-pick; report regressions as they are.
-- Each row is one op's measurement: `BenchmarkReport.record()` takes the op, which the benchmark names once at construction. A comparison of anything else — kernel strategies, a field of libraries — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
+- Each row is one op's measurement: `BenchmarkReport.record()` takes the op the runner was built with. A comparison of anything else — kernel strategies, a field of libraries — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
 - Use an existing baseline tag. A new tag means updating its downstream consumers.

@@ -13,6 +13,7 @@ rotation itself is measured.
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
@@ -21,7 +22,6 @@ from benchmarks.baselines import (
     flashinfer_op,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
@@ -30,7 +30,6 @@ from tileops.ops.rope import (
     YaRNFwdOp,
 )
 from workloads.rope import (
-    RoPECall,
     llama31_frequency_tables,
     longrope_frequency_tables,
     rope_frequency_tables,
@@ -70,13 +69,13 @@ def _vllm_rope(
     head_dim: int,
     cos: torch.Tensor,
     sin: torch.Tensor,
-):
-    """Return vllm's rotary_embedding and the arguments it rotates.
+) -> bench.Implementation:
+    """vllm's rotary_embedding on its own copy of the query, restored before every round.
 
     It rewrites its query in place and takes it flattened to
-    ``[num_tokens, num_heads * head_dim]``, so it gets its own copy; its cache is
-    the half-width cos and sin concatenated, not the doubled tables the reference
-    indexes; and ``is_neox=True`` is the same half-split rotation.
+    ``[num_tokens, num_heads * head_dim]``; its cache is the half-width cos and sin
+    concatenated, not the doubled tables the reference indexes; and ``is_neox=True`` is
+    the same half-split rotation.
     """
     fn = vllm_op("rotary_embedding")
     num_tokens = x.shape[0]
@@ -85,22 +84,23 @@ def _vllm_rope(
     positions = position_ids.long()
     query = x.reshape(num_tokens, -1).clone()
 
-    def baseline_fn(positions_i, query_i):
-        query_i.copy_(x.reshape_as(query_i))
+    def reset() -> None:
+        query.copy_(x.reshape_as(query))
+
+    def run(positions_i, query_i):
         fn(positions_i, query_i, None, head_dim, cache, True)
-        return query_i
+        return query_i.view(x.shape)
 
-    return baseline_fn, (positions, query)
+    return bench.Implementation(run=run, args=(positions, query), reset=reset)
 
 
-def _bench_rope(op_cls, call) -> None:
+def _bench_rope(op_cls, case: bench.Case) -> None:
     """Check and time the rotation using this variant's independent frequency tables."""
-    workload = RoPECall(call)
-    tensors = workload.tensors
-    op = op_cls(**call.arguments(tensors))
-    bm = ManifestBenchmark(op, workload)
-    x = tensors["x"]
-    input_layout = call.params["input_layout"]
+    tensors = case.workload.tensors
+    params = case.workload.call.params
+    op = op_cls(**case.arguments)
+    (x,) = case.inputs
+    input_layout = params["input_layout"]
     seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
     table_fn = {
         RoPEFwdOp: rope_frequency_tables,
@@ -108,14 +108,14 @@ def _bench_rope(op_cls, call) -> None:
         YaRNFwdOp: yarn_frequency_tables,
         LongRoPEFwdOp: longrope_frequency_tables,
     }[op_cls]
-    parameters = {k: v for k, v in call.params.items() if k not in ("input_layout", "rope_layout")}
+    parameters = {k: v for k, v in params.items() if k not in ("input_layout", "rope_layout")}
     if "rescale_factors" in tensors:
         parameters["rescale_factors"] = tensors["rescale_factors"]
     cos, sin = table_fn(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **parameters)
     cos, sin = (torch.cat([table, table], dim=-1) for table in (cos, sin))
     if input_layout != "1d":
         cos, sin = (t.view(1, seq_len, 1, x.shape[-1]) for t in (cos, sin))
-    rotate = _rotate if call.params.get("rope_layout", "neox") == "neox" else _rotate_interleaved
+    rotate = _rotate if params.get("rope_layout", "neox") == "neox" else _rotate_interleaved
 
     def baseline_fn(t):
         return rotate(t, cos, sin)
@@ -129,7 +129,7 @@ def _bench_rope(op_cls, call) -> None:
     if input_layout != "1d":
         positions = positions.repeat(x.shape[0])
     scratch = torch.empty((positions.numel(), dim), dtype=x.dtype, device=x.device)
-    neox = call.params.get("rope_layout", "neox") == "neox"
+    neox = params.get("rope_layout", "neox") == "neox"
 
     def flashinfer_fn(x):
         rotated, _ = apply_rope(
@@ -138,60 +138,51 @@ def _bench_rope(op_cls, call) -> None:
         return rotated.reshape_as(x)
 
     functors = {
-        "tileops": op,
         "torch-ref": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
     if x.dtype in (torch.float16, torch.bfloat16):
         functors[FLASHINFER_TAG] = flashinfer_fn
-    bm.compare(functors, x)
+    bench.Runner(op, case).compare(functors)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RoPEFwdOp))
-def test_rope_bench(call) -> None:
-    _bench_rope(RoPEFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(RoPEFwdOp), ids=lambda case: case.id)
+def test_rope_bench(case) -> None:
+    _bench_rope(RoPEFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RoPELlama31FwdOp))
-def test_rope_llama31_bench(call) -> None:
-    _bench_rope(RoPELlama31FwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(RoPELlama31FwdOp), ids=lambda case: case.id)
+def test_rope_llama31_bench(case) -> None:
+    _bench_rope(RoPELlama31FwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(YaRNFwdOp))
-def test_yarn_bench(call) -> None:
-    _bench_rope(YaRNFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(YaRNFwdOp), ids=lambda case: case.id)
+def test_yarn_bench(case) -> None:
+    _bench_rope(YaRNFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LongRoPEFwdOp))
-def test_rope_longrope_bench(call) -> None:
-    _bench_rope(LongRoPEFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LongRoPEFwdOp), ids=lambda case: case.id)
+def test_rope_longrope_bench(case) -> None:
+    _bench_rope(LongRoPEFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RoPENeoxPositionIdsFwdOp))
-def test_rope_neox_position_ids_bench(call) -> None:
-    workload = RoPECall(call)
-    tensors = workload.tensors
-    x, position_ids = (tensors["x"], tensors["position_ids"])
+@pytest.mark.parametrize("case", bench.cases(RoPENeoxPositionIdsFwdOp), ids=lambda case: case.id)
+def test_rope_neox_position_ids_bench(case) -> None:
+    x, position_ids = case.inputs
     head_dim = x.shape[-1]
-    op = RoPENeoxPositionIdsFwdOp(**call.arguments(tensors))
-    bm = ManifestBenchmark(op, workload)
+    op = RoPENeoxPositionIdsFwdOp(**case.arguments)
     cos, sin = _rope_tables(
-        call.params["max_position"], head_dim, x.dtype, base=call.params["base"]
+        case.params["max_position"], head_dim, x.dtype, base=case.params["base"]
     )
 
     def baseline_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         idx = pos.long()
         return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
-    vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
-    vllm_shaped = (lambda *a, _f=vllm_fn: _f(*a).view(x.shape), vllm_args)
-    bm.compare(
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
-            VLLM_TAG: vllm_shaped,
+            VLLM_TAG: _vllm_rope(x, position_ids, head_dim, cos, sin),
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        x,
-        position_ids,
+        }
     )

@@ -3,17 +3,14 @@
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op, vllm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MLADecodeWithKVCacheFwdOp
-from workloads.attention.mla import MLADecodeCall
 
 
-@pytest.mark.parametrize("call", manifest_calls(MLADecodeWithKVCacheFwdOp))
-def test_mla_decode_bench(call) -> None:
-    workload = MLADecodeCall(call)
-    inputs = workload.gen_inputs()
-    q, q_pe, k, _ = inputs
+@pytest.mark.parametrize("case", bench.cases(MLADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
+def test_mla_decode_bench(case) -> None:
+    q, q_pe, k, _ = case.inputs
     batch, heads, dim = q.shape
     length, dim_pe = (k.shape[1], q_pe.shape[-1])
     page = 64
@@ -50,6 +47,5 @@ def test_mla_decode_bench(call) -> None:
         out, _ = flashmla(query, cache, table, lengths, dim, metadata)
         return out.squeeze(1)
 
-    op = MLADecodeWithKVCacheFwdOp(**workload.arguments(), tune=True)
-    functors = {"tileops": op, FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn}
-    ManifestBenchmark(op, workload).compare(functors, *inputs, count_copies=True)
+    op = MLADecodeWithKVCacheFwdOp(**case.arguments, tune=True)
+    bench.Runner(op, case).compare({FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn})

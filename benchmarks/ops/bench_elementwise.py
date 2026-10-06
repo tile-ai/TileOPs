@@ -8,11 +8,11 @@ flashinfer's kernels.
 
 import pytest
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     compiled_reference,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -82,354 +82,349 @@ from tileops.elementwise import (
     TruncFwdOp,
     WhereFwdOp,
 )
-from workloads.elementwise import ElementwiseCall
 
 
-def _bench(op_cls, call, *, torch_tag: str = "torch", count_copies: bool = False):
+def _bench(op_cls, case: bench.Case, *, torch_tag: str = "torch"):
     """Time the op against its reference, in torch eager and through inductor."""
-    workload = ElementwiseCall(call)
-    op = op_cls(**workload.arguments())
-    inputs = workload.gen_inputs()
-    functors = {
-        "tileops": op,
-        torch_tag: workload.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-    }
-    ManifestBenchmark(op, workload).compare(functors, *inputs, count_copies=count_copies)
+    op = op_cls(**case.arguments)
+    bench.Runner(op, case).compare(
+        {
+            torch_tag: case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(PreluFwdOp))
-def test_prelu_bench(call) -> None:
-    _bench(PreluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(PreluFwdOp), ids=lambda case: case.id)
+def test_prelu_bench(case) -> None:
+    _bench(PreluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaskedFillTensorFwdOp))
-def test_masked_fill_bench(call) -> None:
-    # The baseline is a clone plus an in-place fill, and the clone is a copy, not a
-    # kernel; counting copies is what puts all of it in the reading.
-    _bench(MaskedFillTensorFwdOp, call, count_copies=True)
+@pytest.mark.parametrize("case", bench.cases(MaskedFillTensorFwdOp), ids=lambda case: case.id)
+def test_masked_fill_bench(case) -> None:
+    _bench(MaskedFillTensorFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaskedFillScalarFwdOp))
-def test_masked_fill_scalar_bench(call) -> None:
-    _bench(MaskedFillScalarFwdOp, call, count_copies=True)
+@pytest.mark.parametrize("case", bench.cases(MaskedFillScalarFwdOp), ids=lambda case: case.id)
+def test_masked_fill_scalar_bench(case) -> None:
+    _bench(MaskedFillScalarFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AddFwdOp))
-def test_add_bench(call) -> None:
-    _bench(AddFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(AddFwdOp), ids=lambda case: case.id)
+def test_add_bench(case) -> None:
+    _bench(AddFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SubFwdOp))
-def test_sub_bench(call) -> None:
-    _bench(SubFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SubFwdOp), ids=lambda case: case.id)
+def test_sub_bench(case) -> None:
+    _bench(SubFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MulFwdOp))
-def test_mul_bench(call) -> None:
-    _bench(MulFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(MulFwdOp), ids=lambda case: case.id)
+def test_mul_bench(case) -> None:
+    _bench(MulFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DivFwdOp))
-def test_div_bench(call) -> None:
-    _bench(DivFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(DivFwdOp), ids=lambda case: case.id)
+def test_div_bench(case) -> None:
+    _bench(DivFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RemainderFwdOp))
-def test_remainder_bench(call) -> None:
-    _bench(RemainderFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(RemainderFwdOp), ids=lambda case: case.id)
+def test_remainder_bench(case) -> None:
+    _bench(RemainderFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(PowFwdOp))
-def test_pow_bench(call) -> None:
-    _bench(PowFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(PowFwdOp), ids=lambda case: case.id)
+def test_pow_bench(case) -> None:
+    _bench(PowFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(FloorDivideFwdOp))
-def test_floor_divide_bench(call) -> None:
-    _bench(FloorDivideFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(FloorDivideFwdOp), ids=lambda case: case.id)
+def test_floor_divide_bench(case) -> None:
+    _bench(FloorDivideFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LerpScalarFwdOp))
-def test_lerp_bench(call) -> None:
-    _bench(LerpScalarFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LerpScalarFwdOp), ids=lambda case: case.id)
+def test_lerp_bench(case) -> None:
+    _bench(LerpScalarFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MaximumFwdOp))
-def test_maximum_bench(call) -> None:
-    _bench(MaximumFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(MaximumFwdOp), ids=lambda case: case.id)
+def test_maximum_bench(case) -> None:
+    _bench(MaximumFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MinimumFwdOp))
-def test_minimum_bench(call) -> None:
-    _bench(MinimumFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(MinimumFwdOp), ids=lambda case: case.id)
+def test_minimum_bench(case) -> None:
+    _bench(MinimumFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(EqFwdOp))
-def test_eq_bench(call) -> None:
-    _bench(EqFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(EqFwdOp), ids=lambda case: case.id)
+def test_eq_bench(case) -> None:
+    _bench(EqFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(NeFwdOp))
-def test_ne_bench(call) -> None:
-    _bench(NeFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(NeFwdOp), ids=lambda case: case.id)
+def test_ne_bench(case) -> None:
+    _bench(NeFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GtFwdOp))
-def test_gt_bench(call) -> None:
-    _bench(GtFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(GtFwdOp), ids=lambda case: case.id)
+def test_gt_bench(case) -> None:
+    _bench(GtFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LtFwdOp))
-def test_lt_bench(call) -> None:
-    _bench(LtFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LtFwdOp), ids=lambda case: case.id)
+def test_lt_bench(case) -> None:
+    _bench(LtFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GeFwdOp))
-def test_ge_bench(call) -> None:
-    _bench(GeFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(GeFwdOp), ids=lambda case: case.id)
+def test_ge_bench(case) -> None:
+    _bench(GeFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LeFwdOp))
-def test_le_bench(call) -> None:
-    _bench(LeFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LeFwdOp), ids=lambda case: case.id)
+def test_le_bench(case) -> None:
+    _bench(LeFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogicalAndFwdOp))
-def test_logical_and_bench(call) -> None:
-    _bench(LogicalAndFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LogicalAndFwdOp), ids=lambda case: case.id)
+def test_logical_and_bench(case) -> None:
+    _bench(LogicalAndFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogicalOrFwdOp))
-def test_logical_or_bench(call) -> None:
-    _bench(LogicalOrFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LogicalOrFwdOp), ids=lambda case: case.id)
+def test_logical_or_bench(case) -> None:
+    _bench(LogicalOrFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(BitwiseAndFwdOp))
-def test_bitwise_and_bench(call) -> None:
-    _bench(BitwiseAndFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(BitwiseAndFwdOp), ids=lambda case: case.id)
+def test_bitwise_and_bench(case) -> None:
+    _bench(BitwiseAndFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(BitwiseOrFwdOp))
-def test_bitwise_or_bench(call) -> None:
-    _bench(BitwiseOrFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(BitwiseOrFwdOp), ids=lambda case: case.id)
+def test_bitwise_or_bench(case) -> None:
+    _bench(BitwiseOrFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(BitwiseXorFwdOp))
-def test_bitwise_xor_bench(call) -> None:
-    _bench(BitwiseXorFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(BitwiseXorFwdOp), ids=lambda case: case.id)
+def test_bitwise_xor_bench(case) -> None:
+    _bench(BitwiseXorFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AlibiFwdOp))
-def test_alibi_bench(call) -> None:
-    _bench(AlibiFwdOp, call, torch_tag="torch-ref")
+@pytest.mark.parametrize("case", bench.cases(AlibiFwdOp), ids=lambda case: case.id)
+def test_alibi_bench(case) -> None:
+    _bench(AlibiFwdOp, case, torch_tag="torch-ref")
 
 
-@pytest.mark.parametrize("call", manifest_calls(SinusoidalFwdOp))
-def test_sinusoidal_bench(call) -> None:
-    _bench(SinusoidalFwdOp, call, torch_tag="torch-ref")
+@pytest.mark.parametrize("case", bench.cases(SinusoidalFwdOp), ids=lambda case: case.id)
+def test_sinusoidal_bench(case) -> None:
+    _bench(SinusoidalFwdOp, case, torch_tag="torch-ref")
 
 
-@pytest.mark.parametrize("call", manifest_calls(WhereFwdOp))
-def test_where_bench(call) -> None:
-    _bench(WhereFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(WhereFwdOp), ids=lambda case: case.id)
+def test_where_bench(case) -> None:
+    _bench(WhereFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LerpTensorFwdOp))
-def test_lerp_tensor_bench(call) -> None:
-    _bench(LerpTensorFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LerpTensorFwdOp), ids=lambda case: case.id)
+def test_lerp_tensor_bench(case) -> None:
+    _bench(LerpTensorFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ReluFwdOp))
-def test_relu_bench(call) -> None:
-    _bench(ReluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ReluFwdOp), ids=lambda case: case.id)
+def test_relu_bench(case) -> None:
+    _bench(ReluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GeluFwdOp))
-def test_gelu_bench(call) -> None:
-    _bench(GeluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(GeluFwdOp), ids=lambda case: case.id)
+def test_gelu_bench(case) -> None:
+    _bench(GeluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SiluFwdOp))
-def test_silu_bench(call) -> None:
-    _bench(SiluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SiluFwdOp), ids=lambda case: case.id)
+def test_silu_bench(case) -> None:
+    _bench(SiluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(HardswishFwdOp))
-def test_hardswish_bench(call) -> None:
-    _bench(HardswishFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(HardswishFwdOp), ids=lambda case: case.id)
+def test_hardswish_bench(case) -> None:
+    _bench(HardswishFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(HardsigmoidFwdOp))
-def test_hardsigmoid_bench(call) -> None:
-    _bench(HardsigmoidFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(HardsigmoidFwdOp), ids=lambda case: case.id)
+def test_hardsigmoid_bench(case) -> None:
+    _bench(HardsigmoidFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(MishFwdOp))
-def test_mish_bench(call) -> None:
-    _bench(MishFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(MishFwdOp), ids=lambda case: case.id)
+def test_mish_bench(case) -> None:
+    _bench(MishFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SeluFwdOp))
-def test_selu_bench(call) -> None:
-    _bench(SeluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SeluFwdOp), ids=lambda case: case.id)
+def test_selu_bench(case) -> None:
+    _bench(SeluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LeakyReluFwdOp))
-def test_leaky_relu_bench(call) -> None:
-    _bench(LeakyReluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LeakyReluFwdOp), ids=lambda case: case.id)
+def test_leaky_relu_bench(case) -> None:
+    _bench(LeakyReluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(EluFwdOp))
-def test_elu_bench(call) -> None:
-    _bench(EluFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(EluFwdOp), ids=lambda case: case.id)
+def test_elu_bench(case) -> None:
+    _bench(EluFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(HardtanhFwdOp))
-def test_hardtanh_bench(call) -> None:
-    _bench(HardtanhFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(HardtanhFwdOp), ids=lambda case: case.id)
+def test_hardtanh_bench(case) -> None:
+    _bench(HardtanhFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SoftplusFwdOp))
-def test_softplus_bench(call) -> None:
-    _bench(SoftplusFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SoftplusFwdOp), ids=lambda case: case.id)
+def test_softplus_bench(case) -> None:
+    _bench(SoftplusFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ClampTensorFwdOp))
-def test_clamp_bench(call) -> None:
-    _bench(ClampTensorFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ClampTensorFwdOp), ids=lambda case: case.id)
+def test_clamp_bench(case) -> None:
+    _bench(ClampTensorFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ClampScalarFwdOp))
-def test_clamp_scalar_bench(call) -> None:
-    _bench(ClampScalarFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ClampScalarFwdOp), ids=lambda case: case.id)
+def test_clamp_scalar_bench(case) -> None:
+    _bench(ClampScalarFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(NanToNumFwdOp))
-def test_nan_to_num_bench(call) -> None:
-    _bench(NanToNumFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(NanToNumFwdOp), ids=lambda case: case.id)
+def test_nan_to_num_bench(case) -> None:
+    _bench(NanToNumFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ExpFwdOp))
-def test_exp_bench(call) -> None:
-    _bench(ExpFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ExpFwdOp), ids=lambda case: case.id)
+def test_exp_bench(case) -> None:
+    _bench(ExpFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogFwdOp))
-def test_log_bench(call) -> None:
-    _bench(LogFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LogFwdOp), ids=lambda case: case.id)
+def test_log_bench(case) -> None:
+    _bench(LogFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SqrtFwdOp))
-def test_sqrt_bench(call) -> None:
-    _bench(SqrtFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SqrtFwdOp), ids=lambda case: case.id)
+def test_sqrt_bench(case) -> None:
+    _bench(SqrtFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RsqrtFwdOp))
-def test_rsqrt_bench(call) -> None:
-    _bench(RsqrtFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(RsqrtFwdOp), ids=lambda case: case.id)
+def test_rsqrt_bench(case) -> None:
+    _bench(RsqrtFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(AbsFwdOp))
-def test_abs_bench(call) -> None:
-    _bench(AbsFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(AbsFwdOp), ids=lambda case: case.id)
+def test_abs_bench(case) -> None:
+    _bench(AbsFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(NegFwdOp))
-def test_neg_bench(call) -> None:
-    _bench(NegFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(NegFwdOp), ids=lambda case: case.id)
+def test_neg_bench(case) -> None:
+    _bench(NegFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ReciprocalFwdOp))
-def test_reciprocal_bench(call) -> None:
-    _bench(ReciprocalFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ReciprocalFwdOp), ids=lambda case: case.id)
+def test_reciprocal_bench(case) -> None:
+    _bench(ReciprocalFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SignFwdOp))
-def test_sign_bench(call) -> None:
-    _bench(SignFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SignFwdOp), ids=lambda case: case.id)
+def test_sign_bench(case) -> None:
+    _bench(SignFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SinFwdOp))
-def test_sin_bench(call) -> None:
-    _bench(SinFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SinFwdOp), ids=lambda case: case.id)
+def test_sin_bench(case) -> None:
+    _bench(SinFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(CosFwdOp))
-def test_cos_bench(call) -> None:
-    _bench(CosFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(CosFwdOp), ids=lambda case: case.id)
+def test_cos_bench(case) -> None:
+    _bench(CosFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(FloorFwdOp))
-def test_floor_bench(call) -> None:
-    _bench(FloorFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(FloorFwdOp), ids=lambda case: case.id)
+def test_floor_bench(case) -> None:
+    _bench(FloorFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(CeilFwdOp))
-def test_ceil_bench(call) -> None:
-    _bench(CeilFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(CeilFwdOp), ids=lambda case: case.id)
+def test_ceil_bench(case) -> None:
+    _bench(CeilFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(RoundFwdOp))
-def test_round_bench(call) -> None:
-    _bench(RoundFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(RoundFwdOp), ids=lambda case: case.id)
+def test_round_bench(case) -> None:
+    _bench(RoundFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(TruncFwdOp))
-def test_trunc_bench(call) -> None:
-    _bench(TruncFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(TruncFwdOp), ids=lambda case: case.id)
+def test_trunc_bench(case) -> None:
+    _bench(TruncFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(ErfFwdOp))
-def test_erf_bench(call) -> None:
-    _bench(ErfFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(ErfFwdOp), ids=lambda case: case.id)
+def test_erf_bench(case) -> None:
+    _bench(ErfFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(Log1pFwdOp))
-def test_log1p_bench(call) -> None:
-    _bench(Log1pFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(Log1pFwdOp), ids=lambda case: case.id)
+def test_log1p_bench(case) -> None:
+    _bench(Log1pFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(Expm1FwdOp))
-def test_expm1_bench(call) -> None:
-    _bench(Expm1FwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(Expm1FwdOp), ids=lambda case: case.id)
+def test_expm1_bench(case) -> None:
+    _bench(Expm1FwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SigmoidFwdOp))
-def test_sigmoid_bench(call) -> None:
-    _bench(SigmoidFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(SigmoidFwdOp), ids=lambda case: case.id)
+def test_sigmoid_bench(case) -> None:
+    _bench(SigmoidFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(TanhFwdOp))
-def test_tanh_bench(call) -> None:
-    _bench(TanhFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(TanhFwdOp), ids=lambda case: case.id)
+def test_tanh_bench(case) -> None:
+    _bench(TanhFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogicalNotFwdOp))
-def test_logical_not_bench(call) -> None:
-    _bench(LogicalNotFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(LogicalNotFwdOp), ids=lambda case: case.id)
+def test_logical_not_bench(case) -> None:
+    _bench(LogicalNotFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(BitwiseNotFwdOp))
-def test_bitwise_not_bench(call) -> None:
-    _bench(BitwiseNotFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(BitwiseNotFwdOp), ids=lambda case: case.id)
+def test_bitwise_not_bench(case) -> None:
+    _bench(BitwiseNotFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(IsnanFwdOp))
-def test_isnan_bench(call) -> None:
-    _bench(IsnanFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(IsnanFwdOp), ids=lambda case: case.id)
+def test_isnan_bench(case) -> None:
+    _bench(IsnanFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(IsinfFwdOp))
-def test_isinf_bench(call) -> None:
-    _bench(IsinfFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(IsinfFwdOp), ids=lambda case: case.id)
+def test_isinf_bench(case) -> None:
+    _bench(IsinfFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(IsfiniteFwdOp))
-def test_isfinite_bench(call) -> None:
-    _bench(IsfiniteFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(IsfiniteFwdOp), ids=lambda case: case.id)
+def test_isfinite_bench(case) -> None:
+    _bench(IsfiniteFwdOp, case)
 
 
-@pytest.mark.parametrize("call", manifest_calls(DropoutFwdOp))
-def test_dropout_bench(call) -> None:
-    _bench(DropoutFwdOp, call)
+@pytest.mark.parametrize("case", bench.cases(DropoutFwdOp), ids=lambda case: case.id)
+def test_dropout_bench(case) -> None:
+    _bench(DropoutFwdOp, case)

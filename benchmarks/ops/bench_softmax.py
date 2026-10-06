@@ -11,6 +11,7 @@ do not take. logsumexp has no flag_gems entry point.
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     QUACK_TAG,
@@ -19,28 +20,25 @@ from benchmarks.baselines import (
     flaggems_op,
     quack_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from workloads.reduction import ReductionCall
 
 
-def _bench(op_cls: type, call, flaggems_name: "str | None") -> None:
-    workload = ReductionCall(call)
-    baseline_fn = workload.ref_program
-    inputs = workload.gen_inputs()
-    op = op_cls(**workload.arguments(), tune=True)
-    functors = {"tileops": op}
-    if flaggems_name is not None and (not call.params.get("dtype")):
+def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
+    baseline_fn = case.reference
+    inputs = case.inputs
+    op = op_cls(**case.arguments, tune=True)
+    functors = {}
+    if flaggems_name is not None and (not case.params.get("dtype")):
         fn = flaggems_op(flaggems_name)
-        dim = call.params["dim"]
+        dim = case.params["dim"]
 
         def flaggems_fn(x):
             return fn(x, dim)
 
         functors[FLAGGEMS_TAG] = flaggems_fn
-    if op_cls is SoftmaxFwdOp and call.params["dim"] % inputs[0].ndim == inputs[0].ndim - 1:
+    if op_cls is SoftmaxFwdOp and case.params["dim"] % inputs[0].ndim == inputs[0].ndim - 1:
         softmax = quack_op("softmax")
-        dtype = _dtype(call.params)
+        dtype = _dtype(case.params)
 
         def quack_fn(x):
             values = x.to(dtype) if dtype is not None else x
@@ -49,23 +47,23 @@ def _bench(op_cls: type, call, flaggems_name: "str | None") -> None:
         functors[QUACK_TAG] = quack_fn
     functors["torch"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+    bench.Runner(op, case).compare(functors)
 
 
 def _dtype(params: dict) -> "torch.dtype | None":
     return getattr(torch, params["dtype"]) if params.get("dtype") else None
 
 
-@pytest.mark.parametrize("call", manifest_calls(SoftmaxFwdOp))
-def test_softmax_bench(call) -> None:
-    _bench(SoftmaxFwdOp, call, "softmax")
+@pytest.mark.parametrize("case", bench.cases(SoftmaxFwdOp), ids=lambda case: case.id)
+def test_softmax_bench(case) -> None:
+    _bench(SoftmaxFwdOp, case, "softmax")
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogSoftmaxFwdOp))
-def test_log_softmax_bench(call) -> None:
-    _bench(LogSoftmaxFwdOp, call, "log_softmax")
+@pytest.mark.parametrize("case", bench.cases(LogSoftmaxFwdOp), ids=lambda case: case.id)
+def test_log_softmax_bench(case) -> None:
+    _bench(LogSoftmaxFwdOp, case, "log_softmax")
 
 
-@pytest.mark.parametrize("call", manifest_calls(LogSumExpFwdOp))
-def test_logsumexp_bench(call) -> None:
-    _bench(LogSumExpFwdOp, call, None)
+@pytest.mark.parametrize("case", bench.cases(LogSumExpFwdOp), ids=lambda case: case.id)
+def test_logsumexp_bench(case) -> None:
+    _bench(LogSumExpFwdOp, case, None)

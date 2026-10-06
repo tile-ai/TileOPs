@@ -6,13 +6,14 @@ mamba_chunk_scan_combined.
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
     flashinfer_op,
+    private_inputs,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -20,16 +21,7 @@ from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
-from workloads.mamba import (
-    Mamba2FwdCall,
-    SSDChunkCouplingFwdCall,
-    SSDChunkCumsumFwdCall,
-    SSDChunkScanFwdCall,
-    SSDChunkStateFwdCall,
-    SSDDecodeFwdCall,
-    SSDStatePassingFwdCall,
-    ssd_decode_result,
-)
+from workloads.mamba import ssd_decode_result
 
 # Optional mamba_ssm Triton baselines
 try:
@@ -67,28 +59,24 @@ def _torch_baselines(functors: dict, ref_program) -> None:
     functors[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDChunkCouplingFwdOp))
-def test_ssd_chunk_coupling_fwd_bench(call) -> None:
+@pytest.mark.parametrize("case", bench.cases(SSDChunkCouplingFwdOp), ids=lambda case: case.id)
+def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
-    workload = SSDChunkCouplingFwdCall(call)
-    inputs = workload.gen_inputs()
-    op = SSDChunkCouplingFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
+    chunk_len = case.workload.call.ix["chunk_len"]
+    op = SSDChunkCouplingFwdOp(**case.arguments)
     from mamba_ssm.ops.triton.ssd_bmm import _bmm_chunk_fwd
 
     def mamba_fn(c, b):
-        return _bmm_chunk_fwd(c, b, call.ix["chunk_len"], causal=True, output_dtype=c.dtype).tril()
+        return _bmm_chunk_fwd(c, b, chunk_len, causal=True, output_dtype=c.dtype).tril()
 
-    bm.compare({"tileops": op, "mamba": mamba_fn, "torch": workload.ref_program}, *inputs)
+    bench.Runner(op, case).compare({"mamba": mamba_fn, "torch": case.reference})
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDChunkCumsumFwdOp))
-def test_ssd_chunk_cumsum_fwd_bench(call) -> None:
-    workload = SSDChunkCumsumFwdCall(call)
-    dt, A, dt_bias = inputs = workload.gen_inputs()
-    op = SSDChunkCumsumFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(SSDChunkCumsumFwdOp), ids=lambda case: case.id)
+def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
+    dt, A, dt_bias = case.inputs
+    op = SSDChunkCumsumFwdOp(**case.arguments)
+    functors = {}
 
     # _chunk_cumsum_fwd returns (dA_cumsum, dt_out) with a float32 dt_out; the baseline
     # returns them in TileOPs' order and dtype.
@@ -100,19 +88,17 @@ def test_ssd_chunk_cumsum_fwd_bench(call) -> None:
             )
             return dt_out.to(op.out_dtype), dA_cumsum
 
-        functors["mamba"] = (mamba_fwd, ())
+        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    _torch_baselines(functors, case.reference)
+    bench.Runner(op, case).compare(functors)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDChunkScanFwdOp))
-def test_ssd_chunk_scan_fwd_bench(call) -> None:
-    workload = SSDChunkScanFwdCall(call)
-    x, cb, dA_cumsum, C, prev_states, dt = inputs = workload.gen_inputs()
-    op = SSDChunkScanFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(SSDChunkScanFwdOp), ids=lambda case: case.id)
+def test_ssd_chunk_scan_fwd_bench(case) -> None:
+    x, cb, dA_cumsum, C, prev_states, dt = case.inputs
+    op = SSDChunkScanFwdOp(**case.arguments)
+    functors = {}
 
     if _mamba_chunk_scan_fwd is not None:
         # mamba signature: _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
@@ -121,44 +107,34 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
             out, _ = _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
             return out.float()
 
-        functors["mamba"] = (mamba_fwd, ())
+        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, workload.ref_program)
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    _torch_baselines(functors, case.reference)
+    bench.Runner(op, case).compare(functors)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDChunkStateFwdOp))
-def test_ssd_chunk_state_fwd_bench(call) -> None:
-    workload = SSDChunkStateFwdCall(call)
-    x, Bmat, dt, dA_cumsum, seq_idx = inputs = workload.gen_inputs()
-    op = SSDChunkStateFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(SSDChunkStateFwdOp), ids=lambda case: case.id)
+def test_ssd_chunk_state_fwd_bench(case) -> None:
+    x, Bmat, dt, dA_cumsum, seq_idx = case.inputs
+    op = SSDChunkStateFwdOp(**case.arguments)
+    functors = {}
 
     if _mamba_chunk_state_fwd is not None:
         # dt and dA_cumsum share TileOPs' (b, h, c, L) layout.
         def mamba_fwd():
             return _mamba_chunk_state_fwd(Bmat, x, dt, dA_cumsum, seq_idx=seq_idx)
 
-        functors["mamba"] = (mamba_fwd, ())
+        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, workload.ref_program)
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    _torch_baselines(functors, case.reference)
+    bench.Runner(op, case).compare(functors)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDStatePassingFwdOp))
-def test_ssd_state_passing_fwd_bench(call) -> None:
-    workload = SSDStatePassingFwdCall(call)
-    states, dA_chunk_cumsum, initial_states = inputs = workload.gen_inputs()
-    op = SSDStatePassingFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(SSDStatePassingFwdOp), ids=lambda case: case.id)
+def test_ssd_state_passing_fwd_bench(case) -> None:
+    states, dA_chunk_cumsum, initial_states = case.inputs
+    op = SSDStatePassingFwdOp(**case.arguments)
+    functors = {}
 
     if _mamba_state_passing_fwd is not None:
         # dA_chunk_cumsum shares TileOPs' (b, h, c) layout; float32 output as TileOPs.
@@ -167,18 +143,16 @@ def test_ssd_state_passing_fwd_bench(call) -> None:
                 states, dA_chunk_cumsum, initial_states=initial_states, out_dtype=torch.float32
             )
 
-        functors["mamba"] = (mamba_fwd, ())
+        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, workload.ref_program)
-    bm.compare(functors, *inputs)
+    _torch_baselines(functors, case.reference)
+    bench.Runner(op, case).compare(functors)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SSDRecurrentFwdOp))
-def test_ssd_decode_bench(call) -> None:
-    workload = SSDDecodeFwdCall(call)
-    A, dt, x, B_in, C_in, state = workload.gen_inputs()
-    op = SSDRecurrentFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(SSDRecurrentFwdOp), ids=lambda case: case.id)
+def test_ssd_decode_bench(case) -> None:
+    x = case.inputs[2]
+    op = SSDRecurrentFwdOp(**case.arguments)
 
     from mamba_ssm.ops.triton.selective_state_update import selective_state_update
 
@@ -197,33 +171,26 @@ def test_ssd_decode_bench(call) -> None:
         steps = dt[:, :, :1].contiguous().expand_as(dt)
         return flashinfer_update(state, x.float(), steps, rates, B.float(), C.float(), skip_tied)
 
-    def reset_state(fn):
-        private = state.clone()
+    def private_state(run):
+        # Every implementation updates the recurrent state in place.
+        return private_inputs(run, case.inputs, 5)
 
-        def run(A, dt, x, B, C, source_state):
-            private.copy_(source_state)
-            return fn(A, dt, x, B, C, private)
-
-        return run
-
-    functors = {
-        "tileops": reset_state(lambda *args: ssd_decode_result(op, *args)),
-        "mamba": reset_state(lambda *args: ssd_decode_result(mamba_fn, *args)),
-        FLASHINFER_TAG: reset_state(lambda *args: ssd_decode_result(flashinfer_fn, *args)),
-        "torch-ref": reset_state(workload.ref_program),
-        TORCH_COMPILE_TAG: reset_state(compiled_reference(workload.ref_program)),
-    }
-    bm.compare(functors, A, dt, x, B_in, C_in, state)
+    bench.Runner(op, case).compare(
+        {
+            "mamba": private_state(lambda *args: ssd_decode_result(mamba_fn, *args)),
+            FLASHINFER_TAG: private_state(lambda *args: ssd_decode_result(flashinfer_fn, *args)),
+            "torch-ref": private_state(case.reference),
+            TORCH_COMPILE_TAG: private_state(compiled_reference(case.reference)),
+        }
+    )
 
 
-@pytest.mark.parametrize("call", manifest_calls(Mamba2FwdOp))
-def test_mamba2_fwd_bench(call):
-    workload = Mamba2FwdCall(call)
-    inputs = workload.gen_inputs()
-    x, dt, A, B, C, dt_bias, initial_states = inputs
-    op = Mamba2FwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
+@pytest.mark.parametrize("case", bench.cases(Mamba2FwdOp), ids=lambda case: case.id)
+def test_mamba2_fwd_bench(case):
+    x, dt, A, B, C, dt_bias, initial_states = case.inputs
+    op = Mamba2FwdOp(**case.arguments)
+    functors = {}
+    reference = case.reference
 
     # Only the five leading tensors are positional, so every path gets identical clone
     # treatment; the optional tensors are captured.
@@ -245,15 +212,14 @@ def test_mamba2_fwd_bench(call):
             )
             return out.float(), final_states.float()
 
-        functors["mamba"] = (_mamba_wrapper, reference_args)
+        functors["mamba"] = bench.Implementation(run=_mamba_wrapper, args=reference_args)
 
     def _torch_wrapper(x, dt, A, B, C):
-        return workload.ref_program(x, dt, A, B, C, dt_bias, initial_states)
+        return reference(x, dt, A, B, C, dt_bias, initial_states)
 
-    functors["torch-ref"] = (_torch_wrapper, reference_args)
-    functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
-
-    bm.compare(
-        functors,
-        *inputs,
+    functors["torch-ref"] = bench.Implementation(run=_torch_wrapper, args=reference_args)
+    functors[TORCH_COMPILE_TAG] = bench.Implementation(
+        run=compiled_reference(_torch_wrapper), args=reference_args
     )
+
+    bench.Runner(op, case).compare(functors)

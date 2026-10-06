@@ -3,8 +3,8 @@
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import vllm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.moe_baselines import flashinfer_experts
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
@@ -15,44 +15,28 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
-from workloads.moe import IndexedExpertMLPWorkload, MoEExpertsWorkload
 
 
-@pytest.mark.parametrize("call", manifest_calls(FusedMoEExpertsFwdOp))
-def test_moe_experts_bench(call) -> None:
-    workload = MoEExpertsWorkload(call)
-    inputs = workload.gen_inputs()
-    output, hidden, w1, w2, topk_weights, topk_ids = inputs
-    experts = FusedMoEExpertsFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(experts, workload)
+def _routed(inputs: tuple, functors: dict) -> dict:
+    """Each functor on the routed inputs, without the output buffer the op writes."""
+    return {tag: bench.Implementation(run=fn, args=inputs[1:]) for tag, fn in functors.items()}
 
-    def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
-        experts(output, hidden, w1, w2, topk_weights, topk_ids)
-        return output
 
+@pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
+def test_moe_experts_bench(case) -> None:
+    _, hidden, w1, w2, _, topk_ids = case.inputs
+    experts = FusedMoEExpertsFwdOp(**case.arguments)
     functors = {
-        "tileops": _experts_fn,
         "vllm-triton": vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe"),
         "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1]),
     }
-
-    bm.compare(
-        {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
-        *inputs,
-        count_copies=True,
-    )
+    bench.Runner(experts, case).compare(_routed(case.inputs, functors))
 
 
-@pytest.mark.parametrize("call", manifest_calls(IndexedExpertMLPFwdOp))
-def test_indexed_expert_mlp_bench(call) -> None:
-    workload = IndexedExpertMLPWorkload(call)
-    inputs = workload.gen_inputs()
-    output, hidden, w1, w2, topk_weights, topk_ids = inputs
-    indexed = IndexedExpertMLPFwdOp(**call.arguments({}))
-
-    def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
-        indexed(output, hidden, w1, w2, topk_weights, topk_ids)
-        return output
+@pytest.mark.parametrize("case", bench.cases(IndexedExpertMLPFwdOp), ids=lambda case: case.id)
+def test_indexed_expert_mlp_bench(case) -> None:
+    output, hidden, w1, w2, _, topk_ids = case.inputs
+    indexed = IndexedExpertMLPFwdOp(**case.arguments)
 
     # The staged pipeline is what the composite runs on every other shape, so it is the
     # comparator the indexed path has to beat.
@@ -81,14 +65,8 @@ def test_indexed_expert_mlp_bench(call) -> None:
         return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
 
     functors = {
-        "tileops": _indexed_fn,
         "staged": _staged_fn,
         "vllm-triton": vllm_fn,
         "flashinfer-cutlass": cutlass_fn,
     }
-
-    ManifestBenchmark(indexed, workload).compare(
-        {tag: (fn, inputs[1:]) for tag, fn in functors.items()},
-        *inputs,
-        count_copies=True,
-    )
+    bench.Runner(indexed, case).compare(_routed(case.inputs, functors))

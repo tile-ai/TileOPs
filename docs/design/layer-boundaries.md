@@ -92,7 +92,7 @@ contract. Both consumers use this shared machinery:
 ```text
 Workload: inputs + reference + verification
                     |
-       TestBase.check / OpBenchmark.compare
+       TestBase.check / bench.Runner.compare
                     |
                   verify
                     |

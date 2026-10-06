@@ -19,6 +19,7 @@ __all__ = [
     "Noncomparable",
     "Partial",
     "ReferenceInfeasible",
+    "Request",
     "Unestablished",
     "assert_close",
     "assert_normalized_error",
@@ -386,77 +387,121 @@ def _copy_outputs(value: Any) -> Any:
     return value
 
 
+@dataclasses.dataclass(frozen=True)
+class Request:
+    """One call to check against the reference: ``reset()``, then ``run(*args)``.
+
+    ``preserve_inputs`` marks a call made on the shared inputs themselves, which it must
+    leave as it found them.
+    """
+
+    run: Callable
+    args: tuple
+    reset: Optional[Callable[[], None]] = None
+    preserve_inputs: bool = False
+
+
+def _snapshot(tensors: list) -> list:
+    return [t.detach().clone() for t in tensors]
+
+
+def _restore(tensors: list, snapshot: list) -> None:
+    with torch.no_grad():
+        for tensor, source in zip(tensors, snapshot, strict=True):
+            target = tensor
+            # Expanded read-only inputs share storage along zero-stride axes.
+            # Restore each stored element once, preserving the original view.
+            for axis in range(tensor.ndim - 1, -1, -1):
+                if tensor.stride(axis) == 0 and tensor.shape[axis] > 1:
+                    target, source = target.select(axis, 0), source.select(axis, 0)
+            target.copy_(source)
+
+
+def _unchanged(tensors: list, snapshot: list) -> bool:
+    try:
+        for tensor, source in zip(tensors, snapshot, strict=True):
+            torch.testing.assert_close(tensor, source, rtol=0, atol=0, equal_nan=True)
+    except AssertionError:
+        return False
+    return True
+
+
+def _unique(value: Any) -> list:
+    return list({id(t): t for t in _tensors(value)}.values())
+
+
 def verify(
-    subject: Callable,
+    reference: Callable | None,
     inputs: tuple,
     *,
-    reference: Callable | None,
     evidence: Evidence,
-    subject_inputs: tuple | None = None,
-) -> CheckResult:
-    """Execute a workload's contract, restoring original inputs even on failure.
+    requests: dict[str, Request],
+) -> dict[str, CheckResult]:
+    """Check every request against one run of the reference, restoring inputs even on failure.
 
-    Snapshots are restored into the original tensors, preserving argument aliases.
-    Outputs are copied before restoring inputs so an in-place error stays visible.
-    Reference OOM establishes nothing; subject failures always propagate.
+    The reference runs once and every request is compared with its copied result, which
+    stays allocated while the requests run so no request's output can be carved from
+    memory that already holds the expected values. Negative controls run once; a Custom
+    probe takes the call under test, so it runs once per request. A failure names its
+    request. Reference OOM establishes nothing; request failures always propagate.
     """
     if evidence.kind not in ("exact", "partial", "custom"):
-        return CheckResult(0, None, None, describe(evidence))
-    oracle = reference
-    if oracle is None:
+        return {name: CheckResult(0, None, None, describe(evidence)) for name in requests}
+    if reference is None:
         raise ValueError(
             "a checked workload must supply ref_program; declare Unestablished explicitly"
         )
-    args = inputs if subject_inputs is None else subject_inputs
-    live = {id(t): t for t in _tensors((inputs, args))}
-    pristine = {key: tensor.detach().clone() for key, tensor in live.items()}
-
-    def restore():
-        with torch.no_grad():
-            for key, tensor in live.items():
-                target, source = tensor, pristine[key]
-                # Expanded read-only inputs share storage along zero-stride axes.
-                # Restore each stored element once, preserving the original view.
-                for axis in range(tensor.ndim - 1, -1, -1):
-                    if tensor.stride(axis) == 0 and tensor.shape[axis] > 1:
-                        target, source = target.select(axis, 0), source.select(axis, 0)
-                target.copy_(source)
-
+    shared = _unique(inputs)
+    pristine = _snapshot(shared)
     try:
         try:
-            reference = oracle(*inputs)
-            expected = _copy_outputs(reference)
+            produced_by_reference = reference(*inputs)
+            expected = _copy_outputs(produced_by_reference)
         except torch.OutOfMemoryError:
-            return CheckResult(0, None, None, "reference ran out of memory")
-        restore()
-        with torch.no_grad():
-            produced = _copy_outputs(subject(*args))
-        # Freed before the subject ran, the reference's own buffers could be handed to it
-        # as its output, and an element it never writes would read back as expected.
-        del reference
-        restore()
-        result = compare_outputs(produced, expected, evidence)
-        del produced
-        if isinstance(evidence, Custom) and evidence.probe is not None:
-            evidence.probe(subject, args)
-            restore()
+            return {
+                name: CheckResult(0, None, None, "reference ran out of memory") for name in requests
+            }
+        _restore(shared, pristine)
+        results = {}
+        for name, request in requests.items():
+            own = [t for t in _unique(request.args) if all(t is not s for s in shared)]
+            own_pristine = _snapshot(own)
+            try:
+                if request.reset is not None:
+                    request.reset()
+                with torch.no_grad():
+                    produced = _copy_outputs(request.run(*request.args))
+                if request.preserve_inputs and not _unchanged(shared, pristine):
+                    raise AssertionError(
+                        "overwrote the shared inputs; give it private arguments and a reset"
+                    )
+                results[name] = compare_outputs(produced, expected, evidence)
+                del produced
+                if isinstance(evidence, Custom) and evidence.probe is not None:
+                    evidence.probe(request.run, request.args)
+            except (AssertionError, ValueError) as exc:
+                raise type(exc)(f"{name}: {exc}") from exc
+            finally:
+                _restore(shared, pristine)
+                _restore(own, own_pristine)
+                own_pristine.clear()
+        del produced_by_reference
         for control in evidence.controls:
-            restore()
-            faulty = _copy_outputs(control.run(oracle, inputs))
-            restore()
+            faulty = _copy_outputs(control.run(reference, inputs))
+            _restore(shared, pristine)
             try:
                 compare_outputs(faulty, expected, evidence)
             except AssertionError:
                 pass
             else:
                 raise ValueError(f"negative control {control.name!r} was accepted")
-        return result
+        return results
     finally:
-        restore()
+        _restore(shared, pristine)
         # A caught negative-control failure keeps this frame in a reference cycle
         # until the next gc pass; drop the snapshots now so they never pile up.
         pristine.clear()
-        live.clear()
+        shared.clear()
 
 
 def assert_rounded(

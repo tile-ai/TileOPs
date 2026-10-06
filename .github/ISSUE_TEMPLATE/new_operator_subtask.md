@@ -41,6 +41,6 @@ Refer to:
 - [ ] Manifest `roofline` is present and consumable by `op.eval_roofline()`.
 - [ ] Op constructor and `forward()` match the manifest entry; `kernel_types` lists the kernels the op dispatches.
 - [ ] Tests use an independent reference implementation and cover relevant FP16/BF16 and edge cases.
-- [ ] Benchmarks take their calls from `manifest_calls` and record at least one non-`tileops` baseline unless explicitly justified.
+- [ ] Benchmarks take their cases from `bench.cases`, register the op in `benchmarks/_cases/`, and compare at least one implementation besides the op unless explicitly justified.
 - [ ] PR title and commits follow the current `[Feat][Scope]` / `[Perf][Scope]` / `[Fix][Scope]` convention.
 - [ ] Implementation follows **Google Python Style** for code and docstrings.

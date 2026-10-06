@@ -1,12 +1,13 @@
 """Benchmark for the chain speculative sampling op.
 
 Workload shapes come from the ops manifest; roofline FLOP and byte counts come from the op's
-``eval_roofline()`` via :class:`ManifestBenchmark`.
+``eval_roofline()``.
 """
 
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
@@ -15,9 +16,7 @@ from benchmarks.baselines import (
     flashinfer_op,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.sampling import ChainSpeculativeSamplingFwdOp
-from workloads.sampling import ChainSpeculativeSamplingWorkload
 
 
 def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
@@ -30,15 +29,13 @@ def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
     return (tokens >= 0).sum(-1).clamp(max=num_draft + 1) - 1
 
 
-@pytest.mark.parametrize("call", manifest_calls(ChainSpeculativeSamplingFwdOp))
-def test_chain_speculative_sampling_bench(call) -> None:
-    workload = ChainSpeculativeSamplingWorkload(call)
-    draft_probs, draft_token_ids, target_probs, seed, offset = workload.gen_inputs()
-    inputs = (draft_probs, draft_token_ids, target_probs, seed, offset)
-    op = ChainSpeculativeSamplingFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
-    compiled = compiled_reference(workload.ref_program)
-    functors = {"tileops": op, "torch-ref": workload.ref_program, TORCH_COMPILE_TAG: compiled}
+@pytest.mark.parametrize(
+    "case", bench.cases(ChainSpeculativeSamplingFwdOp), ids=lambda case: case.id
+)
+def test_chain_speculative_sampling_bench(case) -> None:
+    op = ChainSpeculativeSamplingFwdOp(**case.arguments)
+    compiled = compiled_reference(case.reference)
+    functors = {"torch-ref": case.reference, TORCH_COMPILE_TAG: compiled}
     flashinfer_chain = flashinfer_op("sampling.chain_speculative_sampling")
 
     def flashinfer_verify(draft, draft_ids, target, seed, offset):
@@ -85,11 +82,8 @@ def test_chain_speculative_sampling_bench(call) -> None:
         )
         return result, _accepted_lengths(result, num_draft).to(torch.int32)
 
-    functors[VLLM_TAG] = vllm_verify
-    bm.compare(
-        functors,
-        *inputs,
-        noncomparable={
-            VLLM_TAG: "adapter uses vLLM's ambient RNG instead of the call's seed/offset",
-        },
+    functors[VLLM_TAG] = bench.Implementation(
+        run=vllm_verify,
+        noncomparable_reason="adapter uses vLLM's ambient RNG instead of the call's seed/offset",
     )
+    bench.Runner(op, case).compare(functors)

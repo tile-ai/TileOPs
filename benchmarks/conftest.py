@@ -7,7 +7,7 @@ import benchmarks.baselines  # noqa: F401
 
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
-from benchmarks import benchmark_base
+from benchmarks import api
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 
@@ -60,7 +60,6 @@ def _emit(item, tag: str, entry: dict) -> None:
     """
     measurements = {
         **entry["result"],
-        "dtype": entry.get("dtype"),
         "unverified": (entry.get("params") or {}).get("unverified"),
         "no_ratio": (entry.get("params") or {}).get("no_ratio"),
     }
@@ -117,8 +116,8 @@ def pytest_configure(config):
             "so they run on cuda only"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
-    config.stash[_OUTER_VERIFYING] = benchmark_base.verifying()
-    benchmark_base.set_verifying(config.getoption("--tileops-verify"))
+    config.stash[_OUTER_VERIFYING] = api.verifying()
+    api.set_verifying(config.getoption("--tileops-verify"))
     set_events_fallback_allowed(config.getoption("--tileops-allow-events-fallback"))
 
 
@@ -127,7 +126,7 @@ def pytest_unconfigure(config):
     if _OUTER_EVENTS_FALLBACK in config.stash:
         set_events_fallback_allowed(config.stash[_OUTER_EVENTS_FALLBACK])
     if _OUTER_VERIFYING in config.stash:
-        benchmark_base.set_verifying(config.stash[_OUTER_VERIFYING])
+        api.set_verifying(config.stash[_OUTER_VERIFYING])
 
 
 def pytest_sessionstart(session):
@@ -198,4 +197,7 @@ def pytest_runtest_call(item):
                     item.user_properties.append(("baseline_ratio", f"{bl / tl:.4f}"))
     finally:
         _bench_results.entries = []
+        for value in getattr(getattr(item, "callspec", None), "params", {}).values():
+            if isinstance(value, api.Case):
+                value._release()
         _release_cuda_cache_after_case()

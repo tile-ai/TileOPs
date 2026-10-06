@@ -1,11 +1,9 @@
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark
 from benchmarks.timing import (
     Trace,
     _attributed_samples,
@@ -17,7 +15,6 @@ from benchmarks.timing import (
     _OffThreadLaunchError,
     bench_kernel,
 )
-from tileops.manifest import load_workloads
 
 
 def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
@@ -39,7 +36,7 @@ def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
     assert not offenders, (
         "these launch their kernels from autograd's engine thread, where the timer "
         "cannot tell which iteration they belong to; call the backward node instead, "
-        "via benchmarks.benchmark_base.backward_of:\n  " + "\n  ".join(offenders)
+        "via benchmarks.baselines.backward_of:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -227,47 +224,36 @@ def test_kernel_runtime_error_propagates():
         bench_kernel(boom)
 
 
-class SumFwdOp:
-    """Stands in for the manifest op of that name; only the class name is read."""
-
-
-class NotAManifestOp:
-    """A wrapper of the kind a benchmark must not report under."""
-
-
-def test_an_op_class_names_its_own_workloads():
-    """A caller holding the Op class does not have to repeat its name as a string."""
-    assert load_workloads(SumFwdOp) == load_workloads("SumFwdOp")
-
-
 @pytest.mark.smoke
-def test_manifest_benchmark_takes_its_name_from_the_op():
-    """The report name is the op's class, so it cannot disagree with what ran."""
-    assert ManifestBenchmark(SumFwdOp(), object()).op_name == "SumFwdOp"
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("events", [False, True])
+def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
+    """The reset runs before the flush, so what it writes is evicted, and outside the reading."""
+    from benchmarks import timing
+
+    order = []
+    flush = timing._reset_persisting_l2_cache
+    monkeypatch.setattr(
+        timing, "_reset_persisting_l2_cache", lambda: (order.append("flush"), flush())
+    )
+    x = torch.empty(1 << 24, device="cuda")
+    private = torch.empty_like(x)
+
+    def reset():
+        order.append("reset")
+        private.copy_(x)
+
+    def run():
+        order.append("run")
+        private.mul_(2)
+
+    if events:
+        monkeypatch.setattr(timing, "_collect_attributed", _raise_attribution)
+    samples = bench_kernel(run, reset=reset, allow_events_fallback=events)
+    assert order == ["reset", "flush", "run"] * (len(order) // 3)
+    if not events:
+        assert all(s.n_kernels == 1 and s.uncounted_copy_ms == 0 for s in samples)
 
 
-@pytest.mark.smoke
-def test_manifest_benchmark_refuses_an_op_the_manifest_does_not_declare():
-    """A wrapper or a subclass would report numbers under a name no spec knows."""
-    with pytest.raises(KeyError, match="NotAManifestOp"):
-        ManifestBenchmark(NotAManifestOp(), object())
-
-
-class TestRooflineInputsRecording:
-    """What decided a call's bytes travels with the reading."""
-
-    @staticmethod
-    def _reported(reader):
-        """What a benchmark over an op with this `roofline_inputs` records."""
-        return BenchmarkBase._roofline_inputs(
-            SimpleNamespace(op=SimpleNamespace(roofline_inputs=reader))
-        )
-
-    def test_a_reading_carries_what_the_op_reports(self):
-        assert self._reported(lambda: {"active_experts": 96}) == {"active_experts": 96}
-
-    def test_a_diagnostic_that_raises_does_not_fail_the_measurement(self):
-        def explode():
-            raise RuntimeError("routing was never bound")
-
-        assert self._reported(explode) == {}
+def _raise_attribution(*_args, **_kwargs):
+    raise _CUPTIAttributionError("forced")
