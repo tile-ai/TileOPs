@@ -11,6 +11,7 @@ from tileops.kernels.pool import (
     MaxPool1dWithIndicesKernel,
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
+    MaxPool2dIndicesRegisterKernel,
     MaxPool2dKernel,
     MaxPool2dRegisterKernel,
     MaxPool2dWithIndicesKernel,
@@ -256,7 +257,8 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
 
     ndim = 2
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel
+        "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel,
+        "max_pool2d_indices_register": MaxPool2dIndicesRegisterKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "max_pool": MaxPool2dIndicesFwdInterface

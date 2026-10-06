@@ -1913,3 +1913,40 @@ def test_max_pool2d_windows_read_into_registers(
     out = MaxPool2dFwdOp(kernel_size=kernel, stride=stride, padding=padding)(x)
     expected = F.max_pool2d(x, kernel, stride, padding)
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, kernel, stride, padding, dtype, offset, fill",
+    [
+        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, "ties", id="pad-ties-fp16"),
+        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.bfloat16, 1, "randn", id="misaligned-bf16"),
+        pytest.param((2, 3, 32, 32), 2, 2, 0, torch.float32, 0, "nan", id="nan-fp32"),
+        pytest.param((2, 3, 16, 32), 3, 1, 1, torch.float32, 0, "ties", id="reach-both-ties-fp32"),
+        pytest.param(
+            (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, "nan", id="reach-after-nan-fp32"
+        ),
+        # Past 128 MiB the run is read without the evict-first hint.
+        pytest.param((1, 1344, 224, 224), 2, 2, 0, torch.float16, 0, "nan", id="large-fp16"),
+    ],
+)
+def test_max_pool2d_indices_windows_read_into_registers(
+    shape, kernel, stride, padding, dtype, offset: int, fill: str
+) -> None:
+    """Windows a 16-byte load of an input row covers whole outputs of give torch's values
+    and positions: a tie keeps the first position, the last NaN in a window wins, and an
+    edge read in place of padding reports the edge. An input starting ``offset``
+    elements into its storage is served too."""
+    numel = math.prod(shape)
+    if fill == "ties":
+        storage = torch.randint(0, 3, (offset + numel,), device=run_device()).to(dtype)
+    else:
+        storage = torch.randn(offset + numel, device=run_device(), dtype=dtype)
+    x = storage[offset:].view(shape)
+    if fill == "nan":
+        x.view(-1)[::97] = float("nan")
+        x.view(-1)[1::97] = float("nan")
+    out, indices = MaxPool2dIndicesFwdOp(kernel_size=kernel, stride=stride, padding=padding)(x)
+    expected, expected_indices = F.max_pool2d(x, kernel, stride, padding, return_indices=True)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+    assert torch.equal(indices, expected_indices)
