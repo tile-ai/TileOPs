@@ -247,6 +247,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
         pytest.param(
             SoftmaxFwdOp, F.softmax, (4, 128256), marks=pytest.mark.full, id="fused-split"
         ),
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 32768), marks=pytest.mark.full, id="on-chip"),
     ],
 )
 def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
@@ -801,27 +802,59 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
         pytest.param(LogSoftmaxFwdOp, lambda t: F.log_softmax(t, dim=-1), id="log_softmax"),
     ],
 )
-def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(op: type, reference) -> None:
-    """A row whose first tiles hold only ``-inf`` still reduces its finite tail.
+@pytest.mark.parametrize(
+    "width, prefix",
+    [
+        # Two tiles of 28672 on the tiled body: the first is exactly the -inf prefix.
+        pytest.param(40000, 28672, id="tiled"),
+        # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
+        pytest.param(40960, 5120, id="on-chip"),
+    ],
+)
+def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(
+    op: type, reference, width: int, prefix: int
+) -> None:
+    """A row whose leading part holds only ``-inf`` still reduces its finite tail.
 
     The tiled path folds one tile at a time and rescales the running sum by the change
-    in the row maximum. While that maximum is still ``-inf`` the rescale subtracts one
-    infinity from another, and the ``NaN`` reaches every later tile. The row below is
-    wide enough to tile, so its leading tiles are entirely ``-inf``; the second row is
-    ``-inf`` throughout and must still come back as torch returns it.
+    in the row maximum; the on-chip path folds the partials of a row's CTAs. While a
+    maximum is still ``-inf`` the rescale subtracts one infinity from another, and the
+    ``NaN`` reaches the rest of the row. The second row is ``-inf`` throughout and must
+    still come back as torch returns it.
     """
     device = run_device()
     torch.manual_seed(1235)
-    # The shape has to reach the tiled body and fold more than one tile: too few rows
-    # dispatch to the split kernel instead, and a row that fits one tile never rescales.
-    # 264x40960 folds two tiles of 20480, so the first tile is exactly the -inf prefix.
-    x = torch.randn((264, 40960), dtype=torch.float32, device=device)
-    x[0, :20480] = float("-inf")
+    # Too few rows dispatch to the split kernel instead.
+    x = torch.randn((264, width), dtype=torch.float32, device=device)
+    x[0, :prefix] = float("-inf")
     x[1, :] = float("-inf")
 
     compare_outputs(
         op(dim=-1)(x),
         reference(x),
+        softmax_verification(x.dtype, logarithmic=op is LogSoftmaxFwdOp),
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op, reference, shape, dtype",
+    [
+        # Each CTA holds its whole share in registers.
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 32768), torch.bfloat16, id="registers"),
+        # Each CTA holds half its share in registers and stages the rest.
+        pytest.param(LogSoftmaxFwdOp, F.log_softmax, (264, 65536), torch.float16, id="staged"),
+        # Eight CTAs a row, each past the share a cluster is aimed at.
+        pytest.param(SoftmaxFwdOp, F.softmax, (264, 262144), torch.float32, id="widest"),
+    ],
+)
+def test_rows_read_once_across_a_cluster(op, reference, shape: tuple, dtype) -> None:
+    """Rows the on-chip kernel splits across a cluster match torch."""
+    torch.manual_seed(1235)
+    x = torch.randn(shape, dtype=dtype, device=run_device()) * 4
+    compare_outputs(
+        op(dim=-1)(x),
+        reference(x, dim=-1),
         softmax_verification(x.dtype, logarithmic=op is LogSoftmaxFwdOp),
     )
 
