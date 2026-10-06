@@ -269,11 +269,10 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
         )
-        build = (
-            _avg_pool3d_wide_kernel
-            if _wide_run(self.window, self.dtype_str) is not None
-            else _avg_pool3d_kernel
-        )
+        wide = _wide_run(self.window, self.dtype_str) is not None
+        build = _avg_pool3d_wide_kernel if wide else _avg_pool3d_kernel
+        # Only the wide-run program reads x in 16-byte vectors.
+        self.aligned_inputs = ("x",) if wide else ()
         self.kernel = build(self.window, self.dtype_str)
         self.init_config(config, tune)
 
