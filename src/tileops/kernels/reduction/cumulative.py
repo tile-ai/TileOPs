@@ -3,7 +3,6 @@
 import functools
 import itertools
 import math
-from dataclasses import dataclass
 from typing import Optional
 
 import tilelang
@@ -15,7 +14,7 @@ from tileops.kernels.constants import (
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     align_up,
@@ -33,30 +32,9 @@ from tileops.utils import WARP_LANES
 __all__ = ["CumsumParallelScanKernel", "CumulativeKernel", "CumulativeRowScanKernel"]
 
 
-@dataclass(frozen=True)
-class _CumulativeScanPolicy:
-    """Shape and shared-memory heuristics for cumulative scan kernels."""
-
-    # Multiple of DEFAULT_ALIGNMENT for T.copy shared memory alignment.
-    default_block_n: int = 128
-
-    # Breaks shared-memory bank conflicts for fp16/bf16 row staging.
-    smem_pad: int = 8
-
-    # Elements per thread the split aims for.
-    row_scan_chunk: int = 64
-    # Block width past which the split lengthens the chunk instead of adding warps.
-    row_scan_wide_threads: int = 256
-    # Longest chunk a thread takes. It lives in fp32 registers, so 256 would spill.
-    row_scan_max_chunk: int = 128
-    # Pads _row_scan_pad chooses between, in vector accesses. A whole vector access is
-    # what keeps a chunk 16-byte aligned, which the shared access needs to stay 128-bit.
-    row_scan_pad_vectors: tuple = (1, 2)
-    row_scan_min_threads: int = 64
-    row_scan_max_threads: int = 1024
-
-
-_SCAN_POLICY = _CumulativeScanPolicy()
+# Columns padding each row of a shared tile against the bank conflicts of 16-bit staging;
+# the tiles and the budgets that size them must agree on it.
+_SMEM_PAD = 8
 
 
 def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
@@ -67,7 +45,9 @@ def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
     ``SHARED_BANK_SPAN_BYTES``. This returns the candidate pad that shares least, which
     depends on *chunk*: a fixed pad leaves some chunks striding the whole span.
     """
-    candidates = [k * VECTOR_ACCESS_BYTES // elem_bytes for k in _SCAN_POLICY.row_scan_pad_vectors]
+    # One or two vector accesses: a whole access keeps a chunk 16-byte aligned, which the
+    # shared access needs to stay 128-bit.
+    candidates = [k * VECTOR_ACCESS_BYTES // elem_bytes for k in (1, 2)]
     return min(
         candidates,
         key=lambda pad: (math.gcd((chunk + pad) * elem_bytes, SHARED_BANK_SPAN_BYTES), pad),
@@ -77,17 +57,14 @@ def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
 def _row_scan_chunk_ok(chunk: int, elem_bytes: int, threads: int) -> bool:
     """Whether a block of *threads* may give each thread a chunk of *chunk* elements.
 
-    Up to ``row_scan_chunk`` always. A block already ``row_scan_wide_threads`` wide may
-    go as far as ``row_scan_max_chunk``, but only with a chunk of whole vector accesses,
-    which is what keeps the chunk 16-byte aligned.
+    Up to 64 elements always. A block already 256 threads wide lengthens the chunk
+    rather than adding warps, as far as 128 elements, the longest fp32 chunk the
+    registers hold without spilling; only with a chunk of whole vector accesses, which
+    is what keeps the chunk 16-byte aligned.
     """
-    if chunk <= _SCAN_POLICY.row_scan_chunk:
+    if chunk <= 64:
         return True
-    return (
-        threads >= _SCAN_POLICY.row_scan_wide_threads
-        and chunk <= _SCAN_POLICY.row_scan_max_chunk
-        and (chunk * elem_bytes) % VECTOR_ACCESS_BYTES == 0
-    )
+    return threads >= 256 and chunk <= 128 and (chunk * elem_bytes) % VECTOR_ACCESS_BYTES == 0
 
 
 def _row_scan_threads(N_padded: int, elem_bytes: int) -> int:
@@ -97,9 +74,9 @@ def _row_scan_threads(N_padded: int, elem_bytes: int) -> int:
     accepts, or the widest divisor tried when no block qualifies -- which
     :func:`row_scan_fits` then declines.
     """
-    threads = _SCAN_POLICY.row_scan_min_threads
+    threads = 64
     widest = threads
-    while threads <= _SCAN_POLICY.row_scan_max_threads:
+    while threads <= 1024:
         if N_padded % threads == 0:
             widest = threads
             if _row_scan_chunk_ok(N_padded // threads, elem_bytes, threads):
@@ -259,8 +236,8 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_in = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
+                    shared_in = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
                     tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
@@ -334,8 +311,8 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                 y: T.Tensor[(M, N_padded), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_in = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), dtype)
+                    shared_in = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
+                    shared_out = T.alloc_shared((block_m, block_n + _SMEM_PAD), dtype)
                     tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     out_f32 = T.alloc_fragment((block_m, block_n), "float32")
                     acc = T.alloc_fragment((block_m,), "float32")
@@ -467,6 +444,7 @@ class _CumulativeKernelBase(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         axes = (self.scan_axis,)
         y = self._scan_rows(rows_for_axes(x, axes))
@@ -516,7 +494,7 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
     @property
     def default_config(self) -> dict:
         block_n = 256 if self.N > 16384 else 128
-        smem_per_row = (block_n + _SCAN_POLICY.smem_pad) * 4  # fp32 intermediate
+        smem_per_row = (block_n + _SMEM_PAD) * 4  # fp32 intermediate
         max_block_m = STATIC_SHARED_BYTES // smem_per_row
         block_m = max(1, min(16, self.M, max_block_m))
         return {"block_m": block_m, "block_n": block_n, "threads": 256}
@@ -543,9 +521,10 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
 
     @property
     def default_config(self) -> dict:
-        block_n = _SCAN_POLICY.default_block_n
+        # A multiple of DEFAULT_ALIGNMENT, so T.copy keeps the shared tile aligned.
+        block_n = 128
         elem_size = torch_dtype_nbytes(self.dtype)
-        smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
+        smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
         max_block_m = STATIC_SHARED_BYTES // smem_per_row
 
         if self.M < 128:
@@ -567,7 +546,7 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
             if self.N_padded % block_n != 0:
                 continue
             # Account for padding in shared memory budget calculation
-            smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
+            smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
             max_block_m = STATIC_SHARED_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
             threads_list = [128, 256]
@@ -607,7 +586,7 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
             tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
         ):
             with T.Kernel(T.ceildiv(M, block_m), n_tiles, threads=threads) as (pid_m, tile_idx):
-                tile_shared = T.alloc_shared((block_m, block_n + _SCAN_POLICY.smem_pad), "float32")
+                tile_shared = T.alloc_shared((block_m, block_n + _SMEM_PAD), "float32")
                 tile_frag = T.alloc_fragment((block_m, block_n), "float32")
 
                 for i, j in T.Parallel(block_m, block_n):

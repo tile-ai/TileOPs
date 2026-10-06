@@ -5,6 +5,7 @@ Each op reduces along a configurable dim and returns int64 indices.
 Uses exact match (torch.equal) instead of allclose.
 """
 
+import math
 from typing import cast
 
 import pytest
@@ -598,5 +599,25 @@ def test_argmax_wide_rows_under_tuning(tune: bool) -> None:
     compare_outputs(
         ArgmaxFwdOp(dim=-1, tune=tune)(x),
         torch.argmax(x, dim=-1),
+        reduction_verification(torch.int64),
+    )
+
+
+@pytest.mark.parametrize(
+    "shape, dim",
+    [
+        pytest.param((64, 8192), -1, marks=pytest.mark.smoke, id="rows"),
+        pytest.param((4, 128, 4096), 0, marks=pytest.mark.full, id="strided"),
+    ],
+)
+def test_argmax_contiguous_input_off_a_vector_boundary(shape: tuple, dim: int) -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches torch."""
+    from tileops.ops.reduction import ArgmaxFwdOp
+
+    x = torch.randn(math.prod(shape) + 1, dtype=torch.float16, device=run_device())[1:]
+    x = x.view(shape)
+    compare_outputs(
+        _call(ArgmaxFwdOp(dim=dim), x),
+        torch.argmax(x, dim=dim),
         reduction_verification(torch.int64),
     )

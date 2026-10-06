@@ -104,13 +104,33 @@ def test_a_zero_correction_matches_torch(op_cls, ref_fn, dim) -> None:
     _check(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=0)
 
 
-@pytest.mark.smoke
-def test_edge_axis_variance_keeps_a_large_mean_fp16() -> None:
-    """The edge-axis path merges Welford partials; a naive sum of squares would cancel."""
+@pytest.mark.parametrize(
+    "op_cls, ref_fn, shape, dim",
+    [
+        # The edge-axis path merges Welford partials.
+        pytest.param(VarFwdOp, _ref_var, (4, 8, 256), (0, 2), marks=pytest.mark.smoke, id="edge"),
+        # Padded rows, one tile and several: the pad is masked out of the centered sum.
+        pytest.param(VarFwdOp, _ref_var, (4, 8, 255), -1, marks=pytest.mark.full, id="row"),
+        pytest.param(
+            VarMeanFwdOp, _ref_var_mean, (4, 8, 255), -1, marks=pytest.mark.full, id="row-pair"
+        ),
+        pytest.param(StdFwdOp, _ref_std, (4, 33000), -1, marks=pytest.mark.full, id="tiled-row"),
+        pytest.param(
+            VarMeanFwdOp,
+            _ref_var_mean,
+            (4, 33000),
+            -1,
+            marks=pytest.mark.full,
+            id="tiled-row-pair",
+        ),
+    ],
+)
+def test_variance_keeps_a_large_mean_fp16(op_cls, ref_fn, shape, dim) -> None:
+    """A mean far from zero, where a naive sum of squares would cancel."""
     torch.manual_seed(0)
-    x = (torch.randn(4, 8, 256, dtype=torch.float16, device=run_device()) + 60.0).half()
+    x = (torch.randn(*shape, dtype=torch.float16, device=run_device()) + 60.0).half()
 
-    _check(VarFwdOp, _ref_var, x, dim=(0, 2), keepdim=False, correction=1)
+    _check(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=1)
 
 
 @pytest.mark.smoke

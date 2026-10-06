@@ -54,6 +54,9 @@ class LayerNormFixture(FixtureBase):
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # fp32, one warp per row: 250 vectors, so six lanes hold one fewer
                 pytest.param(1025, 1000, torch.float32, False, marks=pytest.mark.full),
+                # Tuned over 128 and 256 threads: 256 leaves each thread an odd 95 elements
+                # of a row walked from shared memory by a 512-row grid.
+                pytest.param(512, 24320, torch.float16, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -62,7 +65,7 @@ class LayerNormFixture(FixtureBase):
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormFwdOp(normalized_shape=(n,))
+    op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
     test.check(op, *test.gen_inputs())
 
 
@@ -156,10 +159,12 @@ class LayerNormLargeOffsetFixture(FixtureBase):
             [
                 pytest.param(4, 4096, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(4, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+                # A padded row: the pad columns must not add to the variance, held in
+                # registers here and walked from shared memory by a 1024-row grid.
+                pytest.param(4, 3000, torch.float32, marks=pytest.mark.smoke),
                 # One warp per row: a lane slot past the row must not add to the variance
                 pytest.param(4, 1020, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.full),
+                pytest.param(1024, 8300, torch.float32, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -226,6 +231,30 @@ def test_either_affine_tensor_alone_matches_torch(give: str, n: int) -> None:
     )
 
 
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n", [pytest.param(4096, id="aligned-row"), pytest.param(1000, id="warp-row")]
+)
+def test_layer_norm_reads_inputs_off_the_vector_boundary(n: int) -> None:
+    """A contiguous input, weight and bias may start anywhere in their storage."""
+    dtype = torch.bfloat16
+    x = _misaligned(torch.randn(2, n, dtype=dtype, device=run_device()))
+    weight = _misaligned(torch.randn(n, dtype=dtype, device=x.device))
+    bias = _misaligned(torch.randn(n, dtype=dtype, device=x.device))
+    compare_outputs(
+        LayerNormFwdOp(normalized_shape=(n,))(x, weight, bias),
+        F.layer_norm(x.float(), (n,), weight.float(), bias.float()).to(dtype),
+        normalization_verification("LayerNormFwdOp", dtype),
+    )
+
+
 class FusedAddLayerNormTest(FusedAddLayerNormWorkload, TestBase):
     pass
 
@@ -261,6 +290,15 @@ def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool)
     test = FusedAddLayerNormTest(m, n, dtype)
     op = FusedAddLayerNormFwdOp(tune=tune)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_fused_add_layer_norm_large_offset() -> None:
+    """A padded row whose mean far outgrows its spread keeps the pad out of the variance."""
+    workload = LayerNormLargeOffsetWorkload(4, 3000, torch.float32)
+    x, weight, bias = workload.gen_inputs()
+    y, _ = FusedAddLayerNormFwdOp()(x, torch.zeros_like(x), weight, bias)
+    compare_outputs(y, workload.ref_program(x, weight, bias), workload.verification(x))
 
 
 class FusedAddLayerNormNonContigFixture(FixtureBase):

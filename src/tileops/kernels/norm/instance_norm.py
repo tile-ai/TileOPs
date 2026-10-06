@@ -223,9 +223,7 @@ def _instance_norm_train_kernel(
                         var_i = acc_squares[i] / float(D) - mean_val[i] * mean_val[i]
                     else:
                         mean_i = mean_val[i]
-                        var_i = (acc[i] - float(D_padded - D) * mean_val[i] * mean_val[i]) / float(
-                            D
-                        )
+                        var_i = acc[i] / float(D)
                     valid = s * block_m + i < N
                     mean_update[i] = T.if_then_else(
                         valid,

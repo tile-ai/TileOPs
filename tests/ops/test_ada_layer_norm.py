@@ -8,7 +8,12 @@ from tileops.backend import BUILTIN
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
-from workloads.norm import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
+from workloads.norm import (
+    AdaLayerNormWorkload,
+    AdaLayerNormZeroWorkload,
+    LayerNormLargeOffsetWorkload,
+)
+from workloads.numerics import compare_outputs
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
@@ -58,6 +63,17 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     test = AdaLayerNormTest(m, n, dtype)
     op = AdaLayerNormFwdOp(eps=test.eps, target=BUILTIN)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_ada_layer_norm_large_offset() -> None:
+    """A padded row whose mean far outgrows its spread keeps the pad out of the variance."""
+    large = LayerNormLargeOffsetWorkload(4, 1152, torch.float32)
+    test = AdaLayerNormTest(4, 1152, torch.float32)
+    x, _, _ = large.gen_inputs()
+    _, scale, shift = test.gen_inputs()
+    expected = test.ref_program(x, scale, shift)
+    compare_outputs(AdaLayerNormFwdOp()(x, scale, shift), expected, large.verification(x))
 
 
 @pytest.mark.cuda_only

@@ -13,35 +13,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops._csrc import csrc_path
+from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.utils import WARP_LANES
 
 __all__ = ["RMSNormOnChipKernel"]
-
-# Store a CTA's partial sum from registers into peer ``peer``'s ``slot``; the store
-# completes its four bytes of the transaction on the peer's ``bar``.
-_PRELUDE = r"""
-static __device__ __forceinline__ void tl_send_partial(
-    void* slot, void* bar, int peer, float total) {
-  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(slot));
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile(
-      "{\n\t.reg .b32 rs, rm;\n\t"
-      "mapa.shared::cluster.u32 rs, %0, %2;\n\t"
-      "mapa.shared::cluster.u32 rm, %1, %2;\n\t"
-      "st.async.shared::cluster.mbarrier::complete_tx::bytes.f32 [rs], %3, [rm];\n\t}"
-      :: "r"(s), "r"(m), "r"(peer), "f"(total) : "memory");
-}
-
-// Arrive on ``bar`` once, expecting ``bytes`` from the peers' stores.
-static __device__ __forceinline__ void tl_expect_partials(void* bar, unsigned bytes) {
-  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;"
-               :: "r"(m), "r"(bytes) : "memory");
-}
-"""
 
 
 @functools.lru_cache(maxsize=32)
@@ -54,7 +32,7 @@ def _rms_norm_on_chip_kernel(
     registers, the rest staged in shared memory, by cp.async where ``async_stage``.
     The buffers are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     """
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     chunk = N // cluster
     held = threads * held_vectors * vec
     staged = chunk - held
@@ -64,7 +42,7 @@ def _rms_norm_on_chip_kernel(
     own = warps
     clustered = cluster > 1
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=["-include", csrc_path("cluster_partials.h")])
     def build():
         def normalize(value, rrms, scale):
             """*value* scaled by the row's reciprocal RMS and, where there is one, the weight."""
@@ -77,9 +55,7 @@ def _rms_norm_on_chip_kernel(
             weight: T.Tensor[(cluster if has_weight else 1, chunk if has_weight else 1), dtype],
             y: T.Tensor[(M * cluster, chunk), dtype],
         ):
-            with T.ClusterKernel(
-                M * cluster, threads=threads, cluster_dims=cluster, prelude=_PRELUDE
-            ) as cta:
+            with T.ClusterKernel(M * cluster, threads=threads, cluster_dims=cluster) as cta:
                 tx = T.get_thread_binding()
                 rank = cta % cluster
                 values = T.alloc_local([held_vectors * vec], dtype)
@@ -97,7 +73,7 @@ def _rms_norm_on_chip_kernel(
                     if tx == 0:
                         T.call_extern(
                             "handle",
-                            "tl_expect_partials",
+                            "tl::tileops_expect_partials",
                             T.address_of(received[0]),
                             4 * (cluster - 1),
                         )
@@ -143,7 +119,7 @@ def _rms_norm_on_chip_kernel(
                     if tx < cluster and tx != rank:
                         T.call_extern(
                             "handle",
-                            "tl_send_partial",
+                            "tl::tileops_send_partial",
                             T.address_of(sums[own + rank]),
                             T.address_of(received[0]),
                             tx,
@@ -184,48 +160,41 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
 
     1024 threads a CTA hold a share of the row in registers and the rest in shared memory.
     A row that one CTA cannot hold is split across the smallest power-of-two cluster whose
-    CTAs can; the cluster is at most ``_MAX_CLUSTER`` wide.
+    CTAs can, at most a portable cluster wide.
     """
 
     supported_archs = [90]
     preferred_over = frozenset({"rms_norm", "rms_norm_streaming"})
 
     _THREADS = 1024
-    # 16-byte vectors a thread holds in registers: four once a CTA's share of the row passes
-    # ``_ASYNC_STAGE_BYTES``, where the staged rest goes in by cp.async, else three.
-    _HELD_VECTORS_SMALL = 3
-    _HELD_VECTORS_LARGE = 4
-    _ASYNC_STAGE_BYTES = 128 * 1024
-    # Shared memory a CTA keeps for its sums and barrier rather than the row.
-    _RESERVED_BYTES = 1024
-    # Rows at most this many bytes stay with the register-held kernel.
-    _MIN_ROW_BYTES = 80 * 1024
-    _MAX_CLUSTER = 8
 
     @classmethod
     def _plan(cls, n: int, dtype: torch.dtype, smem_budget: int) -> Optional[tuple]:
         """``(cluster, held_vectors, async_stage)`` for rows of *n*, or ``None``."""
-        elem = torch.empty((), dtype=dtype).element_size()
+        elem = dtype.itemsize
         vec = VECTOR_ACCESS_BYTES // elem
-        if n * elem <= cls._MIN_ROW_BYTES:
+        # Rows of at most 80 KB stay with the register-held kernel.
+        if n * elem <= 80 * 1024:
             return None
+        # A CTA's share past 128 KB stages its rest by cp.async.
+        async_stage_bytes = 128 * 1024
+        # Shared memory a CTA keeps for its sums and barrier rather than the row.
+        reserved_bytes = 1024
         cluster = 1
-        while cluster <= cls._MAX_CLUSTER:
+        while cluster <= MAX_PORTABLE_CLUSTER_BLOCKS:
             chunk = n // cluster
             share = chunk * elem
-            held_vectors = (
-                cls._HELD_VECTORS_LARGE
-                if share > cls._ASYNC_STAGE_BYTES
-                else cls._HELD_VECTORS_SMALL
-            )
+            async_stage = share > async_stage_bytes
+            # 16-byte vectors a thread holds in registers.
+            held_vectors = 4 if async_stage else 3
             staged = chunk - cls._THREADS * held_vectors * vec
             if (
                 n % cluster == 0
                 and chunk % (cls._THREADS * vec) == 0
                 and staged > 0
-                and staged * elem <= smem_budget - cls._RESERVED_BYTES
+                and staged * elem <= smem_budget - reserved_bytes
             ):
-                return cluster, held_vectors, share > cls._ASYNC_STAGE_BYTES
+                return cluster, held_vectors, async_stage
             cluster *= 2
         return None
 
@@ -253,6 +222,8 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
         rows = x.reshape(-1, self.n)
         m = rows.shape[0]
         has_weight = weight is not None

@@ -12,7 +12,9 @@ from tileops.kernels.convolution._common import (
     CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
+    grid_refusal,
     launch,
+    operand_refusal,
 )
 from tileops.kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -653,6 +655,14 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         )
 
     @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return (
+            super().refusal(call)
+            or operand_refusal(call.n * call.c_out * call.out_l)
+            or grid_refusal(z=call.n)
+        )
+
+    @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
@@ -745,6 +755,10 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups == 1
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -878,6 +892,10 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups == 1 and call.stride_l == 1 and call.kernel_l > 1 and call.c_in >= 16
 
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or operand_refusal(call.n * call.c_out * call.out_l)
+
     @property
     def default_config(self) -> dict:
         return {**super().default_config, "taps": 1}
@@ -928,6 +946,15 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups > 1
+
+    @classmethod
+    def _grid_z(cls, call: Conv1dCall) -> int:
+        """Blocks the program launches along grid z: one per image and group."""
+        return call.n * call.groups
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -1068,6 +1095,11 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+
+    @classmethod
+    def _grid_z(cls, call: Conv1dCall) -> int:
+        """One block row per image, not per group."""
+        return call.n
 
     def _build_program(self) -> None:
         self.kernel = _conv1d_direct_kernel(

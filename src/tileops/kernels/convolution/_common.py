@@ -1,10 +1,12 @@
-"""What the 1d, 2d and 3d kernels share: the autotune search space and the launch path."""
+"""What the 1d, 2d and 3d kernels share: the autotune search space, the grid limit and the
+launch path."""
 
 import itertools
 from typing import Optional
 
 import torch
 
+from tileops.kernels.constants import MAX_GRID_YZ_BLOCKS
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_version
 
@@ -14,6 +16,25 @@ from tileops.utils import get_shared_memory_optin, get_sm_version
 # short kernel; the narrowest one, because the long 1d grids lose monotonically as it
 # widens. Whether to swizzle at all is a searched config.
 CONV_SWIZZLE_PANEL = 2
+
+
+def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
+    """Why a launch of ``y`` blocks along grid y and ``z`` along z cannot run, or ``None``."""
+    for axis, blocks in (("y", y), ("z", z)):
+        if blocks > MAX_GRID_YZ_BLOCKS:
+            return f"launches {blocks} blocks along grid {axis}, past {MAX_GRID_YZ_BLOCKS}"
+    return None
+
+
+def operand_refusal(elements: int) -> Optional[str]:
+    """Why a program with an operand of ``elements`` elements cannot build, or ``None``.
+
+    TileLang fails to build the programs that ask once an index into that operand passes
+    int32. Each caller passes the largest of the operands its program fails on.
+    """
+    if elements > 2**31 - 1:
+        return f"builds only for operands of at most 2**31 - 1 elements, and one holds {elements}"
+    return None
 
 
 def conv_num_stages(device_index: Optional[int]) -> int:

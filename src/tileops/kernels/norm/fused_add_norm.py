@@ -48,7 +48,6 @@ _VEC = VECTOR_ACCESS_BYTES // 2
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
-    pad_count = N_padded - N
 
     @tilelang.jit(out_idx=[4, 5])
     def _func(block_m, threads):
@@ -110,13 +109,15 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
 
                 # --- Centered variance reduction ---
                 for i, j in T.Parallel(block_m, N_padded):
-                    add_f32[i, j] = (add_f32[i, j] - mean_val[i]) * (add_f32[i, j] - mean_val[i])
+                    add_f32[i, j] = T.if_then_else(
+                        j < N,
+                        (add_f32[i, j] - mean_val[i]) * (add_f32[i, j] - mean_val[i]),
+                        0.0,
+                    )
 
                 T.reduce_sum(add_f32, acc, dim=1)
                 for i in T.Parallel(block_m):
-                    rstd[i] = T.rsqrt(
-                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
-                    )
+                    rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
 
                 # --- Output y: (add - mean) * rstd * weight + bias ---
                 # Re-cast from x_local (which holds the pre-norm sum in native dtype)

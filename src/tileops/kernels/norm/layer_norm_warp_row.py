@@ -14,7 +14,7 @@ import torch
 from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT
 from tileops.utils import WARP_LANES
@@ -114,21 +114,13 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
 
 class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     """LayerNorm with one warp per row, for rows that split into 16-byte vectors, at most
-    eight to a lane, but not into 256-element blocks.
+    twelve fp32 or fifteen 16-bit vectors to a lane, but not into 256-element blocks.
 
     Supports SM80+ architectures.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"layer_norm"})
-
-    # Vectors one lane holds at most. Past eight, the fp32 copy of the row costs a 4096-row
-    # call more than the padded block it replaces.
-    _MAX_LANE_VECTORS = 8
-
-    # Warps, and so rows, in one CTA.
-    _WARP_CANDIDATES = (1, 2, 4, 8)
-    _DEFAULT_WARPS = 4
 
     @classmethod
     def applies(cls, call: LayerNormCall) -> bool:
@@ -141,7 +133,9 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
             return f"serves rows that do not split into {ALIGNMENT}-element blocks"
         if call.n % vec:
             return f"reads the row in 16-byte vectors of {vec} elements"
-        widest = WARP_LANES * cls._MAX_LANE_VECTORS * vec
+        # Vectors one lane holds at most: past twelve fp32 or fifteen 16-bit vectors the
+        # padded block is faster at 1024 and 4096 rows.
+        widest = WARP_LANES * (12 if call.dtype.itemsize == 4 else 15) * vec
         if call.n > widest:
             return f"holds a row of at most {widest} elements in one warp's registers"
         return None
@@ -173,11 +167,12 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {"warps": self._DEFAULT_WARPS}
+        # Warps, and so rows, in one CTA.
+        return {"warps": 4}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [{"warps": warps} for warps in self._WARP_CANDIDATES]
+        return [{"warps": warps} for warps in (1, 2, 4, 8)]
 
     def forward(
         self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
@@ -198,6 +193,9 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(x=x, weight=weight, bias=bias)
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
+        bias = vector_aligned(bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

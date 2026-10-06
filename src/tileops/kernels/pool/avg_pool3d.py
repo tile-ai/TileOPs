@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
@@ -268,11 +268,9 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
         )
-        build = (
-            _avg_pool3d_wide_kernel
-            if _wide_run(self.window, self.dtype_str) is not None
-            else _avg_pool3d_kernel
-        )
+        # Only the wide-run program reads x in 16-byte vectors.
+        self._wide = _wide_run(self.window, self.dtype_str) is not None
+        build = _avg_pool3d_wide_kernel if self._wide else _avg_pool3d_kernel
         self.kernel = build(self.window, self.dtype_str)
         self.init_config(config, tune)
 
@@ -286,6 +284,9 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = x.contiguous()
+        if self._wide:
+            x = vector_aligned(x)
         kernel = self.kernel(self.config["threads"])
-        volumes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
+        volumes = kernel(x.view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)

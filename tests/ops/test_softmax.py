@@ -13,6 +13,8 @@ All operators use the spec-conformant interface:
   LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 """
 
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -262,6 +264,33 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
         ref_fn(x, dim=-1, dtype=torch.float32),
         softmax_verification(y.dtype, input_dtype=x.dtype, logarithmic=op_cls is LogSoftmaxFwdOp),
     )
+
+
+@pytest.mark.parametrize(
+    "case_cls, op_cls, dim, shape",
+    [
+        pytest.param(
+            SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
+        ),
+        pytest.param(
+            LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
+        ),
+        pytest.param(
+            LogSumExpCase,
+            LogSumExpFwdOp,
+            (0, 2),
+            (8, 64, 1024),
+            marks=pytest.mark.full,
+            id="logsumexp-edge-split",
+        ),
+    ],
+)
+def test_contiguous_input_off_a_vector_boundary(case_cls, op_cls, dim, shape: tuple) -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches torch."""
+    x = torch.randn(math.prod(shape) + 1, device=run_device(), dtype=torch.float16)[1:]
+    x = x.view(shape)
+    case = case_cls(shape, x.dtype, dim=dim)
+    compare_outputs(op_cls(dim=dim)(x), case.ref_program(x), case.verification(x))
 
 
 # LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)

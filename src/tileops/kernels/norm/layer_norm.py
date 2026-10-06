@@ -9,8 +9,7 @@ so must reach slots the reader does not own.
 256-element alignment (512 bytes for fp16/bf16) is required by the T.copy() that fills
 that shared buffer. Boundary handling for non-aligned N is performed inside the kernel,
 eliminating host-side padding allocations and copies. Padding zeros contribute 0 to the
-mean reduction; the centered two-pass variance computation subtracts their exact
-contribution to remain numerically stable for large-offset inputs.
+mean reduction and are masked out of the centered variance sum.
 """
 
 import functools
@@ -20,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
@@ -30,23 +29,30 @@ __all__ = ["LayerNormKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_elements, sm_count):
+def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
-    pad_count = N_padded - N  # number of zero-padded elements per row
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
-        # a grid that oversubscribes the device is paid back for the walk.
+        # a grid that oversubscribes the device is paid back for the walk, and
+        # only once a thread owns 64 elements: twice RMSNorm's, for two walks.
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
         per_thread_partial = (
             -(-M // block_m) > sm_count
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
-            and N_padded // threads >= partial_min_elements
+            and N_padded // threads >= 64
+            # FIXME(staged-rollout): an odd walk is routed to the fragment path
+            #
+            # Broken invariant: the shared-memory walk serves every count it divides.
+            # Why: TileLang generates an out-of-bounds shared read for some odd counts,
+            #      95 elements a thread at 256 threads among them.
+            # Cleanup: drop this clause once tile-ai/tilelang#3438 is fixed.
+            and N_padded // threads % 2 == 0
         )
 
         def affine(normed, weight, bias, j):
@@ -96,18 +102,15 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_eleme
                     for i in T.Parallel(block_m):
                         mean_val[i] = acc[i] / float(N)
 
-                    # Padded positions (x=0) contribute mean^2; corrected below.
                     T.clear(x_f32)
                     for i, j in T.Parallel(block_m, threads):
                         for k in T.serial(N_padded // threads):
                             d = T.cast(shared_buf[i, k * threads + j], "float32") - mean_val[i]
-                            x_f32[i, j] += d * d
+                            x_f32[i, j] += T.if_then_else(k * threads + j < N, d * d, 0.0)
 
                     T.reduce_sum(x_f32, acc, dim=1)
                     for i in T.Parallel(block_m):
-                        rstd[i] = T.rsqrt(
-                            (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
-                        )
+                        rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
 
                     if not needs_pad:
                         T.copy(shared_buf, x_local)
@@ -138,15 +141,16 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, partial_min_eleme
                     for i in T.Parallel(block_m):
                         mean_val[i] = acc[i] / float(N)
 
-                    # Padded positions (x=0) contribute mean^2; corrected below.
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+                        x_f32[i, j] = T.if_then_else(
+                            j < N,
+                            (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i]),
+                            0.0,
+                        )
 
                     T.reduce_sum(x_f32, acc, dim=1)
                     for i in T.Parallel(block_m):
-                        rstd[i] = T.rsqrt(
-                            (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
-                        )
+                        rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
 
                 # --- Output: y = (x - mean) * rstd * weight + bias ---
                 # A padded row under the partial walk is the one case the fragment
@@ -199,10 +203,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-
-    # Row elements a thread must own before the walk pays. Two reductions here,
-    # so two walks, so twice the row RMSNorm needs.
-    PARTIAL_MIN_ELEMENTS_PER_THREAD = 64
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -260,6 +260,9 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(x=x, weight=weight, bias=bias)
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
+        bias = vector_aligned(bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
@@ -276,7 +279,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             self.dtype_str,
             has_weight,
             has_bias,
-            self.PARTIAL_MIN_ELEMENTS_PER_THREAD,
             # The device the input is on, not whichever is current.
             get_sm_count(rows.device.index),
         )

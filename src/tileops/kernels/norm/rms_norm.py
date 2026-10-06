@@ -18,7 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
@@ -28,14 +28,15 @@ __all__ = ["RMSNormKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, partial_min_elements, sm_count):
+def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count):
     col_guard = N_padded != N
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
-        # a grid that oversubscribes the device is paid back for the walk.
+        # a grid that oversubscribes the device is paid back for the walk, and
+        # only once a thread owns 32 elements.
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
         per_thread_partial = (
@@ -43,7 +44,7 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, partial_min_element
             and -(-M // block_m) > sm_count
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
-            and N_padded // threads >= partial_min_elements
+            and N_padded // threads >= 32
         )
 
         @T.prim_func
@@ -143,17 +144,9 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         identity = (call.n, call.eps, call.dtype)
         return identity, lambda: cls(*identity)
 
-    # Row elements a thread must own before the walk pays. One reduction here,
-    # so one walk.
-    PARTIAL_MIN_ELEMENTS_PER_THREAD = 32
     # Rows at most this wide share a block of the default 128 threads: one of them gives
     # each thread less than one 16-byte access of a 16-bit dtype.
     _SHARED_ROW_MAX = 512
-    # Elements such a block then holds: two 16-byte accesses per thread.
-    _SHARED_BLOCK_ELEMENTS = 2048
-    # Threads a row past the static shared budget gets untuned: never measurably slower
-    # than 128 there, and faster as the row widens.
-    _WIDE_ROW_THREADS = 256
 
     def __init__(
         self,
@@ -183,9 +176,12 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     def default_config(self) -> dict:
         config = select_row_config()
         if self.N_padded <= self._SHARED_ROW_MAX:
-            config["block_m"] = self._SHARED_BLOCK_ELEMENTS // self.N_padded
+            # 2048 elements a block: two 16-byte accesses a thread.
+            config["block_m"] = 2048 // self.N_padded
         elif self.N_padded * self.dtype.itemsize > STATIC_SHARED_BYTES:
-            config["threads"] = self._WIDE_ROW_THREADS
+            # Past the static shared budget 256 threads are never measurably slower than
+            # 128, and faster as the row widens.
+            config["threads"] = 256
         return config
 
     @property
@@ -210,6 +206,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         Raises:
             ValueError: Either input is not on a CUDA device.
         """
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
         if not (x.is_cuda and (weight is None or weight.is_cuda)):
             weight_device = None if weight is None else weight.device
             raise ValueError(
@@ -232,7 +230,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             self.eps,
             self.dtype_str,
             has_weight,
-            self.PARTIAL_MIN_ELEMENTS_PER_THREAD,
             # The device the input is on, not whichever is current.
             get_sm_count(x.device.index),
         )

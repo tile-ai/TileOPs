@@ -14,7 +14,7 @@ from tileops.kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, TopPMaskFwdInterface
 from tileops.kernels.sampling.row_tiles import (
     INF_BITS,
@@ -430,8 +430,8 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     def forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         self._require_cuda(logits=logits, p=p)
         # A row of whole 16-byte vectors is read as vectors, from the start of the row.
-        if self._vec > 1 and logits.data_ptr() % VECTOR_ACCESS_BYTES:
-            logits = logits.clone()
+        if self._vec > 1:
+            logits = vector_aligned(logits)
         blocks = self.call.batch * self._parts
         part_top = torch.empty(blocks, dtype=torch.float32, device=logits.device)
         part_bins = torch.empty(blocks * _SEARCH_BINS, dtype=torch.float32, device=logits.device)

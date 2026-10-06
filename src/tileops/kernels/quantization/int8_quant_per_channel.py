@@ -14,7 +14,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import (
     INT8QuantPerChannelFwdInterface,
     QuantizeCall,
@@ -523,11 +523,6 @@ class _INT8QuantPerRowKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    @staticmethod
-    def _aligned(t: torch.Tensor) -> torch.Tensor:
-        """*t*, or a copy of it when its storage does not start on a 16-byte vector."""
-        return t.clone() if t.data_ptr() % VECTOR_ACCESS_BYTES else t
-
 
 class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFwdInterface):
     """Quantize each row of ``w`` against its own amax, reading ``w`` once.
@@ -543,7 +538,7 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_cuda(w=w)
-        w = self._aligned(w)
+        w = vector_aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
         c = self.config
@@ -623,8 +618,8 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_cuda(x=x, smooth=smooth)
-        x = self._aligned(x)
-        smooth = self._aligned(smooth)
+        x = vector_aligned(x)
+        smooth = vector_aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(x.shape[0], dtype=torch.float32, device=x.device)
         c = self.config

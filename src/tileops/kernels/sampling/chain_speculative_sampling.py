@@ -8,8 +8,8 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
 from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
 from tileops.kernels.sampling.row_tiles import load_vector, vector_width
@@ -495,10 +495,8 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             offset=offset,
         )
         # The fold reads 16-byte vectors from the start of each row.
-        if target_probs.data_ptr() % VECTOR_ACCESS_BYTES:
-            target_probs = target_probs.clone()
-        if draft_probs.data_ptr() % VECTOR_ACCESS_BYTES:
-            draft_probs = draft_probs.clone()
+        target_probs = vector_aligned(target_probs)
+        draft_probs = vector_aligned(draft_probs)
         device = target_probs.device
         partial = torch.empty(self.call.batch * self._parts, dtype=torch.float64, device=device)
         output_token_ids = torch.empty(

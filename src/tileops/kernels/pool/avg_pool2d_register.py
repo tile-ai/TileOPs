@@ -13,19 +13,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
+from tileops.kernels.pool.common import ACCUM_DTYPE
 
 __all__ = ["AvgPool2dRegisterKernel"]
-
-_ACCUM = "float32"
-_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-# Elements a thread's windows may reach past its load on either side of a row; each is a
-# load of its own.
-_MAX_REACH = 1
-# Window rows a thread walks; the row loop is unrolled, so taller windows stay on
-# AvgPool2dKernel.
-_MAX_ROWS = 16
 
 
 @functools.lru_cache(maxsize=32)
@@ -52,8 +44,8 @@ def _avg_pool2d_register_kernel(
             """``x[plane, ih, iw]`` in float32, zero outside the plane."""
             row = T.max(T.min(ih, h_in - 1), 0)
             column = T.max(T.min(iw, w_in - 1), 0)
-            value = T.cast(x[plane, row, column], _ACCUM)
-            zero = T.cast(0, _ACCUM)
+            value = T.cast(x[plane, row, column], ACCUM_DTYPE)
+            zero = T.cast(0, ACCUM_DTYPE)
             return T.if_then_else(row == ih, T.if_then_else(column == iw, value, zero), zero)
 
         @T.prim_func
@@ -71,11 +63,11 @@ def _avg_pool2d_register_kernel(
                 plane = index // (groups * out_h)
                 start = group * run
                 values = T.alloc_local([run], dtype)
-                window = T.alloc_local([pad_w + run + after], _ACCUM)
-                totals = T.alloc_local([outputs], _ACCUM)
+                window = T.alloc_local([pad_w + run + after], ACCUM_DTYPE)
+                totals = T.alloc_local([outputs], ACCUM_DTYPE)
                 means = T.alloc_local([outputs], dtype)
                 for e in T.unroll(outputs):
-                    totals[e] = T.cast(0, _ACCUM)
+                    totals[e] = T.cast(0, ACCUM_DTYPE)
                 for kh in T.unroll(kernel_h):
                     ih = oh * stride_h - pad_h + kh
                     row = T.max(T.min(ih, h_in - 1), 0)
@@ -83,7 +75,7 @@ def _avg_pool2d_register_kernel(
                         values[i] = x[plane, row, start + i]
                     for i in T.unroll(run):
                         window[pad_w + i] = T.if_then_else(
-                            row == ih, T.cast(values[i], _ACCUM), T.cast(0, _ACCUM)
+                            row == ih, T.cast(values[i], ACCUM_DTYPE), T.cast(0, ACCUM_DTYPE)
                         )
                     if pad_w:
                         for i in T.unroll(pad_w):
@@ -97,7 +89,7 @@ def _avg_pool2d_register_kernel(
                 for e in T.unroll(outputs):
                     # A division, not a multiply by the reciprocal: torch divides, and the
                     # two round apart in a 16-bit result.
-                    means[e] = T.cast(totals[e] / T.cast(kernel_h * kernel_w, _ACCUM), dtype)
+                    means[e] = T.cast(totals[e] / T.cast(kernel_h * kernel_w, ACCUM_DTYPE), dtype)
                 if bx * threads + tx < total:
                     for e in T.vectorized(outputs):
                         y[plane, oh, group * outputs + e] = means[e]
@@ -113,18 +105,18 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     Serves windows whose every divisor is ``kernel_h * kernel_w``: padding counted or
     absent, no ``ceil_mode`` and no ``divisor_override``. Along the width, the stride must
     divide the elements of a 16-byte load, so that one covers whole outputs; the outputs
-    must divide into those loads, stay within the padded row, and reach at most
-    ``_MAX_REACH`` element past a load on either side.
+    must divide into those loads, stay within the padded row, and reach at most one
+    element past a load on either side. Windows are at most 16 rows tall.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool2d_kernel"})
 
-    _THREADS = 128
-
     @classmethod
     def applies(cls, call: AvgPoolCall) -> bool:
-        if call.dtype not in _DTYPES or len(call.size) != 2:
+        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            return False
+        if len(call.size) != 2:
             return False
         (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
         (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
@@ -135,10 +127,14 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
             return False
         out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
         out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
+        # Each element past a load is a load of its own.
+        max_reach = 1
+        # The row loop is unrolled, so taller windows stay on AvgPool2dKernel.
+        max_rows = 16
         return (
-            kernel_h <= _MAX_ROWS
-            and pad_w <= _MAX_REACH
-            and kernel_w - stride_w - pad_w <= _MAX_REACH
+            kernel_h <= max_rows
+            and pad_w <= max_reach
+            and kernel_w - stride_w - pad_w <= max_reach
             and out_h > 0
             and out_w > 0
             and out_w % (run // stride_w) == 0
@@ -184,7 +180,7 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
             pad_h,
             pad_w,
             self.dtype_str,
-            self._THREADS,
+            threads=128,
         )
         self.init_config()
 
@@ -198,8 +194,7 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         x = x.contiguous()
-        # The kernel reads 16-byte vectors from the start of each row.
-        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
         y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])

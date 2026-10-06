@@ -13,7 +13,7 @@ from tileops.kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import INT8QuantPerTensorFwdInterface, QuantizeCall
 from tileops.kernels.quantization.int8_codes import (
     INV_QMAX,
@@ -385,8 +385,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # The kernel reads 16-byte vectors from the start of the storage.
-        if x.data_ptr() % VECTOR_ACCESS_BYTES:
-            x = x.clone()
+        x = vector_aligned(x)
         partial = torch.empty(self._grid, dtype=torch.int32, device=x.device)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(1, dtype=torch.float32, device=x.device)

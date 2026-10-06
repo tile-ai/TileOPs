@@ -11,9 +11,8 @@ from tileops._csrc import csrc_path
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
-    VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, SamplingFromProbsFwdInterface
 from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
 from tileops.kernels.sampling.row_tiles import load_vector, row_split, vector_width
@@ -391,8 +390,8 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         self._require_cuda(probs=probs, seed=seed, offset=offset)
         # A row folded a vector at a time is read from the start of the storage; a row
         # folded weight by weight needs no alignment.
-        if self._vec > 1 and probs.data_ptr() % VECTOR_ACCESS_BYTES:
-            probs = probs.clone()
+        if self._vec > 1:
+            probs = vector_aligned(probs)
         partial = torch.empty(
             self.call.batch * self._parts, dtype=torch.float64, device=probs.device
         )

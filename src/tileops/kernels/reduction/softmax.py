@@ -21,7 +21,7 @@ import torch
 from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -444,6 +444,10 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    def _rows(self, x: torch.Tensor) -> torch.Tensor:
+        """The rows of *x* along ``call.axis``, starting on a 16-byte vector boundary."""
+        return rows_for_axes(vector_aligned(x), (self.call.axis,))
+
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:
         """Row-sized shared buffers a row block is planned with.
@@ -561,7 +565,7 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = rows_for_axes(x, (self.call.axis,))
+        rows = self._rows(x)
         if self.fused is not None:
             stats = torch.empty(
                 2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
@@ -586,12 +590,6 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
     registers, and its CTAs share its shared memory for the kept tiles.
     """
 
-    _TILE_ELEMENTS = 16384
-    _ACCESSES = 4
-    _THREADS_PER_SM = 1024
-    # Shared memory a CTA keeps for the warps' statistics rather than row tiles.
-    _STATS_BYTES = 1024
-
     @classmethod
     def applies(cls, call: SoftmaxCall) -> bool:
         return cls.row_plan(call)[1] != 0 and cls.split_seg_n(call) == 0
@@ -600,7 +598,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
         super().__init__(device_index=call.device.index)
         self.call = call
         self.dtype = call.dtype
-        ctas_per_sm = self._THREADS_PER_SM // self.default_config["threads"]
+        ctas_per_sm = 1024 // self.default_config["threads"]
         self.kernel = _softmax_streaming_kernel(
             call.m,
             call.n,
@@ -609,17 +607,16 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
             self.dtype_to_str(call.out_dtype),
             min(call.m, ctas_per_sm * call.sm_count),
             ctas_per_sm,
-            call.smem_budget // ctas_per_sm - self._STATS_BYTES,
+            # A CTA keeps 1 KB for the warps' statistics rather than row tiles.
+            call.smem_budget // ctas_per_sm - 1024,
         )
         self.init_config(None)
 
     @property
     def default_config(self) -> dict:
+        accesses = 4
         vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
-        return {
-            "threads": self._TILE_ELEMENTS // (self._ACCESSES * vec),
-            "accesses": self._ACCESSES,
-        }
+        return {"threads": 16384 // (accesses * vec), "accesses": accesses}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -629,7 +626,7 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel(**self.config)(rows_for_axes(x, (self.call.axis,)))
+        y = self.kernel(**self.config)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
@@ -685,6 +682,6 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
         program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(rows_for_axes(x, (self.call.axis,)))
+        y = program(self._rows(x))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))

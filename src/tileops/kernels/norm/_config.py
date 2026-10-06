@@ -146,13 +146,13 @@ def select_row_configs(
             dtype: Element type the row is stored in.
             widths: Block widths to draw from.
         """
-        min_elements = VECTOR_ACCESS_BYTES // torch.tensor([], dtype=dtype).element_size()
+        min_elements = VECTOR_ACCESS_BYTES // dtype.itemsize
         candidates = [t for t in widths if n_padded % t == 0]
         vectorizable = [t for t in candidates if n_padded // t >= min_elements]
         return vectorizable or candidates
 
     threads = _feasible_threads(n_padded, dtype, widths)
-    smem_per_row = n_padded * torch.tensor([], dtype=dtype).element_size()
+    smem_per_row = n_padded * dtype.itemsize
     max_block_m = _ROW_SMEM_BUDGET_BYTES // (num_buffers * smem_per_row)
     configs = [
         {"block_m": block_m, "threads": t}
@@ -168,8 +168,10 @@ def select_row_configs(
 def make_row_reduce(block_m, n, n_padded, eps):
     """Create the macro reducing a loaded fp32 row block to mean and rstd.
 
-    Consumes ``x_f32`` and overwrites it with the centered squares. The load
-    stays at the call sites, which read the row block in the dtype the tensor
+    Consumes ``x_f32`` and overwrites it with the centered squares, zero past the row.
+    ``acc`` is left holding their sum over the row.
+
+    The load stays at the call sites, which read the row block in the dtype the tensor
     holds and keep it for the output pass.
 
     Args:
@@ -181,7 +183,6 @@ def make_row_reduce(block_m, n, n_padded, eps):
     Returns:
         A ``@T.macro`` taking ``(x_f32, acc, mean_val, rstd)``.
     """
-    pad_count = n_padded - n
 
     @T.macro
     def row_reduce(x_f32, acc, mean_val, rstd):
@@ -189,16 +190,15 @@ def make_row_reduce(block_m, n, n_padded, eps):
         for i in T.Parallel(block_m):
             mean_val[i] = acc[i] / float(n)
 
-        # Rewrite x_f32 in-place with (x - mean)^2. Padded positions (x=0)
-        # contribute mean^2, subtracted back out below.
+        # Rewrite x_f32 in-place with (x - mean)^2, zero past the row.
         for i, j in T.Parallel(block_m, n_padded):
-            x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+            x_f32[i, j] = T.if_then_else(
+                j < n, (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i]), 0.0
+            )
 
         T.reduce_sum(x_f32, acc, dim=1)
         for i in T.Parallel(block_m):
-            rstd[i] = T.rsqrt(
-                (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(n) + eps
-            )
+            rstd[i] = T.rsqrt(acc[i] / float(n) + eps)
 
     return row_reduce
 

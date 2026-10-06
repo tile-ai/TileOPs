@@ -230,6 +230,33 @@ def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> No
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(4096, id="register-row"),
+        pytest.param(131080, id="streaming"),
+        # The on-chip kernel on SM90, the streaming kernel before it.
+        pytest.param(131072, id="on-chip"),
+    ],
+)
+def test_rms_norm_reads_an_input_and_weight_off_the_vector_boundary(n: int) -> None:
+    """A contiguous input and weight may start anywhere in their storage."""
+    dtype = torch.bfloat16
+    x = _misaligned(torch.randn(2, n, device=run_device(), dtype=dtype))
+    weight = _misaligned(torch.randn(n, device=x.device, dtype=dtype))
+    expected = F.rms_norm(x.float(), (n,), weight.float(), eps=1e-6).to(dtype)
+    actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)(x, weight)
+    compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", dtype))
+
+
 class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):
     pass
 

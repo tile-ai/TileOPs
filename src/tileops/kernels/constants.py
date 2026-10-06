@@ -37,6 +37,9 @@ MAX_BLOCK_THREADS: int = 1024
 # Blocks one thread-block cluster may hold without opting in to a non-portable size.
 MAX_PORTABLE_CLUSTER_BLOCKS: int = 8
 
+# Blocks a grid may hold along y or along z; x runs to 2**31 - 1.
+MAX_GRID_YZ_BLOCKS: int = 65535
+
 # Blocks one SM may hold resident at once, by architecture.
 SM_RESIDENT_BLOCKS: dict[int, int] = {
     80: 32,

@@ -399,3 +399,21 @@ def test_generated_checks_reject_an_integer_first_input(cls):
     inputs[0] = inputs[0].to(torch.int32)
     with pytest.raises(ValueError):
         cls()(*inputs)
+
+
+@pytest.mark.parametrize("cls", list(_SMALL_CALLS), ids=lambda cls: cls.__name__)
+def test_probabilities_off_a_vector_boundary_give_the_aligned_result(cls):
+    """Logits or probabilities starting one element past a 16-byte boundary sample as their
+    aligned copy does; the draws are seeded."""
+    workload_cls, dtype_case, row = _SMALL_CALLS[cls]
+    inputs = list(workload_cls(manifest_call(cls.__name__, dtype_case, **row)).gen_inputs())
+    want = _run(cls(), *inputs)
+    # The float inputs a row is read from: chain speculative sampling's draft and target.
+    for i in (0, 2) if cls is ChainSpeculativeSamplingFwdOp else (0,):
+        moved = torch.empty(inputs[i].numel() + 1, dtype=inputs[i].dtype, device=run_device())
+        inputs[i] = moved[1:].copy_(inputs[i].reshape(-1)).view(inputs[i].shape)
+    got = cls()(*inputs)
+    if isinstance(want, tuple):
+        assert all(map(torch.equal, got, want))
+    else:
+        assert torch.equal(got, want)

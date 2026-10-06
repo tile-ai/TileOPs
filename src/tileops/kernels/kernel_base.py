@@ -4,7 +4,9 @@ from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Entry", "Kernel", "KernelInterface"]
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+
+__all__ = ["Entry", "Kernel", "KernelInterface", "vector_aligned"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -13,6 +15,14 @@ Entry = tuple[Hashable, Callable[[], object]]
 # Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
 # supplier. Distinct from ``None``, which means "no supplier".
 _INHERIT_SUPPLY_PROG = object()
+
+
+def vector_aligned(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    """*t*, or a copy of it when its storage does not start on a 16-byte vector boundary.
+
+    For an input a kernel reads in 16-byte vectors; never for a tensor it writes.
+    """
+    return t.clone() if t is not None and t.data_ptr() % VECTOR_ACCESS_BYTES else t
 
 
 class Kernel(ABC):

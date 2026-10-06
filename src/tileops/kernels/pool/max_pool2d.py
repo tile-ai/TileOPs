@@ -6,13 +6,14 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
     MaxPoolCall,
 )
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
@@ -68,7 +69,7 @@ def _max_pool2d_kernel(
         window_inside = rows_inside and cols_inside
         # Every tile starts the same distance into its row, so one check settles
         # 16-byte alignment for all of them.
-        vector_width = 16 // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+        vector_width = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
         vector_band = (
             window_inside and band_w % vector_width == 0 and (tile_w * stride_w) % vector_width == 0
         )
@@ -378,6 +379,7 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
         config: dict,
         x: torch.Tensor,
     ) -> torch.Tensor:
+        x = vector_aligned(x)
         out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
         kernel = _max_pool2d_kernel(

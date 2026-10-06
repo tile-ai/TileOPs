@@ -1075,6 +1075,33 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("op_type", "groups", "x_shape", "w_shape"),
+    [
+        pytest.param(Conv1dFwdOp, 1, (70_000, 4, 8), (8, 4, 3), id="images-conv1d"),
+        pytest.param(
+            Conv2dFwdOp, 640, (128, 1280, 4, 4), (1280, 2, 3, 3), id="grouped-images-conv2d"
+        ),
+    ],
+)
+def test_conv_past_the_grid_z_limit_is_refused_before_building(
+    op_type, groups, x_shape, w_shape
+) -> None:
+    """The kernels that serve these calls put one image, or one group of an image, a block
+    row along grid z, which CUDA caps at 65535: the op names that limit rather than failing
+    at launch."""
+    op = op_type(padding=1, groups=groups)
+    x = torch.randn(x_shape, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(w_shape, device=run_device(), dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="blocks along grid z"):
+        op(x, weight)
+    (interface,) = op_type.interfaces
+    assert not op.built_kernels(interface)
+
+
+@pytest.mark.smoke
 def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
     """The channels-last kernel stages input and weight. Those buffers are
     intermediates of one implementation, and the roofline is the algorithm's minimum

@@ -13,16 +13,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
+from tileops.kernels.pool.common import ACCUM_DTYPE
 
 __all__ = ["AvgPool1dRegisterKernel"]
-
-_ACCUM = "float32"
-_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-# Elements a thread's windows may reach past its load on either side, each a load of its
-# own; at two the shared-memory stage of AvgPool1dKernel is faster.
-_MAX_REACH = 1
 
 
 @functools.lru_cache(maxsize=32)
@@ -44,7 +39,9 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
         def element(x, row, at):
             """``x[row, at]`` in float32, zero outside the row."""
             inside = T.max(T.min(at, l_in - 1), 0)
-            return T.if_then_else(inside == at, T.cast(x[row, inside], _ACCUM), T.cast(0, _ACCUM))
+            return T.if_then_else(
+                inside == at, T.cast(x[row, inside], ACCUM_DTYPE), T.cast(0, ACCUM_DTYPE)
+            )
 
         @T.prim_func
         def main(
@@ -55,8 +52,8 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                 tx = T.get_thread_binding()
                 group = bx * threads + tx
                 values = T.alloc_local([run], dtype)
-                window = T.alloc_local([pad_l + run + after], _ACCUM)
-                totals = T.alloc_local([outputs], _ACCUM)
+                window = T.alloc_local([pad_l + run + after], ACCUM_DTYPE)
+                totals = T.alloc_local([outputs], ACCUM_DTYPE)
                 means = T.alloc_local([outputs], dtype)
                 # A thread past the last group reads the last group's run and stores
                 # nothing: the loads then issue without a branch around them.
@@ -64,7 +61,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                 for i in T.vectorized(run):
                     values[i] = x[row, start + i]
                 for i in T.unroll(run):
-                    window[pad_l + i] = T.cast(values[i], _ACCUM)
+                    window[pad_l + i] = T.cast(values[i], ACCUM_DTYPE)
                 if pad_l:
                     for i in T.unroll(pad_l):
                         window[i] = element(x, row, start - pad_l + i)
@@ -72,12 +69,12 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                     for i in T.unroll(after):
                         window[pad_l + run + i] = element(x, row, start + run + i)
                 for e in T.unroll(outputs):
-                    totals[e] = T.cast(0, _ACCUM)
+                    totals[e] = T.cast(0, ACCUM_DTYPE)
                     for t in T.unroll(kernel_l):
                         totals[e] += window[e * stride_l + t]
                     # A division, not a multiply by the reciprocal: torch divides, and the
                     # two round apart.
-                    means[e] = T.cast(totals[e] / T.cast(kernel_l, _ACCUM), dtype)
+                    means[e] = T.cast(totals[e] / T.cast(kernel_l, ACCUM_DTYPE), dtype)
                 if group < groups:
                     for e in T.vectorized(outputs):
                         y[row, group * outputs + e] = means[e]
@@ -94,17 +91,17 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     no ``ceil_mode`` and no ``divisor_override``. The stride must divide the elements of
     a 16-byte load, so that one covers whole outputs; the outputs must divide into
     those loads and the windows stay within the padded row. A thread's windows reach at
-    most ``_MAX_REACH`` element past its load on either side, each one a load of its own.
+    most one element past its load on either side, each one a load of its own.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool1d_kernel"})
 
-    _THREADS = 128
-
     @classmethod
     def applies(cls, call: AvgPoolCall) -> bool:
-        if call.dtype not in _DTYPES or len(call.size) != 1:
+        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            return False
+        if len(call.size) != 1:
             return False
         (l_in,), (kernel_l,), (stride_l,), (pad_l,) = call.size, call.window, call.stride, call.pad
         run = VECTOR_ACCESS_BYTES // call.dtype.itemsize
@@ -113,9 +110,12 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         if pad_l and not call.count_include_pad:
             return False
         out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
+        # Each element past the load is a load of its own; at two, AvgPool1dKernel's
+        # shared-memory stage is faster.
+        max_reach = 1
         return (
-            pad_l <= _MAX_REACH
-            and kernel_l - stride_l - pad_l <= _MAX_REACH
+            pad_l <= max_reach
+            and kernel_l - stride_l - pad_l <= max_reach
             and out_l > 0
             and out_l % (run // stride_l) == 0
             and out_l * stride_l <= l_in
@@ -140,7 +140,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         super().__init__()
         self.rows, self.l_in, self.dtype = rows, l_in, dtype
         self.kernel = _avg_pool1d_register_kernel(
-            rows, l_in, kernel_l, stride_l, pad_l, self.dtype_str, self._THREADS
+            rows, l_in, kernel_l, stride_l, pad_l, self.dtype_str, threads=128
         )
         self.init_config()
 
@@ -154,8 +154,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         x = x.contiguous()
-        # The kernel reads 16-byte vectors from the start of each row.
-        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
         y = self.kernel()(x.view(self.rows, self.l_in))
         return y.view(*x.shape[:-1], y.shape[-1])

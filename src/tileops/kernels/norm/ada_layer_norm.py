@@ -12,8 +12,7 @@ The `has_gate` parameter controls the variant:
 
 The kernels accept natural ``(M, N)`` tensors. For non-aligned ``N``, boundary
 handling stays on device: loads zero-fill the logical reduction tail and stores
-write only real output columns. The centered two-pass variance subtracts the
-padded-zero contribution explicitly.
+write only real output columns. The centered two-pass variance leaves the padding out.
 
 AdaLN modulation tensors use predicated ``cp.async`` prefetch for selected
 non-aligned shapes. Aligned shapes retain the vectorized ``T.copy`` path.
