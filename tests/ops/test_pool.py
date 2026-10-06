@@ -1598,6 +1598,18 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-asymmetric-bf16",
                 ),
+                # A global pool splits each plane over several threads of a warp.
+                pytest.param(
+                    2,
+                    64,
+                    7,
+                    7,
+                    (1, 1),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-global-fp16",
+                ),
                 pytest.param(
                     1,
                     128,
@@ -1632,6 +1644,18 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-expanding-bins-fp16",
+                ),
+                # Five planes over sixteen threads each: the last warp is half idle.
+                pytest.param(
+                    1,
+                    5,
+                    9,
+                    9,
+                    (1, 1),
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-global-partial-warp-bf16",
                 ),
             ],
         ),
@@ -1748,3 +1772,13 @@ def test_adaptive_max_pool2d_indices_nan_window() -> None:
     ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (1, 1), return_indices=True)
     assert torch.isnan(val.float()).all()
     compare_outputs(idx, ref_idx, pool_verification(maximum=True))
+
+
+@pytest.mark.smoke
+def test_adaptive_max_pool2d_global_nan_plane() -> None:
+    """A NaN anywhere in a plane makes its global max NaN, whichever thread reads it."""
+    x = torch.randn(2, 64, 7, 7, device=run_device(), dtype=torch.float16)
+    x[0, 3, 6, 6] = float("nan")
+    x[1, 10, 0, 0] = float("nan")
+    out = AdaptiveMaxPool2dFwdOp(output_size=(1, 1))(x)
+    torch.testing.assert_close(out, F.adaptive_max_pool2d(x, (1, 1)), equal_nan=True)

@@ -15,6 +15,7 @@ from tileops.kernels.pool.common import (
     fits_static_shared,
     max_adaptive_bin_extent,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
 
@@ -114,6 +115,18 @@ def _check_planes(rows: int, planes: int) -> None:
         raise ValueError(f"planes={planes} must divide rows={rows}")
 
 
+def _bin_lanes(threads: int, outputs: int) -> int:
+    """Threads a bin's taps are split over: the block's spare threads, up to a warp.
+
+    A block with fewer outputs than threads leaves the rest idle while each output walks
+    its bin alone; a power of two of them per bin shares the walk and folds by shuffle.
+    """
+    lanes = 1
+    while lanes < WARP_LANES and threads >= 2 * lanes * outputs:
+        lanes *= 2
+    return lanes
+
+
 def _bin_extent(size_in: int, size_out: int) -> Tuple[int, bool]:
     """The widest bin on this axis, and whether every bin on it is that wide."""
     extent = max_adaptive_bin_extent(size_in, size_out)
@@ -145,6 +158,44 @@ def _adaptive_max_pool2d_kernel(
     def _adaptive_max_pool2d_func(planes: int, threads: int):
         _check_planes(rows, planes)
         staged = _stages_in_shared(planes, plane, dtype)
+        # A global pool has one bin a plane; finer bins keep a thread each, where the
+        # split's index arithmetic costs more than it saves.
+        lanes = _bin_lanes(threads, planes) if out_plane == 1 else 1
+        taps = max_kh * max_kw
+
+        @T.macro
+        def _keep(run, v):
+            # NaN enters `run` and never leaves, since a later value fails `v > NaN`.
+            run[0] = T.if_then_else(T.isnan(v) or (v > run[0]), v, run[0])
+
+        @T.macro
+        def _max_bin_over_lanes(src, src_plane, dst, dst_plane, oh, ow, lane, active):
+            """Store the max over one adaptive bin, its taps split over ``lanes`` threads.
+
+            Every thread of the block takes part in the shuffle; one past the last bin
+            reads nothing and stores nothing.
+            """
+            ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
+            iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
+            run = T.alloc_local([1], accum_dtype)
+            other = T.alloc_local([1], accum_dtype)
+            run[0] = -T.infinity(accum_dtype)
+            for step in T.unroll(-(-taps // lanes)):
+                tap = step * lanes + lane
+                ih = ih_start + tap // max_kw
+                iw = iw_start + tap % max_kw
+                if (
+                    active
+                    and tap < taps
+                    and (uniform_h or ih < ih_end)
+                    and (uniform_w or iw < iw_end)
+                ):
+                    _keep(run, T.cast(src[src_plane, ih, iw], accum_dtype))
+            for level in T.unroll(lanes.bit_length() - 1):
+                other[0] = T.shfl_xor(run[0], T.shift_left(1, level))
+                _keep(run, other[0])
+            if active and lane == 0:
+                dst[dst_plane, oh, ow] = T.cast(run[0], dtype)
 
         @T.macro
         def _max_bin(src, src_plane, dst, dst_plane, oh, ow):
@@ -177,15 +228,31 @@ def _adaptive_max_pool2d_kernel(
                 if staged:
                     tile = T.alloc_shared((planes, h_in, w_in), dtype)
                     T.copy(x[base : base + planes, :, :], tile)
-                for i in T.Parallel(planes * out_plane):
+                if lanes > 1:
+                    tx = T.get_thread_binding()
+                    # A thread past the last bin clamps to it and is kept inactive.
+                    i = T.min(tx // lanes, planes * out_plane - 1)
+                    active = tx // lanes < planes * out_plane
                     p = i // out_plane
                     o = i - p * out_plane
-                    oh = o // out_w
-                    ow = o - oh * out_w
                     if staged:
-                        _max_bin(tile, p, out, base + p, oh, ow)
+                        _max_bin_over_lanes(
+                            tile, p, out, base + p, o // out_w, o % out_w, tx % lanes, active
+                        )
                     else:
-                        _max_bin(x, base + p, out, base + p, oh, ow)
+                        _max_bin_over_lanes(
+                            x, base + p, out, base + p, o // out_w, o % out_w, tx % lanes, active
+                        )
+                else:
+                    for i in T.Parallel(planes * out_plane):
+                        p = i // out_plane
+                        o = i - p * out_plane
+                        oh = o // out_w
+                        ow = o - oh * out_w
+                        if staged:
+                            _max_bin(tile, p, out, base + p, oh, ow)
+                        else:
+                            _max_bin(x, base + p, out, base + p, oh, ow)
 
         return _adaptive_max_pool2d_main
 
