@@ -170,8 +170,8 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                     staged[i, j] = x[row, i * chunk_len + j]
                 T.sync_threads()
 
-                # A thread reads and writes its own chunk a vector at a time: one element
-                # an access moves a sixteenth of what a 16-byte one does.
+                # A thread reads and writes its own chunk a vector at a time, up to 16
+                # bytes an access instead of one element.
                 running[0] = T.cast(identity, "float32")
                 for v in T.unroll(chunk_len // vec):
                     for i in T.vectorized(vec):
