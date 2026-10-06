@@ -719,8 +719,11 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
 
     @property
     def default_config(self) -> dict:
-        # Four outputs per thread: the span the staged read wants.
-        return self._knobs({"block_m": 512, "threads": 128})
+        # A 512-output span, staged. From four positions on the axis the walk is long
+        # enough that two outputs a thread over 256 threads finish sooner than four over
+        # 128; over two positions the wider block loses.
+        threads = 256 if self.N >= 4 else 128
+        return self._knobs({"block_m": 512, "threads": threads})
 
     def _candidates(self) -> list[dict]:
         return [
