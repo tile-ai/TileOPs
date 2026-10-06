@@ -21,10 +21,6 @@ _NEG_INF = float("-inf")
 _NAN = float("nan")
 _ACCUM_DTYPE = "float"
 _JIT_FLAGS = ["-O3", "-DENABLE_BF16"]
-# Rows up to this size are read evict-first in L2 by the windowed body: (2560, 4096) fp32
-# measured 16.45 to 15.49 us and fp16 11.30 to 10.40; MaxPool2dRegisterKernel found the
-# hint slowing a 411 MB input.
-_EVICT_FIRST_BYTES = 128 << 20
 
 # Taps one row-reduce block may hold. It bounds the two f32 fragments together: 8192
 # taps is 64 KB over a 256-thread block, or 64 registers a thread.
@@ -140,7 +136,10 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
-    evict_first = rows * l_in * dtype_itemsize(dtype) <= _EVICT_FIRST_BYTES
+    # Rows up to 128 MiB are read evict-first in L2: (2560, 4096) fp32 measured 16.45 to
+    # 15.49 us and fp16 11.30 to 10.40; MaxPool2dRegisterKernel found the hint slowing a
+    # 411 MB input.
+    evict_first = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
     @tilelang.jit(
         out_idx=[1], compile_flags=[*_JIT_FLAGS, "-include", csrc_path("streaming_load.h")]
