@@ -7,7 +7,7 @@ Kernels for two operations:
 Three implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
 split across blocks for a handful of long rows, resident CTAs streaming the other rows
 no shared-memory tile holds, and the general row kernel for rows one tile holds.
-``softmax_on_chip`` adds a cluster kernel for rows of 64 KB or more on SM90.
+``softmax_on_chip`` adds a cluster kernel for rows of 32768 elements or more on SM90.
 
 Boundary handling for non-aligned N is performed inside the kernel via masked loads
 and -inf fills, eliminating host-side ``F.pad`` from the forward path.

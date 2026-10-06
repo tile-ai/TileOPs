@@ -248,15 +248,15 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     A row is split across the smallest power-of-two cluster of at least two CTAs, at most
     ``_MAX_CLUSTER``, whose CTAs each take at most ``_CTA_BYTES`` of their element size.
     Several CTAs share an SM, so one computes its exponentials while another loads or
-    stores. Rows narrower than
-    ``_MIN_ROW_BYTES``, and rows :class:`SoftmaxSplitKernel` splits, stay with the other
-    kernels.
+    stores. Rows narrower than ``_MIN_ROW_ELEMENTS``, and rows :class:`SoftmaxSplitKernel`
+    splits, stay with the other kernels.
     """
 
     supported_archs = [90]
     preferred_over = frozenset({"softmax_streaming"})
 
-    _MIN_ROW_BYTES = 64 * 1024
+    # A 16384-element fp32 row runs faster on SoftmaxKernel.
+    _MIN_ROW_ELEMENTS = 32768
     # A 16-bit element costs the same exponential as a 32-bit one in half the bytes, so a
     # 16-bit CTA takes twice the bytes for the same work.
     _CTA_BYTES = {2: 64 * 1024, 4: 32 * 1024}
@@ -277,7 +277,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
         """``(cluster, threads, held_vectors, ctas_per_sm)`` for *call*'s rows, or ``None``."""
         elem = call.dtype.itemsize
-        if call.n * elem < cls._MIN_ROW_BYTES or cls.split_seg_n(call) != 0:
+        if call.n < cls._MIN_ROW_ELEMENTS or cls.split_seg_n(call) != 0:
             return None
         cluster = cls._MIN_CLUSTER
         while call.n * elem > cluster * cls._CTA_BYTES[elem] and cluster < cls._MAX_CLUSTER:
