@@ -719,8 +719,16 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
 
     @property
     def default_config(self) -> dict:
-        # Four outputs per thread: the span the staged read wants.
-        return self._knobs({"block_m": 512, "threads": 128})
+        # Two outputs a thread over 256 threads beat four over 128 while every block is
+        # resident at once and the axis has four positions or more, or once each
+        # output's walk reads 24 bytes or more.
+        block_m, wide = 512, 256
+        props = torch.cuda.get_device_properties(self.device_index)
+        resident = props.multi_processor_count * (props.max_threads_per_multi_processor // wide)
+        one_wave = ceildiv_int(self.M, block_m) <= resident
+        long_walk = self.N * self.dtype.itemsize >= 24
+        threads = wide if (one_wave and self.N >= 4) or long_walk else 128
+        return self._knobs({"block_m": block_m, "threads": threads})
 
     def _candidates(self) -> list[dict]:
         return [
