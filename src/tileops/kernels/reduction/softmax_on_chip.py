@@ -12,6 +12,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.reduction._primitives import (
@@ -75,7 +76,7 @@ def _softmax_on_chip_kernel(
     registers, the rest staged in shared memory.
     The buffers are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     """
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
     chunk = N // cluster
     held = threads * held_vectors * vec
     staged = chunk - held
@@ -253,7 +254,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     """
 
     supported_archs = [90]
-    preferred_over = frozenset({"softmax_fwd", "softmax_streaming"})
+    preferred_over = frozenset({"softmax_streaming"})
 
     _MIN_ROW_BYTES = 64 * 1024
     # A 16-bit element costs the same exponential as a 32-bit one in half the bytes, so a
@@ -287,13 +288,12 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         _, threads, held_bytes, ctas_per_sm = next(
             tier for tier in cls._TIERS if tier[0] is None or share <= tier[0]
         )
-        held = held_bytes
-        staged = share - held
+        staged = share - held_bytes
         if staged <= 0 or share % (threads * VECTOR_ACCESS_BYTES):
             return None
         if staged * ctas_per_sm > call.smem_budget - ctas_per_sm * cls._RESERVED_BYTES:
             return None
-        return cluster, threads, held // (threads * VECTOR_ACCESS_BYTES), ctas_per_sm
+        return cluster, threads, held_bytes // (threads * VECTOR_ACCESS_BYTES), ctas_per_sm
 
     @classmethod
     def applies(cls, call: SoftmaxCall) -> bool:
