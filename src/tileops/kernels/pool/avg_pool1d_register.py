@@ -20,9 +20,8 @@ __all__ = ["AvgPool1dRegisterKernel"]
 
 _ACCUM = "float32"
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-# Elements a thread's windows may reach past its load on either side. Each is a load of
-# its own; at two, (512, 32000) with kernel 5, stride 4 and padding 2 measured 15.0 us
-# against the shared-memory stage's 14.3.
+# Elements a thread's windows may reach past its load on either side, each a load of its
+# own; at two the shared-memory stage of AvgPool1dKernel is faster.
 _MAX_REACH = 1
 
 
@@ -34,7 +33,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
     of those outputs start ``pad_l`` elements before the run and end ``after`` past it;
     ``window`` holds them in float32, zero outside the row.
     """
-    run = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     outputs = run // stride_l
     out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
     after = max(kernel_l - stride_l - pad_l, 0)
@@ -57,6 +56,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                 group = bx * threads + tx
                 values = T.alloc_local([run], dtype)
                 window = T.alloc_local([pad_l + run + after], _ACCUM)
+                totals = T.alloc_local([outputs], _ACCUM)
                 means = T.alloc_local([outputs], dtype)
                 # A thread past the last group reads the last group's run and stores
                 # nothing: the loads then issue without a branch around them.
@@ -72,13 +72,12 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                     for i in T.unroll(after):
                         window[pad_l + run + i] = element(x, row, start + run + i)
                 for e in T.unroll(outputs):
-                    total = T.alloc_var(_ACCUM)
-                    total = T.cast(0, _ACCUM)
+                    totals[e] = T.cast(0, _ACCUM)
                     for t in T.unroll(kernel_l):
-                        total += window[e * stride_l + t]
+                        totals[e] += window[e * stride_l + t]
                     # A division, not a multiply by the reciprocal: torch divides, and the
-                    # two round apart in a 16-bit result.
-                    means[e] = T.cast(total / T.cast(kernel_l, _ACCUM), dtype)
+                    # two round apart.
+                    means[e] = T.cast(totals[e] / T.cast(kernel_l, _ACCUM), dtype)
                 if group < groups:
                     for e in T.vectorized(outputs):
                         y[row, group * outputs + e] = means[e]
@@ -155,5 +154,8 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
-        y = self.kernel()(x.contiguous().view(self.rows, self.l_in))
+        x = x.contiguous()
+        # The kernel reads 16-byte vectors from the start of each row.
+        x = x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
+        y = self.kernel()(x.view(self.rows, self.l_in))
         return y.view(*x.shape[:-1], y.shape[-1])
