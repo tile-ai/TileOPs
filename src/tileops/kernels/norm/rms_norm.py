@@ -17,6 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
@@ -150,6 +151,9 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     _SHARED_ROW_MAX = 512
     # Elements such a block then holds: two 16-byte accesses per thread.
     _SHARED_BLOCK_ELEMENTS = 2048
+    # Threads a row past the static shared budget gets untuned: never measurably slower
+    # than 128 there, and faster as the row widens.
+    _WIDE_ROW_THREADS = 256
 
     def __init__(
         self,
@@ -180,6 +184,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         config = select_row_config()
         if self.N_padded <= self._SHARED_ROW_MAX:
             config["block_m"] = self._SHARED_BLOCK_ELEMENTS // self.N_padded
+        elif self.N_padded * self.dtype.itemsize > STATIC_SHARED_BYTES:
+            config["threads"] = self._WIDE_ROW_THREADS
         return config
 
     @property
@@ -187,7 +193,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         """The width-derived default alone for shared-block rows; L2-warm tuning misranks them."""
         if self.default_config["block_m"] > 1:
             return [self.default_config]
-        return select_row_configs(self.N_padded, self.dtype)
+        # Past the shared budget the best width still varies with the row.
+        return select_row_configs(self.N_padded, self.dtype, every_width_past_budget=True)
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.

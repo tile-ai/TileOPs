@@ -206,15 +206,22 @@ def test_no_weight_and_no_eps_match_torch() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "n,dtype,has_weight",
+    "rows,n,dtype,has_weight",
     [
-        pytest.param(131072, torch.float16, True, id="wide-fp16"),
-        pytest.param(262144, torch.bfloat16, True, id="wide-bf16"),
-        pytest.param(131073, torch.bfloat16, False, id="tail-no-weight"),
+        # On SM90 these four reach the on-chip kernel: one CTA staging by cp.async, a
+        # cluster of two, and one CTA read synchronously with and without weight.
+        pytest.param(3, 131072, torch.float16, True, id="on-chip-async-fp16"),
+        pytest.param(3, 262144, torch.bfloat16, True, id="on-chip-cluster-bf16"),
+        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16"),
+        pytest.param(3, 65536, torch.bfloat16, False, id="on-chip-no-weight"),
+        # Widths the on-chip kernel cannot split reach the streaming kernel: an odd width,
+        # and more rows than resident CTAs, so each CTA walks several rows.
+        pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight"),
+        pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta"),
     ],
 )
-def test_rms_norm_rows_exceeding_shared_memory(n, dtype, has_weight) -> None:
-    x = torch.randn(3, n, device=run_device(), dtype=dtype)
+def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> None:
+    x = torch.randn(rows, n, device=run_device(), dtype=dtype)
     weight = torch.randn(n, device=x.device, dtype=dtype) if has_weight else None
     expected = F.rms_norm(x.float(), (n,), None if weight is None else weight.float(), eps=1e-6).to(
         dtype
