@@ -22,10 +22,6 @@ __all__ = [
     "GroupConv3dKernel",
 ]
 
-# Columns padding the NDHWC kernel's shared output tile; two put a column's
-# consecutive rows on consecutive banks.
-_OUT_PAD_COLS = 2
-
 
 @functools.lru_cache(maxsize=64)
 def _conv3d_kernel(
@@ -370,6 +366,7 @@ def _conv3d_ndhwc_kernel(
     dilation_h: int,
     dilation_w: int,
     has_bias: bool,
+    out_pad_cols: int,
     dtype: str = "float16",
     pad_d_end: Optional[int] = None,
     pad_h_end: Optional[int] = None,
@@ -479,7 +476,7 @@ def _conv3d_ndhwc_kernel(
                 weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 # The store below reads the tile down its columns.
-                out_shared = T.alloc_shared((block_m, block_n + _OUT_PAD_COLS), dtype)
+                out_shared = T.alloc_shared((block_m, block_n + out_pad_cols), dtype)
 
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_kdrsc.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
@@ -970,6 +967,15 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    # The m tiles this kernel builds. The default configuration and the autotune filter
+    # read the same tuple.
+    block_m_candidates: tuple[int, ...] = (64, 128)
+
+    # Columns padding the shared output tile: two put a column's consecutive rows on
+    # consecutive banks, which the NCDHW store reads down. The build and the autotune
+    # filter read the same count.
+    _OUT_PAD_COLS = 2
+
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
         """Dense 16-bit calls whose output amortizes the two layout transforms.
@@ -1092,6 +1098,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
             dilation_h,
             dilation_w,
             has_bias,
+            self._OUT_PAD_COLS,
             self.dtype_str,
             pad_d_end=self.pad_d_end,
             pad_h_end=self.pad_h_end,
@@ -1102,7 +1109,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
     @property
     def default_config(self) -> dict:
         return {
-            "block_m": 64,
+            "block_m": min(self.block_m_candidates),
             "block_n": 256,
             "block_k": 32,
             "num_stages": 3,
@@ -1115,10 +1122,10 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
         configs = conv_autotune_configs(
             self.dtype,
             self.device_index,
-            block_m=[64, 128],
+            block_m=list(self.block_m_candidates),
             block_k=[16, 32, 64, 128, 256],
             threads=[128],
-            out_pad_cols=_OUT_PAD_COLS,
+            out_pad_cols=self._OUT_PAD_COLS,
         )
         return [c for c in configs if self.c_in % c["block_k"] == 0]
 
