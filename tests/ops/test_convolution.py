@@ -1071,6 +1071,7 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
     out = op(x, weight)
 
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["Conv3dNdhwcKernel"]
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     compare_outputs(out, ref, convolution_verification(out.dtype))
 
