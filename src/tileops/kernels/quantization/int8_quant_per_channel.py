@@ -523,11 +523,6 @@ class _INT8QuantPerRowKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    @staticmethod
-    def _aligned(t: torch.Tensor) -> torch.Tensor:
-        """*t*, or a copy of it when its storage does not start on a 16-byte vector."""
-        return t.clone() if t.data_ptr() % VECTOR_ACCESS_BYTES else t
-
 
 class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFwdInterface):
     """Quantize each row of ``w`` against its own amax, reading ``w`` once.
@@ -539,11 +534,12 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
         tune: Whether to autotune.
     """
 
+    aligned_inputs = ("w",)
+
     _builder = staticmethod(_int8_quant_per_channel_kernel)
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_cuda(w=w)
-        w = self._aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
         c = self.config
@@ -562,6 +558,8 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
             ``min_blocks`` and ``ctas``.
         tune: Whether to autotune.
     """
+
+    aligned_inputs = ("x", "smooth")
 
     _builder = staticmethod(_smooth_quant_kernel)
 
@@ -623,8 +621,6 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_cuda(x=x, smooth=smooth)
-        x = self._aligned(x)
-        smooth = self._aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(x.shape[0], dtype=torch.float32, device=x.device)
         c = self.config

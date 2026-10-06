@@ -249,9 +249,6 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
             dtype=torch.float32,
             device=w.device,
         )
-        # The aligned kernel reads 16-byte vectors from the start of the storage.
-        if self._aligned and w.data_ptr() % VECTOR_ACCESS_BYTES:
-            w = w.clone()
         self.kernel(**self.config)(w.view(-1), q.view(-1), scale.view(-1))
         return q, scale
 
@@ -272,6 +269,7 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     """
 
     _aligned = True
+    aligned_inputs = ("w",)
 
     @classmethod
     def applies(cls, call: QuantizeCall) -> bool:

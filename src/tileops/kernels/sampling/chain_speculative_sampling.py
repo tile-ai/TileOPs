@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
 from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
@@ -410,6 +410,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("draft_probs", "target_probs")
     general: ClassVar[bool] = True
     # ``draft_token_ids`` indexes a row, so a value outside ``[0, V)`` reads out of bounds.
     autotune_accepts_random_int_inputs: bool = False
@@ -494,11 +495,6 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             seed=seed,
             offset=offset,
         )
-        # The fold reads 16-byte vectors from the start of each row.
-        if target_probs.data_ptr() % VECTOR_ACCESS_BYTES:
-            target_probs = target_probs.clone()
-        if draft_probs.data_ptr() % VECTOR_ACCESS_BYTES:
-            draft_probs = draft_probs.clone()
         device = target_probs.device
         partial = torch.empty(self.call.batch * self._parts, dtype=torch.float64, device=device)
         output_token_ids = torch.empty(

@@ -156,6 +156,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     """What the two per-group kernels share: the calls they refuse and how they launch."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    aligned_inputs = ("w",)
     # The integer tensors are outputs, written before anything reads them.
     autotune_accepts_random_int_inputs = True
 
@@ -189,9 +190,6 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         params = torch.empty(
             (n * k // self.call.group_size, 2), dtype=torch.float32, device=w.device
         )
-        # The kernel reads 16-byte vectors from the start of the storage.
-        if w.data_ptr() % VECTOR_ACCESS_BYTES:
-            w = w.clone()
         self.kernel(**self.config)(w.view(-1), packed.view(-1).view(torch.uint32), params)
         return packed, params
 
