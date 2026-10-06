@@ -137,6 +137,11 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
     """
     chunk_len = N // threads
     pad = _row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
+    # The widest access that divides a chunk: the pad is whole vectors, so every chunk
+    # then starts on one.
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    while chunk_len % vec:
+        vec //= 2
     # Shuffle steps to scan one warp's lanes, and the warps a block holds.
     n_steps = WARP_LANES.bit_length() - 1
     n_warps = max(threads // WARP_LANES, 1)
@@ -155,6 +160,7 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                 staged = T.alloc_shared((threads, chunk_len + pad), dtype)
                 totals = T.alloc_shared((n_warps,), "float32")
                 chunk = T.alloc_local((chunk_len,), "float32")
+                piece = T.alloc_local((vec,), dtype)
                 running = T.alloc_local((1,), "float32")
                 ahead = T.alloc_local((1,), "float32")
                 offset = T.alloc_local((1,), "float32")
@@ -164,10 +170,15 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                     staged[i, j] = x[row, i * chunk_len + j]
                 T.sync_threads()
 
+                # A thread reads and writes its own chunk a vector at a time: one element
+                # an access moves a sixteenth of what a 16-byte one does.
                 running[0] = T.cast(identity, "float32")
-                for j in T.serial(chunk_len):
-                    running[0] = combine(running[0], T.cast(staged[tx, j], "float32"))
-                    chunk[j] = running[0]
+                for v in T.unroll(chunk_len // vec):
+                    for i in T.vectorized(vec):
+                        piece[i] = staged[tx, v * vec + i]
+                    for i in T.unroll(vec):
+                        running[0] = combine(running[0], T.cast(piece[i], "float32"))
+                        chunk[v * vec + i] = running[0]
 
                 for step in T.serial(n_steps):
                     stride = T.shift_left(T.int32(1), step)
@@ -192,8 +203,11 @@ def _row_scan_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int):
                         w < tx // WARP_LANES, combine(ahead[0], totals[w]), ahead[0]
                     )
                 offset[0] = combine(before[0], ahead[0])
-                for j in T.serial(chunk_len):
-                    staged[tx, j] = T.cast(combine(chunk[j], offset[0]), dtype)
+                for v in T.unroll(chunk_len // vec):
+                    for i in T.unroll(vec):
+                        piece[i] = T.cast(combine(chunk[v * vec + i], offset[0]), dtype)
+                    for i in T.vectorized(vec):
+                        staged[tx, v * vec + i] = piece[i]
                 T.sync_threads()
                 for i, j in T.Parallel(threads, chunk_len):
                     y[row, i * chunk_len + j] = staged[i, j]
