@@ -26,6 +26,17 @@ def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
     return None
 
 
+def operand_refusal(elements: int) -> Optional[str]:
+    """Why a program whose largest operand holds ``elements`` cannot build, or ``None``.
+
+    TileLang fails to build the programs that ask once an index into an operand passes
+    int32.
+    """
+    if elements > 2**31 - 1:
+        return f"builds only for operands of at most 2**31 - 1 elements, and one holds {elements}"
+    return None
+
+
 def conv_num_stages(device_index: Optional[int]) -> int:
     """Pipeline depth this target's shared memory holds: three on SM90, two before."""
     return 3 if get_sm_version(device_index) == 90 else 2

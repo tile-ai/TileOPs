@@ -13,6 +13,7 @@ from tileops.kernels.convolution._common import (
     conv_num_stages,
     grid_refusal,
     launch,
+    operand_refusal,
 )
 from tileops.kernels.convolution.call_spec import Conv3dCall, Conv3dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -776,7 +777,12 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
-        return super().refusal(call) or grid_refusal(z=call.n * call.groups)
+        x_elements = call.n * call.c_in * call.d * call.h * call.w
+        return (
+            super().refusal(call)
+            or operand_refusal(max(x_elements, call.c_out * call.output_spatial))
+            or grid_refusal(z=call.n * call.groups)
+        )
 
     @classmethod
     def entry_for(cls, call: Conv3dCall) -> Entry:

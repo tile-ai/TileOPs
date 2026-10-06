@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.convolution.call_spec import Conv2dCall, Conv3dCall
+from tileops.kernels.convolution.call_spec import Conv1dCall, Conv2dCall, Conv3dCall
 from tileops.ops import (
     Conv1dFwdOp,
     Conv2dFwdOp,
@@ -1102,6 +1102,22 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
             id="channels-last-m-tiles-past-grid-y",
         ),
         pytest.param(
+            Conv1dFwdOp,
+            Conv1dCall(
+                n=1,
+                c_in=16,
+                c_out=64,
+                c_in_g=16,
+                l_in=33_600_000,
+                kernel_l=3,
+                pad_left=1,
+                pad_right=1,
+                out_l=33_600_000,
+            ),
+            "conv1d",
+            id="unit-stride-output-past-int32",
+        ),
+        pytest.param(
             Conv2dFwdOp,
             Conv2dCall(
                 n=128,
@@ -1123,8 +1139,8 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
     ],
 )
 def test_conv_call_past_a_launch_limit_is_refused_during_selection(op_type, call, served) -> None:
-    """A kernel that cannot launch a call leaves it to one that can, or selection raises
-    with the limit rather than the launch failing."""
+    """A kernel that cannot launch or build a call leaves it to one that can, or selection
+    raises with the limit rather than the launch failing."""
     (interface,) = op_type.interfaces
     if served is None:
         with pytest.raises(ValueError, match="blocks along grid z"):

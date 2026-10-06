@@ -14,6 +14,7 @@ from tileops.kernels.convolution._common import (
     conv_num_stages,
     grid_refusal,
     launch,
+    operand_refusal,
 )
 from tileops.kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -655,7 +656,11 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
-        return super().refusal(call) or grid_refusal(z=call.n)
+        return (
+            super().refusal(call)
+            or operand_refusal(call.n * call.c_out * call.out_l)
+            or grid_refusal(z=call.n)
+        )
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
@@ -886,6 +891,10 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
         return call.groups == 1 and call.stride_l == 1 and call.kernel_l > 1 and call.c_in >= 16
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        return super().refusal(call) or operand_refusal(call.n * call.c_out * call.out_l)
 
     @property
     def default_config(self) -> dict:
