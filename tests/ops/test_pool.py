@@ -575,9 +575,9 @@ def test_avg_pool1d_staged_windows_match_the_reference(
     "l_in, kernel_l, stride_l, pad_l",
     [
         pytest.param(4096, 3, 2, 1, id="s2-pad-before"),
-        pytest.param(1024, 5, 1, 2, id="s1-pad-both-sides"),
+        pytest.param(1024, 3, 1, 1, id="s1-pad-both-sides"),
         pytest.param(512, 4, 4, 0, id="s4-one-output-a-load"),
-        pytest.param(1024, 6, 2, 0, id="s2-reach-past-the-load"),
+        pytest.param(1024, 5, 4, 0, id="s4-reach-past-the-load"),
     ],
 )
 def test_avg_pool1d_float32_windows_read_into_registers(
@@ -588,6 +588,31 @@ def test_avg_pool1d_float32_windows_read_into_registers(
     _run_avg_pool_case(
         1, (2, 3, l_in), kernel_l, stride_l, pad_l, False, True, None, torch.float32, False
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype, values, output",
+    [
+        pytest.param(
+            torch.float16,
+            [-31.5, 78, -208, -14.8671875, 97.1875, -49.46875, 3.40234375, -10.1171875],
+            0,
+            id="fp16",
+        ),
+        pytest.param(
+            torch.bfloat16, [54.25, -159, -3.296875, -28.5, -50.5, 34.75, 149, 11.5], 4, id="bf16"
+        ),
+    ],
+)
+def test_avg_pool1d_rounds_its_mean_as_torch_divides(dtype, values, output: int) -> None:
+    """A window's mean rounds to the same 16-bit value as torch's division by the window
+    size; a multiply by its reciprocal rounds the chosen output the other way."""
+    x = torch.tensor(values, device=run_device(), dtype=dtype).view(1, 1, len(values))
+    y = AvgPool1dFwdOp(kernel_size=7, stride=1, padding=3)(x)
+    expected = F.avg_pool1d(x, 7, 1, 3)
+    assert y[0, 0, output] == expected[0, 0, output]
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
 
 
 @pytest.mark.smoke

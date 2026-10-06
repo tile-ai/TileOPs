@@ -20,8 +20,10 @@ __all__ = ["AvgPool1dRegisterKernel"]
 
 _ACCUM = "float32"
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-# Taps a window may hold; past this the halo outgrows a thread's registers.
-_MAX_TAPS = 16
+# Elements a thread's windows may reach past its load on either side. Each is a load of
+# its own; at two, (512, 32000) with kernel 5, stride 4 and padding 2 measured 15.0 us
+# against the shared-memory stage's 14.3.
+_MAX_REACH = 1
 
 
 @functools.lru_cache(maxsize=32)
@@ -37,7 +39,6 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
     out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
     after = max(kernel_l - stride_l - pad_l, 0)
     groups = out_l // outputs
-    inv_k = 1.0 / kernel_l
 
     @tilelang.jit(out_idx=[1])
     def build():
@@ -75,7 +76,9 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, th
                     total = T.cast(0, _ACCUM)
                     for t in T.unroll(kernel_l):
                         total += window[e * stride_l + t]
-                    means[e] = T.cast(total * inv_k, dtype)
+                    # A division, not a multiply by the reciprocal: torch divides, and the
+                    # two round apart in a 16-bit result.
+                    means[e] = T.cast(total / T.cast(kernel_l, _ACCUM), dtype)
                 if group < groups:
                     for e in T.vectorized(outputs):
                         y[row, group * outputs + e] = means[e]
@@ -91,7 +94,8 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     Serves windows whose every divisor is ``kernel_size``: padding counted or absent,
     no ``ceil_mode`` and no ``divisor_override``. The stride must divide the elements of
     a 16-byte load, so that one covers whole outputs; the outputs must divide into
-    those loads and the windows stay within the padded row.
+    those loads and the windows stay within the padded row. A thread's windows reach at
+    most ``_MAX_REACH`` element past its load on either side, each one a load of its own.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
@@ -111,7 +115,8 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             return False
         out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
         return (
-            kernel_l <= _MAX_TAPS
+            pad_l <= _MAX_REACH
+            and kernel_l - stride_l - pad_l <= _MAX_REACH
             and out_l > 0
             and out_l % (run // stride_l) == 0
             and out_l * stride_l <= l_in
