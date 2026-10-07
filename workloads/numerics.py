@@ -451,6 +451,16 @@ def check_inputs_preserved(request: Request, inputs: tuple) -> None:
         _restore(own, own_pristine)
 
 
+def _check_requests_preserve(requests: dict[str, Request], inputs: tuple) -> None:
+    """Run each request that must leave the shared inputs unchanged, naming the one that did not."""
+    for name, request in requests.items():
+        if request.preserve_inputs:
+            try:
+                check_inputs_preserved(request, inputs)
+            except AssertionError as exc:
+                raise AssertionError(f"{name}: {exc}") from exc
+
+
 def verify(
     reference: Callable | None,
     inputs: tuple,
@@ -473,12 +483,7 @@ def verify(
                 check_inputs_preserved(Request(reference, inputs), inputs)
             except AssertionError as exc:
                 raise AssertionError(f"reference: {exc}") from exc
-        for name, request in requests.items():
-            if request.preserve_inputs:
-                try:
-                    check_inputs_preserved(request, inputs)
-                except AssertionError as exc:
-                    raise AssertionError(f"{name}: {exc}") from exc
+        _check_requests_preserve(requests, inputs)
         return {name: CheckResult(0, None, None, describe(evidence)) for name in requests}
     if reference is None:
         raise ValueError(
@@ -491,6 +496,9 @@ def verify(
             produced_by_reference = reference(*inputs)
             expected = _copy_outputs(produced_by_reference)
         except torch.OutOfMemoryError:
+            # Nothing is compared, but every request is still timed on the shared inputs.
+            _restore(shared, pristine)
+            _check_requests_preserve(requests, inputs)
             return {
                 name: CheckResult(0, None, None, "reference ran out of memory") for name in requests
             }

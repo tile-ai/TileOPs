@@ -62,6 +62,10 @@ def _case(
     return bench.Case("probe", call, Entry(lambda _call: workload, count_copies, binder))
 
 
+def _out_of_memory(*_):
+    raise torch.OutOfMemoryError("out of memory")
+
+
 @pytest.fixture
 def timed(monkeypatch):
     """Every bench_kernel call, answered with one sample; every recorded row."""
@@ -132,10 +136,7 @@ def test_the_reference_runs_once_for_every_implementation(timed):
 
 
 def test_the_reference_row_is_unverified_where_the_reference_could_not_run(timed):
-    def out_of_memory(x):
-        raise torch.OutOfMemoryError("out of memory")
-
-    case = _case(reference=out_of_memory)
+    case = _case(reference=_out_of_memory)
     bench.Runner(SumFwdOp(), case).compare({"torch": case.reference})
     assert all(row["ratio"] is False and "memory" in row["unverified"] for row in timed.rows)
 
@@ -146,10 +147,18 @@ def test_a_callable_that_overwrites_the_shared_inputs_fails_before_timing(timed)
     assert not timed.runs
 
 
-@pytest.mark.parametrize("noncomparable", [False, True])
-@pytest.mark.parametrize("evidence", [None, Unestablished()])
-def test_explicit_args_cannot_overwrite_shared_inputs(timed, noncomparable, evidence):
-    case = _case(evidence=evidence)
+@pytest.mark.parametrize(
+    "noncomparable, reference, evidence",
+    [
+        (False, None, None),
+        (False, None, Unestablished()),
+        (False, _out_of_memory, None),
+        (True, None, None),
+    ],
+    ids=["checked", "unestablished", "reference-oom", "noncomparable"],
+)
+def test_explicit_args_cannot_overwrite_shared_inputs(timed, noncomparable, reference, evidence):
+    case = _case(evidence=evidence, **({"reference": reference} if reference else {}))
     impl = bench.Implementation(
         run=lambda x: x.mul_(2),
         args=case.inputs,
