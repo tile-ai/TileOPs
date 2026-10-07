@@ -15,6 +15,8 @@ The op computes cos/sin internally from variant parameters; tests call
 independently computes the same frequency tables.
 """
 
+import math
+
 import pytest
 import torch
 
@@ -143,13 +145,47 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
 
 
 @pytest.mark.smoke
-def test_rope_neox_position_ids_validates_range() -> None:
+# 32768 tokens of eight pairs take more than one wave of 512 threads of two pairs.
+@pytest.mark.parametrize("num_tokens", [2, 32768], ids=["one-wave", "multi-wave"])
+def test_rope_neox_position_ids_validates_range(num_tokens: int) -> None:
     from tileops.ops.rope import RoPENeoxPositionIdsFwdOp
 
     op = RoPENeoxPositionIdsFwdOp(max_position=8)
-    x = torch.randn(2, 1, 16, device=run_device(), dtype=torch.float16)
+    x = torch.randn(num_tokens, 1, 16, device=run_device(), dtype=torch.float16)
+    position_ids = torch.zeros(num_tokens, device=run_device(), dtype=torch.int32)
+    position_ids[-1] = 8
     with pytest.raises(ValueError, match="position_ids"):
-        op(x, torch.tensor([0, 8], device=run_device(), dtype=torch.int32))
+        op(x, position_ids)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("num_tokens", [96, 2048], ids=["one-wave", "multi-wave"])
+def test_rope_neox_position_ids_input_off_a_vector_boundary(num_tokens: int) -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches torch."""
+    from tileops.ops.rope import RoPENeoxPositionIdsFwdOp
+
+    shape, max_position = (num_tokens, 8, 64), 512
+    x = torch.randn(math.prod(shape) + 1, device=run_device(), dtype=torch.float16)[1:]
+    x = x.view(shape)
+    position_ids = torch.randint(0, max_position, (num_tokens,), device=run_device())
+    position_ids = position_ids.to(torch.int32)
+    cos, sin = rope_frequency_tables(64, max_position, dtype=x.dtype, device=run_device())
+    ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long())
+    op = RoPENeoxPositionIdsFwdOp(max_position=max_position)
+    compare_outputs(op(x, position_ids), ref, rope_verification())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("rope_layout, variant", [("neox", "neox"), ("interleaved", "non_neox")])
+def test_rope_input_off_a_vector_boundary(rope_layout: str, variant: str) -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches the reference."""
+    from tileops.ops.rope import RoPEFwdOp
+
+    test = RoPETest(variant, "2d", 2, 64, 4, 128, torch.float16)
+    (aligned,) = test.gen_inputs()
+    x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
+    x = x.view(aligned.shape).copy_(aligned)
+    test.check(RoPEFwdOp(rope_layout=rope_layout, input_layout="2d"), x)
 
 
 @pytest.mark.smoke

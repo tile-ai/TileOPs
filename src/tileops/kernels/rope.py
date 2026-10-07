@@ -28,7 +28,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface, vector_aligned
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -363,6 +363,7 @@ def _make_rope_neox_position_ids_thd(
     dtype: str,
     threads: int = 256,
     num_per_thread: int = 8,
+    one_wave: bool = False,
 ) -> object:
     """THD neox RoPE kernel with explicit absolute position ids.
 
@@ -374,6 +375,12 @@ def _make_rope_neox_position_ids_thd(
     faulting, and ``status`` counts how many were seen. The count only grows and is
     never reset, so one buffer serves every call and a caller learns of an out-of-range
     position by the count moving.
+
+    ``one_wave`` builds the body for a grid of at most one wave, whose time is the chain of
+    a position load then a table load. A thread there loads its ``num_per_thread`` pairs
+    as vectors, the position and the table first; the clamp sits in the table index, where
+    the bounds analysis sees it, so the loads carry no branch on the position; and the
+    thread holding a token's first pair counts that token's position, adding no load.
     """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
@@ -394,25 +401,64 @@ def _make_rope_neox_position_ids_thd(
             y: T.Tensor((n_total,), dtype),
         ):
             with T.Kernel(T.ceildiv(n_walked, threads_arg * npt_arg), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    token = (bx * threads_arg + i) * npt_arg + j
-                    if token < num_tokens:
-                        seen = position_ids[token]
-                        if seen != T.max(0, T.min(seen, max_position - 1)):
+                # A thread's pairs share its first pair's row only where they divide the row.
+                if one_wave and half % npt_arg == 0:
+                    tx = T.get_thread_binding()
+                    cs = T.alloc_local([npt_arg], dtype)
+                    sn = T.alloc_local([npt_arg], dtype)
+                    lo = T.alloc_local([npt_arg], dtype)
+                    hi = T.alloc_local([npt_arg], dtype)
+                    first = (bx * threads_arg + tx) * npt_arg
+                    if first < n_pairs:
+                        row = first // half
+                        col = first % half
+                        seen = position_ids[row // num_heads]
+                        if (
+                            row % num_heads == 0
+                            and col == 0
+                            and seen != T.max(0, T.min(seen, max_position - 1))
+                        ):
                             T.atomic_add(status[0], 1)
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    pair_idx = (bx * threads_arg + i) * npt_arg + j
-                    if pair_idx < n_pairs:
-                        row = pair_idx // half
-                        col = pair_idx % half
-                        pos = T.max(0, T.min(position_ids[row // num_heads], max_position - 1))
+                        for j in T.vectorized(npt_arg):
+                            cs[j] = cos_table[T.max(0, T.min(seen, max_position - 1)), col + j]
+                        for j in T.vectorized(npt_arg):
+                            sn[j] = sin_table[T.max(0, T.min(seen, max_position - 1)), col + j]
                         low = row * head_dim + col
-                        x_low = T.Cast("float32", x[low])
-                        x_high = T.Cast("float32", x[low + half])
-                        c = T.Cast("float32", cos_table[pos, col])
-                        s = T.Cast("float32", sin_table[pos, col])
-                        y[low] = T.Cast(dtype, x_low * c - x_high * s)
-                        y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
+                        for j in T.vectorized(npt_arg):
+                            lo[j] = x[low + j]
+                        for j in T.vectorized(npt_arg):
+                            hi[j] = x[low + half + j]
+                        for j in T.unroll(npt_arg):
+                            c = T.Cast("float32", cs[j])
+                            s = T.Cast("float32", sn[j])
+                            x_low = T.Cast("float32", lo[j])
+                            x_high = T.Cast("float32", hi[j])
+                            lo[j] = T.Cast(dtype, x_low * c - x_high * s)
+                            hi[j] = T.Cast(dtype, x_high * c + x_low * s)
+                        for j in T.vectorized(npt_arg):
+                            y[low + j] = lo[j]
+                        for j in T.vectorized(npt_arg):
+                            y[low + half + j] = hi[j]
+                else:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        token = (bx * threads_arg + i) * npt_arg + j
+                        if token < num_tokens:
+                            seen = position_ids[token]
+                            if seen != T.max(0, T.min(seen, max_position - 1)):
+                                T.atomic_add(status[0], 1)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        pair_idx = (bx * threads_arg + i) * npt_arg + j
+                        if pair_idx < n_pairs:
+                            row = pair_idx // half
+                            col = pair_idx % half
+                            pos = T.max(0, T.min(position_ids[row // num_heads], max_position - 1))
+                            low = row * head_dim + col
+                            x_low = T.Cast("float32", x[low])
+                            x_high = T.Cast("float32", x[low + half])
+                            c = T.Cast("float32", cos_table[pos, col])
+                            s = T.Cast("float32", sin_table[pos, col])
+                            y[low] = T.Cast(dtype, x_low * c - x_high * s)
+                            y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
                 if n_tail > 0:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         tail_idx = (bx * threads_arg + i) * npt_arg + j
@@ -632,6 +678,7 @@ class _RoPEKernelBase(Kernel):
         """
         cfg = self.config
         orig_shape = x.shape
+        x = vector_aligned(x)
         if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
             result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)
@@ -670,6 +717,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             rotary_dim=call.rotary_dim,
             max_position=call.max_position,
             dtype=call.dtype,
+            sm_count=call.sm_count,
         )
 
     def __init__(
@@ -680,6 +728,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         rotary_dim: int,
         max_position: int,
         dtype: torch.dtype,
+        sm_count: int | None = None,
         config: dict | None = None,
         tune: bool = False,
     ):
@@ -699,6 +748,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = dtype
+        self.sm_count = sm_count
         # Grows by one per position seen outside [0, max_position), and is never
         # reset; take_out_of_range answers whether it moved.
         self._status: torch.Tensor | None = None
@@ -717,10 +767,29 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             self.dtype_to_str(self.dtype),
             threads=cfg["threads"],
             num_per_thread=cfg["num_per_thread"],
+            one_wave=self._one_wave,
+        )
+
+    @property
+    def _one_wave(self) -> bool:
+        """Whether a 512-thread grid of two pairs a thread fits one wave of the device.
+
+        Such a grid's time is the latency of a position load then a table load; sixteen
+        warps a block keep four times the chains in flight that four warps of eight pairs do.
+        """
+        half = self.rotary_dim // 2
+        pairs = self.num_tokens * self.num_heads * half
+        return (
+            self.sm_count is not None
+            and half % 2 == 0
+            and self.head_dim == self.rotary_dim
+            and -(-pairs // (512 * 2)) <= self.sm_count
         )
 
     @property
     def default_config(self) -> dict:
+        if self._one_wave:
+            return {"threads": 512, "num_per_thread": 2}
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
@@ -744,7 +813,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         if self._status is None:
             self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
         result = self.kernel(cfg["threads"], cfg["num_per_thread"])(
-            x.contiguous().reshape(-1),
+            vector_aligned(x.contiguous()).reshape(-1),
             cos,
             sin,
             position_ids.contiguous(),
