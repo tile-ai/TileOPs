@@ -774,10 +774,8 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
     def _one_wave(self) -> bool:
         """Whether a 512-thread grid of two pairs a thread fits one wave of the device.
 
-        Such a grid's time is the chain of a position load then a table load. Sixteen
-        warps a block keep sixteen of those chains in flight on an SM where four warps of
-        eight pairs keep four: decode-b32 measured 1.98 us on the multi-wave body, 1.79
-        on this one at 128 threads of eight pairs, and 1.54 at 512 of two.
+        Such a grid's time is the latency of a position load then a table load; sixteen
+        warps a block keep four times the chains in flight that four warps of eight pairs do.
         """
         half = self.rotary_dim // 2
         pairs = self.num_tokens * self.num_heads * half
