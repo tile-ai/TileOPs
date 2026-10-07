@@ -30,12 +30,14 @@ from tileops.kernels.linear_attention.deltanet.autotune import (
     default_h_block_v,
     default_h_threads,
     delta_rule_fwd_autotune_configs,
+    h_block_v_candidates,
     tune_delta_rule_fwd,
 )
 from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
 )
 from tileops.kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
+from tileops.utils import get_shared_memory_optin
 
 __all__ = ["DeltaNetFwdKernel"]
 
@@ -159,11 +161,16 @@ def _output_o_tl(
     dim_k: int,
     dim_v: int,
     dtype: str = "float32",
+    late_loads: bool = False,
 ):
     """Output projection: (q, k, S, v_new) -> o.
 
     Grid: (num_chunks, batch, head) -- fully parallel across chunks.
     Each chunk reads h = S[t] (boundary state at start of chunk) and v_new[t].
+
+    *late_loads* loads k once h is spent and v_new once q and k are, so each product holds
+    only its own operands; it costs the loads their overlap, so only a chunk that does not
+    fit otherwise takes it.
     """
     accum_dtype = "float32"
     block_C = chunk_size
@@ -196,23 +203,39 @@ def _output_o_tl(
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
 
                 T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
-                T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
+                if not late_loads:
+                    T.copy(
+                        k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True
+                    )
                 T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
-                T.copy(
-                    v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :],
-                    v_new_c,
-                    disable_tma=True,
-                )
+                if not late_loads:
+                    T.copy(
+                        v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :],
+                        v_new_c,
+                        disable_tma=True,
+                    )
 
                 # o = q @ h (no exp(g) scaling)
                 T.clear(o_frag)
                 T.gemm(q_c, h_c, o_frag)
+
+                if late_loads:
+                    T.copy(
+                        k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True
+                    )
 
                 # attn = causal(q @ k^T) (no Gamma weighting)
                 T.clear(attn_frag)
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(i >= j, attn_frag[i, j], T.float32(0.0))
+
+                if late_loads:
+                    T.copy(
+                        v_new[bid, hid, tid * block_C : (tid + 1) * block_C, :],
+                        v_new_c,
+                        disable_tma=True,
+                    )
 
                 # o += attn @ v_new
                 T.gemm(attn, v_new_c, o_frag)
@@ -232,7 +255,57 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
 
     @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
-        return head_count_refusal(call.heads)
+        """Why no program serves this call, or ``None``; reads lower bounds, the recurrence's
+        over its narrowest V tile, so a call above them that TileLang still cannot place in the
+        device's shared memory is built and fails at launch."""
+        reason = head_count_refusal(call.heads)
+        if reason is not None or not call.smem_budget:
+            return reason
+        c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
+        width = min((resolve_block_v(v, b) for b in h_block_v_candidates(v)), default=v)
+        need = max(
+            cls._fused_live_bytes(c, k, v, elem),
+            cls._state_live_bytes(c, k, width, elem),
+            cls._output_live_bytes(c, k, v, elem),
+        )
+        if need <= call.smem_budget:
+            return None
+        return (
+            f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
+            f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
+        )
+
+    @staticmethod
+    def _fused_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the w/u preparation's shared memory: k, beta, S and P through the
+        inverse, k_beta with k, beta and S, then S, beta, v and v_beta."""
+        return max(c * k + c + 2 * c * c, 2 * c * k + c + c * c, c * c + c + 2 * c * v) * elem
+
+    @staticmethod
+    def _state_live_bytes(c: int, k: int, width: int, elem: int) -> int:
+        """Lower bound on the recurrence's shared memory at one stage over a V tile: k, w, the
+        tile of u and the cast state at w @ h."""
+        return (2 * c * k + (c + k) * width) * elem
+
+    @staticmethod
+    def _state_shared_bytes(c: int, k: int, width: int, elem: int, stages: int) -> int:
+        """Shared memory of the recurrence over a V tile: k, w and the tile of u once per
+        stage, then the cast state and v_new."""
+        return (stages * (2 * c * k + c * width) + (k + c) * width) * elem
+
+    @staticmethod
+    def _output_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Lower bound on the output pass's shared memory: q with the state, q with k, then
+        attn with v_new."""
+        return max(c * k + k * v, 2 * c * k, c * c + c * v) * elem
+
+    @staticmethod
+    def _late_loads_for(budget: int, c: int, k: int, v: int, elem: int) -> Tuple[bool, bool]:
+        """Whether the w/u preparation and the output pass load late: only where their buffers,
+        every one loaded up front, exceed *budget*."""
+        fused = (2 * c * k + 2 * c * v + 2 * c * c + c) * elem
+        output = (2 * c * k + k * v + c * v + c * c) * elem
+        return fused > budget, output > budget
 
     @staticmethod
     def _deltanet_fwd_run(
@@ -249,6 +322,8 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
         h_threads: int,
         h_block_v: int,
         o_threads: int,
+        fused_late_v: bool,
+        o_late_loads: bool,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -262,6 +337,7 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
             dim_k,
             dim_v,
             dtype,
+            late_v=fused_late_v,
         )(fused_num_stages, fused_threads)
         h_fn = _h_recurrence_tl(
             batch,
@@ -281,6 +357,7 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
             dim_k,
             dim_v,
             dtype,
+            late_loads=o_late_loads,
         )(o_threads)
         S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
         Aw, Au, w, u = fused_fn(k, v, beta)
@@ -326,16 +403,41 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
+        self._fused_late_v, self._o_late_loads = self._late_loads_for(
+            get_shared_memory_optin(self.device_index),
+            chunk_size,
+            dim_k,
+            dim_v,
+            getattr(torch, self.dtype_str).itemsize,
+        )
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        h_block_v = default_h_block_v(self.dim_v, self.chunk_size)
+        return self._default_config_for(
+            get_shared_memory_optin(self.device_index),
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            getattr(torch, self.dtype_str).itemsize,
+        )
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+    ) -> dict:
+        """The config this kernel builds at *budget* bytes of shared memory per block."""
+        c, k, v = chunk_size, dim_k, dim_v
+        h_block_v = default_h_block_v(v, c)
+        if cls._state_shared_bytes(c, k, resolve_block_v(v, h_block_v), elem, 1) > budget:
+            h_block_v = min((b for b in h_block_v_candidates(v) if b), default=h_block_v)
+        width = resolve_block_v(v, h_block_v)
+        h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
         return {
             "fused_num_stages": 2,
             "fused_threads": 256,
-            "h_num_stages": 2,
-            "h_threads": default_h_threads(self.dim_v, h_block_v),
+            "h_num_stages": h_num_stages,
+            "h_threads": default_h_threads(v, h_block_v),
             "h_block_v": h_block_v,
             "o_threads": 256,
         }
@@ -348,9 +450,11 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
         """Tune the three sub-kernels independently and merge the winners."""
         self.config = tune_delta_rule_fwd(
             self,
-            fused_builder=fused_prepare_compute_w_u_tl,
+            fused_builder=functools.partial(
+                fused_prepare_compute_w_u_tl, late_v=self._fused_late_v
+            ),
             h_builder=_h_recurrence_tl,
-            o_builder=_output_o_tl,
+            o_builder=functools.partial(_output_o_tl, late_loads=self._o_late_loads),
             warmup=warmup,
             rep=rep,
         )
@@ -376,6 +480,8 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
             self.config["h_threads"],
             self.config.get("h_block_v", 0),
             self.config["o_threads"],
+            self._fused_late_v,
+            self._o_late_loads,
             q,
             k,
             v,

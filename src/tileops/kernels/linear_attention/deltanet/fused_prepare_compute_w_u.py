@@ -30,8 +30,13 @@ def fused_prepare_compute_w_u_tl(
     dim_k: int,
     dim_v: int,
     dtype: str = "float32",
+    late_v: bool = False,
 ):
-    """Fused TileLang kernel: (k, v, beta) -> (Aw, Au, w, u) per chunk."""
+    """Fused TileLang kernel: (k, v, beta) -> (Aw, Au, w, u) per chunk.
+
+    *late_v* loads v once w is written, so v does not share the peak with k and the inverse;
+    it costs the load its overlap, so only a chunk that does not fit otherwise takes it.
+    """
     accum_dtype = "float32"
     block_C = chunk_size
     num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
@@ -70,9 +75,12 @@ def fused_prepare_compute_w_u_tl(
                 T.copy(
                     k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True
                 )
-                T.copy(
-                    v[bid, hid, by * block_C : (by + 1) * block_C, :], v_shared, disable_tma=True
-                )
+                if not late_v:
+                    T.copy(
+                        v[bid, hid, by * block_C : (by + 1) * block_C, :],
+                        v_shared,
+                        disable_tma=True,
+                    )
                 T.copy(
                     beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True
                 )
@@ -116,6 +124,13 @@ def fused_prepare_compute_w_u_tl(
                 T.clear(w_frag)
                 T.gemm(S_shared, k_beta_shared, w_frag)
                 T.copy(w_frag, w[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+
+                if late_v:
+                    T.copy(
+                        v[bid, hid, by * block_C : (by + 1) * block_C, :],
+                        v_shared,
+                        disable_tma=True,
+                    )
 
                 # v_beta = v * beta
                 for i, j in T.Parallel(block_C, dim_v):

@@ -1,3 +1,4 @@
+import math
 from typing import Callable, Optional
 
 import pytest
@@ -1877,4 +1878,38 @@ def test_max_pool1d_windowed_taps_match_torch(
     x.view(-1)[::313] = float("nan")
     out = MaxPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)(x)
     expected = F.max_pool1d(x, kernel_l, stride_l, pad_l)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, kernel, stride, padding, dtype, offset, nan",
+    [
+        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, False, id="pad-before-fp16"),
+        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 1, False, id="misaligned-fp16"),
+        pytest.param((2, 3, 32, 32), 2, 2, 0, torch.float32, 0, True, id="nan-fp32"),
+        pytest.param(
+            (2, 3, 15, 16), (3, 2), 2, (1, 0), torch.bfloat16, 0, False, id="pad-rows-bf16"
+        ),
+        pytest.param((2, 3, 16, 32), 3, 1, 1, torch.float32, 0, False, id="reach-both-sides-fp32"),
+        pytest.param(
+            (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, False, id="reach-after-fp32"
+        ),
+        # Past 128 MiB the run is read without the evict-first hint.
+        pytest.param((1, 1344, 224, 224), 2, 2, 0, torch.float16, 0, True, id="large-fp16"),
+    ],
+)
+def test_max_pool2d_windows_read_into_registers(
+    shape, kernel, stride, padding, dtype, offset: int, nan: bool
+) -> None:
+    """Windows a 16-byte load of an input row covers whole outputs of match torch bit for
+    bit, a NaN in a window winning; an input starting ``offset`` elements into its storage
+    is served too."""
+    numel = math.prod(shape)
+    storage = torch.randn(offset + numel, device=run_device(), dtype=dtype)
+    x = storage[offset:].view(shape)
+    if nan:
+        x.view(-1)[::997] = float("nan")
+    out = MaxPool2dFwdOp(kernel_size=kernel, stride=stride, padding=padding)(x)
+    expected = F.max_pool2d(x, kernel, stride, padding)
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
