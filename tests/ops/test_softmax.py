@@ -236,6 +236,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     "op_cls, ref_fn, shape",
     [
         pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
+        pytest.param(SoftmaxFwdOp, F.softmax, (64, 256), marks=pytest.mark.full, id="warp-rows"),
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="streaming"
         ),
@@ -271,6 +272,9 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
     [
         pytest.param(
             SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
+        ),
+        pytest.param(
+            SoftmaxCase, SoftmaxFwdOp, -1, (8, 512), marks=pytest.mark.full, id="softmax-warp-rows"
         ),
         pytest.param(
             LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
