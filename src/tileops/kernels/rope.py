@@ -401,7 +401,8 @@ def _make_rope_neox_position_ids_thd(
             y: T.Tensor((n_total,), dtype),
         ):
             with T.Kernel(T.ceildiv(n_walked, threads_arg * npt_arg), threads=threads_arg) as bx:
-                if one_wave:
+                # A thread's pairs share its first pair's row only where they divide the row.
+                if one_wave and half % npt_arg == 0:
                     tx = T.get_thread_binding()
                     cs = T.alloc_local([npt_arg], dtype)
                     sn = T.alloc_local([npt_arg], dtype)
@@ -770,25 +771,26 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
 
     @property
     def _one_wave(self) -> bool:
-        """Whether a 128-thread grid of eight pairs a thread fits one wave of the device.
+        """Whether a 512-thread grid of two pairs a thread fits one wave of the device.
 
-        Such a grid's time is the chain of a position load then a table load, which the
-        one-wave body shortens: decode-b32 measured 1.98 us on the multi-wave body and
-        1.66 on this one.
+        Such a grid's time is the chain of a position load then a table load. Sixteen
+        warps a block keep sixteen of those chains in flight on an SM where four warps of
+        eight pairs keep four: decode-b32 measured 1.98 us on the multi-wave body, 1.79
+        on this one at 128 threads of eight pairs, and 1.54 at 512 of two.
         """
         half = self.rotary_dim // 2
         pairs = self.num_tokens * self.num_heads * half
         return (
             self.sm_count is not None
-            and half % 8 == 0
+            and half % 2 == 0
             and self.head_dim == self.rotary_dim
-            and -(-pairs // (128 * 8)) <= self.sm_count
+            and -(-pairs // (512 * 2)) <= self.sm_count
         )
 
     @property
     def default_config(self) -> dict:
         if self._one_wave:
-            return {"threads": 128, "num_per_thread": 8}
+            return {"threads": 512, "num_per_thread": 2}
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
