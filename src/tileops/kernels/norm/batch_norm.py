@@ -15,7 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
@@ -779,6 +779,7 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
+        x = vector_aligned(x)
         running_mean, running_var, weight, bias = _fill_absent(
             x, self.C, running_mean, running_var, weight, bias
         )
@@ -1100,6 +1101,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
+        x = vector_aligned(x)
         running_mean, running_var, weight, bias = _fill_absent(
             x, self.C, running_mean, running_var, weight, bias
         )
@@ -1193,6 +1195,7 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
+        x = vector_aligned(x)
         running_mean, running_var, weight, bias = _fill_absent(
             x, self.C, running_mean, running_var, weight, bias
         )
@@ -1451,6 +1454,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
             running_mean=running_mean,
             running_var=running_var,
         )
+        x = vector_aligned(x)
         if weight is None or bias is None:
             placeholder = torch.empty(x.shape[1], dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight
@@ -1994,6 +1998,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         grad_x = self.kernel(*self.launch)(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
@@ -2067,6 +2072,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         stats, finalize, apply_ = self.stages
@@ -2161,6 +2167,7 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         program = self.kernel(self.config["block_l"], self.config["threads"])
