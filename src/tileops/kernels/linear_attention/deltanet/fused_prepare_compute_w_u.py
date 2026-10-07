@@ -34,8 +34,9 @@ def fused_prepare_compute_w_u_tl(
 ):
     """Fused TileLang kernel: (k, v, beta) -> (Aw, Au, w, u) per chunk.
 
-    *late_v* loads v once w is written, so v does not share the peak with k and the inverse;
-    it costs the load its overlap, so only a chunk that does not fit otherwise takes it.
+    *late_v* loads v once w is written, so v does not share the peak with k and the inverse,
+    and scales it by beta in place, so v and v_beta do not take two buffers; it costs the load
+    its overlap, so only a chunk that does not fit otherwise takes it.
     """
     accum_dtype = "float32"
     block_C = chunk_size
@@ -64,7 +65,7 @@ def fused_prepare_compute_w_u_tl(
                 v_shared = T.alloc_shared([block_C, dim_v], dtype)
                 beta_shared = T.alloc_shared([block_C], dtype)
                 k_beta_shared = T.alloc_shared([block_C, dim_k], dtype)
-                v_beta_shared = T.alloc_shared([block_C, dim_v], dtype)
+                v_beta_shared = v_shared if late_v else T.alloc_shared([block_C, dim_v], dtype)
                 S_shared = T.alloc_shared([block_C, block_C], dtype)
                 P_shared = T.alloc_shared([block_C, block_C], dtype)
                 gram_frag = T.alloc_fragment([block_C, block_C], accum_dtype)

@@ -255,9 +255,12 @@ class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
 
     @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
-        """Why no program serves this call, or ``None``; reads lower bounds, the recurrence's
-        over its narrowest V tile, so a call above them that TileLang still cannot place in the
-        device's shared memory is built and fails at launch."""
+        """Why no program serves this call, or ``None``.
+
+        Reads lower bounds, the recurrence's over its narrowest V tile, so a call above them
+        that TileLang still cannot place in the device's shared memory is built and fails at
+        launch.
+        """
         reason = head_count_refusal(call.heads)
         if reason is not None or not call.smem_budget:
             return reason

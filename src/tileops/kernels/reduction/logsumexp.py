@@ -631,6 +631,18 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
     def default_config(self) -> dict:
         return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # The plan reserves the scratch at the untuned thread count; a tiled candidate at
+        # more threads holds more, and is dropped where its tile and scratch exceed the budget.
+        return [
+            c
+            for c in super().autotune_configs
+            if not c["tile_n"]
+            or c["block_m"] * c["tile_n"] * self._elem_bytes + 2 * c["threads"] * 4
+            <= self._smem_budget
+        ]
+
     def _build_row_kernel(self, tile_n: int):
         if tile_n == 0:
             return _logsumexp_kernel_single(self.M, self.N, self.dtype_str)
