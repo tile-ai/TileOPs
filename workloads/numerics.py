@@ -392,8 +392,8 @@ def _copy_outputs(value: Any) -> Any:
 class Request:
     """One call to check against the reference: ``reset()``, then ``run(*args)``.
 
-    ``preserve_inputs`` marks a call made on the shared inputs themselves, which it must
-    leave as it found them.
+    ``preserve_inputs`` requires the call to leave the shared inputs as it found them,
+    whatever ``args`` it runs on.
     """
 
     run: Callable
@@ -496,7 +496,11 @@ def verify(
             produced_by_reference = reference(*inputs)
             expected = _copy_outputs(produced_by_reference)
         except torch.OutOfMemoryError:
-            # Nothing is compared, but every request is still timed on the shared inputs.
+            # Nothing is compared; the shared-input contract is still checked.
+            if preserve_reference_inputs and not _unchanged(shared, pristine):
+                raise AssertionError(
+                    "reference overwrote the shared inputs; time it on private arguments"
+                ) from None
             _restore(shared, pristine)
             _check_requests_preserve(requests, inputs)
             return {
