@@ -137,8 +137,8 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
     # Rows up to 128 MiB are read evict-first in L2: (2560, 4096) fp32 measured 16.45 to
-    # 15.49 us and fp16 11.30 to 10.40; MaxPool2dRegisterKernel found the hint slowing a
-    # 411 MB input.
+    # 15.49 us and fp16 11.30 to 10.40. The 128 MiB bound is not measured here; it is the
+    # register MaxPool2d kernel's, where the hint slowed a 411 MB input.
     evict_first = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
     @tilelang.jit(
