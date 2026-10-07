@@ -76,6 +76,8 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=-1, non-aligned M, long aligned rows (split kernel)
                 pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
+                # dim=-1, a 4 KB row a whole warp's lanes share (warp-rows kernel)
+                pytest.param((33, 2048), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim — different M/N split)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
@@ -236,6 +238,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     "op_cls, ref_fn, shape",
     [
         pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
+        pytest.param(SoftmaxFwdOp, F.softmax, (64, 256), marks=pytest.mark.full, id="warp-rows"),
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="streaming"
         ),
@@ -271,6 +274,9 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
     [
         pytest.param(
             SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
+        ),
+        pytest.param(
+            SoftmaxCase, SoftmaxFwdOp, -1, (8, 1024), marks=pytest.mark.full, id="softmax-warp-rows"
         ),
         pytest.param(
             LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"

@@ -26,6 +26,7 @@ from tileops.kernels.reduction.softmax import (
     SoftmaxStreamingKernel,
 )
 from tileops.kernels.reduction.softmax_on_chip import SoftmaxOnChipKernel
+from tileops.kernels.reduction.softmax_warp_rows import SoftmaxWarpRowsKernel
 from tileops.manifest.primitives import normalize_axis
 from tileops.ops.op_base import Op
 from tileops.ops.reduction.reduce import _ReduceOpBase
@@ -45,6 +46,7 @@ class _SoftmaxBaseOp(Op):
         "softmax_split": SoftmaxSplitKernel,
         "softmax_streaming": SoftmaxStreamingKernel,
         "softmax_on_chip": SoftmaxOnChipKernel,
+        "softmax_warp_rows": SoftmaxWarpRowsKernel,
         "softmax_fwd": SoftmaxKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"softmax": SoftmaxFwdInterface}
