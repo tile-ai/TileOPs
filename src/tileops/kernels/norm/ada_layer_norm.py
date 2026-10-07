@@ -26,7 +26,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import make_row_reduce, select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import (
     AdaLayerNormFwdInterface,
@@ -297,6 +297,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
                 ``has_gate``.
         """
         self._require_cuda(x=x, scale=scale, shift=shift, gate=gate)
+        x, scale, shift, gate = (vector_aligned(t) for t in (x, scale, shift, gate))
         if self.has_gate and gate is None:
             raise ValueError("gate tensor is required when has_gate=True")
 

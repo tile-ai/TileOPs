@@ -25,7 +25,7 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import (
     FusedAddLayerNormFwdInterface,
@@ -214,6 +214,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(x=x, residual=residual, weight=weight, bias=bias)
+        x, residual, weight, bias = (vector_aligned(t) for t in (x, residual, weight, bias))
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
@@ -486,6 +487,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(x=x, residual=residual, weight=weight)
+        x, residual, weight = (vector_aligned(t) for t in (x, residual, weight))
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

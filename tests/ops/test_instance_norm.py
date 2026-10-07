@@ -289,3 +289,32 @@ def test_instance_norm_needs_both_running_statistics_to_read_them() -> None:
         InstanceNormFwdOp(use_input_stats=False)(x)
     with pytest.raises(ValueError, match="'running_var' is required"):
         InstanceNormFwdOp()(x, stat)
+
+
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("stats", [False, True], ids=["affine", "running-stats"])
+def test_instance_norm_reads_input_off_the_vector_boundary(stats: bool) -> None:
+    """A contiguous input starting one element into its storage matches torch, whether the
+    call normalizes with an affine or updates running statistics."""
+    x = _misaligned(torch.randn(2, 16, 16, 16, dtype=torch.float16, device=run_device()))
+    weight = None if stats else torch.randn(16, dtype=x.dtype, device=x.device)
+    bias = None if stats else torch.randn(16, dtype=x.dtype, device=x.device)
+    rm = torch.zeros(16, device=x.device) if stats else None
+    rv = torch.ones(16, device=x.device) if stats else None
+    y_ref = F.instance_norm(
+        x.float(),
+        None if rm is None else rm.clone(),
+        None if rv is None else rv.clone(),
+        None if weight is None else weight.float(),
+        None if bias is None else bias.float(),
+        use_input_stats=True,
+    ).to(x.dtype)
+    y = InstanceNormFwdOp()(x, rm, rv, weight, bias)
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))

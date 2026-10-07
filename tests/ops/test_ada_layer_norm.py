@@ -210,3 +210,19 @@ def test_ada_layer_norm_under_tuning(tune: bool) -> None:
 def test_ada_layer_norm_zero_under_tuning(tune: bool) -> None:
     test = AdaLayerNormZeroTest(17, 514, torch.float16)
     test.check(AdaLayerNormZeroFwdOp(eps=test.eps, tune=tune), *test.gen_inputs())
+
+
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("zero", [False, True], ids=["ada", "ada-zero"])
+def test_ada_layer_norm_reads_inputs_off_the_vector_boundary(zero: bool) -> None:
+    """A contiguous input and modulation tensors may start anywhere in their storage."""
+    test = (AdaLayerNormZeroTest if zero else AdaLayerNormTest)(4, 1024, torch.float16)
+    op = AdaLayerNormZeroFwdOp() if zero else AdaLayerNormFwdOp()
+    test.check(op, *(_misaligned(t) for t in test.gen_inputs()))
