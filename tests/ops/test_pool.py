@@ -1861,6 +1861,28 @@ def test_adaptive_max_pool2d_global_zero_keeps_first_sign(first_sign: float) -> 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype",
+    [
+        pytest.param(4096, 3, 3, 0, torch.float32, id="in-row-fp32"),
+        pytest.param(4096, 3, 3, 0, torch.bfloat16, id="in-row-bf16"),
+        pytest.param(1000, 2, 3, 1, torch.float32, id="padded-fp32"),
+        pytest.param(1001, 3, 4, 1, torch.bfloat16, id="padded-bf16"),
+    ],
+)
+def test_max_pool1d_windowed_taps_match_torch(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: torch.dtype
+) -> None:
+    """Windows no wider than their stride read each tap where it lies, with the 4- and
+    2-byte element loads; the maxima match torch exactly, a NaN winning."""
+    x = torch.randn(4, 8, l_in, device=run_device(), dtype=dtype)
+    x.view(-1)[::313] = float("nan")
+    out = MaxPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)(x)
+    expected = F.max_pool1d(x, kernel_l, stride_l, pad_l)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "shape, kernel, stride, padding, dtype, offset, nan",
     [
         pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, False, id="pad-before-fp16"),
