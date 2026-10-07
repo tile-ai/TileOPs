@@ -139,6 +139,21 @@ def test_an_unwritten_output_element_does_not_read_back_as_expected():
         _verify_one(half_written, (x,), reference=lambda v: v * 2, evidence=Exact())
 
 
+def test_every_block_of_a_large_output_is_compared():
+    """A mismatch past the first block of a multi-block output is rejected."""
+    x = torch.randn(3 << 20, dtype=torch.float64)
+    result = _verify_one(lambda v: v * 2, (x,), reference=lambda v: v * 2, evidence=Exact())
+    assert result.checked_outputs == 1
+
+    def last_element_wrong(v):
+        out = v * 2
+        out[-1] += 1
+        return out
+
+    with pytest.raises(AssertionError, match="first failing block"):
+        _verify_one(last_element_wrong, (x,), reference=lambda v: v * 2, evidence=Exact())
+
+
 def test_a_reference_returning_a_cached_buffer_keeps_its_expected_values():
     """The subject overwriting a buffer the reference returned does not change what it is held to."""
     cache = torch.zeros(1)

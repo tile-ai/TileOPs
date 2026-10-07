@@ -302,6 +302,31 @@ def _tensor_pairs(got: Any, expected: Any):
         assert got == expected, f"non-tensor output mismatch: {got!r} != {expected!r}"
 
 
+def _assert_close_in_blocks(got: torch.Tensor, target: torch.Tensor, **tolerance) -> None:
+    """``assert_close`` a block of elements at a time, so its temporaries stay one block wide.
+
+    Every tolerance is element by element, so the blocks decide as one call would. A tensor
+    within one block, or not contiguous, is compared whole; a failure names the first
+    failing block.
+    """
+    block = 1 << 20
+    if got.numel() <= block or not (got.is_contiguous() and target.is_contiguous()):
+        torch.testing.assert_close(got, target, equal_nan=True, **tolerance)
+        return
+    flat_got, flat_target = got.view(-1), target.view(-1)
+    for start in range(0, got.numel(), block):
+        stop = min(start + block, got.numel())
+        try:
+            torch.testing.assert_close(
+                flat_got[start:stop], flat_target[start:stop], equal_nan=True, **tolerance
+            )
+        except AssertionError as exc:
+            raise AssertionError(
+                f"first failing block: flat elements [{start}, {stop}) of shape "
+                f"{tuple(got.shape)}: {exc}"
+            ) from exc
+
+
 def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckResult:
     """The only interpreter of output coverage, structure and numerical policy.
 
@@ -333,11 +358,8 @@ def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckRe
     else:
         for output_pairs in pairs:
             for got, target in output_pairs:
-                torch.testing.assert_close(
-                    got,
-                    target,
-                    equal_nan=True,
-                    **evidence.tolerance(reference_tolerance(got.dtype)),
+                _assert_close_in_blocks(
+                    got, target, **evidence.tolerance(reference_tolerance(got.dtype))
                 )
                 if getattr(evidence, "normalized", None) is not None:
                     assert_normalized_error(got, target, evidence.normalized)
