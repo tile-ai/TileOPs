@@ -425,8 +425,9 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
 
 
 # The tiled kernel's two reductions across threads, the tile's max and then its sum, each
-# take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
-_TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
+# take one fp32 per thread of shared memory besides the tile, at the widest thread count the
+# tuner offers.
+_TILED_WORKSPACE_BYTES = 2 * max(AUTOTUNE_THREADS) * 4
 
 
 class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
