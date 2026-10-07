@@ -12,6 +12,7 @@ from tileops.kernels.pool import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
     MaxPool2dKernel,
+    MaxPool2dRegisterKernel,
     MaxPool2dWithIndicesKernel,
     MaxPool3dFwdInterface,
     MaxPool3dIndicesFwdInterface,
@@ -208,7 +209,10 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
 
     ndim = 2
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"max_pool2d_kernel": MaxPool2dKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "max_pool2d_kernel": MaxPool2dKernel,
+        "max_pool2d_register": MaxPool2dRegisterKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"max_pool": MaxPool2dFwdInterface}
 
     def __init__(

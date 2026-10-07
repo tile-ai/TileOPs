@@ -29,6 +29,7 @@ from tileops.kernels.pool.call_spec import (
 )
 from tileops.kernels.pool.max_pool1d import MaxPool1dKernel, MaxPool1dWithIndicesKernel
 from tileops.kernels.pool.max_pool2d import MaxPool2dKernel, MaxPool2dWithIndicesKernel
+from tileops.kernels.pool.max_pool2d_register import MaxPool2dRegisterKernel
 from tileops.kernels.pool.max_pool3d import MaxPool3dKernel, MaxPool3dWithIndicesKernel
 from tileops.kernels.pool.mean_pooling import MeanPoolingFwdKernel
 
@@ -56,6 +57,7 @@ __all__ = [
     "MaxPool2dFwdInterface",
     "MaxPool2dIndicesFwdInterface",
     "MaxPool2dKernel",
+    "MaxPool2dRegisterKernel",
     "MaxPool2dWithIndicesKernel",
     "MaxPool3dFwdInterface",
     "MaxPool3dIndicesFwdInterface",
