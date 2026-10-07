@@ -45,7 +45,7 @@ _CORRECTNESS_CASES = (
         id="decomposed-dtype-boundary",
     ),
     pytest.param(1 << 25, torch.complex64, (), marks=pytest.mark.full, id="three-factor-lower"),
-    # Asks for 80 GiB free; the nightly job runs alone on its GPU.
+    # Asks for 112 GiB free; the nightly job runs alone on its GPU.
     pytest.param(
         16384,
         torch.complex128,
@@ -64,7 +64,8 @@ class FFTFixture(FixtureBase):
 @FFTFixture
 def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     batch = math.prod(batch_shape) if batch_shape else 1
-    need = 5 * batch * n * (8 if dtype == torch.complex64 else 16)
+    # The check peaks at six copies of the output, measured; one more is headroom.
+    need = 7 * batch * n * (8 if dtype == torch.complex64 else 16)
     free, _total = torch.cuda.mem_get_info(run_device())
     if need > free:
         pytest.skip(f"n={n} {dtype} needs {need >> 20} MiB free, device has {free >> 20} MiB")
