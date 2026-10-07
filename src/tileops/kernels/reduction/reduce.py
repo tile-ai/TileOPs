@@ -87,9 +87,14 @@ class ReduceKernelBase(Kernel):
     @classmethod
     def row_planner(cls, call: ReduceCall) -> BlockConfigPlanner:
         """The block planner for the ``(m, n)`` rows the reduced axes flatten to."""
+        return cls._planner_for(call, call.n)
+
+    @staticmethod
+    def _planner_for(call: ReduceCall, n: int) -> BlockConfigPlanner:
+        """The block planner for rows of *n* elements of *call*'s dtype and kind."""
         slots = 2 if call.op_kind in WELFORD_KINDS else 1
         return BlockConfigPlanner(
-            align_up(call.n, DEFAULT_ALIGNMENT),
+            align_up(n, DEFAULT_ALIGNMENT),
             torch_dtype_nbytes(call.dtype),
             call.smem_budget,
             num_buffers=slots,
@@ -104,16 +109,7 @@ class ReduceKernelBase(Kernel):
         k, j = edge_axis_split(len(call.shape), call.axes)
         end = len(call.shape) - j
         lead, kept, trail = (math.prod(call.shape[a:b]) for a, b in ((0, k), (k, end), (end, None)))
-        slots = 2 if call.op_kind in WELFORD_KINDS else 1
-        planner = BlockConfigPlanner(
-            align_up(trail, DEFAULT_ALIGNMENT),
-            torch_dtype_nbytes(call.dtype),
-            call.smem_budget,
-            num_buffers=slots,
-            frag_slots=slots,
-            workspace_bytes=0 if slots == 2 else _TILED_WORKSPACE_BYTES,
-            split_workspace=True,
-        )
+        planner = cls._planner_for(call, trail)
         return lead, kept, trail, planner, planner.default_config()
 
     @classmethod
