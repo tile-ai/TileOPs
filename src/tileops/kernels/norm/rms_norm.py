@@ -16,20 +16,22 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import get_sm_count
+from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["RMSNormKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count):
+def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budget):
     col_guard = N_padded != N
+    elem_bytes = DataType(dtype).bits // 8
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
@@ -45,6 +47,9 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count):
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
             and N_padded // threads >= 32
+            # The staged rows share the block's shared memory with the reduction's
+            # scratch, one fp32 a thread.
+            and block_m * N_padded * elem_bytes + threads * 4 <= smem_budget
         )
 
         @T.prim_func
@@ -232,6 +237,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             has_weight,
             # The device the input is on, not whichever is current.
             get_sm_count(x.device.index),
+            get_shared_memory_optin(x.device.index),
         )
         if self._tune_pending:
             self._tune_pending = False
