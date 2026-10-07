@@ -318,6 +318,8 @@ def _batch_norm_fwd_train_split_kernel(
     @tilelang.jit
     def _stats_func(splits: int, threads: int, num_per_thread: int) -> Callable:
         chunk = T.ceildiv(L, splits)
+        # A vector never straddles two batch items, so its address stays affine.
+        vector_holds_one_item = S % num_per_thread == 0 and -(-L // splits) % num_per_thread == 0
 
         @T.prim_func
         def _bn_train_stats(
@@ -334,16 +336,28 @@ def _batch_norm_fwd_train_split_kernel(
                 # back must not depend on a merge order.
                 sums = T.alloc_fragment([1, threads], accum_dtype)
                 sqs = T.alloc_fragment([1, threads], accum_dtype)
+                held = T.alloc_local([num_per_thread], dtype)
                 T.clear(sums)
                 T.clear(sqs)
                 for _i, j in T.Parallel(1, threads):
                     for step in T.serial(T.ceildiv(chunk, threads * num_per_thread)):
-                        for i in T.serial(num_per_thread):
-                            l = start + (step * threads + j) * num_per_thread + i
-                            if l < end:
-                                v = T.cast(x[l // S, bc, l % S], accum_dtype)
+                        head = start + (step * threads + j) * num_per_thread
+                        # A whole vector inside the chunk is one access: a test per element
+                        # would split it into one 2-byte load each.
+                        if head + num_per_thread <= end and vector_holds_one_item:
+                            for i in T.vectorized(num_per_thread):
+                                held[i] = x[head // S, bc, head % S + i]
+                            for i in T.serial(num_per_thread):
+                                v = T.cast(held[i], accum_dtype)
                                 sums[_i, j] += v
                                 sqs[_i, j] += v * v
+                        else:
+                            for i in T.serial(num_per_thread):
+                                l = head + i
+                                if l < end:
+                                    v = T.cast(x[l // S, bc, l % S], accum_dtype)
+                                    sums[_i, j] += v
+                                    sqs[_i, j] += v * v
                 sum_result = T.alloc_fragment([1], accum_dtype)
                 sq_result = T.alloc_fragment([1], accum_dtype)
                 T.reduce_sum(sums, sum_result, dim=1)
@@ -1796,6 +1810,8 @@ def _batch_norm_bwd_split_kernel(
     @tilelang.jit
     def _stats_func(splits: int, threads: int, num_per_thread: int) -> Callable:
         chunk = T.ceildiv(L, splits)
+        # A vector never straddles two batch items, so its address stays affine.
+        vector_holds_one_item = S % num_per_thread == 0 and -(-L // splits) % num_per_thread == 0
 
         @T.prim_func
         def _bn_bwd_stats(
@@ -1819,17 +1835,33 @@ def _batch_norm_bwd_split_kernel(
                 sums_xhat = T.alloc_fragment([1, threads], accum_dtype)
                 T.clear(sums)
                 T.clear(sums_xhat)
+                held_g = T.alloc_local([num_per_thread], dtype)
+                held_x = T.alloc_local([num_per_thread], dtype)
                 for _i, j in T.Parallel(1, threads):
                     for step in T.serial(T.ceildiv(chunk, threads * num_per_thread)):
-                        for i in T.serial(num_per_thread):
-                            l = start + (step * threads + j) * num_per_thread + i
-                            if l < end:
-                                g = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
-                                x_hat = (
-                                    T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
-                                ) * rstd_val
+                        head = start + (step * threads + j) * num_per_thread
+                        # A whole vector inside the chunk is one access: a test per element
+                        # would split it into one 2-byte load each.
+                        if head + num_per_thread <= end and vector_holds_one_item:
+                            for i in T.vectorized(num_per_thread):
+                                held_g[i] = grad_out[head // S, bc, head % S + i]
+                            for i in T.vectorized(num_per_thread):
+                                held_x[i] = x[head // S, bc, head % S + i]
+                            for i in T.serial(num_per_thread):
+                                g = T.cast(held_g[i], accum_dtype)
+                                x_hat = (T.cast(held_x[i], accum_dtype) - mean_val) * rstd_val
                                 sums[_i, j] += g
                                 sums_xhat[_i, j] += g * x_hat
+                        else:
+                            for i in T.serial(num_per_thread):
+                                l = head + i
+                                if l < end:
+                                    g = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
+                                    x_hat = (
+                                        T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
+                                    ) * rstd_val
+                                    sums[_i, j] += g
+                                    sums_xhat[_i, j] += g * x_hat
                 sum_result = T.alloc_fragment([1], accum_dtype)
                 sum_xhat_result = T.alloc_fragment([1], accum_dtype)
                 T.reduce_sum(sums, sum_result, dim=1)

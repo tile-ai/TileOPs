@@ -319,6 +319,39 @@ def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> Non
     assert type(bwd.kernel).__name__ == kernel
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape",
+    [
+        # A channel a 16-byte vector divides: each piece read a vector at a time.
+        pytest.param((4, 4, 256, 512), id="vector"),
+        # An odd spatial extent: a vector would straddle two batch items, so one element.
+        pytest.param((4, 4, 255, 513), id="element"),
+    ],
+)
+def test_channels_split_across_blocks_match_torch(shape) -> None:
+    """The split training forward and backward, a channel summed across blocks, match
+    torch whether a piece is read a vector or an element at a time."""
+    x = torch.randn(shape, dtype=torch.float16, device=run_device())
+    c = shape[1]
+    weight, bias = torch.rand(c, device=run_device()) + 0.5, torch.randn(c, device=run_device())
+    op = BatchNormFwdOp(training=True)
+    compare_outputs(
+        batch_norm_forward_result(op, x, None, None, weight, bias),
+        batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
+        batch_norm_forward_verification(x.dtype),
+    )
+    assert type(op.kernel).__name__ == "BatchNormFwdTrainSplitKernel"
+    grad_out = torch.randn_like(x)
+    var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
+    inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+    bwd = BatchNormBwdOp()
+    compare_outputs(
+        bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
+    )
+    assert type(bwd.kernel).__name__ == "BatchNormBwdSplitKernel"
+
+
 # Input validation and torch.compile.
 @pytest.mark.smoke
 class TestBatchNormFwdValidation:
