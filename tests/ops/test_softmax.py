@@ -76,8 +76,6 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
                 # dim=-1, non-aligned M, long aligned rows (split kernel)
                 pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, a 4 KB row a whole warp's lanes share (warp-rows kernel)
-                pytest.param((33, 2048), -1, torch.bfloat16, False, marks=pytest.mark.full),
                 # dim=0 (reduce along first dim — different M/N split)
                 pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),

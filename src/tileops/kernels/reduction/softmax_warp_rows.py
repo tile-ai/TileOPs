@@ -1,4 +1,4 @@
-"""Softmax / log-softmax of rows of up to 4 KB, several rows a warp.
+"""Softmax / log-softmax of rows of up to 1 KB, several rows a warp.
 
 A row is split across a group of adjacent lanes of one warp, each lane holding a few
 16-byte vectors of it in registers. The group's lanes exchange the row's maximum and
@@ -90,12 +90,12 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
 
 
 class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
-    """Softmax / log-softmax of rows of up to 4 KB, a group of a warp's lanes a row.
+    """Softmax / log-softmax of rows of up to 1 KB, a group of a warp's lanes a row.
 
-    A row of ``N`` elements is ``N`` over the 16-byte vector width vectors. A lane holds
-    two to eight of them, and a power of two of adjacent lanes, up to a warp, holds the
-    row: up to 16 lanes where that leaves a lane eight vectors or fewer, else 32. Rows
-    whose vectors do not split that way stay on :class:`SoftmaxKernel`.
+    A row of ``N`` elements is ``N`` over the 16-byte vector width vectors, at most 64.
+    A lane holds two to four of them, and a power of two of adjacent lanes, up to 16,
+    holds the row. Rows whose vectors do not split that way, and wider rows, stay on
+    :class:`SoftmaxKernel`, which measured as fast or faster from 2 KB.
     """
 
     preferred_over = frozenset({"softmax_fwd"})
@@ -104,17 +104,16 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
     def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
         """``(lanes, per_lane)`` for *call*'s rows, or ``None``."""
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
-        if call.n % vec:
-            return None
         vectors = call.n // vec
-        # Two vectors a lane measured faster than one at 128 and 256 16-bit columns; past
-        # eight a lane the registers no longer hold the row.
-        least, most = min(2, vectors), 8
-        for lane_cap in (WARP_LANES // 2, WARP_LANES):
-            for per_lane in range(max(least, -(-vectors // lane_cap)), most + 1):
-                lanes = vectors // per_lane
-                if vectors % per_lane == 0 and lanes & (lanes - 1) == 0 and lanes <= lane_cap:
-                    return lanes, per_lane
+        # Past 1 KB a row runs as fast or faster on SoftmaxKernel, tuned.
+        if call.n % vec or vectors > 64:
+            return None
+        # Two vectors a lane measured faster than one at 128 and 256 16-bit columns.
+        lane_cap = WARP_LANES // 2
+        for per_lane in range(max(min(2, vectors), -(-vectors // lane_cap)), 5):
+            lanes = vectors // per_lane
+            if vectors % per_lane == 0 and lanes & (lanes - 1) == 0:
+                return lanes, per_lane
         return None
 
     @classmethod
