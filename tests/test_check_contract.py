@@ -241,6 +241,31 @@ def test_custom_probe_failure_is_a_verification_failure():
         )
 
 
+def test_custom_probe_cannot_overwrite_shared_inputs():
+    inputs = (torch.ones(1),)
+
+    def probe(subject, args):
+        subject(*args)
+
+    calls = 0
+
+    def subject(x):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            x.mul_(2)
+        return x.clone()
+
+    with pytest.raises(AssertionError, match="overwrote the shared inputs"):
+        verify(
+            lambda x: x.clone(),
+            inputs,
+            evidence=Custom(lambda *_: None, "statistical check", probe=probe),
+            requests={"impl": Request(subject, inputs, preserve_inputs=True)},
+        )
+    torch.testing.assert_close(inputs[0], torch.ones(1))
+
+
 @pytest.mark.parametrize("fault", ["scale", "codes"])
 def test_quantization_rejects_wrong_scales_and_codes(fault):
     codes = torch.tensor([12, 20], dtype=torch.int8)

@@ -528,6 +528,10 @@ def verify(
                 del produced
                 if isinstance(evidence, Custom) and evidence.probe is not None:
                     evidence.probe(request.run, request.args)
+                    if request.preserve_inputs and not _unchanged(shared, pristine):
+                        raise AssertionError(
+                            "overwrote the shared inputs; give it private arguments and a reset"
+                        )
             except (AssertionError, ValueError) as exc:
                 raise type(exc)(f"{name}: {exc}") from exc
             finally:
