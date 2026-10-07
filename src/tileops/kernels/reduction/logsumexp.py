@@ -425,9 +425,8 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
 
 
 # The tiled kernel's two reductions across threads, the tile's max and then its sum, each
-# take one fp32 per thread of shared memory besides the tile, at the widest thread count the
-# tuner offers.
-_TILED_WORKSPACE_BYTES = 2 * max(AUTOTUNE_THREADS) * 4
+# take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
+_TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
 
 class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
@@ -631,6 +630,18 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
     @property
     def default_config(self) -> dict:
         return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # The plan reserves the scratch at the untuned thread count; a tiled candidate at
+        # more threads holds more, and is dropped where its tile and scratch exceed the budget.
+        return [
+            c
+            for c in super().autotune_configs
+            if not c["tile_n"]
+            or c["block_m"] * c["tile_n"] * self._elem_bytes + 2 * c["threads"] * 4
+            <= self._smem_budget
+        ]
 
     def _build_row_kernel(self, tile_n: int):
         if tile_n == 0:
