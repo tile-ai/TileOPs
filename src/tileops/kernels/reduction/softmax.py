@@ -461,13 +461,21 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
 
     @classmethod
     def row_plan(cls, call: SoftmaxCall) -> "tuple[int, int]":
-        """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
-        return cls._plan_rows(
-            align_up(call.n, DEFAULT_ALIGNMENT),
-            call.dtype.itemsize,
-            call.smem_budget,
-            cls.num_buffers(call),
-        )
+        """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile.
+
+        A one tile log_softmax stages its rows in shared memory beside the scratch of its
+        reductions across threads, one fp32 for each of its default threads; where the two
+        pass the budget, the rows are planned against the budget less that scratch.
+        """
+        n_padded = align_up(call.n, DEFAULT_ALIGNMENT)
+        elem_bytes = call.dtype.itemsize
+        num_buffers = cls.num_buffers(call)
+        block_m, tile_n = cls._plan_rows(n_padded, elem_bytes, call.smem_budget, num_buffers)
+        staged = block_m * n_padded * elem_bytes + DEFAULT_THREADS * 4
+        if call.op_kind == "log_softmax" and tile_n == 0 and staged > call.smem_budget:
+            budget = call.smem_budget - DEFAULT_THREADS * 4
+            return cls._plan_rows(n_padded, elem_bytes, budget, num_buffers)
+        return block_m, tile_n
 
     @classmethod
     def split_seg_n(cls, call: SoftmaxCall) -> int:

@@ -20,7 +20,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.kernels.tiling import ALIGNMENT
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops.utils import get_shared_memory_optin, get_sm_count
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
 
@@ -753,6 +755,20 @@ def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     compare_outputs(
         LogSumExpFwdOp(dim=-1)(x),
         torch.logsumexp(x, dim=-1),
+        softmax_verification(x.dtype, logarithmic=True),
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+def test_log_softmax_widest_one_tile_row() -> None:
+    """The widest fp32 row shared memory holds, at rows enough to fill the grid, where a one
+    tile log_softmax would stage it beside the scratch of its reductions."""
+    n = get_shared_memory_optin() // 4 // ALIGNMENT * ALIGNMENT
+    x = torch.randn(2 * get_sm_count(), n, dtype=torch.float32, device=run_device())
+    compare_outputs(
+        LogSoftmaxFwdOp(dim=-1)(x),
+        F.log_softmax(x, dim=-1),
         softmax_verification(x.dtype, logarithmic=True),
     )
 
