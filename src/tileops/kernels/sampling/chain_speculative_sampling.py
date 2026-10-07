@@ -13,6 +13,7 @@ from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
 from tileops.kernels.sampling.philox import UNIFORM_BITS, mix
 from tileops.kernels.sampling.row_tiles import load_vector, vector_width
+from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["ChainSpeculativeSamplingFwdKernel"]
@@ -453,13 +454,16 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             return f"indexes elements with int32, and B * (N + 1) * V = {elements}"
         _vec, _threads, parts, leaves = cls._plan(call.vocab, call.batch, call.sm_count)
         # One float64 entry per (slot, warp) of a block's chunk, against the shared budget
-        # less the scratch the descent takes.
-        budget = (
-            BLOCK_SHARED_BYTES_OPT_IN[call.arch]
-            - 8 * (parts + 3 * WARP_LANES + 2)
-            - 4 * call.num_draft
+        # less the scratch the descent takes. Each buffer starts on a 16-byte boundary;
+        # TileLang may lay a small one over ``seg``, which this does not count on.
+        budget = BLOCK_SHARED_BYTES_OPT_IN[call.arch] - (
+            align_up(8 * parts, 16)
+            + 3 * 8 * WARP_LANES  # tail, lane, prefix
+            + 2 * 16  # total, left
+            + align_up(4 * max(call.num_draft, 1), 16)  # verdict
+            + 4 * 16  # pick, token_uniform, owner_part, warp_at
         )
-        if 8 * leaves > budget:
+        if align_up(8 * leaves, 16) > budget:
             return f"folds a row into {leaves} shared float64 entries, past {budget // 8}"
         return None
 
