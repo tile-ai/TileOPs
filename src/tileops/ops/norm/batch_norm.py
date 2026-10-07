@@ -131,23 +131,7 @@ class BatchNormFwdOp(Op):
             return torch.empty_like(x)
         batch, channels = x.shape[0], x.shape[1]
         spatial = math.prod(x.shape[2:])
-        weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
-        bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
         x_ncs = x.contiguous().view(batch, channels, spatial)
-        # The running statistics are written, so normalizing them is not enough: whoever
-        # serves this op writes the tensor it was handed, and a copy would swallow that
-        # write. ``contiguous()`` returns the same object when it has nothing to do, so
-        # what came back tells us whether a write-back is owed. Absent statistics in
-        # training take scratch buffers whose update nobody reads.
-        stats = (running_mean, running_var)
-        if running_mean is None:
-            handed = (
-                torch.zeros(channels, dtype=torch.float32, device=x.device),
-                torch.ones(channels, dtype=torch.float32, device=x.device),
-            )
-        else:
-            handed = tuple(stat.contiguous() for stat in stats)
-
         call = BatchNormCall(
             device=x.device,
             n=batch,
@@ -156,16 +140,32 @@ class BatchNormFwdOp(Op):
             dtype=x.dtype,
             eps=self.eps,
             momentum=self.momentum,
+            has_weight=weight is not None,
+            has_bias=bias is not None,
+            has_running_stats=running_mean is not None,
         )
-        interface = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
-        kernel = self.kernel_for(interface, call)
+        if not self.training:
+            weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
+            kernel = self.kernel_for("batch_norm_fwd_infer", call)
+            self.kernel = kernel
+            stats = (running_mean.contiguous(), running_var.contiguous())
+            return kernel(x_ncs, *stats, weight, bias).view(x.shape)
+
+        # A training program is built for the tensors passed and reads no stand-in for an
+        # absent one. The running statistics are written, so normalizing them is not
+        # enough: whoever serves this op writes the tensor it was handed, and a copy would
+        # swallow that write. ``contiguous()`` returns the same object when it has nothing
+        # to do, so what came back tells us whether a write-back is owed.
+        stats = (running_mean, running_var)
+        handed = stats if running_mean is None else tuple(stat.contiguous() for stat in stats)
+        weight = None if weight is None else weight.contiguous()
+        bias = None if bias is None else bias.contiguous()
+        kernel = self.kernel_for("batch_norm_fwd_train", call)
         self.kernel = kernel
 
         # The training kernel also returns the batch statistics, which the manifest keeps
         # out of this op's outputs.
-        if not self.training:
-            return kernel(x_ncs, *handed, weight, bias).view(x.shape)
-
         y, _mean, _rstd = kernel(x_ncs, *handed, weight, bias)
         if running_mean is not None:
             for original, written in zip(stats, handed, strict=True):

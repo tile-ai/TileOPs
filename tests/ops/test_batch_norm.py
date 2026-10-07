@@ -234,6 +234,32 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("absent", ["weight", "bias"])
+@pytest.mark.parametrize(
+    "shape, kernel",
+    [
+        pytest.param((16, 32), "BatchNormFwdTrainWholeKernel", id="whole"),
+        pytest.param((8, 16, 32, 32), "BatchNormFwdTrainWideKernel", id="wide"),
+        pytest.param((4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", id="split"),
+    ],
+)
+def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, absent) -> None:
+    """A training program built without one affine tensor, and without running
+    statistics, scales by one or shifts by zero in its place."""
+    x = torch.randn(shape, dtype=torch.float16, device=run_device())
+    c = shape[1]
+    weight = None if absent == "weight" else torch.rand(c, device=run_device()) + 0.5
+    bias = None if absent == "bias" else torch.randn(c, device=run_device())
+    op = BatchNormFwdOp(training=True)
+    compare_outputs(
+        batch_norm_forward_result(op, x, None, None, weight, bias),
+        batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
+        batch_norm_forward_verification(x.dtype),
+    )
+    assert type(op.kernel).__name__ == kernel
+
+
 # Input validation and torch.compile.
 @pytest.mark.smoke
 class TestBatchNormFwdValidation:
