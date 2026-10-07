@@ -274,7 +274,7 @@ def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
             SoftmaxCase, SoftmaxFwdOp, -1, (8, 1000), marks=pytest.mark.smoke, id="softmax"
         ),
         pytest.param(
-            SoftmaxCase, SoftmaxFwdOp, -1, (8, 1024), marks=pytest.mark.full, id="softmax-warp-rows"
+            SoftmaxCase, SoftmaxFwdOp, -1, (8, 512), marks=pytest.mark.full, id="softmax-warp-rows"
         ),
         pytest.param(
             LogSumExpCase, LogSumExpFwdOp, -1, (32, 1000), marks=pytest.mark.full, id="logsumexp"
