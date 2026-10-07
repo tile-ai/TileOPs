@@ -77,8 +77,7 @@ ENTRIES = {
             "WhereFwdOp",
         )
     },
-    # The reference is a clone plus an in-place fill, and the clone is a copy, not a
-    # kernel; counting copies is what puts all of it in the reading.
+    # The reference clones then fills in place; the clone is a device copy and counts.
     "MaskedFillTensorFwdOp": Entry(ElementwiseCall, count_copies=True),
     "MaskedFillScalarFwdOp": Entry(ElementwiseCall, count_copies=True),
 }

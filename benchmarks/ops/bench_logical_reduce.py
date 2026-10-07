@@ -27,7 +27,7 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name=None) -> None:
     """
     baseline_fn = case.reference
     op = op_cls(**case.arguments)
-    functors = {}
+    implementations = {}
     if flaggems_name is not None:
         fn = flaggems_op(flaggems_name)
         dims = flaggems_dims(case.params["dim"])
@@ -36,10 +36,10 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name=None) -> None:
         def flaggems_fn(x):
             return fn(x.bool(), dims, keepdim)
 
-        functors[FLAGGEMS_TAG] = flaggems_fn
-    functors["torch"] = baseline_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    bench.Runner(op, case).compare(functors)
+        implementations[FLAGGEMS_TAG] = flaggems_fn
+    implementations["torch"] = baseline_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(AnyFwdOp), ids=lambda case: case.id)

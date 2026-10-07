@@ -17,20 +17,20 @@ from tileops.ops.moe import (
 )
 
 
-def _routed(inputs: tuple, functors: dict) -> dict:
-    """Each functor on the routed inputs, without the output buffer the op writes."""
-    return {tag: bench.Implementation(run=fn, args=inputs[1:]) for tag, fn in functors.items()}
+def _routed(inputs: tuple, callables: dict) -> dict:
+    """Each callable bound to the routed inputs, without the output buffer the op writes."""
+    return {name: bench.Implementation(run=fn, args=inputs[1:]) for name, fn in callables.items()}
 
 
 @pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
 def test_moe_experts_bench(case) -> None:
     _, hidden, w1, w2, _, topk_ids = case.inputs
     experts = FusedMoEExpertsFwdOp(**case.arguments)
-    functors = {
+    implementations = {
         "vllm-triton": vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe"),
         "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1]),
     }
-    bench.Runner(experts, case).compare(_routed(case.inputs, functors))
+    bench.Runner(experts, case).compare(_routed(case.inputs, implementations))
 
 
 @pytest.mark.parametrize("case", bench.cases(IndexedExpertMLPFwdOp), ids=lambda case: case.id)
@@ -64,9 +64,9 @@ def test_indexed_expert_mlp_bench(case) -> None:
     def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
         return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
 
-    functors = {
+    implementations = {
         "staged": _staged_fn,
         "vllm-triton": vllm_fn,
         "flashinfer-cutlass": cutlass_fn,
     }
-    bench.Runner(indexed, case).compare(_routed(case.inputs, functors))
+    bench.Runner(indexed, case).compare(_routed(case.inputs, implementations))

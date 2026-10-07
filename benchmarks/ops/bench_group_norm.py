@@ -27,12 +27,12 @@ def _bench(case: bench.Case) -> None:
     baseline_fn = case.reference
     n, c, *spatial = x.shape
     flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), groups, eps)
-    functors = {
+    implementations = {
         FLAGGEMS_TAG: flaggems_fn,
         "torch": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", [c for c in _CASES if _affine(c)], ids=lambda case: case.id)

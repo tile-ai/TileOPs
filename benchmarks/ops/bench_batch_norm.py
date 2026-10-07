@@ -73,13 +73,13 @@ def test_batch_norm_fwd_bench(case):
     op = BatchNormFwdOp(**case.arguments)
     training, momentum, eps = (case.params[k] for k in ("training", "momentum", "eps"))
     torch_fn = case.reference
-    functors = {}
+    implementations = {}
     if all((t is not None for t in inputs)):
         flaggems_fn = _flaggems_bn_fwd(training, momentum, eps)
-        functors[FLAGGEMS_TAG] = private_inputs(flaggems_fn, inputs, 1, 2)
-    functors["torch-cudnn"] = torch_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
-    bench.Runner(op, case).compare(functors)
+        implementations[FLAGGEMS_TAG] = private_inputs(flaggems_fn, inputs, 1, 2)
+    implementations["torch-cudnn"] = torch_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(BatchNormBwdOp), ids=lambda case: case.id)

@@ -23,12 +23,12 @@ from tileops.sampling import TopKMaskFwdOp
 def test_top_k_mask_bench(case) -> None:
     logits, k = case.inputs
     op = TopKMaskFwdOp(**case.arguments)
-    functors = {
+    implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: compiled_reference(case.reference),
     }
     flashinfer_mask = flashinfer_op("sampling.top_k_mask_logits")
-    functors[FLASHINFER_TAG] = flashinfer_mask
+    implementations[FLASHINFER_TAG] = flashinfer_mask
     apply_top_k_only = vllm_op("apply_top_k_only", "v1.sample.ops.topk_topp_sampler")
     # vllm masks the logits in place.
     vllm_logits = torch.empty_like(logits)
@@ -37,7 +37,7 @@ def test_top_k_mask_bench(case) -> None:
     def vllm_reset() -> None:
         vllm_logits.copy_(logits)
 
-    functors[VLLM_TAG] = bench.Implementation(
+    implementations[VLLM_TAG] = bench.Implementation(
         run=apply_top_k_only, args=(vllm_logits, vllm_k), reset=vllm_reset
     )
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

@@ -70,12 +70,10 @@ def _vllm_rope(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> bench.Implementation:
-    """vllm's rotary_embedding on its own copy of the query, restored before every round.
+    """vllm's rotary_embedding on a private query it rewrites, restored before every round.
 
-    It rewrites its query in place and takes it flattened to
-    ``[num_tokens, num_heads * head_dim]``; its cache is the half-width cos and sin
-    concatenated, not the doubled tables the reference indexes; and ``is_neox=True`` is
-    the same half-split rotation.
+    vllm takes the query as ``[num_tokens, num_heads * head_dim]`` and a cache of the
+    half-width cos and sin concatenated; ``is_neox=True`` is the half-split rotation.
     """
     fn = vllm_op("rotary_embedding")
     num_tokens = x.shape[0]
@@ -134,13 +132,13 @@ def _bench_rope(op_cls, case: bench.Case) -> None:
         )
         return rotated.reshape_as(x)
 
-    functors = {
+    implementations = {
         "torch-ref": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
     if x.dtype in (torch.float16, torch.bfloat16):
-        functors[FLASHINFER_TAG] = flashinfer_fn
-    bench.Runner(op, case).compare(functors)
+        implementations[FLASHINFER_TAG] = flashinfer_fn
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(RoPEFwdOp), ids=lambda case: case.id)

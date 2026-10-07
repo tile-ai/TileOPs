@@ -31,7 +31,7 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     dtype = getattr(torch, p["dtype"]) if p.get("dtype") else None
     baseline_fn = case.reference
     op = op_cls(**case.arguments)
-    functors = {}
+    implementations = {}
     if dtype is None:
         fn = flaggems_op("vector_norm")
         dims = flaggems_dims(p["dim"])
@@ -39,10 +39,10 @@ def _bench(op_cls: type, case: bench.Case) -> None:
         def flaggems_fn(x):
             return fn(x, p["ord"], dims, p["keepdim"])
 
-        functors[FLAGGEMS_TAG] = flaggems_fn
-    functors["torch"] = baseline_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    bench.Runner(op, case).compare(functors)
+        implementations[FLAGGEMS_TAG] = flaggems_fn
+    implementations["torch"] = baseline_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(VectorNormFwdOp), ids=lambda case: case.id)

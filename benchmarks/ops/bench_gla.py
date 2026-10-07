@@ -64,7 +64,7 @@ def test_gla_inference_bench(case) -> None:
 @pytest.mark.parametrize("case", bench.cases(GLARecurrentFwdOp), ids=lambda case: case.id)
 def test_gla_decode_bench(case) -> None:
     op = GLARecurrentFwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
 
     if fused_recurrent_gla is not None:
         q, k, v, gk, state = case.inputs
@@ -82,9 +82,9 @@ def test_gla_decode_bench(case) -> None:
             )
             return o.squeeze(1), new_state.to(state.dtype)
 
-        functors["fla"] = bench.Implementation(run=fla_decode, args=())
+        implementations["fla"] = bench.Implementation(run=fla_decode, args=())
 
-    functors["torch"] = case.reference
-    functors[TORCH_COMPILE_TAG] = compiled_reference(case.reference)
+    implementations["torch"] = case.reference
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(case.reference)
 
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

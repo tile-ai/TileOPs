@@ -396,8 +396,7 @@ def test_gemm_w4a16_bench(case) -> None:
 
     op = GemmW4A16FwdOp(**case.arguments)
 
-    # Another idiom for the reference: timing the reference would time its dequantization, so
-    # the torch baseline multiplies by a weight dequantized once, outside the timed region.
+    # The torch row multiplies by a weight dequantized once, outside the timed call.
     weight = dequantize_w4a16_weight(*inputs[1:]).to(workload.dtype)
 
     def torch_dequantized_matmul(activation: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:

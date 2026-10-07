@@ -337,13 +337,13 @@ def test_mean_pooling_bench(case) -> None:
         def reference(x, *_metadata):
             return workload.reference_slices(x, slices)
 
-    functors = {
+    implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)
     if view_mean is not None:
-        functors["torch-view-mean"] = view_mean
+        implementations["torch-view-mean"] = view_mean
 
     if len(inputs) > 1 and inputs[1] is not None:
         lengths = torch.tensor(
@@ -355,5 +355,5 @@ def test_mean_pooling_bench(case) -> None:
             out = torch.segment_reduce(values, "mean", lengths=lengths, unsafe=True)
             return out.to(x.dtype).transpose(0, 1).contiguous()
 
-        functors["torch-segment-reduce"] = segmented_mean
-    bench.Runner(op, case).compare(functors)
+        implementations["torch-segment-reduce"] = segmented_mean
+    bench.Runner(op, case).compare(implementations)

@@ -390,7 +390,7 @@ def _copy_outputs(value: Any) -> Any:
 
 @dataclasses.dataclass(frozen=True)
 class Request:
-    """One call to check against the reference: ``reset()``, then ``run(*args)``.
+    """One call a check runs: ``reset()``, then ``run(*args)``.
 
     ``preserve_inputs`` requires the call to leave the shared inputs as it found them,
     whatever ``args`` it runs on.
@@ -431,8 +431,15 @@ def _unique(value: Any) -> list:
     return list({id(t): t for t in _tensors(value)}.values())
 
 
+def _require_unchanged(shared: list, pristine: list) -> None:
+    if not _unchanged(shared, pristine):
+        raise AssertionError(
+            "overwrote the shared inputs; run it on private arguments restored by a reset"
+        )
+
+
 def check_inputs_preserved(request: Request, inputs: tuple) -> None:
-    """Check an unverified call's shared-input contract without judging its output."""
+    """Run *request* once and fail if it changed the shared *inputs*; ignore its output."""
     shared = _unique(inputs)
     pristine = _snapshot(shared)
     own = [t for t in _unique(request.args) if all(t is not s for s in shared)]
@@ -442,17 +449,14 @@ def check_inputs_preserved(request: Request, inputs: tuple) -> None:
             request.reset()
         with torch.no_grad():
             request.run(*request.args)
-        if not _unchanged(shared, pristine):
-            raise AssertionError(
-                "overwrote the shared inputs; give it private arguments and a reset"
-            )
+        _require_unchanged(shared, pristine)
     finally:
         _restore(shared, pristine)
         _restore(own, own_pristine)
 
 
-def _check_requests_preserve(requests: dict[str, Request], inputs: tuple) -> None:
-    """Run each request that must leave the shared inputs unchanged, naming the one that did not."""
+def _check_preserving(requests: dict[str, Request], inputs: tuple) -> None:
+    """Run each request marked ``preserve_inputs`` once, naming one that changed *inputs*."""
     for name, request in requests.items():
         if request.preserve_inputs:
             try:
@@ -471,11 +475,12 @@ def verify(
 ) -> dict[str, CheckResult]:
     """Check every request against one run of the reference, restoring inputs even on failure.
 
-    The reference runs once and every request is compared with its copied result, which
-    stays allocated while the requests run so no request's output can be carved from
-    memory that already holds the expected values. Negative controls run once; a Custom
-    probe takes the call under test, so it runs once per request. A failure names its
-    request. Reference OOM establishes nothing; request failures always propagate.
+    The reference's result stays allocated while the requests run, so no request's output
+    can reuse memory that already holds the expected values. Negative controls run once; a
+    Custom probe runs once per request. A request marked ``preserve_inputs``, and the
+    reference under ``preserve_reference_inputs``, must leave *inputs* unchanged, probes
+    included, even where nothing is compared. A failure names its request. Reference OOM
+    leaves every request unchecked; request failures always propagate.
     """
     if evidence.kind not in ("exact", "partial", "custom"):
         if preserve_reference_inputs and reference is not None:
@@ -483,7 +488,7 @@ def verify(
                 check_inputs_preserved(Request(reference, inputs), inputs)
             except AssertionError as exc:
                 raise AssertionError(f"reference: {exc}") from exc
-        _check_requests_preserve(requests, inputs)
+        _check_preserving(requests, inputs)
         return {name: CheckResult(0, None, None, describe(evidence)) for name in requests}
     if reference is None:
         raise ValueError(
@@ -493,23 +498,20 @@ def verify(
     pristine = _snapshot(shared)
     try:
         try:
-            produced_by_reference = reference(*inputs)
-            expected = _copy_outputs(produced_by_reference)
+            try:
+                produced_by_reference = reference(*inputs)
+                expected = _copy_outputs(produced_by_reference)
+            finally:
+                if preserve_reference_inputs:
+                    _require_unchanged(shared, pristine)
         except torch.OutOfMemoryError:
-            # Nothing is compared; the shared-input contract is still checked.
-            if preserve_reference_inputs and not _unchanged(shared, pristine):
-                raise AssertionError(
-                    "reference overwrote the shared inputs; time it on private arguments"
-                ) from None
             _restore(shared, pristine)
-            _check_requests_preserve(requests, inputs)
+            _check_preserving(requests, inputs)
             return {
                 name: CheckResult(0, None, None, "reference ran out of memory") for name in requests
             }
-        if preserve_reference_inputs and not _unchanged(shared, pristine):
-            raise AssertionError(
-                "reference overwrote the shared inputs; time it on private arguments"
-            )
+        except AssertionError as exc:
+            raise AssertionError(f"reference: {exc}") from exc
         _restore(shared, pristine)
         results = {}
         for name, request in requests.items():
@@ -520,18 +522,14 @@ def verify(
                     request.reset()
                 with torch.no_grad():
                     produced = _copy_outputs(request.run(*request.args))
-                if request.preserve_inputs and not _unchanged(shared, pristine):
-                    raise AssertionError(
-                        "overwrote the shared inputs; give it private arguments and a reset"
-                    )
+                if request.preserve_inputs:
+                    _require_unchanged(shared, pristine)
                 results[name] = compare_outputs(produced, expected, evidence)
                 del produced
                 if isinstance(evidence, Custom) and evidence.probe is not None:
                     evidence.probe(request.run, request.args)
-                    if request.preserve_inputs and not _unchanged(shared, pristine):
-                        raise AssertionError(
-                            "overwrote the shared inputs; give it private arguments and a reset"
-                        )
+                    if request.preserve_inputs:
+                        _require_unchanged(shared, pristine)
             except (AssertionError, ValueError) as exc:
                 raise type(exc)(f"{name}: {exc}") from exc
             finally:

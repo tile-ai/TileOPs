@@ -29,7 +29,7 @@ def test_min_p_mask_bench(case) -> None:
     vllm_min_p.min_p = min_p[:, None]
 
     # vllm masks the logits in place.
-    vllm_mask = private_inputs(lambda logits, min_p: vllm_min_p.apply(logits), case.inputs, 0)
+    vllm_mask = private_inputs(lambda logits, _min_p: vllm_min_p.apply(logits), case.inputs, 0)
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,

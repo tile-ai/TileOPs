@@ -20,10 +20,7 @@ from workloads.moe import (
 
 
 def _private_output(op, case) -> Implementation:
-    """The op writing a buffer of its own instead of ``inputs[0]``, the output it is passed.
-
-    The op overwrites the whole buffer, so no round restores it.
-    """
+    """The op writing a private output buffer, which it overwrites whole, so no reset."""
     output = torch.empty_like(case.inputs[0])
 
     def run(*args):

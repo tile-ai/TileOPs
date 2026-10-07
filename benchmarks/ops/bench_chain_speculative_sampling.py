@@ -35,19 +35,19 @@ def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
 def test_chain_speculative_sampling_bench(case) -> None:
     op = ChainSpeculativeSamplingFwdOp(**case.arguments)
     compiled = compiled_reference(case.reference)
-    functors = {"torch-ref": case.reference, TORCH_COMPILE_TAG: compiled}
+    implementations = {"torch-ref": case.reference, TORCH_COMPILE_TAG: compiled}
     flashinfer_chain = flashinfer_op("sampling.chain_speculative_sampling")
 
     def flashinfer_verify(draft, draft_ids, target, seed, offset):
         result = flashinfer_chain(draft, draft_ids, target, seed=seed, offset=offset)
         return result[0], _accepted_lengths(result, draft.shape[1]).to(torch.int32)
 
-    functors[FLASHINFER_TAG] = flashinfer_verify
+    implementations[FLASHINFER_TAG] = flashinfer_verify
     rejection_sample = vllm_op("rejection_sample", "v1.sample.rejection_sampler")
     random_sample = vllm_op("random_sample", "v1.sample.ops.topk_topp_sampler")
     sampling_metadata = vllm_op("SamplingMetadata", "v1.sample.metadata")
 
-    def vllm_verify(draft, draft_ids, target, seed, offset):
+    def vllm_verify(draft, draft_ids, target, _seed, _offset):
         """vllm's rejection sampler takes flattened draft positions and target logits."""
         batch, num_draft, vocab = draft.shape
         device = draft.device
@@ -82,8 +82,8 @@ def test_chain_speculative_sampling_bench(case) -> None:
         )
         return result, _accepted_lengths(result, num_draft).to(torch.int32)
 
-    functors[VLLM_TAG] = bench.Implementation(
+    implementations[VLLM_TAG] = bench.Implementation(
         run=vllm_verify,
         noncomparable_reason="adapter uses vLLM's ambient RNG instead of the call's seed/offset",
     )
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

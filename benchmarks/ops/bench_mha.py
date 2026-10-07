@@ -96,17 +96,17 @@ def test_mha_decode_paged_bench(case) -> None:
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = MHADecodePagedWithKVCacheFwdOp(**case.arguments, tune=True)
-    functors = {}
+    implementations = {}
 
     fa3_fn = _fa3_mha_decode_paged(workload, k, v)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        implementations["fa3"] = fa3_fn
 
     fi_fn = _flashinfer_mha_decode_paged(workload, *inputs)
     if fi_fn is not None:
-        functors[FLASHINFER_TAG] = fi_fn
+        implementations[FLASHINFER_TAG] = fi_fn
 
     if fa3_fn is None and fi_fn is None:
-        functors["torch-ref"] = case.reference
+        implementations["torch-ref"] = case.reference
 
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

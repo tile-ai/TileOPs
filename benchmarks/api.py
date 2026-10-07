@@ -41,9 +41,9 @@ __all__ = [
     "cases",
 ]
 
-# The name the TileOps op is recorded under; no implementation passed to compare() may take it.
+# The report name of the TileOps op; reserved.
 TILEOPS = "tileops"
-# The name a single implementation passed to compare() is recorded under.
+# The report name of a single implementation passed to compare().
 BASELINE = "baseline"
 
 # --tileops-verify runs the correctness check only, omitting timing.
@@ -80,7 +80,7 @@ class Implementation:
 
 
 def _report_value(value: Any) -> Any:
-    """A manifest parameter as the report records it: an ADT as the literal the manifest writes."""
+    """A manifest parameter as the report records it; an ADT as its manifest literal."""
     if isinstance(value, ADTValue):
         return {value.kind: dict(value.fields)}
     return value
@@ -88,8 +88,7 @@ def _report_value(value: Any) -> Any:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Case:
-    """One benchmark case of a manifest op: its inputs, constructor arguments, reference,
-    verification and timing policy.
+    """One manifest call of an op, with its inputs, reference, verification and copy policy.
 
     Data is created on first access and kept until the test ends, so collecting cases needs
     no GPU and the verification and timing of one case read the same tensors.
@@ -106,7 +105,7 @@ class Case:
 
     @functools.cached_property
     def workload(self) -> Any:
-        """The workload the inputs come from, for an implementation that needs what it derives."""
+        """The workload the inputs come from, and the data it derives."""
         return self._entry.workload(self._call)
 
     @functools.cached_property
@@ -134,8 +133,7 @@ class Case:
 
     @functools.cached_property
     def params(self) -> dict:
-        """What the report records for the case: each tensor's shape and dtype, and the
-        manifest parameters as the call states them."""
+        """The report parameters: each tensor's shape and dtype, and the manifest parameters."""
         tensors = {
             name: (tuple(shape), dtype) for name, (shape, dtype) in self._call.tensors.items()
         }
@@ -274,8 +272,7 @@ class Runner:
             requests=requests,
             preserve_reference_inputs=bool(itself),
         )
-        # The reference timed as an implementation is as established as the op's check
-        # shows the reference to be: unchecked where it could not run or nothing is declared.
+        # The timed reference takes the op's check status: unverified where the op's is.
         op_check = checks[TILEOPS]
         for name in itself:
             checks[name] = CheckResult(
@@ -329,7 +326,7 @@ class Runner:
         return self._roofline
 
     def _roofline_inputs(self) -> dict:
-        """The op's diagnostic mapping, or nothing when it declares none."""
+        """The op's diagnostic mapping, or an empty one when it declares none or fails."""
         reader = getattr(self.op, "roofline_inputs", None)
         if reader is None:
             return {}
@@ -380,8 +377,7 @@ class Runner:
         roof = self.op.compute_roof()
         if roof is not None:
             result["compute_roof"] = roof
-        # What decided this call's bytes, where its inputs' values decided it.
-        # Nothing judges it; it explains a number that moved.
+        # What decided this call's bytes where the input values did; a diagnostic only.
         decided_by = self._roofline_inputs()
         if decided_by:
             result["roofline_inputs"] = decided_by

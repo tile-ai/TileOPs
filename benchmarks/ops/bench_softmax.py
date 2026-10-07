@@ -27,7 +27,7 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
     baseline_fn = case.reference
     inputs = case.inputs
     op = op_cls(**case.arguments, tune=True)
-    functors = {}
+    implementations = {}
     if flaggems_name is not None and (not case.params.get("dtype")):
         fn = flaggems_op(flaggems_name)
         dim = case.params["dim"]
@@ -35,7 +35,7 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
         def flaggems_fn(x):
             return fn(x, dim)
 
-        functors[FLAGGEMS_TAG] = flaggems_fn
+        implementations[FLAGGEMS_TAG] = flaggems_fn
     if op_cls is SoftmaxFwdOp and case.params["dim"] % inputs[0].ndim == inputs[0].ndim - 1:
         softmax = quack_op("softmax")
         dtype = _dtype(case.params)
@@ -44,10 +44,10 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
             values = x.to(dtype) if dtype is not None else x
             return softmax(values.reshape(-1, values.shape[-1])).reshape_as(values)
 
-        functors[QUACK_TAG] = quack_fn
-    functors["torch"] = baseline_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    bench.Runner(op, case).compare(functors)
+        implementations[QUACK_TAG] = quack_fn
+    implementations["torch"] = baseline_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _dtype(params: dict) -> "torch.dtype | None":

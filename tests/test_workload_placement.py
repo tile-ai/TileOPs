@@ -56,10 +56,14 @@ def test_workloads_do_not_import_the_benchmark_layer() -> None:
         hits = [
             f"line {node.lineno}"
             for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
-            if isinstance(node, ast.ImportFrom)
-            and (node.module or "").split(".")[0] == "benchmarks"
-            or isinstance(node, ast.Import)
-            and any(alias.name.split(".")[0] == "benchmarks" for alias in node.names)
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] == "benchmarks"
+            )
+            or (
+                isinstance(node, ast.Import)
+                and any(alias.name.split(".")[0] == "benchmarks" for alias in node.names)
+            )
         ]
         if hits:
             offenders[str(path.relative_to(REPO_ROOT))] = hits

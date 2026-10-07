@@ -68,7 +68,7 @@ def _out_of_memory(*_):
 
 @pytest.fixture
 def timed(monkeypatch):
-    """Every bench_kernel call, answered with one sample; every recorded row."""
+    """Record every bench_kernel call, answered with one sample, and every recorded row."""
     runs, rows = [], []
 
     def bench_kernel(run, args=(), reset=None, count_copies=False, **_):
@@ -177,7 +177,7 @@ def _overwrite_then_out_of_memory(x):
 @pytest.mark.parametrize("reference", [lambda x: x.mul_(2), _overwrite_then_out_of_memory])
 def test_reference_timed_on_shared_inputs_must_preserve_them(timed, reference):
     case = _case(reference=reference)
-    with pytest.raises(AssertionError, match="reference overwrote the shared inputs"):
+    with pytest.raises(AssertionError, match="reference: overwrote the shared inputs"):
         bench.Runner(SumFwdOp(), case).compare({"torch": case.reference})
     assert not timed.runs
 

@@ -12,6 +12,7 @@ from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
+    private_float32_logits,
     vllm_op,
 )
 from tileops.sampling import TopKTopPMaskFwdOp
@@ -21,24 +22,20 @@ from tileops.sampling import TopKTopPMaskFwdOp
 def test_top_k_top_p_mask_bench(case) -> None:
     logits, k, p = case.inputs
     op = TopKTopPMaskFwdOp(**case.arguments)
-    functors = {
+    implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: compiled_reference(case.reference),
     }
     apply_top_k_top_p = vllm_op("apply_top_k_top_p", "v1.sample.ops.topk_topp_sampler")
-    # vllm masks float32 logits in place.
-    vllm_logits = torch.empty_like(logits, dtype=torch.float32)
-
-    def vllm_reset() -> None:
-        vllm_logits.copy_(logits)
 
     def vllm_mask(vllm_logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         return apply_top_k_top_p(vllm_logits, k.clamp(max=logits.shape[-1]), p).to(logits.dtype)
 
-    functors[VLLM_TAG] = bench.Implementation(
-        run=vllm_mask,
-        args=(vllm_logits, k, p),
-        reset=vllm_reset,
+    implementations[VLLM_TAG] = private_float32_logits(
+        vllm_mask,
+        logits,
+        k,
+        p,
         noncomparable_reason="vendor approximates the mask boundary beyond the workload contract",
     )
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

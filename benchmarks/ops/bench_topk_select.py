@@ -55,12 +55,12 @@ def test_topk_select_bench(case) -> None:
 
     op = TopKSelectFwdOp(**case.arguments, tune=_TUNE)
 
-    functors = {
+    implementations = {
         "torch": case.reference,
         TORCH_COMPILE_TAG: compiled_reference(case.reference),
     }
     flashinfer_fn = _flashinfer_topk(case.workload, inputs[1], inputs[2])
     if flashinfer_fn is not None:
-        functors[FLASHINFER_TAG] = flashinfer_fn
+        implementations[FLASHINFER_TAG] = flashinfer_fn
 
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

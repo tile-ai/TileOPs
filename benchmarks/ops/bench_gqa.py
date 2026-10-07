@@ -94,15 +94,15 @@ def test_gqa_bwd_bench(case) -> None:
     inputs = case.inputs
 
     op = GQABwdOp(**case.arguments, tune=True)
-    functors = {}
+    implementations = {}
 
     fa3_fn = _fa3_gqa_bwd(workload, inputs)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        implementations["fa3"] = fa3_fn
     else:
-        functors["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
+        implementations["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
 
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
@@ -198,23 +198,23 @@ def _flashinfer_gqa_dense_decode(
 
 
 def _gqa_dense_decode_baselines(workload: GQADenseDecodeCall, inputs: tuple, reference) -> dict:
-    functors = {}
+    implementations = {}
 
     fa3_fn = _fa3_gqa_dense_decode(workload)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        implementations["fa3"] = fa3_fn
 
     flashinfer_fn = _flashinfer_gqa_dense_decode(workload, *inputs)
     if flashinfer_fn is not None:
-        functors[FLASHINFER_TAG] = flashinfer_fn
+        implementations[FLASHINFER_TAG] = flashinfer_fn
 
     if fa3_fn is None and flashinfer_fn is None:
-        functors["torch-ref"] = reference
-    return functors
+        implementations["torch-ref"] = reference
+    return implementations
 
 
 def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, reference) -> dict:
-    """Dense prefill with scaled inputs and caller-provided rotary tables."""
+    """Dense prefill implementations, with the FP8 scales and rotary tables the call passes."""
     from flash_attn_interface import flash_attn_func
 
     rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
@@ -282,11 +282,11 @@ def test_gqa_dense_fwd_bench(case) -> None:
     if isinstance(workload, GQADensePrefillCall):
         if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
             pytest.skip("native FP8 Dense GQA requires SM90")
-        functors = _gqa_dense_prefill_baselines(workload, case.inputs, case.reference)
+        implementations = _gqa_dense_prefill_baselines(workload, case.inputs, case.reference)
     else:
-        functors = _gqa_dense_decode_baselines(workload, case.inputs, case.reference)
+        implementations = _gqa_dense_decode_baselines(workload, case.inputs, case.reference)
     op = GQADenseFwdOp(**case.arguments)
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):
@@ -422,8 +422,7 @@ def _flashinfer_gqa_varlen(
 
 @pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
 def test_gqa_varlen_fwd_bench(case) -> None:
-    """Packed varlen, and packed varlen over FP8 Q/K/V dequantized by one scale per request
-    and KV head.
+    """Packed varlen GQA, including FP8 Q/K/V dequantized by one scale per request and KV head.
 
     FlashAttention-3 dequantizes the same per-request scales inside its own kernel, so a
     scaled call reads it against the same reference and times it on the same call.
@@ -436,23 +435,23 @@ def test_gqa_varlen_fwd_bench(case) -> None:
     if scaled and workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = case.inputs
-    functors = {"torch-ref": case.reference}
+    implementations = {"torch-ref": case.reference}
     if scaled:
         fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
         if fa3_fn is not None:
-            functors["fa3"] = bench.Implementation(run=fa3_fn, args=inputs[:8])
+            implementations["fa3"] = bench.Implementation(run=fa3_fn, args=inputs[:8])
     else:
         rotate = _varlen_rope(workload, *inputs)
         fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr, rotate)
         if fa3_fn is not None:
-            functors["fa3"] = fa3_fn
+            implementations["fa3"] = fa3_fn
         flashinfer_fn = _flashinfer_gqa_varlen(
             workload, workload.wl, workload.wr, *inputs, rotate=rotate
         )
         if flashinfer_fn is not None:
-            functors[FLASHINFER_TAG] = flashinfer_fn
+            implementations[FLASHINFER_TAG] = flashinfer_fn
     op = GQAVarlenFwdOp(**case.arguments)
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _fa3_gqa_prefill_paged(workload, inputs):
@@ -531,13 +530,13 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(case) -> None:
     inputs = case.inputs
     op = GQAPrefillPagedWithKVCacheFwdOp(**case.arguments)
     # Every implementation writes k_new and v_new into k_pages and v_pages.
-    functors = {"torch-ref": private_inputs(case.reference, inputs, 3, 4)}
+    implementations = {"torch-ref": private_inputs(case.reference, inputs, 3, 4)}
     fa3_fn = _fa3_gqa_prefill_paged(case.workload, inputs)
     if fa3_fn is not None:
-        functors["fa3"] = private_inputs(
+        implementations["fa3"] = private_inputs(
             lambda *args: paged_prefill_result(fa3_fn, *args), inputs, 3, 4
         )
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _fa3_gqa_paged(workload):
@@ -660,11 +659,11 @@ def test_gqa_paged_fwd_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
     op = GQAPagedFwdOp(**case.arguments)
-    functors = {"torch-ref": case.reference}
+    implementations = {"torch-ref": case.reference}
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+        implementations["fa3"] = fa3_fn
     flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
     if flashinfer_fn is not None:
-        functors[FLASHINFER_TAG] = flashinfer_fn
-    bench.Runner(op, case).compare(functors)
+        implementations[FLASHINFER_TAG] = flashinfer_fn
+    bench.Runner(op, case).compare(implementations)

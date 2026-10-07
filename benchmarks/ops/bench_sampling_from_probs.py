@@ -22,7 +22,7 @@ from tileops.sampling import SamplingFromProbsFwdOp
 
 @pytest.mark.parametrize("case", bench.cases(SamplingFromProbsFwdOp), ids=lambda case: case.id)
 def test_sampling_from_probs_bench(case) -> None:
-    probs, seed, offset = case.inputs
+    probs, seed, _offset = case.inputs
 
     op = SamplingFromProbsFwdOp(**case.arguments)
 
@@ -34,13 +34,13 @@ def test_sampling_from_probs_bench(case) -> None:
     generator = torch.Generator(device=probs.device).manual_seed(int(seed.item()))
     generators = {0: torch.Generator(device=probs.device).manual_seed(int(seed.item()))}
 
-    def flashinfer_from_probs(probs, seed, offset):
+    def flashinfer_from_probs(probs, _seed, _offset):
         return flashinfer_draw(probs, generator=generator).to(torch.int32)
 
-    def vllm_from_probs(probs, seed, offset):
+    def vllm_from_probs(probs, _seed, _offset):
         return random_sample(probs, generators).to(torch.int32)
 
-    def multinomial_from_probs(probs, seed, offset):
+    def multinomial_from_probs(probs, _seed, _offset):
         return torch.multinomial(probs, 1, generator=generator)[:, 0].to(torch.int32)
 
     bench.Runner(op, case).compare(

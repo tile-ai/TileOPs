@@ -54,9 +54,9 @@ except ImportError:
     _mamba_chunk_scan_combined = None
 
 
-def _torch_baselines(functors: dict, ref_program) -> None:
-    functors["torch-ref"] = ref_program
-    functors[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
+def _torch_baselines(implementations: dict, ref_program) -> None:
+    implementations["torch-ref"] = ref_program
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
 
 
 @pytest.mark.parametrize("case", bench.cases(SSDChunkCouplingFwdOp), ids=lambda case: case.id)
@@ -76,7 +76,7 @@ def test_ssd_chunk_coupling_fwd_bench(case) -> None:
 def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
     dt, A, dt_bias = case.inputs
     op = SSDChunkCumsumFwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
 
     # _chunk_cumsum_fwd returns (dA_cumsum, dt_out) with a float32 dt_out; the baseline
     # returns them in TileOPs' order and dtype.
@@ -88,17 +88,17 @@ def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
             )
             return dt_out.to(op.out_dtype), dA_cumsum
 
-        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
+        implementations["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, case.reference)
-    bench.Runner(op, case).compare(functors)
+    _torch_baselines(implementations, case.reference)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SSDChunkScanFwdOp), ids=lambda case: case.id)
 def test_ssd_chunk_scan_fwd_bench(case) -> None:
     x, cb, dA_cumsum, C, prev_states, dt = case.inputs
     op = SSDChunkScanFwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
 
     if _mamba_chunk_scan_fwd is not None:
         # mamba signature: _chunk_scan_fwd(cb, x, dt, dA_cumsum, C, states, ...)
@@ -107,34 +107,34 @@ def test_ssd_chunk_scan_fwd_bench(case) -> None:
             out, _ = _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
             return out.float()
 
-        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
+        implementations["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, case.reference)
-    bench.Runner(op, case).compare(functors)
+    _torch_baselines(implementations, case.reference)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SSDChunkStateFwdOp), ids=lambda case: case.id)
 def test_ssd_chunk_state_fwd_bench(case) -> None:
     x, Bmat, dt, dA_cumsum, seq_idx = case.inputs
     op = SSDChunkStateFwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
 
     if _mamba_chunk_state_fwd is not None:
         # dt and dA_cumsum share TileOPs' (b, h, c, L) layout.
         def mamba_fwd():
             return _mamba_chunk_state_fwd(Bmat, x, dt, dA_cumsum, seq_idx=seq_idx)
 
-        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
+        implementations["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, case.reference)
-    bench.Runner(op, case).compare(functors)
+    _torch_baselines(implementations, case.reference)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SSDStatePassingFwdOp), ids=lambda case: case.id)
 def test_ssd_state_passing_fwd_bench(case) -> None:
     states, dA_chunk_cumsum, initial_states = case.inputs
     op = SSDStatePassingFwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
 
     if _mamba_state_passing_fwd is not None:
         # dA_chunk_cumsum shares TileOPs' (b, h, c) layout; float32 output as TileOPs.
@@ -143,10 +143,10 @@ def test_ssd_state_passing_fwd_bench(case) -> None:
                 states, dA_chunk_cumsum, initial_states=initial_states, out_dtype=torch.float32
             )
 
-        functors["mamba"] = bench.Implementation(run=mamba_fwd, args=())
+        implementations["mamba"] = bench.Implementation(run=mamba_fwd, args=())
 
-    _torch_baselines(functors, case.reference)
-    bench.Runner(op, case).compare(functors)
+    _torch_baselines(implementations, case.reference)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SSDRecurrentFwdOp), ids=lambda case: case.id)
@@ -189,7 +189,7 @@ def test_ssd_decode_bench(case) -> None:
 def test_mamba2_fwd_bench(case):
     x, dt, A, B, C, dt_bias, initial_states = case.inputs
     op = Mamba2FwdOp(**case.arguments)
-    functors = {}
+    implementations = {}
     reference = case.reference
 
     # Only the five leading tensors are positional, so every path gets identical clone
@@ -212,14 +212,14 @@ def test_mamba2_fwd_bench(case):
             )
             return out.float(), final_states.float()
 
-        functors["mamba"] = bench.Implementation(run=_mamba_wrapper, args=reference_args)
+        implementations["mamba"] = bench.Implementation(run=_mamba_wrapper, args=reference_args)
 
     def _torch_wrapper(x, dt, A, B, C):
         return reference(x, dt, A, B, C, dt_bias, initial_states)
 
-    functors["torch-ref"] = bench.Implementation(run=_torch_wrapper, args=reference_args)
-    functors[TORCH_COMPILE_TAG] = bench.Implementation(
+    implementations["torch-ref"] = bench.Implementation(run=_torch_wrapper, args=reference_args)
+    implementations[TORCH_COMPILE_TAG] = bench.Implementation(
         run=compiled_reference(_torch_wrapper), args=reference_args
     )
 
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

@@ -28,7 +28,7 @@ def test_instance_norm_bench(case) -> None:
         case.params[k] for k in ("use_input_stats", "momentum", "eps")
     )
     baseline_fn = case.reference
-    functors = {}
+    implementations = {}
     if use_input_stats and inputs[1] is None:
         n, c, *spatial = x.shape
         group_norm_fn = flaggems_group_norm(n, c, math.prod(spatial), c, eps)
@@ -36,7 +36,7 @@ def test_instance_norm_bench(case) -> None:
         def flaggems_fn(x, running_mean, running_var, weight, bias):
             return group_norm_fn(x, weight, bias)
 
-        functors[FLAGGEMS_TAG] = flaggems_fn
-    functors["torch"] = baseline_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    bench.Runner(op, case).compare(functors)
+        implementations[FLAGGEMS_TAG] = flaggems_fn
+    implementations["torch"] = baseline_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    bench.Runner(op, case).compare(implementations)

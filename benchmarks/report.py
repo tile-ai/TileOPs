@@ -137,7 +137,6 @@ class BenchmarkReport:
         op_module = op.__class__.__module__
         op_config = _run_config(op)
 
-        # The case's parameters, as far as a log can print them back.
         def _is_serializable(v: Any) -> bool:
             if v is None or isinstance(v, (int, float, bool, str, torch.dtype)):
                 return True

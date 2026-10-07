@@ -125,20 +125,20 @@ def test_gdn_fwd_bench(case) -> None:
             final = final.transpose(-1, -2).contiguous()
         return out[..., :dim].to(q.dtype), final[..., :dim, :dim].contiguous()
 
-    functors = {"fla": fla_fn, FLASHINFER_TAG: flashinfer_fn}
+    implementations = {"fla": fla_fn, FLASHINFER_TAG: flashinfer_fn}
     if inputs[0].shape[1] == 1:
         # A decode step is checked against the FP32 recurrence; both FlashInfer
         # paths carry BF16- or FP16-grade error into the FP32 state.
-        functors[FLASHINFER_TAG] = bench.Implementation(
+        implementations[FLASHINFER_TAG] = bench.Implementation(
             run=flashinfer_fn,
             noncomparable_reason="chunk prefill kernel multiplies the FP32 state at input precision",
         )
         if inputs[6] is None and not ix["allow_neg_eigval"]:
-            functors["flashinfer-decode"] = bench.Implementation(
+            implementations["flashinfer-decode"] = bench.Implementation(
                 run=decode_fn,
                 noncomparable_reason=(
                     "takes Q/K/V and the raw gate and step-size logits as BF16; converting "
                     "the workload's log decay and step size rounds both"
                 ),
             )
-    bench.Runner(op, case).compare(functors)
+    bench.Runner(op, case).compare(implementations)

@@ -39,7 +39,9 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
     )
 
 
-def _flashinfer_bmm_fp8_row(workload: BmmFP8Workload, *inputs: torch.Tensor) -> Optional[tuple]:
+def _flashinfer_bmm_fp8_row(
+    workload: BmmFP8Workload, *inputs: torch.Tensor
+) -> Optional[bench.Implementation]:
     """The flashinfer entry for this case, or ``None`` when it cannot serve it.
 
     Preferred, not selected: a flashinfer row that cannot run drops its tag
@@ -47,12 +49,12 @@ def _flashinfer_bmm_fp8_row(workload: BmmFP8Workload, *inputs: torch.Tensor) -> 
     reference, that is a correctness signal and should fail the benchmark.
 
     Args:
-        workload: The case being timed, which states the reference and tolerance.
+        workload: The case's workload.
         *inputs: ``a``, ``b`` as a ``[B, K, N]`` view, ``scale_a``, ``scale_b``, as
             flashinfer takes them.
 
     Returns:
-        An implementation for :meth:`bench.Runner.compare`.
+        The implementation, or ``None`` when flashinfer cannot serve the case.
     """
 
     def run(a: torch.Tensor, b: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):

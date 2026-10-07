@@ -1,8 +1,6 @@
-"""How each manifest op becomes a benchmark case: one registry entry per op.
+"""One benchmark case factory per manifest op.
 
-An entry names the workload a call builds, whether the case counts device copies, and how
-the TileOps op is bound into an :class:`~benchmarks.api.Implementation`. Each family module
-holds ``ENTRIES``; they merge here, and a name registered twice fails on import.
+Each family module holds ``ENTRIES``; they merge here, and a name registered twice fails.
 """
 
 import dataclasses

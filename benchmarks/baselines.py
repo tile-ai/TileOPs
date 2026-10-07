@@ -37,6 +37,7 @@ __all__ = [
     "flaggems_group_norm",
     "flaggems_op",
     "flashinfer_op",
+    "private_float32_logits",
     "private_inputs",
     "quack_op",
     "vllm_op",
@@ -280,3 +281,18 @@ def private_inputs(run: Callable, inputs: tuple, *positions: int) -> Implementat
             args[i].copy_(inputs[i])
 
     return Implementation(run=run, args=tuple(args), reset=reset)
+
+
+def private_float32_logits(
+    run: Callable, logits: torch.Tensor, *args: Any, **kwargs: Any
+) -> Implementation:
+    """*run* on a float32 copy of *logits* it masks in place, restored before every round.
+
+    Takes ``(logits_fp32, *args)``; *kwargs* go to the :class:`Implementation`.
+    """
+    private = torch.empty_like(logits, dtype=torch.float32)
+
+    def reset() -> None:
+        private.copy_(logits)
+
+    return Implementation(run=run, args=(private, *args), reset=reset, **kwargs)

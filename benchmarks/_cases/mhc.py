@@ -7,8 +7,7 @@ from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 
 
 def _pre(call) -> MHCPreWorkload:
-    # The manifest workload is the authority for the scaling params, so the case
-    # is built with them rather than with the ones the generator would draw.
+    # The scaling params come from the manifest row, not from the generator.
     return MHCPreWorkload(
         call.ix["B"],
         call.ix["n"],
