@@ -342,8 +342,7 @@ def _batch_norm_fwd_train_split_kernel(
                 for _i, j in T.Parallel(1, threads):
                     for step in T.serial(T.ceildiv(chunk, threads * num_per_thread)):
                         head = start + (step * threads + j) * num_per_thread
-                        # A whole vector inside the chunk is one access: a test per element
-                        # would split it into one 2-byte load each.
+                        # The chunk bound is tested once a vector, so the vector loads in one access.
                         if head + num_per_thread <= end and vector_holds_one_item:
                             for i in T.vectorized(num_per_thread):
                                 held[i] = x[head // S, bc, head % S + i]
@@ -1840,8 +1839,7 @@ def _batch_norm_bwd_split_kernel(
                 for _i, j in T.Parallel(1, threads):
                     for step in T.serial(T.ceildiv(chunk, threads * num_per_thread)):
                         head = start + (step * threads + j) * num_per_thread
-                        # A whole vector inside the chunk is one access: a test per element
-                        # would split it into one 2-byte load each.
+                        # The chunk bound is tested once a vector, so the vector loads in one access.
                         if head + num_per_thread <= end and vector_holds_one_item:
                             for i in T.vectorized(num_per_thread):
                                 held_g[i] = grad_out[head // S, bc, head % S + i]
