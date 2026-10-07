@@ -39,7 +39,8 @@ class BatchNormCall(CallSpec):
     ``eps`` and ``momentum`` are the op's construction parameters, which the programs
     compile in. ``input_dtype_params`` is set where the affine is in the input dtype and
     the running statistics are read rounded to it, as ``instance_norm`` reads them;
-    ``has_weight`` and ``has_bias`` say which affine tensors are passed.
+    ``has_weight`` and ``has_bias`` say which affine tensors are passed, and
+    ``has_running_stats`` whether the running statistics are.
     """
 
     n: int = 0
@@ -51,6 +52,7 @@ class BatchNormCall(CallSpec):
     input_dtype_params: bool = False
     has_weight: bool = True
     has_bias: bool = True
+    has_running_stats: bool = True
 
     @property
     def passes_affine(self) -> bool:
@@ -80,21 +82,26 @@ class BatchNormTrainFwdInterface(KernelInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        running_mean: Optional[torch.Tensor],
+        running_var: Optional[torch.Tensor],
+        weight: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Normalize *x* per channel by its batch statistics.
 
-        Every tensor is contiguous on ``call.device``, and none aliases another.
+        Every tensor passed is contiguous on ``call.device``, and none aliases another. A
+        tensor is passed exactly where ``call`` says it is.
 
         Args:
             x: ``(n, c, spatial)`` in ``call.dtype``.
-            running_mean: ``float32`` ``(c,)``; updated in place with ``call.momentum``.
-            running_var: ``float32`` ``(c,)``; updated in place with the unbiased variance.
-            weight: ``float32`` ``(c,)`` scale.
-            bias: ``float32`` ``(c,)`` shift.
+            running_mean: ``float32`` ``(c,)``, updated in place with ``call.momentum``;
+                ``None`` where ``call.has_running_stats`` is false.
+            running_var: ``float32`` ``(c,)``, updated in place with the unbiased variance;
+                ``None`` exactly where ``running_mean`` is.
+            weight: ``float32`` ``(c,)`` scale, or ``None`` for one where
+                ``call.has_weight`` is false.
+            bias: ``float32`` ``(c,)`` shift, or ``None`` for zero where
+                ``call.has_bias`` is false.
 
         Returns:
             ``(y, mean, rstd)``: a new ``(n, c, spatial)`` output in ``call.dtype``, and the

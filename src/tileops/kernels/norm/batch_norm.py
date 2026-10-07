@@ -15,7 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
@@ -34,6 +34,28 @@ __all__ = [
     "BatchNormFwdTrainWholeKernel",
     "BatchNormFwdTrainWideKernel",
 ]
+
+
+def _param(tensor, index, present: bool, absent: float):
+    """``tensor[index]``, or the constant *absent* where the caller passed no tensor."""
+    return tensor[index] if present else T.float32(absent)
+
+
+def _fill_absent(x: torch.Tensor, channels: int, *tensors: Optional[torch.Tensor]) -> tuple:
+    """*tensors*, each absent one replaced by an unwritten ``(channels,)`` float32 tensor.
+
+    A program built without a tensor never reads or writes it, so the stand-in costs an
+    allocation and no kernel launch.
+    """
+    stand_in = None
+    out = []
+    for tensor in tensors:
+        if tensor is None:
+            if stand_in is None:
+                stand_in = torch.empty(channels, dtype=torch.float32, device=x.device)
+            tensor = stand_in
+        out.append(tensor)
+    return tuple(out)
 
 
 def _vector_elements(dtype: torch.dtype) -> int:
@@ -98,6 +120,9 @@ def _batch_norm_fwd_train_kernel(
     dtype: str = "float16",
     eps: float = 1e-5,
     momentum: float = 0.1,
+    has_weight: bool = True,
+    has_bias: bool = True,
+    has_stats: bool = True,
 ) -> Callable:
     """Return the JIT-compiled training-forward kernel factory.
 
@@ -198,22 +223,23 @@ def _batch_norm_fwd_train_kernel(
                 mean_out[bc] = mean_val
                 rstd_out[bc] = rstd_val
 
-                # Update running statistics.
-                # running_var takes the unbiased variance, as PyTorch does.
-                mom = T.cast(momentum, accum_dtype)
-                unbiased_var = (
-                    var_val
-                    * T.cast(L, accum_dtype)
-                    / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
-                )
-                # One writer per block: this running-stat RMW races if every thread runs it.
-                if T.get_thread_binding() == 0:
-                    running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[
-                        bc
-                    ] + mom * mean_val
-                    running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[
-                        bc
-                    ] + mom * unbiased_var
+                # Update running statistics, where the caller passed them.
+                if has_stats:
+                    # running_var takes the unbiased variance, as PyTorch does.
+                    mom = T.cast(momentum, accum_dtype)
+                    unbiased_var = (
+                        var_val
+                        * T.cast(L, accum_dtype)
+                        / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
+                    )
+                    # One writer per block: this running-stat RMW races if every thread runs it.
+                    if T.get_thread_binding() == 0:
+                        running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[
+                            bc
+                        ] + mom * mean_val
+                        running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[
+                            bc
+                        ] + mom * unbiased_var
 
                 # Pass 2 – normalize.
                 if block_l >= L and ragged:
@@ -222,13 +248,17 @@ def _batch_norm_fwd_train_kernel(
                         if j < L:
                             xval = T.cast(x_shared[j], accum_dtype)
                             y[j // S, bc, j % S] = T.cast(
-                                weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                                _param(weight, bc, has_weight, 1.0) * (xval - mean_val) * rstd_val
+                                + _param(bias, bc, has_bias, 0.0),
+                                dtype,
                             )
                 elif block_l >= L:
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
                         y[j // S, bc, j % S] = T.cast(
-                            weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                            _param(weight, bc, has_weight, 1.0) * (xval - mean_val) * rstd_val
+                            + _param(bias, bc, has_bias, 0.0),
+                            dtype,
                         )
                 elif ragged:
                     for l_tile in T.Pipelined(tiles, num_stages=0):
@@ -237,7 +267,11 @@ def _batch_norm_fwd_train_kernel(
                             if l < L:
                                 xval = T.cast(x[l // S, bc, l % S], accum_dtype)
                                 y[l // S, bc, l % S] = T.cast(
-                                    weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                                    _param(weight, bc, has_weight, 1.0)
+                                    * (xval - mean_val)
+                                    * rstd_val
+                                    + _param(bias, bc, has_bias, 0.0),
+                                    dtype,
                                 )
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
@@ -246,7 +280,9 @@ def _batch_norm_fwd_train_kernel(
                             l = l_tile * block_l + j
                             xval = T.cast(x[l // S, bc, l % S], accum_dtype)
                             y[l // S, bc, l % S] = T.cast(
-                                weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                                _param(weight, bc, has_weight, 1.0) * (xval - mean_val) * rstd_val
+                                + _param(bias, bc, has_bias, 0.0),
+                                dtype,
                             )
 
         return _bn_fwd_train
@@ -262,6 +298,9 @@ def _batch_norm_fwd_train_split_kernel(
     dtype: str = "float16",
     eps: float = 1e-5,
     momentum: float = 0.1,
+    has_weight: bool = True,
+    has_bias: bool = True,
+    has_stats: bool = True,
 ) -> Callable:
     """Return the three-stage training-forward factories for a long channel.
 
@@ -352,16 +391,18 @@ def _batch_norm_fwd_train_split_kernel(
                         rstd_out[bc] = rstd_val
                         # Folded here, the map pass reads two numbers per
                         # channel instead of four.
-                        scale_out[bc] = weight[bc] * rstd_val
-                        shift_out[bc] = bias[bc] - mean_val * weight[bc] * rstd_val
+                        scale_val = _param(weight, bc, has_weight, 1.0) * rstd_val
+                        scale_out[bc] = scale_val
+                        shift_out[bc] = _param(bias, bc, has_bias, 0.0) - mean_val * scale_val
                         # running_var follows PyTorch convention: updated with
                         # unbiased variance (Bessel's correction).
                         mom = T.cast(momentum, accum_dtype)
                         one = T.cast(1.0, accum_dtype)
-                        running_mean[bc] = (one - mom) * running_mean[bc] + mom * mean_val
-                        running_var[bc] = (one - mom) * running_var[bc] + mom * (
-                            var_val * n / (n - one)
-                        )
+                        if has_stats:
+                            running_mean[bc] = (one - mom) * running_mean[bc] + mom * mean_val
+                            running_var[bc] = (one - mom) * running_var[bc] + mom * (
+                                var_val * n / (n - one)
+                            )
 
         return _bn_train_finalize
 
@@ -421,6 +462,9 @@ def _batch_norm_fwd_train_wide_kernel(
     dtype: str = "float16",
     eps: float = 1e-5,
     momentum: float = 0.1,
+    has_weight: bool = True,
+    has_bias: bool = True,
+    has_stats: bool = True,
 ) -> Callable:
     """Return the JIT-compiled training-forward factory for a register-held channel.
 
@@ -463,10 +507,11 @@ def _batch_norm_fwd_train_wide_kernel(
                 tx = T.get_thread_binding()
                 # Read before the sums so the latency overlaps the element loads.
                 params = T.alloc_local([4], accum_dtype)
-                params[0] = weight[bc]
-                params[1] = bias[bc]
-                params[2] = running_mean[bc]
-                params[3] = running_var[bc]
+                params[0] = _param(weight, bc, has_weight, 1.0)
+                params[1] = _param(bias, bc, has_bias, 0.0)
+                if has_stats:
+                    params[2] = running_mean[bc]
+                    params[3] = running_var[bc]
                 held = T.alloc_local([steps * num_per_thread], dtype)
                 out = T.alloc_local([num_per_thread], dtype)
                 acc = T.alloc_local([1], accum_dtype)
@@ -522,9 +567,10 @@ def _batch_norm_fwd_train_wide_kernel(
                 if tx == 0:
                     mean_out[bc] = mean_val
                     rstd_out[bc] = rstd_val
-                    running_mean[bc] = (one - mom) * params[2] + mom * mean_val
-                    # running_var takes the unbiased variance, as PyTorch does.
-                    running_var[bc] = (one - mom) * params[3] + mom * (var_val * n / (n - one))
+                    if has_stats:
+                        running_mean[bc] = (one - mom) * params[2] + mom * mean_val
+                        # running_var takes the unbiased variance, as PyTorch does.
+                        running_var[bc] = (one - mom) * params[3] + mom * (var_val * n / (n - one))
 
                 for k in T.serial(steps):
                     head = (k * threads + tx) * num_per_thread
@@ -560,6 +606,9 @@ def _batch_norm_fwd_train_whole_kernel(
     dtype: str = "float16",
     eps: float = 1e-5,
     momentum: float = 0.1,
+    has_weight: bool = True,
+    has_bias: bool = True,
+    has_stats: bool = True,
 ) -> Callable:
     """Return the JIT-compiled training-forward factory for a channel per thread.
 
@@ -594,10 +643,11 @@ def _batch_norm_fwd_train_whole_kernel(
                 # latency overlaps the element loads.
                 params = T.alloc_local([4], accum_dtype)
                 if c < C:
-                    params[0] = weight[c]
-                    params[1] = bias[c]
-                    params[2] = running_mean[c]
-                    params[3] = running_var[c]
+                    params[0] = _param(weight, c, has_weight, 1.0)
+                    params[1] = _param(bias, c, has_bias, 0.0)
+                    if has_stats:
+                        params[2] = running_mean[c]
+                        params[3] = running_var[c]
                 held = T.alloc_local([L], dtype)
                 acc = T.alloc_local([1], accum_dtype)
                 sq = T.alloc_local([1], accum_dtype)
@@ -622,9 +672,10 @@ def _batch_norm_fwd_train_whole_kernel(
 
                     mom = T.cast(momentum, accum_dtype)
                     one = T.cast(1.0, accum_dtype)
-                    running_mean[c] = (one - mom) * params[2] + mom * mean_val
-                    # running_var takes the unbiased variance, as PyTorch does.
-                    running_var[c] = (one - mom) * params[3] + mom * (var_val * n / (n - one))
+                    if has_stats:
+                        running_mean[c] = (one - mom) * params[2] + mom * mean_val
+                        # running_var takes the unbiased variance, as PyTorch does.
+                        running_var[c] = (one - mom) * params[3] + mom * (var_val * n / (n - one))
 
                     for l in T.serial(L):
                         y[l // S, c, l % S] = T.cast(
@@ -714,10 +765,10 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        running_mean: Optional[torch.Tensor],
+        running_var: Optional[torch.Tensor],
+        weight: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -727,6 +778,10 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         """
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        x = vector_aligned(x)
+        running_mean, running_var, weight, bias = _fill_absent(
+            x, self.C, running_mean, running_var, weight, bias
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
@@ -764,7 +819,8 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        presence = (call.has_weight, call.has_bias, call.has_running_stats)
+        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
 
     def __init__(
         self,
@@ -774,13 +830,16 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
         dtype: torch.dtype = torch.float16,
         eps: float = 1e-5,
         momentum: float = 0.1,
+        presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
         self.launch = (self._BLOCK_THREADS,)
-        self.kernel = _batch_norm_fwd_train_whole_kernel(N, C, S, self.dtype_str, eps, momentum)
+        self.kernel = _batch_norm_fwd_train_whole_kernel(
+            N, C, S, self.dtype_str, eps, momentum, *presence
+        )
 
 
 class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
@@ -815,7 +874,8 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
             cls._block_launch(call, 1),
         )
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        presence = (call.has_weight, call.has_bias, call.has_running_stats)
+        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
 
     def __init__(
         self,
@@ -826,13 +886,16 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         eps: float,
         momentum: float,
         launch: tuple[int, int],
+        presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
         self.launch = launch
-        self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
+        self.kernel = _batch_norm_fwd_train_wide_kernel(
+            N, C, S, self.dtype_str, eps, momentum, *presence
+        )
 
 
 class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface):
@@ -877,7 +940,8 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             cls._split_seed(call),
         )
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        presence = (call.has_weight, call.has_bias, call.has_running_stats)
+        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
 
     def __init__(
         self,
@@ -890,6 +954,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         splits: int,
         config: Optional[dict] = None,
         tune: bool = False,
+        presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -899,7 +964,9 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         self.L = N * S
         self.splits = splits
         self.dtype = dtype
-        self.stages = _batch_norm_fwd_train_split_kernel(N, C, S, self.dtype_str, eps, momentum)
+        self.stages = _batch_norm_fwd_train_split_kernel(
+            N, C, S, self.dtype_str, eps, momentum, *presence
+        )
         self.init_config(config, tune)
 
     @property
@@ -1020,10 +1087,10 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        running_mean: Optional[torch.Tensor],
+        running_var: Optional[torch.Tensor],
+        weight: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -1033,6 +1100,10 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         """
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        x = vector_aligned(x)
+        running_mean, running_var, weight, bias = _fill_absent(
+            x, self.C, running_mean, running_var, weight, bias
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
@@ -1074,7 +1145,8 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        presence = (call.has_weight, call.has_bias, call.has_running_stats)
+        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
 
     def __init__(
         self,
@@ -1086,13 +1158,16 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         momentum: float = 0.1,
         config: Optional[dict] = None,
         tune: bool = False,
+        presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.L = N * S
         self.dtype = dtype
-        self.kernel = _batch_norm_fwd_train_kernel(N, C, S, self.dtype_str, eps, momentum)
+        self.kernel = _batch_norm_fwd_train_kernel(
+            N, C, S, self.dtype_str, eps, momentum, *presence
+        )
         self.init_config(config, tune)
 
     @property
@@ -1106,10 +1181,10 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        running_mean: Optional[torch.Tensor],
+        running_var: Optional[torch.Tensor],
+        weight: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -1119,6 +1194,10 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         """
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        x = vector_aligned(x)
+        running_mean, running_var, weight, bias = _fill_absent(
+            x, self.C, running_mean, running_var, weight, bias
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
@@ -1375,6 +1454,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
             running_mean=running_mean,
             running_var=running_var,
         )
+        x = vector_aligned(x)
         if weight is None or bias is None:
             placeholder = torch.empty(x.shape[1], dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight
@@ -1918,6 +1998,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         grad_x = self.kernel(*self.launch)(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
@@ -1991,6 +2072,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         stats, finalize, apply_ = self.stages
@@ -2085,6 +2167,7 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
         program = self.kernel(self.config["block_l"], self.config["threads"])

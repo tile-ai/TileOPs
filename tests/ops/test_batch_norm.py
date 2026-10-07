@@ -2,6 +2,7 @@
 gradient from torch.autograd.
 """
 
+import math
 import re
 
 import pytest
@@ -232,6 +233,90 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
         batch_norm_backward(*inputs),
         batch_norm_backward_verification(x.dtype),
     )
+
+
+@pytest.mark.parametrize("absent", ["weight", "bias"])
+@pytest.mark.parametrize(
+    "shape, kernel",
+    [
+        pytest.param((16, 32), "BatchNormFwdTrainWholeKernel", marks=pytest.mark.smoke, id="whole"),
+        pytest.param(
+            (8, 16, 32, 32), "BatchNormFwdTrainWideKernel", marks=pytest.mark.smoke, id="wide"
+        ),
+        pytest.param(
+            (4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", marks=pytest.mark.smoke, id="split"
+        ),
+        # 1024 channels of an odd 65537-element run: too many to split, too long to hold.
+        pytest.param(
+            (1, 1024, 65537), "BatchNormFwdTrainKernel", marks=pytest.mark.full, id="tiled"
+        ),
+    ],
+)
+def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, absent) -> None:
+    """A training program built without one affine tensor, and without running
+    statistics, scales by one or shifts by zero in its place."""
+    x = torch.randn(shape, dtype=torch.float16, device=run_device())
+    c = shape[1]
+    weight = None if absent == "weight" else torch.rand(c, device=run_device()) + 0.5
+    bias = None if absent == "bias" else torch.randn(c, device=run_device())
+    op = BatchNormFwdOp(training=True)
+    compare_outputs(
+        batch_norm_forward_result(op, x, None, None, weight, bias),
+        batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
+        batch_norm_forward_verification(x.dtype),
+    )
+    assert type(op.kernel).__name__ == kernel
+
+
+def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
+    """A contiguous float16 tensor whose storage starts one element past a 16-byte boundary."""
+    x = torch.randn(math.prod(shape) + 1, dtype=torch.float16, device=run_device())[1:]
+    return x.view(shape)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "training, shape, kernel",
+    [
+        pytest.param(True, (8, 16, 32, 32), "BatchNormFwdTrainWideKernel", id="wide"),
+        pytest.param(True, (4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", id="split"),
+        pytest.param(False, (8, 16, 32, 32), "BatchNormFwdInferKernel", id="infer"),
+    ],
+)
+def test_forward_input_off_a_vector_boundary_matches_torch(training, shape, kernel) -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches torch."""
+    x = _off_a_vector_boundary(shape)
+    c = shape[1]
+    weight, bias = torch.rand(c, device=run_device()) + 0.5, torch.randn(c, device=run_device())
+    rm, rv = torch.randn(c, device=run_device()), torch.rand(c, device=run_device()) + 0.5
+    op = BatchNormFwdOp(training=training)
+    compare_outputs(
+        batch_norm_forward_result(op, x, rm.clone(), rv.clone(), weight, bias),
+        batch_norm_fwd_ref(x, weight, bias, rm.clone(), rv.clone(), training=training),
+        batch_norm_forward_verification(x.dtype),
+    )
+    assert type(op.kernel).__name__ == kernel
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, kernel",
+    [
+        pytest.param((8, 16, 32, 32), "BatchNormBwdWideKernel", id="wide"),
+        pytest.param((4, 4, 256, 512), "BatchNormBwdSplitKernel", id="split"),
+    ],
+)
+def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> None:
+    """A grad_out and an x starting one element past a 16-byte boundary match torch."""
+    grad_out, x = _off_a_vector_boundary(shape), _off_a_vector_boundary(shape)
+    weight = torch.rand(shape[1], device=run_device()) + 0.5
+    var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
+    inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+    bwd = BatchNormBwdOp()
+    compare_outputs(
+        bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
+    )
+    assert type(bwd.kernel).__name__ == kernel
 
 
 # Input validation and torch.compile.
