@@ -48,6 +48,28 @@ def test_workloads_carry_no_consumer_execution() -> None:
     assert _methods_named(REPO_ROOT / "workloads", NOT_IN_WORKLOADS.__contains__) == {}
 
 
+@pytest.mark.smoke
+def test_workloads_do_not_import_the_benchmark_layer() -> None:
+    """The benchmark layer consumes the workload contract; the dependency never runs back."""
+    offenders = {}
+    for path in sorted((REPO_ROOT / "workloads").rglob("*.py")):
+        hits = [
+            f"line {node.lineno}"
+            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] == "benchmarks"
+            )
+            or (
+                isinstance(node, ast.Import)
+                and any(alias.name.split(".")[0] == "benchmarks" for alias in node.names)
+            )
+        ]
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert offenders == {}
+
+
 def _seeds_global_rng(node: ast.AST) -> bool:
     """Whether *node* is a call that seeds the global RNG.
 

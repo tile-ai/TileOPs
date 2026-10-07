@@ -17,25 +17,18 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
     fused_topk_bias as _vllm_fused_topk_bias,
 )
 
+from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import FusedTopKFwdOp
-from workloads.moe import FusedTopKWorkload
 
 
-@pytest.mark.parametrize("call", manifest_calls(FusedTopKFwdOp))
-def test_fused_topk_bench(call) -> None:
-    workload = FusedTopKWorkload(call)
-    inputs = workload.gen_inputs()
-    gating_output, correction_bias = inputs
-    if correction_bias is None:
-        inputs = (gating_output,)
-    op = FusedTopKFwdOp(**call.arguments({}))
+@pytest.mark.parametrize("case", bench.cases(FusedTopKFwdOp), ids=lambda case: case.id)
+def test_fused_topk_bench(case) -> None:
+    gating_output, *bias = case.inputs
+    correction_bias = bias[0] if bias else None
+    op = FusedTopKFwdOp(**case.arguments)
     top_k, scoring_func, renormalize = op.top_k, op.scoring_func, op.renormalize
     num_tokens = gating_output.shape[0]
-    bm = ManifestBenchmark(op, workload)
-
-    functors = {"tileops": op}
 
     # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
     hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
@@ -62,9 +55,4 @@ def test_fused_topk_bench(call) -> None:
                 scoring_func=scoring_func,
             )[:2]
 
-    functors[VLLM_TAG] = _vllm_fn
-
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    bench.Runner(op, case).compare({VLLM_TAG: _vllm_fn})

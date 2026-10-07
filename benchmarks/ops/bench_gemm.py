@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
@@ -15,17 +16,11 @@ from benchmarks.baselines import (
     flashinfer_op,
     quack_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
-from workloads.gemm import (
-    GemmFP8Workload,
-    GemmW4A16Workload,
-    GemmWorkload,
-    dequantize_w4a16_weight,
-)
+from workloads.gemm import GemmFP8Workload, GemmWorkload, dequantize_w4a16_weight
 
 CUBLASLT_TAG = "cublaslt-best"
 
@@ -319,46 +314,44 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GemmFwdOp))
-def test_gemm_bench(call) -> None:
-    workload = GemmWorkload.from_call(call)
-    a, b = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(GemmFwdOp), ids=lambda case: case.id)
+def test_gemm_bench(case) -> None:
+    workload = case.workload
+    a, b = case.inputs
     trans_a, trans_b = workload.trans_a, workload.trans_b
 
-    op = GemmFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
+    op = GemmFwdOp(**case.arguments)
 
-    functors = {"tileops": op, "torch-cublas": workload.ref_program}
+    implementations = {"torch-cublas": case.reference}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
-        functors[CUBLASLT_TAG] = best_fn
+        implementations[CUBLASLT_TAG] = best_fn
 
     deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
     if deepgemm_fn is not None:
-        functors[DEEPGEMM_TAG] = deepgemm_fn
+        implementations[DEEPGEMM_TAG] = deepgemm_fn
 
     if not trans_a and not trans_b:
         flaggems_mm = flaggems_op("mm")
-        functors[FLAGGEMS_TAG] = flaggems_mm
+        implementations[FLAGGEMS_TAG] = flaggems_mm
 
     quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
     def quack_fn(a, b):
         return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
 
-    functors[QUACK_TAG] = quack_fn
-    bm.compare(functors, a, b)
+    implementations[QUACK_TAG] = quack_fn
+    bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GemmFP8FwdOp))
-def test_gemm_fp8_bench(call) -> None:
-    workload = GemmFP8Workload.from_call(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(GemmFP8FwdOp), ids=lambda case: case.id)
+def test_gemm_fp8_bench(case) -> None:
+    workload = case.workload
+    inputs = case.inputs
     scale_mode, out_dtype = (workload.scale_mode, workload.out_dtype)
-    op = GemmFP8FwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op, "torch-fp32-ref": workload.ref_program}
-    functors[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
+    op = GemmFP8FwdOp(**case.arguments)
+    implementations = {"torch-fp32-ref": case.reference}
+    implementations[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
     if scale_mode == "per_tensor":
 
         def scaled_mm(a, b, scale_a, scale_b, bias=None):
@@ -366,7 +359,7 @@ def test_gemm_fp8_bench(call) -> None:
                 a, b.T, scale_a=scale_a, scale_b=scale_b, bias=bias, out_dtype=out_dtype
             )
 
-        functors["torch-scaled-mm"] = scaled_mm
+        implementations["torch-scaled-mm"] = scaled_mm
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
@@ -382,7 +375,7 @@ def test_gemm_fp8_bench(call) -> None:
                     out = out.float() + bias.float()
                 return out.to(out_dtype)
 
-            functors["flashinfer-mm-fp8"] = flashinfer_fn
+            implementations["flashinfer-mm-fp8"] = flashinfer_fn
     elif scale_mode == "block128x128":
         baselines = {"flashinfer-fp8-blockscale-sm90": _flashinfer_fp8_blockscale_1d2d}
         for tag, adapter in baselines.items():
@@ -391,27 +384,25 @@ def test_gemm_fp8_bench(call) -> None:
             except ValueError as exc:
                 print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
             else:
-                functors[tag] = (fn, inputs)
-    bm.compare(functors, *inputs, count_copies=True)
+                implementations[tag] = bench.Implementation(run=fn, args=inputs)
+    bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GemmW4A16FwdOp))
-def test_gemm_w4a16_bench(call) -> None:
-    workload = GemmW4A16Workload.from_call(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(GemmW4A16FwdOp), ids=lambda case: case.id)
+def test_gemm_w4a16_bench(case) -> None:
+    workload = case.workload
+    inputs = case.inputs
     m, n, k = workload.m, workload.n, workload.k
 
-    op = GemmW4A16FwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
+    op = GemmW4A16FwdOp(**case.arguments)
 
-    # Another idiom for the reference: timing ref_program would time its dequantization, so
-    # the torch baseline multiplies by a weight dequantized once, outside the timed region.
+    # The torch row multiplies by a weight dequantized once, outside the timed call.
     weight = dequantize_w4a16_weight(*inputs[1:]).to(workload.dtype)
 
     def torch_dequantized_matmul(activation: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
         return torch.matmul(activation, weight.T)
 
-    functors = {"tileops": op, "torch-dequantized-matmul": torch_dequantized_matmul}
+    implementations = {"torch-dequantized-matmul": torch_dequantized_matmul}
 
     logical = (inputs[0], workload.row_major_weight, inputs[2], inputs[3])
     for mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
@@ -423,6 +414,6 @@ def test_gemm_w4a16_bench(call) -> None:
         except ValueError as exc:
             print(f"  [skip] {tag}: {exc}")
             continue
-        functors[tag] = (baseline, baseline_inputs)
+        implementations[tag] = bench.Implementation(run=baseline, args=baseline_inputs)
 
-    bm.compare(functors, *inputs)
+    bench.Runner(op, case).compare(implementations)

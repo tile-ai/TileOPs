@@ -210,7 +210,7 @@ def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch)
 
 
 class TestBench:
-    """A bench file takes its calls from the manifest and its roofline off the op.
+    """A bench file takes its cases from the manifest and its roofline off the op.
 
     Which op the file benchmarks is a run-time fact, checked against a benchmark run by
     ``scripts/check_bench_coverage.py``, so no case here names an op.
@@ -221,25 +221,33 @@ class TestBench:
         [
             (
                 """\
-                from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-                for call in manifest_calls(OP):
-                    ManifestBenchmark(OP(), call)
+                from benchmarks import api as bench
+                for case in bench.cases(OP):
+                    bench.Runner(OP(), case).compare({})
                 """,
                 [],
             ),
             (
                 """\
-                from benchmarks.benchmark_base import manifest_calls
-                calls = manifest_calls(OP)
+                from benchmarks.api import Runner, cases
+                for case in cases(OP):
+                    Runner(OP(), case)
                 """,
-                ["roofline"],
+                [],
             ),
             (
                 """\
-                from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+                from benchmarks import api as bench
+                cases = bench.cases(OP)
+                """,
+                ["Runner"],
+            ),
+            (
+                """\
+                from benchmarks import api as bench
                 shapes = [(1024, 4096)]
                 """,
-                ["manifest_calls", "roofline"],
+                ["cases", "Runner"],
             ),
             ("def broken(\n", ["syntax error"]),
         ],

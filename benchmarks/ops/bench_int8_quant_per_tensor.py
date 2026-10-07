@@ -1,22 +1,20 @@
 """Benchmark for the per-tensor INT8 quantization op.
 
 Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`.
+byte counts come from the op's ``eval_roofline()``.
 """
 
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.quantization import INT8QuantPerTensorFwdOp
-from workloads.quantization.quantize import INT8QuantPerTensorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -35,23 +33,16 @@ def _vllm_quant(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return q, scale
 
 
-@pytest.mark.parametrize("call", manifest_calls(INT8QuantPerTensorFwdOp))
-def test_int8_quant_per_tensor_bench(call) -> None:
-    workload = INT8QuantPerTensorWorkload.from_call(call)
-    inputs = workload.gen_inputs()
-
-    op = INT8QuantPerTensorFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, workload)
-
-    bm.compare(
+@pytest.mark.parametrize("case", bench.cases(INT8QuantPerTensorFwdOp), ids=lambda case: case.id)
+def test_int8_quant_per_tensor_bench(case) -> None:
+    op = INT8QuantPerTensorFwdOp(**case.arguments, tune=_TUNE)
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
             VLLM_TAG: _vllm_quant,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
-        noncomparable={
-            TORCH_COMPILE_TAG: "Inductor lowering does not preserve the reference's exact INT8 codes",
-        },
+            "torch-ref": case.reference,
+            TORCH_COMPILE_TAG: bench.Implementation(
+                run=compiled_reference(case.reference),
+                noncomparable_reason="Inductor lowering does not preserve the reference's exact INT8 codes",
+            ),
+        }
     )

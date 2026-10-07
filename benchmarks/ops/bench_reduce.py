@@ -17,6 +17,7 @@ from typing import Callable, Optional
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
@@ -24,7 +25,6 @@ from benchmarks.baselines import (
     flaggems_dims,
     flaggems_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -35,20 +35,18 @@ from tileops.ops.reduction.reduce import (
     VarFwdOp,
     VarMeanFwdOp,
 )
-from workloads.reduction import ProdCall, ReductionCall
 
 
-def _bench(op_cls: type, workload: ReductionCall, flaggems_fn: Optional[Callable] = None) -> None:
+def _bench(op_cls: type, case: bench.Case, flaggems_fn: Optional[Callable] = None) -> None:
     """Check flag_gems against the reference, then time it and the op with torch."""
-    baseline_fn = workload.ref_program
-    inputs = workload.gen_inputs()
-    op = op_cls(**workload.arguments())
-    functors = {"tileops": op}
+    baseline_fn = case.reference
+    op = op_cls(**case.arguments)
+    implementations = {}
     if flaggems_fn is not None:
-        functors[FLAGGEMS_TAG] = flaggems_fn
-    functors["torch"] = baseline_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+        implementations[FLAGGEMS_TAG] = flaggems_fn
+    implementations["torch"] = baseline_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _out_dtype(x: torch.Tensor, params: dict) -> torch.dtype:
@@ -64,35 +62,35 @@ def _flaggems(name: str, params: dict, *extra, **kwargs) -> Optional[Callable]:
     return lambda x: fn(x, flaggems_dims(dim), *extra, keepdim=params["keepdim"], **kwargs)
 
 
-@pytest.mark.parametrize("call", manifest_calls(SumFwdOp))
-def test_sum_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(SumFwdOp), ids=lambda case: case.id)
+def test_sum_bench(case) -> None:
+    p = case.params
 
-    _bench(SumFwdOp, ReductionCall(call), _flaggems("sum_dim", p))
-
-
-@pytest.mark.parametrize("call", manifest_calls(MeanFwdOp))
-def test_mean_bench(call) -> None:
-    p = call.params
-
-    _bench(MeanFwdOp, ReductionCall(call), _flaggems("mean_dim", p))
+    _bench(SumFwdOp, case, _flaggems("sum_dim", p))
 
 
-@pytest.mark.parametrize("call", manifest_calls(AmaxFwdOp))
-def test_amax_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(MeanFwdOp), ids=lambda case: case.id)
+def test_mean_bench(case) -> None:
+    p = case.params
 
-    _bench(AmaxFwdOp, ReductionCall(call), _flaggems("amax", p))
-
-
-@pytest.mark.parametrize("call", manifest_calls(AminFwdOp))
-def test_amin_bench(call) -> None:
-    _bench(AminFwdOp, ReductionCall(call))
+    _bench(MeanFwdOp, case, _flaggems("mean_dim", p))
 
 
-@pytest.mark.parametrize("call", manifest_calls(ProdFwdOp))
-def test_prod_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(AmaxFwdOp), ids=lambda case: case.id)
+def test_amax_bench(case) -> None:
+    p = case.params
+
+    _bench(AmaxFwdOp, case, _flaggems("amax", p))
+
+
+@pytest.mark.parametrize("case", bench.cases(AminFwdOp), ids=lambda case: case.id)
+def test_amin_bench(case) -> None:
+    _bench(AminFwdOp, case)
+
+
+@pytest.mark.parametrize("case", bench.cases(ProdFwdOp), ids=lambda case: case.id)
+def test_prod_bench(case) -> None:
+    p = case.params
 
     flaggems_fn = None
     if not p.get("dtype"):
@@ -101,32 +99,32 @@ def test_prod_bench(call) -> None:
         def flaggems_fn(x):
             return flaggems_prod(x, p["dim"], p["keepdim"])
 
-    _bench(ProdFwdOp, ProdCall(call), flaggems_fn)
+    _bench(ProdFwdOp, case, flaggems_fn)
 
 
 def _correction(params: dict):
     return 1 if params["correction"] is None else params["correction"]
 
 
-@pytest.mark.parametrize("call", manifest_calls(StdFwdOp))
-def test_std_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(StdFwdOp), ids=lambda case: case.id)
+def test_std_bench(case) -> None:
+    p = case.params
     c = _correction(p)
 
-    _bench(StdFwdOp, ReductionCall(call), _flaggems("std", p, correction=c))
+    _bench(StdFwdOp, case, _flaggems("std", p, correction=c))
 
 
-@pytest.mark.parametrize("call", manifest_calls(VarFwdOp))
-def test_var_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(VarFwdOp), ids=lambda case: case.id)
+def test_var_bench(case) -> None:
+    p = case.params
     c = _correction(p)
 
-    _bench(VarFwdOp, ReductionCall(call), _flaggems("var_dim", p, correction=c))
+    _bench(VarFwdOp, case, _flaggems("var_dim", p, correction=c))
 
 
-@pytest.mark.parametrize("call", manifest_calls(VarMeanFwdOp))
-def test_var_mean_bench(call) -> None:
-    p = call.params
+@pytest.mark.parametrize("case", bench.cases(VarMeanFwdOp), ids=lambda case: case.id)
+def test_var_mean_bench(case) -> None:
+    p = case.params
     c = _correction(p)
 
-    _bench(VarMeanFwdOp, ReductionCall(call), _flaggems("var_mean", p, correction=c))
+    _bench(VarMeanFwdOp, case, _flaggems("var_mean", p, correction=c))

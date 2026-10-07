@@ -2,23 +2,21 @@
 
 Workload shapes, dtypes, and transpose layouts come from the ops manifest;
 per-variant roofline FLOP and byte counts come from the op's
-``eval_roofline()`` via :class:`ManifestBenchmark`.
+``eval_roofline()``.
 """
 
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     QUACK_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
     quack_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedGemmFwdOp
-from workloads.gemm import (
-    GroupedGemmWorkload,
-)
+from workloads.gemm import GroupedGemmWorkload
 
 
 def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
@@ -72,22 +70,20 @@ def _compiled_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
     return compiled_reference(fn)
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedGemmFwdOp))
-def test_grouped_gemm_bench(call) -> None:
-    workload = GroupedGemmWorkload.from_call(call)
-    inputs = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(GroupedGemmFwdOp), ids=lambda case: case.id)
+def test_grouped_gemm_bench(case) -> None:
+    workload = case.workload
+    inputs = case.inputs
 
-    op = GroupedGemmFwdOp(**call.arguments({}), tune=True)
-    bm = ManifestBenchmark(op, workload)
+    op = GroupedGemmFwdOp(**case.arguments, tune=True)
 
-    functors = {
-        "tileops": op,
-        "torch-ref": workload.ref_program,
+    implementations = {
+        "torch-ref": case.reference,
         TORCH_COMPILE_TAG: _compiled_grouped_mm(workload, inputs),
     }
     grouped_mm_fn = _torch_grouped_mm(workload, inputs)
     if grouped_mm_fn is not None:
-        functors["torch"] = grouped_mm_fn
+        implementations["torch"] = grouped_mm_fn
     quack_gemm = quack_op("gemm", "quack.gemm_interface")
     offsets = torch.tensor(
         [0, *torch.tensor(workload.batch_sizes_list).cumsum(0).tolist()],
@@ -102,5 +98,5 @@ def test_grouped_gemm_bench(call) -> None:
         rhs = b.transpose(-1, -2) if workload.transpose_b else b
         return quack_gemm(a, rhs, cu_seqlens_m=offsets)
 
-    functors[QUACK_TAG] = quack_fn
-    bm.compare(functors, *inputs)
+    implementations[QUACK_TAG] = quack_fn
+    bench.Runner(op, case).compare(implementations)

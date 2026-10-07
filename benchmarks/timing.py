@@ -35,7 +35,7 @@ _MIN_ITERS = 10
 _MAX_ITERS = 200
 
 # Latest bench_kernel measurement metadata; deviations from the default protocol are
-# surfaced in results by BenchmarkBase._build_result.
+# surfaced in every recorded result.
 _bench_meta = threading.local()
 _cuda_runtime = None
 
@@ -603,6 +603,7 @@ def bench_kernel(
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
     allow_events_fallback: Optional[bool] = None,
+    reset: Optional[Callable[[], None]] = None,
 ) -> list[Sample]:
     """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
@@ -619,6 +620,10 @@ def bench_kernel(
     implementations compute part of the result with one. It is off by default because a
     staging copy is not the arithmetic being timed; turn it on for every tag in a row or
     for none, since the two sides are otherwise read off different instruments.
+
+    ``reset`` restores the state *fn* overwrites. Every iteration runs ``reset``, then the
+    L2 flush, then *fn*; ``reset`` is never part of the reading, and the flush evicts what
+    it wrote.
 
     Everything runs on the device the first CUDA tensor in *args* lives on, or the
     current device when there is none.
@@ -642,6 +647,7 @@ def bench_kernel(
             min_iters,
             count_copies,
             allow_events_fallback,
+            reset,
         )
 
 
@@ -654,6 +660,7 @@ def _bench_kernel(
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
     allow_events_fallback: Optional[bool] = None,
+    reset: Optional[Callable[[], None]] = None,
 ) -> list[Sample]:
     allow_fallback = (
         events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
@@ -663,21 +670,23 @@ def _bench_kernel(
     _bench_meta.attribution_retries = None
     cache = _get_l2_flush_cache()
 
-    def _flush_l2():
+    def _reset_and_flush():
+        if reset is not None:
+            reset()
         _reset_persisting_l2_cache()
         cache.zero_()
 
     def _call_raw():
         return fn(*args) if args else fn()
 
-    _flush_l2()
+    _reset_and_flush()
     _call_raw()
     torch.cuda.synchronize()
     calibration_iters = 3
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(calibration_iters):
-        _flush_l2()
+        _reset_and_flush()
         _call_raw()
     end.record()
     torch.cuda.synchronize()
@@ -690,7 +699,7 @@ def _bench_kernel(
         return fn(*args) if args else fn()
 
     def _prepare_iteration(i):
-        _flush_l2()
+        _reset_and_flush()
         torch.cuda.synchronize()
 
     for i in range(n_warmup):

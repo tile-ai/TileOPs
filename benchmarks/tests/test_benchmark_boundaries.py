@@ -81,20 +81,3 @@ def test_benchmarks_do_not_author_ref_program() -> None:
     """The torch baseline is the workload's reference, the one the test checks. Another
     implementation of the same computation is timed under its own tag, next to it."""
     assert _scan(_defines("ref_program")) == {}
-
-
-def _writes_its_own_roofline(tree: ast.AST) -> list[str]:
-    return [
-        f"{node.name}.{fn.name} (line {fn.lineno})"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef)
-        for fn in node.body
-        if isinstance(fn, ast.FunctionDef) and fn.name in ("calculate_flops", "calculate_memory")
-    ]
-
-
-@pytest.mark.smoke
-def test_benchmarks_take_their_roofline_from_the_op() -> None:
-    """Two sources for one op's FLOPs are two numbers that can disagree, and the
-    manifest is the one every other consumer reads. Subclass ``ManifestBenchmark``."""
-    assert _scan(_writes_its_own_roofline) == {}

@@ -7,19 +7,17 @@ abort that no ``except`` here would survive.
 import subprocess
 import sys
 from importlib.util import find_spec
-from types import SimpleNamespace
 
 import pytest
 import torch
 
 from benchmarks.baselines import (
     _FlagGemsImportOrder,
-    assert_output_spec,
     compiled_reference,
     flaggems_op,
     vllm_op,
 )
-from workloads.numerics import Exact, reference_tolerance, verify
+from workloads.numerics import Exact, Request, reference_tolerance, verify
 
 # flag_gems refuses to import without a device, so its tests need one.
 _BOTH_LIBRARIES = (
@@ -30,6 +28,14 @@ _BOTH_LIBRARIES = (
 _needs_both = pytest.mark.skipif(
     not _BOTH_LIBRARIES, reason="needs both flag_gems and vllm installed, on a GPU"
 )
+
+
+def _verify_one(subject, inputs, *, reference, evidence, subject_inputs=None):
+    """Check one call the way ``verify`` checks each of its requests."""
+    args = inputs if subject_inputs is None else subject_inputs
+    return verify(
+        reference, inputs, evidence=evidence, requests={"subject": Request(subject, args)}
+    )["subject"]
 
 
 def _run(source: str) -> subprocess.CompletedProcess:
@@ -110,14 +116,14 @@ def test_shared_verification_rejects_undeclared_extra_outputs():
         return (x, other)
 
     with pytest.raises(ValueError, match="outputs"):
-        verify(two_outputs, (value,), reference=one_output, evidence=Exact())
+        _verify_one(two_outputs, (value,), reference=one_output, evidence=Exact())
     with pytest.raises(AssertionError):
-        verify(lambda x: x + 1, (value,), reference=one_output, evidence=Exact())
-    verify(two_outputs, (value,), reference=two_outputs, evidence=Exact())
+        _verify_one(lambda x: x + 1, (value,), reference=one_output, evidence=Exact())
+    _verify_one(two_outputs, (value,), reference=two_outputs, evidence=Exact())
     with pytest.raises(AssertionError, match="Tensor-likes"):
-        verify(lambda x: (x, other + 1), (value,), reference=two_outputs, evidence=Exact())
+        _verify_one(lambda x: (x, other + 1), (value,), reference=two_outputs, evidence=Exact())
     with pytest.raises(ValueError, match="outputs"):
-        verify(one_output, (value,), reference=two_outputs, evidence=Exact())
+        _verify_one(one_output, (value,), reference=two_outputs, evidence=Exact())
 
 
 def test_compiled_reference_refuses_a_reference_dynamo_splits():
@@ -136,18 +142,6 @@ def test_compiled_reference_refuses_a_reference_dynamo_splits():
     assert torch.equal(compiled_reference(one_graph)(value), one_graph(value))
     with pytest.raises(AssertionError, match="graph"):
         compiled_reference(data_dependent)(value)
-
-
-def test_assert_output_spec_rejects_another_dtype_or_shape():
-    spec = SimpleNamespace(shape=(2, 3), dtype="float16")
-
-    assert_output_spec(torch.zeros(2, 3, dtype=torch.float16), spec, "tag")
-    with pytest.raises(AssertionError, match="float32"):
-        assert_output_spec(torch.zeros(2, 3), spec, "tag")
-    with pytest.raises(AssertionError, match=r"\(3, 3\)"):
-        assert_output_spec(torch.zeros(3, 3, dtype=torch.float16), spec, "tag")
-    with pytest.raises(AssertionError, match="not a tensor"):
-        assert_output_spec((torch.zeros(2, 3, dtype=torch.float16),), spec, "tag")
 
 
 def test_compiled_reference_warmup_updates_state_once():
@@ -170,6 +164,6 @@ def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
     workload = GQABwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
     inputs = workload.gen_inputs()
     backward = _torch_gqa_bwd(workload, *inputs[:3])
-    verify(
+    _verify_one(
         backward, inputs, reference=workload.ref_program, evidence=workload.verification(*inputs)
     )

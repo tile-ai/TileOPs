@@ -9,14 +9,20 @@ kernel by itself. The difference between them is the forward the autograd one re
 import pytest
 import torch
 
-from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from benchmarks import api as bench
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    TORCH_COMPILE_TAG,
+    backward_of,
+    compiled_reference,
+    flaggems_op,
+    private_inputs,
+)
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.norm import BatchNormBwdCall, RunningStatsCall, batch_norm_forward_result
 
 
 def _flaggems_bn_fwd(training: bool, momentum: float, eps: float):
-    """Expose the output and running statistics; the verifier restores input state."""
+    """Expose the output and the running statistics it updates in place."""
     fn = flaggems_op("batch_norm")
 
     def baseline_fn(x, running_mean, running_var, weight, bias):
@@ -61,28 +67,24 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
     return dx.to(x.dtype), dw, db
 
 
-@pytest.mark.parametrize("call", manifest_calls(BatchNormFwdOp))
-def test_batch_norm_fwd_bench(call):
-    workload = RunningStatsCall(call)
-    inputs = workload.gen_inputs()
-    op = BatchNormFwdOp(**workload.arguments())
-    training, momentum, eps = (call.params[k] for k in ("training", "momentum", "eps"))
-    torch_fn = workload.ref_program
-    functors = {"tileops": lambda *args: batch_norm_forward_result(op, *args)}
+@pytest.mark.parametrize("case", bench.cases(BatchNormFwdOp), ids=lambda case: case.id)
+def test_batch_norm_fwd_bench(case):
+    inputs = case.inputs
+    op = BatchNormFwdOp(**case.arguments)
+    training, momentum, eps = (case.params[k] for k in ("training", "momentum", "eps"))
+    torch_fn = case.reference
+    implementations = {}
     if all((t is not None for t in inputs)):
         flaggems_fn = _flaggems_bn_fwd(training, momentum, eps)
-        functors[FLAGGEMS_TAG] = flaggems_fn
-    functors["torch-cudnn"] = torch_fn
-    functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
-    ManifestBenchmark(op, workload).compare(functors, *inputs)
+        implementations[FLAGGEMS_TAG] = private_inputs(flaggems_fn, inputs, 1, 2)
+    implementations["torch-cudnn"] = torch_fn
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
+    bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("call", manifest_calls(BatchNormBwdOp))
-def test_batch_norm_bwd_bench(call):
-    workload = BatchNormBwdCall(call)
-    inputs = workload.gen_inputs()
-    op = BatchNormBwdOp(**workload.arguments())
-    ManifestBenchmark(op, workload).compare(
-        {"tileops": op, "torch-autograd": _torch_bn_bwd, "torch-native-batch-norm": _aten_bn_bwd},
-        *inputs,
+@pytest.mark.parametrize("case", bench.cases(BatchNormBwdOp), ids=lambda case: case.id)
+def test_batch_norm_bwd_bench(case):
+    op = BatchNormBwdOp(**case.arguments)
+    bench.Runner(op, case).compare(
+        {"torch-autograd": _torch_bn_bwd, "torch-native-batch-norm": _aten_bn_bwd}
     )

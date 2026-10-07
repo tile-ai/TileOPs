@@ -3,8 +3,8 @@
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, vllm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import DSADecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DSADecodeCall
 
@@ -84,29 +84,21 @@ def _flashmla_sparse(workload: DSADecodeCall):
     return fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(DSADecodeWithKVCacheFwdOp))
-def test_dsa_decode_bench(call) -> None:
-    workload = DSADecodeCall(call)
-    inputs = workload.gen_inputs()
-    dtype = workload.dtype
-    op = DSADecodeWithKVCacheFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    if dtype == torch.bfloat16:
-        bm.compare({"tileops": op, "flashmla": _flashmla_sparse(workload)}, *inputs)
-        return
-    baselines = {}
-    sdpa_fn = _torch_sdpa_dsa(workload)
-    if sdpa_fn is not None:
-        baselines["torch-sdpa"] = sdpa_fn
-    gather_fn = _torch_gather_dsa(workload)
-    if gather_fn is not None:
-        baselines["torch-gather"] = gather_fn
-    bm.compare(
-        {
-            "tileops": op,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-            **baselines,
-        },
-        *inputs,
-    )
+@pytest.mark.parametrize("case", bench.cases(DSADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
+def test_dsa_decode_bench(case) -> None:
+    workload = case.workload
+    op = DSADecodeWithKVCacheFwdOp(**case.arguments)
+    if workload.dtype == torch.bfloat16:
+        implementations = {"flashmla": _flashmla_sparse(workload)}
+    else:
+        implementations = {
+            "torch-ref": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
+        sdpa_fn = _torch_sdpa_dsa(workload)
+        if sdpa_fn is not None:
+            implementations["torch-sdpa"] = sdpa_fn
+        gather_fn = _torch_gather_dsa(workload)
+        if gather_fn is not None:
+            implementations["torch-gather"] = gather_fn
+    bench.Runner(op, case).compare(implementations)

@@ -1,12 +1,13 @@
 """Benchmark for the chain speculative sampling op.
 
 Workload shapes come from the ops manifest; roofline FLOP and byte counts come from the op's
-``eval_roofline()`` via :class:`ManifestBenchmark`.
+``eval_roofline()``.
 """
 
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
@@ -15,9 +16,7 @@ from benchmarks.baselines import (
     flashinfer_op,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.sampling import ChainSpeculativeSamplingFwdOp
-from workloads.sampling import ChainSpeculativeSamplingWorkload
 
 
 def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
@@ -30,27 +29,25 @@ def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
     return (tokens >= 0).sum(-1).clamp(max=num_draft + 1) - 1
 
 
-@pytest.mark.parametrize("call", manifest_calls(ChainSpeculativeSamplingFwdOp))
-def test_chain_speculative_sampling_bench(call) -> None:
-    workload = ChainSpeculativeSamplingWorkload(call)
-    draft_probs, draft_token_ids, target_probs, seed, offset = workload.gen_inputs()
-    inputs = (draft_probs, draft_token_ids, target_probs, seed, offset)
-    op = ChainSpeculativeSamplingFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
-    compiled = compiled_reference(workload.ref_program)
-    functors = {"tileops": op, "torch-ref": workload.ref_program, TORCH_COMPILE_TAG: compiled}
+@pytest.mark.parametrize(
+    "case", bench.cases(ChainSpeculativeSamplingFwdOp), ids=lambda case: case.id
+)
+def test_chain_speculative_sampling_bench(case) -> None:
+    op = ChainSpeculativeSamplingFwdOp(**case.arguments)
+    compiled = compiled_reference(case.reference)
+    implementations = {"torch-ref": case.reference, TORCH_COMPILE_TAG: compiled}
     flashinfer_chain = flashinfer_op("sampling.chain_speculative_sampling")
 
     def flashinfer_verify(draft, draft_ids, target, seed, offset):
         result = flashinfer_chain(draft, draft_ids, target, seed=seed, offset=offset)
         return result[0], _accepted_lengths(result, draft.shape[1]).to(torch.int32)
 
-    functors[FLASHINFER_TAG] = flashinfer_verify
+    implementations[FLASHINFER_TAG] = flashinfer_verify
     rejection_sample = vllm_op("rejection_sample", "v1.sample.rejection_sampler")
     random_sample = vllm_op("random_sample", "v1.sample.ops.topk_topp_sampler")
     sampling_metadata = vllm_op("SamplingMetadata", "v1.sample.metadata")
 
-    def vllm_verify(draft, draft_ids, target, seed, offset):
+    def vllm_verify(draft, draft_ids, target, _seed, _offset):
         """vllm's rejection sampler takes flattened draft positions and target logits."""
         batch, num_draft, vocab = draft.shape
         device = draft.device
@@ -85,11 +82,8 @@ def test_chain_speculative_sampling_bench(call) -> None:
         )
         return result, _accepted_lengths(result, num_draft).to(torch.int32)
 
-    functors[VLLM_TAG] = vllm_verify
-    bm.compare(
-        functors,
-        *inputs,
-        noncomparable={
-            VLLM_TAG: "adapter uses vLLM's ambient RNG instead of the call's seed/offset",
-        },
+    implementations[VLLM_TAG] = bench.Implementation(
+        run=vllm_verify,
+        noncomparable_reason="adapter uses vLLM's ambient RNG instead of the call's seed/offset",
     )
+    bench.Runner(op, case).compare(implementations)

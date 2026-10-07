@@ -21,10 +21,9 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
+from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, vllm_op
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import MoEPermuteAlignFwdOp
-from workloads.moe import MoEPermuteAlignWorkload
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 
@@ -135,16 +134,12 @@ def _triton_permute_align(
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MoEPermuteAlignFwdOp))
-def test_permute_align_bench(call) -> None:
-    workload = MoEPermuteAlignWorkload(call)
-    inputs = workload.gen_inputs()
-    op = MoEPermuteAlignFwdOp(**call.arguments({}))
+@pytest.mark.parametrize("case", bench.cases(MoEPermuteAlignFwdOp), ids=lambda case: case.id)
+def test_permute_align_bench(case) -> None:
+    inputs = case.inputs
+    op = MoEPermuteAlignFwdOp(**case.arguments)
     num_experts, block_size = op.num_experts, op.block_size
     numel = inputs[0].numel()
-    bm = ManifestBenchmark(op, workload)
-
-    functors = {"tileops": op}
 
     # Triton baseline
     dev = inputs[0].device
@@ -156,13 +151,15 @@ def test_permute_align_bench(call) -> None:
     num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
 
     def _triton_fn(topk_ids):
-        sorted_ids.fill_(numel)
         _triton_permute_align(
             topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_post_pad
         )
         return sorted_ids, expert_ids, num_post_pad
 
-    functors["triton"] = _triton_fn
+    # The kernel writes only the routed slots; every other slot must read as padding.
+    implementations = {
+        "triton": bench.Implementation(run=_triton_fn, reset=lambda: sorted_ids.fill_(numel))
+    }
     align = vllm_op("moe_align_block_size")
     vllm_sorted = torch.empty_like(sorted_ids)
     vllm_experts = torch.empty_like(expert_ids)
@@ -172,7 +169,7 @@ def test_permute_align_bench(call) -> None:
         align(topk_ids, num_experts, block_size, vllm_sorted, vllm_experts, vllm_count)
         return vllm_sorted, vllm_experts, vllm_count
 
-    functors[VLLM_TAG] = vllm_fn
+    implementations[VLLM_TAG] = vllm_fn
 
     # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
@@ -182,7 +179,6 @@ def test_permute_align_bench(call) -> None:
         cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
 
         def _sgl_fn(topk_ids):
-            sorted_ids_sgl.fill_(numel)
             _sgl_moe_align_block_size(
                 topk_ids,
                 num_experts,
@@ -194,9 +190,8 @@ def test_permute_align_bench(call) -> None:
             )
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
-        functors["sgl-kernel"] = _sgl_fn
+        implementations["sgl-kernel"] = bench.Implementation(
+            run=_sgl_fn, reset=lambda: sorted_ids_sgl.fill_(numel)
+        )
 
-    bm.compare(
-        functors,
-        *inputs,
-    )
+    bench.Runner(op, case).compare(implementations)

@@ -1,32 +1,30 @@
 """Benchmark for the seeded categorical draw op.
 
 Workload shapes come from the ops manifest; roofline FLOP and byte counts come
-from the op's ``eval_roofline()`` via :class:`ManifestBenchmark`.
+from the op's ``eval_roofline()``.
 """
 
 import pytest
 import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
     compiled_reference,
     flashinfer_op,
+    private_inputs,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.sampling import SamplingFromProbsFwdOp
-from workloads.sampling import SamplingFromProbsWorkload
 
 
-@pytest.mark.parametrize("call", manifest_calls(SamplingFromProbsFwdOp))
-def test_sampling_from_probs_bench(call) -> None:
-    workload = SamplingFromProbsWorkload(call)
-    probs, seed, offset = workload.gen_inputs()
+@pytest.mark.parametrize("case", bench.cases(SamplingFromProbsFwdOp), ids=lambda case: case.id)
+def test_sampling_from_probs_bench(case) -> None:
+    probs, seed, _offset = case.inputs
 
-    op = SamplingFromProbsFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, workload)
+    op = SamplingFromProbsFwdOp(**case.arguments)
 
     # flashinfer and torch.multinomial take a torch.Generator rather than a Philox pair, and
     # vllm's random_sample takes one per request; each is seeded once here so no timed call
@@ -35,34 +33,24 @@ def test_sampling_from_probs_bench(call) -> None:
     random_sample = vllm_op("random_sample", "v1.sample.ops.topk_topp_sampler")
     generator = torch.Generator(device=probs.device).manual_seed(int(seed.item()))
     generators = {0: torch.Generator(device=probs.device).manual_seed(int(seed.item()))}
-    # vllm's random_sample divides the probabilities it is handed by a draw of exponentials
-    # and takes the argmax, in place. Dividing is not idempotent, so its row is restored
-    # inside its call; the restoring copy is harness work that keeps repeated iterations
-    # reading what the workload built, not part of the draw, and ``count_copies`` stays off
-    # so it is not timed, as ``bench_top_p_mask.py`` leaves it.
-    vllm_probs = torch.empty_like(probs)
 
-    def flashinfer_from_probs(probs, seed, offset):
+    def flashinfer_from_probs(probs, _seed, _offset):
         return flashinfer_draw(probs, generator=generator).to(torch.int32)
 
-    def vllm_from_probs(probs, seed, offset):
-        held = vllm_probs if probs.shape == vllm_probs.shape else torch.empty_like(probs)
-        return random_sample(held.copy_(probs), generators).to(torch.int32)
+    def vllm_from_probs(probs, _seed, _offset):
+        return random_sample(probs, generators).to(torch.int32)
 
-    def multinomial_from_probs(probs, seed, offset):
+    def multinomial_from_probs(probs, _seed, _offset):
         return torch.multinomial(probs, 1, generator=generator)[:, 0].to(torch.int32)
 
-    candidates = {
-        "tileops": op,
-        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        FLASHINFER_TAG: flashinfer_from_probs,
-        VLLM_TAG: vllm_from_probs,
-        "torch-multinomial": multinomial_from_probs,
-    }
-
-    bm.compare(
-        {**candidates, "torch-ref": workload.ref_program},
-        probs,
-        seed,
-        offset,
+    bench.Runner(op, case).compare(
+        {
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            FLASHINFER_TAG: flashinfer_from_probs,
+            # vllm's random_sample divides the probabilities it is handed by a draw of
+            # exponentials and takes the argmax, in place.
+            VLLM_TAG: private_inputs(vllm_from_probs, case.inputs, 0),
+            "torch-multinomial": multinomial_from_probs,
+            "torch-ref": case.reference,
+        }
     )

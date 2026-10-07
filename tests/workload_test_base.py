@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from workloads.numerics import verify
+from workloads.numerics import Request, verify
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
 _logger = logging.getLogger("tileops.ops")
@@ -81,11 +81,11 @@ class TestBase(WorkloadBase):
         _check_result.op_name = name
         _check_result.op_module = module
         result = verify(
-            op if runs is None else runs,
+            self.ref_program,
             inputs,
-            reference=self.ref_program,
             evidence=self.verification(*inputs),
-        )
+            requests={name: Request(op if runs is None else runs, inputs)},
+        )[name]
         if not result.checked_outputs:
             pytest.skip(result.unchecked_reason)
         _check_result.checked_outputs = result.checked_outputs

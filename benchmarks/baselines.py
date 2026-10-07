@@ -17,6 +17,8 @@ from typing import Any, Callable
 
 import torch
 
+from benchmarks.api import Implementation
+
 __all__ = [
     "DEEPGEMM_TAG",
     "DEEPSPEED_TAG",
@@ -26,7 +28,7 @@ __all__ = [
     "QUACK_TAG",
     "TORCH_COMPILE_TAG",
     "VLLM_TAG",
-    "assert_output_spec",
+    "backward_of",
     "compiled_reference",
     "deepgemm_op",
     "deepspeed_op",
@@ -35,6 +37,8 @@ __all__ = [
     "flaggems_group_norm",
     "flaggems_op",
     "flashinfer_op",
+    "private_float32_logits",
+    "private_inputs",
     "quack_op",
     "vllm_op",
 ]
@@ -242,22 +246,53 @@ def vllm_op(name: str, module: str = "_custom_ops") -> Callable:
     return _resolve(f"vllm.{module}", name, "vllm")
 
 
-def assert_output_spec(got: Any, spec: Any, tag: str) -> None:
-    """Check one timed tag's output against the manifest's declared output spec.
+def backward_of(output: torch.Tensor) -> Any:
+    """Return a callable running *output*'s backward on the thread that calls it.
 
-    *spec* is the ``TensorSpec`` the call resolved for the output,
-    ``call.specs["<output name>"]``. A tag whose result carries another dtype or
-    another shape answered a different question than the entry declares, and its
-    time is not comparable with the rest of the row whatever the values say.
-
-    Raises:
-        AssertionError: When *got* is not a tensor of the declared shape and dtype.
+    How a baseline reaches its gradients: ``Tensor.backward`` hands the graph to
+    autograd's engine thread, whose kernels carry no iteration id for the timer to
+    attribute them to, and charges the baseline for engine overhead a tileops backward
+    op never pays. Takes one gradient per output of the op that produced *output*, so
+    one returning ``(out, lse)`` is driven with ``(grad, None)``.
     """
-    dtype = getattr(torch, spec.dtype)
-    if not isinstance(got, torch.Tensor):
-        raise AssertionError(f"{tag} returned {type(got).__name__}, not a tensor")
-    if tuple(got.shape) != tuple(spec.shape) or got.dtype is not dtype:
-        raise AssertionError(
-            f"{tag} returned {tuple(got.shape)} {got.dtype}, the manifest entry declares "
-            f"{tuple(spec.shape)} {dtype}"
+    node = output.grad_fn
+    if node is None:
+        raise ValueError(
+            f"{type(output).__name__} has no grad_fn; build the graph under "
+            "enable_grad on inputs that require grad before timing its backward."
         )
+    # A Python autograd.Function's node exposes apply() and is not callable; a node
+    # built in C++ is callable and has no apply(). Neither offers the other's form.
+    return getattr(node, "apply", None) or node
+
+
+def private_inputs(run: Callable, inputs: tuple, *positions: int) -> Implementation:
+    """*run* on *inputs*, with the ones at *positions* replaced by copies it may overwrite.
+
+    The copies are restored from *inputs* before every round, outside the timed call.
+    """
+    args = list(inputs)
+    owned = [i for i in positions if inputs[i] is not None]
+    for i in owned:
+        args[i] = inputs[i].clone()
+
+    def reset() -> None:
+        for i in owned:
+            args[i].copy_(inputs[i])
+
+    return Implementation(run=run, args=tuple(args), reset=reset)
+
+
+def private_float32_logits(
+    run: Callable, logits: torch.Tensor, *args: Any, **kwargs: Any
+) -> Implementation:
+    """*run* on a float32 copy of *logits* it masks in place, restored before every round.
+
+    Takes ``(logits_fp32, *args)``; *kwargs* go to the :class:`Implementation`.
+    """
+    private = torch.empty_like(logits, dtype=torch.float32)
+
+    def reset() -> None:
+        private.copy_(logits)
+
+    return Implementation(run=run, args=(private, *args), reset=reset, **kwargs)

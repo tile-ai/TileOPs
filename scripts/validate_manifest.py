@@ -160,46 +160,29 @@ def _composition_errors(
     return errors
 
 
-def _reads_manifest_calls(tree: ast.Module) -> bool:
-    """Whether the file imports and calls ``manifest_calls`` from ``benchmarks.benchmark_base``.
+def _api_calls(tree: ast.Module) -> set[str]:
+    """The ``benchmarks.api`` names the file imports and calls.
 
-    Which op it names is a run-time fact, checked against a benchmark run by
-    ``scripts/check_bench_coverage.py``, never against the source: a bench file may reach its
-    op through a loop, a factory or a helper, and none of those shapes is worse than a literal.
+    Reached as ``from benchmarks import api [as bench]`` then ``bench.<name>(...)``, or as
+    ``from benchmarks.api import <name>`` then ``<name>(...)``.
     """
-    imported = False
-    called = False
+    modules, names = set(), set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "benchmarks.benchmark_base":
-            if any(alias.name == "manifest_calls" for alias in node.names):
-                imported = True
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "manifest_calls"
-        ):
-            called = True
-    return imported and called
-
-
-def _reads_op_roofline(tree: ast.Module) -> bool:
-    """Whether the file takes its roofline off an Op, not off its own arithmetic.
-
-    ``<expr>.eval_roofline()`` directly, or a ``ManifestBenchmark`` — which
-    reads the roofline off the op it wraps — imported and constructed.
-    """
-    imported = False
-    called = False
+        if isinstance(node, ast.ImportFrom) and node.module == "benchmarks":
+            modules |= {alias.asname or alias.name for alias in node.names if alias.name == "api"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "benchmarks.api":
+            names |= {alias.asname or alias.name for alias in node.names}
+    called = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "benchmarks.benchmark_base":
-            if any(alias.name == "ManifestBenchmark" for alias in node.names):
-                imported = True
-        elif isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id == "ManifestBenchmark":
-                called = True
-            elif isinstance(node.func, ast.Attribute) and node.func.attr == "eval_roofline":
-                return True
-    return imported and called
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in modules:
+                called.add(func.attr)
+        elif isinstance(func, ast.Name) and func.id in names:
+            called.add(func.id)
+    return called
 
 
 def check_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[str]:
@@ -208,8 +191,8 @@ def check_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[str]
     Uses Python AST parsing (no execution) to verify actual import and usage,
     rather than raw substring matching which can be fooled by comments.
 
-    This is a property of the file: its workloads come from the manifest and
-    its roofline comes from the op. Which manifest entry the file benchmarks is
+    This is a property of the file: its cases come from the manifest and its
+    roofline comes from the op. Which manifest entry the file benchmarks is
     a separate question, answered from a run's report by
     ``scripts/check_bench_coverage.py``.
 
@@ -230,16 +213,16 @@ def check_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[str]
         errors.append(f"[bench] {op_name}: bench file {bench_path} has syntax error: {exc}")
         return errors
 
-    if not _reads_manifest_calls(tree):
+    called = _api_calls(tree)
+    if "cases" not in called:
         errors.append(
-            f"[bench] {op_name}: bench file {bench_path} must import and call "
-            "manifest_calls from benchmarks.benchmark_base"
+            f"[bench] {op_name}: bench file {bench_path} must take its cases from "
+            "benchmarks.api.cases"
         )
-    if not _reads_op_roofline(tree):
+    if "Runner" not in called:
         errors.append(
-            f"[bench] {op_name}: bench file {bench_path} must take its roofline "
-            "off the op — eval_roofline() on an Op instance, or a "
-            "ManifestBenchmark construction"
+            f"[bench] {op_name}: bench file {bench_path} must time and record through "
+            "benchmarks.api.Runner, which reads the roofline off the op"
         )
     return errors
 

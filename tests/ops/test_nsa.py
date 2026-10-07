@@ -4,8 +4,16 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.manifest import load_adts, load_manifest, load_workloads
+from tileops.manifest.plan import entry_plan
+from tileops.manifest.workload import instantiate
 from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
+from workloads.attention.nsa import (
+    NSACompressedFwdWorkload,
+    NSAFwdCall,
+    NSAFwdWorkload,
+    NSATopKWorkload,
+)
 
 
 class NSAFwdTest(NSAFwdWorkload, TestBase):
@@ -256,3 +264,20 @@ def test_nsa_topk_ranks_unquantized_scores() -> None:
         result[-1, 0].sort().values,
         torch.tensor([0, 1, 6, 7], dtype=torch.int32, device=q.device),
     )
+
+
+@pytest.mark.smoke
+def test_nsa_varlen_reference_returns_the_declared_output() -> None:
+    """Benchmarks check every implementation against this reference, so it returns ``o_slc`` as declared."""
+    name = "NSAVarlenFwdOp"
+    plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
+    calls = [
+        instantiate(plan, row, case)
+        for row in load_workloads(name)
+        for case in row.get("dtype_cases") or [{}]
+    ]
+    call = min(calls, key=lambda c: c.ix["T_q"] * c.ix["H"] * c.ix["D"])
+    workload = NSAFwdCall(call)
+    output = workload.ref_program(*workload.gen_inputs())
+    spec = call.specs["o_slc"]
+    assert tuple(output.shape) == tuple(spec.shape) and output.dtype == getattr(torch, spec.dtype)

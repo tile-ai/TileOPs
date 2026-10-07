@@ -1,65 +1,37 @@
 """Benchmarks for the MHC pre/post ops.
 
 Workload shapes and the pre-op scaling params come from the ops manifest; roofline
-FLOP and byte counts come from each op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`.
+FLOP and byte counts come from each op's ``eval_roofline()``.
 """
 
 import pytest
-import torch
 
+from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
-from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-@pytest.mark.parametrize("call", manifest_calls(MHCPreFwdOp))
-def test_mhc_pre_bench(call) -> None:
-    # The manifest workload is the authority for the scaling params, so the case
-    # is built with them rather than with the ones the generator would draw.
-    params = call.arguments({})
-    workload = MHCPreWorkload(
-        call.ix["B"],
-        call.ix["n"],
-        call.ix["c_x"],
-        getattr(torch, call.tensors["x"][1]),
-        **params,
-    )
-    inputs = workload.gen_inputs()
-
-    op = MHCPreFwdOp(**params, tune=_TUNE)
-    bm = ManifestBenchmark(op, workload)
-
-    bm.compare(
+@pytest.mark.parametrize("case", bench.cases(MHCPreFwdOp), ids=lambda case: case.id)
+def test_mhc_pre_bench(case) -> None:
+    op = MHCPreFwdOp(**case.arguments, tune=_TUNE)
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch-ref": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(MHCPostFwdOp))
-def test_mhc_post_bench(call) -> None:
-    workload = MHCPostWorkload(
-        call.ix["B"], call.ix["n"], call.ix["c_x"], getattr(torch, call.tensors["x_res"][1])
-    )
-    inputs = workload.gen_inputs()
-
-    op = MHCPostFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, workload)
-
-    bm.compare(
+@pytest.mark.parametrize("case", bench.cases(MHCPostFwdOp), ids=lambda case: case.id)
+def test_mhc_post_bench(case) -> None:
+    op = MHCPostFwdOp(**case.arguments, tune=_TUNE)
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
-            "torch-ref": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch-ref": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )

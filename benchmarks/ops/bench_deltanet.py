@@ -4,23 +4,19 @@ manifest call, against FLA and torch.
 
 import pytest
 
+from benchmarks import api as bench
 from benchmarks.baselines import (
     FLA_TAG,
     TORCH_COMPILE_TAG,
+    backward_of,
     compiled_reference,
     fla_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
     DeltaNetInferenceFwdOp,
     DeltaNetRecurrentFwdOp,
-)
-from workloads.linear_attention.deltanet import (
-    DeltaNetChunkwiseCall,
-    DeltaNetDecodeCall,
-    DeltaNetInferenceCall,
 )
 
 
@@ -36,44 +32,32 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetInferenceFwdOp))
-def test_deltanet_inference_bench(call) -> None:
-    workload = DeltaNetInferenceCall(call)
-    inputs = workload.gen_inputs()
-    op = DeltaNetInferenceFwdOp(**workload.arguments())
-    ManifestBenchmark(op, workload).compare(
-        {"tileops": op, "fla": workload.ref_program},
-        *inputs,
-    )
+@pytest.mark.parametrize("case", bench.cases(DeltaNetInferenceFwdOp), ids=lambda case: case.id)
+def test_deltanet_inference_bench(case) -> None:
+    op = DeltaNetInferenceFwdOp(**case.arguments)
+    bench.Runner(op, case).compare({"fla": case.reference})
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkFwdOp))
-def test_deltanet_vs_fla_fwd(call) -> None:
+@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkFwdOp), ids=lambda case: case.id)
+def test_deltanet_vs_fla_fwd(case) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
-    workload = DeltaNetChunkwiseCall(call)
-    inputs = workload.gen_inputs()
-    op = DeltaNetChunkFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
+    op = DeltaNetChunkFwdOp(**case.arguments)
+    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*case.inputs)
 
     def fla_fwd():
         out, state = chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)
         return out.transpose(1, 2), state
 
-    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
+    bench.Runner(op, case).compare({"fla": bench.Implementation(run=fla_fwd, args=())})
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetChunkBwdOp))
-def test_deltanet_vs_fla_bwd(call) -> None:
+@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkBwdOp), ids=lambda case: case.id)
+def test_deltanet_vs_fla_bwd(case) -> None:
     from fla.ops.delta_rule import chunk_delta_rule
 
-    workload = DeltaNetChunkwiseCall(call)
-    do, q, k, v, beta, *_saved = workload.gen_inputs()
-    fwd_op = DeltaNetChunkFwdOp(workload.arguments()["chunk_size"])
-    _o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
-    bwd_op = DeltaNetChunkBwdOp(**workload.arguments())
-    bm = ManifestBenchmark(bwd_op, workload)
+    do, q, k, v, beta, *_saved = case.inputs
+    bwd_op = DeltaNetChunkBwdOp(**case.arguments)
     q_fla, k_fla, v_fla, beta_fla = (
         t.detach().requires_grad_(True) for t in _to_fla_layout(q, k, v, beta)
     )
@@ -85,15 +69,12 @@ def test_deltanet_vs_fla_bwd(call) -> None:
         dq, dk, dv, dbeta = fla_backward(do_fla, None)[:4]
         return (dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), dbeta.transpose(1, 2))
 
-    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
+    bench.Runner(bwd_op, case).compare({"fla": bench.Implementation(run=fla_bwd, args=())})
 
 
-@pytest.mark.parametrize("call", manifest_calls(DeltaNetRecurrentFwdOp))
-def test_deltanet_decode_bench(call) -> None:
-    workload = DeltaNetDecodeCall(call)
-    inputs = workload.gen_inputs()
-    op = DeltaNetRecurrentFwdOp(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetRecurrentFwdOp), ids=lambda case: case.id)
+def test_deltanet_decode_bench(case) -> None:
+    op = DeltaNetRecurrentFwdOp(**case.arguments)
     recurrent = fla_op("ops.delta_rule.fused_recurrent_delta_rule")
 
     def fla_fn(q, k, v, beta, state):
@@ -109,12 +90,10 @@ def test_deltanet_decode_bench(call) -> None:
         )
         return out.squeeze(1), final_state.to(state.dtype)
 
-    bm.compare(
+    bench.Runner(op, case).compare(
         {
-            "tileops": op,
             FLA_TAG: fla_fn,
-            "torch": workload.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
-        },
-        *inputs,
+            "torch": case.reference,
+            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+        }
     )

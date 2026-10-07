@@ -117,9 +117,8 @@ class BenchmarkReport:
                 op — a kernel strategy, a field of library implementations —
                 decides something rather than tracking it, and belongs to
                 ``benchmarks/studies/``, which the nightly sweep does not reach.
-            params: what distinguishes this case, from the benchmark's
-                ``case_params()`` — the workload's fields and the parameters the
-                manifest declares for the op.
+            params: what distinguishes this case, ``Case.params``: each tensor's
+                shape and dtype, and the manifest parameters.
             result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
             unverified: what the row's check left unestablished, empty where it left
@@ -138,19 +137,15 @@ class BenchmarkReport:
         op_module = op.__class__.__module__
         op_config = _run_config(op)
 
-        # Filter params to only include serializable benchmark parameters.
-        # Tuples of primitives (e.g. ``shape=(4096, 4096)``) are preserved
-        # verbatim so the profile log carries the original input geometry
-        # rather than a flattened element count.
         def _is_serializable(v: Any) -> bool:
-            if isinstance(v, (int, float, bool, str, torch.dtype)):
+            if v is None or isinstance(v, (int, float, bool, str, torch.dtype)):
                 return True
-            if isinstance(v, tuple):
+            if isinstance(v, (tuple, list)):
                 return all(_is_serializable(x) for x in v)
+            if isinstance(v, dict):
+                return all(isinstance(k, str) and _is_serializable(x) for k, x in v.items())
             return False
 
-        # The workload's own fields, kept where the log can print them. No name
-        # list to maintain: the caller no longer hands over a frame's locals.
         filtered_params = {k: v for k, v in params.items() if _is_serializable(v)}
         if unverified:
             filtered_params["unverified"] = unverified
@@ -166,9 +161,6 @@ class BenchmarkReport:
             record_entry["op_module"] = op_module
         if op_config:
             record_entry["run_config"] = op_config
-        dtype = filtered_params.get("dtype")
-        if isinstance(dtype, torch.dtype):
-            record_entry["dtype"] = str(dtype).removeprefix("torch.")
         BenchmarkReport._records.setdefault(name, []).append(record_entry)
         # The same row, handed to the pytest hook that turns the running case's
         # rows into XML properties. One row recorded once: the log and the XML
