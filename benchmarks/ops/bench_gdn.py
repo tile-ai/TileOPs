@@ -11,7 +11,7 @@ from tileops.ops import GDNFwdOp
 
 @pytest.mark.parametrize("case", bench.cases(GDNFwdOp), ids=lambda case: case.id)
 def test_gdn_fwd_bench(case) -> None:
-    ix = case.workload.call.ix
+    ix = case.params
     inputs = case.inputs
     op = GDNFwdOp(**case.arguments)
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")

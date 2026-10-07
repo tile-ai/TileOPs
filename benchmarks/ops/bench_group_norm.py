@@ -17,7 +17,7 @@ _CASES = bench.cases(GroupNormFwdOp)
 
 
 def _affine(case: bench.Case) -> bool:
-    return case.workload.call.specs["weight"] is not None
+    return "weight" in case.params
 
 
 def _bench(case: bench.Case) -> None:

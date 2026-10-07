@@ -142,11 +142,10 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### File checklist
 
-1. **Cases**: `@pytest.mark.parametrize("case", bench.cases(Op), ids=lambda case: case.id)`, with `from benchmarks import api as bench`. A case is one manifest call; its workload comes from the op's entry in [`benchmarks/_cases/`](../../benchmarks/_cases/), added there with the workload in `workloads/` when either is missing. A benchmark never authors `gen_inputs`.
-1. **Function**: build the op from `case.arguments`, then `bench.Runner(op, case).compare({name: implementation})`. The runner adds the op as `tileops`, takes the roofline from `op.eval_roofline()` and the report name from the op's class, and records `case.params`.
-1. **Independent baseline**: at least one implementation outside the `tileops` name. `case.reference` timed under a name of its own times the workload's `ref_program`. Every other implementation is checked against the reference before it is timed, and raises when unavailable. An external implementation with other semantics carries `bench.Implementation(..., noncomparable_reason=...)`: it is timed and publishes no ratio. Never import a baseline from `tests/`.
-1. **Overwritten inputs**: an implementation called on `case.inputs` leaves them unchanged. One that overwrites an argument takes private copies and a `reset` that restores them (`benchmarks.baselines.private_inputs`); every round runs `reset`, the L2 flush, then the timed call.
-1. **Library baselines**: resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py) — `flaggems_op`, `flashinfer_op` and `vllm_op` for kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row with a library kernel for its op times it, so the ratio is against the strongest implementation available.
+1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
+1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
+1. **Baselines**: name each implementation. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
+1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them before each L2 flush.
 
 ### Verification
 

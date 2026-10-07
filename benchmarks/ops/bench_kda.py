@@ -14,7 +14,7 @@ def test_kda_fwd_bench(case) -> None:
     # Why: no in-tree KDA kernel computes the decay from A_log and dt_bias, and the row
     #   exists because the manifest requires a row passing each optional input.
     # Cleanup: when an in-tree KDA kernel serves use_gate_in_kernel=True, delete this skip.
-    ix = case.workload.call.ix
+    ix = case.params
     if ix["use_gate_in_kernel"]:
         pytest.skip("no in-tree KDA kernel serves use_gate_in_kernel=True")
     op = KDAFwdOp(**case.arguments)

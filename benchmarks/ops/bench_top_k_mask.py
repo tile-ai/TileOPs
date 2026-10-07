@@ -32,7 +32,7 @@ def test_top_k_mask_bench(case) -> None:
     apply_top_k_only = vllm_op("apply_top_k_only", "v1.sample.ops.topk_topp_sampler")
     # vllm masks the logits in place.
     vllm_logits = torch.empty_like(logits)
-    vllm_k = k.clamp(max=case.workload.call.ix["V"])
+    vllm_k = k.clamp(max=logits.shape[-1])
 
     def vllm_reset() -> None:
         vllm_logits.copy_(logits)

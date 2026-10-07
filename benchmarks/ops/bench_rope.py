@@ -96,9 +96,8 @@ def _vllm_rope(
 
 def _bench_rope(op_cls, case: bench.Case) -> None:
     """Check and time the rotation using this variant's independent frequency tables."""
-    tensors = case.workload.tensors
-    params = case.workload.call.params
-    op = op_cls(**case.arguments)
+    params = case.arguments
+    op = op_cls(**params)
     (x,) = case.inputs
     input_layout = params["input_layout"]
     seq_len = x.shape[0] if input_layout == "1d" else x.shape[1]
@@ -109,8 +108,6 @@ def _bench_rope(op_cls, case: bench.Case) -> None:
         LongRoPEFwdOp: longrope_frequency_tables,
     }[op_cls]
     parameters = {k: v for k, v in params.items() if k not in ("input_layout", "rope_layout")}
-    if "rescale_factors" in tensors:
-        parameters["rescale_factors"] = tensors["rescale_factors"]
     cos, sin = table_fn(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **parameters)
     cos, sin = (torch.cat([table, table], dim=-1) for table in (cos, sin))
     if input_layout != "1d":

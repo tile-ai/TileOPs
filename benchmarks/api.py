@@ -30,7 +30,7 @@ from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.values import ADTValue
 from tileops.manifest.workload import Call, instantiate
-from workloads.numerics import CheckResult, Request, verify
+from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
 
 __all__ = [
     "Case",
@@ -187,6 +187,8 @@ class Runner:
                 f"{name} is not a manifest op; a benchmark reports under the name the "
                 "manifest declares, so a wrapper or a subclass cannot stand in for one"
             )
+        if case._call.signature.name != name:
+            raise ValueError(f"{name} cannot run case {case.id!r} of {case._call.signature.name}")
         self.op = op
         self.case = case
         self._roofline: Optional[tuple[float, float]] = None
@@ -242,6 +244,17 @@ class Runner:
         itself = []
         for name, impl in plan.items():
             if impl.noncomparable_reason is not None:
+                try:
+                    check_inputs_preserved(
+                        Request(
+                            impl.run,
+                            case.inputs if impl.args is None else impl.args,
+                            impl.reset,
+                        ),
+                        case.inputs,
+                    )
+                except AssertionError as exc:
+                    raise AssertionError(f"{name}: {exc}") from exc
                 checks[name] = CheckResult(
                     0, None, None, f"noncomparable: {impl.noncomparable_reason}"
                 )
@@ -252,9 +265,15 @@ class Runner:
                     impl.run,
                     case.inputs if impl.args is None else impl.args,
                     impl.reset,
-                    preserve_inputs=impl.args is None,
+                    preserve_inputs=True,
                 )
-        checks |= verify(case.reference, case.inputs, evidence=evidence, requests=requests)
+        checks |= verify(
+            case.reference,
+            case.inputs,
+            evidence=evidence,
+            requests=requests,
+            preserve_reference_inputs=bool(itself),
+        )
         # The reference timed as an implementation is as established as the op's check
         # shows the reference to be: unchecked where it could not run or nothing is declared.
         op_check = checks[TILEOPS]

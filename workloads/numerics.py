@@ -25,6 +25,7 @@ __all__ = [
     "assert_normalized_error",
     "assert_quantized",
     "assert_rounded",
+    "check_inputs_preserved",
     "compare_outputs",
     "describe",
     "logit_mask_validator",
@@ -430,12 +431,33 @@ def _unique(value: Any) -> list:
     return list({id(t): t for t in _tensors(value)}.values())
 
 
+def check_inputs_preserved(request: Request, inputs: tuple) -> None:
+    """Check an unverified call's shared-input contract without judging its output."""
+    shared = _unique(inputs)
+    pristine = _snapshot(shared)
+    own = [t for t in _unique(request.args) if all(t is not s for s in shared)]
+    own_pristine = _snapshot(own)
+    try:
+        if request.reset is not None:
+            request.reset()
+        with torch.no_grad():
+            request.run(*request.args)
+        if not _unchanged(shared, pristine):
+            raise AssertionError(
+                "overwrote the shared inputs; give it private arguments and a reset"
+            )
+    finally:
+        _restore(shared, pristine)
+        _restore(own, own_pristine)
+
+
 def verify(
     reference: Callable | None,
     inputs: tuple,
     *,
     evidence: Evidence,
     requests: dict[str, Request],
+    preserve_reference_inputs: bool = False,
 ) -> dict[str, CheckResult]:
     """Check every request against one run of the reference, restoring inputs even on failure.
 
@@ -446,6 +468,17 @@ def verify(
     request. Reference OOM establishes nothing; request failures always propagate.
     """
     if evidence.kind not in ("exact", "partial", "custom"):
+        if preserve_reference_inputs and reference is not None:
+            try:
+                check_inputs_preserved(Request(reference, inputs), inputs)
+            except AssertionError as exc:
+                raise AssertionError(f"reference: {exc}") from exc
+        for name, request in requests.items():
+            if request.preserve_inputs:
+                try:
+                    check_inputs_preserved(request, inputs)
+                except AssertionError as exc:
+                    raise AssertionError(f"{name}: {exc}") from exc
         return {name: CheckResult(0, None, None, describe(evidence)) for name in requests}
     if reference is None:
         raise ValueError(
@@ -461,6 +494,10 @@ def verify(
             return {
                 name: CheckResult(0, None, None, "reference ran out of memory") for name in requests
             }
+        if preserve_reference_inputs and not _unchanged(shared, pristine):
+            raise AssertionError(
+                "reference overwrote the shared inputs; time it on private arguments"
+            )
         _restore(shared, pristine)
         results = {}
         for name, request in requests.items():

@@ -1,5 +1,6 @@
 """What ``bench.Runner.compare`` promises a bench file, checked without timing a kernel."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from benchmarks.baselines import private_inputs
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
 from tileops.manifest import load_manifest
-from workloads.numerics import Exact
+from workloads.numerics import Exact, Unestablished
 
 pytestmark = pytest.mark.smoke
 
@@ -34,7 +35,14 @@ class NotAManifestOp(SumFwdOp):
     """A wrapper of the kind a benchmark must not report under."""
 
 
-def _case(*, reference=lambda x: x * 2, binder=default_binder, count_copies=False, calls=None):
+def _case(
+    *,
+    reference=lambda x: x * 2,
+    binder=default_binder,
+    count_copies=False,
+    calls=None,
+    evidence=None,
+):
     def reference_counted(*inputs):
         if calls is not None:
             calls.append("reference")
@@ -43,10 +51,14 @@ def _case(*, reference=lambda x: x * 2, binder=default_binder, count_copies=Fals
     workload = SimpleNamespace(
         gen_inputs=lambda: (torch.ones(4),),
         ref_program=reference_counted,
-        verification=lambda *inputs: Exact(atol=0, rtol=0),
+        verification=lambda *inputs: evidence or Exact(atol=0, rtol=0),
         arguments=dict,
     )
-    call = SimpleNamespace(tensors={"x": ((4,), "float32")}, params={"dim": [0]})
+    call = SimpleNamespace(
+        tensors={"x": ((4,), "float32")},
+        params={"dim": [0]},
+        signature=SimpleNamespace(name="SumFwdOp"),
+    )
     return bench.Case("probe", call, Entry(lambda _call: workload, count_copies, binder))
 
 
@@ -102,6 +114,13 @@ def test_the_runner_refuses_an_op_the_manifest_does_not_declare():
         bench.Runner(NotAManifestOp(), _case())
 
 
+def test_the_runner_refuses_a_case_for_another_op():
+    case = _case()
+    with pytest.raises(ValueError, match="cannot run case"):
+        other_call = SimpleNamespace(signature=SimpleNamespace(name="AbsFwdOp"))
+        bench.Runner(SumFwdOp(), dataclasses.replace(case, _call=other_call))
+
+
 def test_the_reference_runs_once_for_every_implementation(timed):
     calls = []
     case = _case(calls=calls)
@@ -124,6 +143,27 @@ def test_the_reference_row_is_unverified_where_the_reference_could_not_run(timed
 def test_a_callable_that_overwrites_the_shared_inputs_fails_before_timing(timed):
     with pytest.raises(AssertionError, match="overwrote the shared inputs"):
         bench.Runner(SumFwdOp(), _case()).compare({"in-place": lambda x: x.mul_(2)})
+    assert not timed.runs
+
+
+@pytest.mark.parametrize("noncomparable", [False, True])
+@pytest.mark.parametrize("evidence", [None, Unestablished()])
+def test_explicit_args_cannot_overwrite_shared_inputs(timed, noncomparable, evidence):
+    case = _case(evidence=evidence)
+    impl = bench.Implementation(
+        run=lambda x: x.mul_(2),
+        args=case.inputs,
+        noncomparable_reason="different semantics" if noncomparable else None,
+    )
+    with pytest.raises(AssertionError, match="overwrote the shared inputs"):
+        bench.Runner(SumFwdOp(), case).compare({"in-place": impl})
+    assert not timed.runs
+
+
+def test_reference_timed_on_shared_inputs_must_preserve_them(timed):
+    case = _case(reference=lambda x: x.mul_(2))
+    with pytest.raises(AssertionError, match="reference overwrote the shared inputs"):
+        bench.Runner(SumFwdOp(), case).compare({"torch": case.reference})
     assert not timed.runs
 
 
