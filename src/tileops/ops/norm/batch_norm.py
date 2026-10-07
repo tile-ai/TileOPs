@@ -132,6 +132,11 @@ class BatchNormFwdOp(Op):
         batch, channels = x.shape[0], x.shape[1]
         spatial = math.prod(x.shape[2:])
         x_ncs = x.contiguous().view(batch, channels, spatial)
+        # The inference program reads a weight and a bias, so an absent one is filled
+        # before the call records what is passed.
+        if not self.training:
+            weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
         call = BatchNormCall(
             device=x.device,
             n=batch,
@@ -145,8 +150,6 @@ class BatchNormFwdOp(Op):
             has_running_stats=running_mean is not None,
         )
         if not self.training:
-            weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
-            bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
             kernel = self.kernel_for("batch_norm_fwd_infer", call)
             self.kernel = kernel
             stats = (running_mean.contiguous(), running_var.contiguous())

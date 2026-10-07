@@ -234,14 +234,21 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("absent", ["weight", "bias"])
 @pytest.mark.parametrize(
     "shape, kernel",
     [
-        pytest.param((16, 32), "BatchNormFwdTrainWholeKernel", id="whole"),
-        pytest.param((8, 16, 32, 32), "BatchNormFwdTrainWideKernel", id="wide"),
-        pytest.param((4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", id="split"),
+        pytest.param((16, 32), "BatchNormFwdTrainWholeKernel", marks=pytest.mark.smoke, id="whole"),
+        pytest.param(
+            (8, 16, 32, 32), "BatchNormFwdTrainWideKernel", marks=pytest.mark.smoke, id="wide"
+        ),
+        pytest.param(
+            (4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", marks=pytest.mark.smoke, id="split"
+        ),
+        # 1024 channels of an odd 65537-element run: too many to split, too long to hold.
+        pytest.param(
+            (1, 1024, 65537), "BatchNormFwdTrainKernel", marks=pytest.mark.full, id="tiled"
+        ),
     ],
 )
 def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, absent) -> None:
