@@ -201,3 +201,19 @@ def test_group_norm_under_tuning(tune: bool) -> None:
     candidates."""
     test = GroupNormTest(2, 32, (32, 32), 4, torch.float16)
     test.check(GroupNormFwdOp(num_groups=4, tune=tune), *test.gen_inputs())
+
+
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """*t* copied into a contiguous view that starts one element into its storage."""
+    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    view.copy_(t)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("affine", [True, False], ids=["affine", "no-affine"])
+def test_group_norm_reads_inputs_off_the_vector_boundary(affine: bool) -> None:
+    """A contiguous input, weight and bias may start anywhere in their storage."""
+    test = GroupNormTest(2, 32, (16, 16), 8, torch.float16)
+    x, weight, bias = (_misaligned(t) for t in test.gen_inputs())
+    test.check(GroupNormFwdOp(num_groups=8), *((x, weight, bias) if affine else (x,)))

@@ -371,3 +371,10 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     compare_outputs(
         residual_out, add_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype)
     )
+
+
+@pytest.mark.smoke
+def test_fused_add_layer_norm_reads_inputs_off_the_vector_boundary() -> None:
+    """A contiguous input, residual, weight and bias may start anywhere in their storage."""
+    test = FusedAddLayerNormTest(4, 1024, torch.float16)
+    test.check(FusedAddLayerNormFwdOp(), *(_misaligned(t) for t in test.gen_inputs()))

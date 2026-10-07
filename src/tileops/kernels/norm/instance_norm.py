@@ -19,7 +19,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry
+from tileops.kernels.kernel_base import Entry, vector_aligned
 from tileops.kernels.norm._config import (
     make_row_reduce,
     make_shifted_row_reduce,
@@ -400,6 +400,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         self._require_cuda(
             x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
         )
+        x = vector_aligned(x)
         if weight is None or bias is None:
             placeholder = torch.empty(self.C, dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight

@@ -358,3 +358,10 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     y, residual_out = op(x, residual, weight)
     compare_outputs(y, y_ref, norm_verification(dtype))
     compare_outputs(residual_out, add_ref, norm_verification(dtype))
+
+
+@pytest.mark.smoke
+def test_fused_add_rms_norm_reads_inputs_off_the_vector_boundary() -> None:
+    """A contiguous input, residual and weight may start anywhere in their storage."""
+    test = FusedAddRMSNormTest(4, 1024, torch.float16)
+    test.check(FusedAddRMSNormFwdOp(), *(_misaligned(t) for t in test.gen_inputs()))
