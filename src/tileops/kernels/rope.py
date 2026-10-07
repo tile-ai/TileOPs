@@ -28,7 +28,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface, vector_aligned
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -678,6 +678,7 @@ class _RoPEKernelBase(Kernel):
         """
         cfg = self.config
         orig_shape = x.shape
+        x = vector_aligned(x)
         if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
             result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)
@@ -814,7 +815,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         if self._status is None:
             self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
         result = self.kernel(cfg["threads"], cfg["num_per_thread"])(
-            x.contiguous().reshape(-1),
+            vector_aligned(x.contiguous()).reshape(-1),
             cos,
             sin,
             position_ids.contiguous(),
