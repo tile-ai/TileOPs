@@ -11,6 +11,7 @@ from tileops.kernels.norm.batch_norm import (
 )
 from tileops.kernels.norm.fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
 from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.group_norm_split import GroupNormSplitKernel
 from tileops.kernels.norm.instance_norm import (
     InstanceNormFwdTrainKernel,
     InstanceNormFwdTrainSingleKernel,
@@ -38,6 +39,7 @@ __all__: list[str] = [
     "FusedAddRMSNormKernel",
     "GroupNormKernel",
     "GroupNormNoAffineKernel",
+    "GroupNormSplitKernel",
     "InstanceNormFwdTrainKernel",
     "InstanceNormFwdTrainSingleKernel",
     "InstanceNormKernel",

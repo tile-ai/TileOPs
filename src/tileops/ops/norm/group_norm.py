@@ -17,7 +17,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel, GroupNormSplitKernel
 from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops.ops.norm.affine import affine_or_constant
 from tileops.ops.op_base import Op
@@ -47,6 +47,7 @@ class GroupNormFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "group_norm": GroupNormKernel,
         "group_norm_no_affine": GroupNormNoAffineKernel,
+        "group_norm_split": GroupNormSplitKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "group_norm": GroupNormFwdInterface
