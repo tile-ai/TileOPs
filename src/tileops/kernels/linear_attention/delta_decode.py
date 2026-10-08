@@ -1,4 +1,4 @@
-"""The SM90 single-token delta-rule decode program, shared by the gated and ungated ops.
+"""The single-token delta-rule decode program, shared by the gated and ungated ops.
 
 One block owns a column tile of one ``(batch, value head)`` recurrent state and advances
 it by one token; a lane group within the block splits the key dimension for one column.
@@ -16,7 +16,7 @@ import tilelang.language as T
 from tileops.kernels.constants import LOG2E, MAX_BLOCK_THREADS
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_sm_count
 
-__all__ = ["decode_launch", "delta_decode_sm90_tl"]
+__all__ = ["decode_launch", "delta_decode_tl"]
 
 
 def decode_launch(
@@ -45,7 +45,7 @@ def decode_launch(
 # Seven recurrence flags and a block shape over two state widths and two dtypes: a process
 # that exercises several variants at several shapes outgrows the 32 entries one variant needs.
 @functools.lru_cache(maxsize=64)
-def delta_decode_sm90_tl(
+def delta_decode_tl(
     batch: int,
     heads: int,
     value_heads: int,
@@ -87,7 +87,7 @@ def delta_decode_sm90_tl(
         A TileLang jit builder returning the program.
     """
     if dim not in (64, 128):
-        raise ValueError(f"Hopper delta-rule decode requires K == V in (64, 128), got {dim}")
+        raise ValueError(f"delta-rule decode requires K == V in (64, 128), got {dim}")
     if value_heads % heads != 0:
         raise ValueError(f"value_heads={value_heads} must be a multiple of heads={heads}")
     if threads % WARP_LANES != 0 or threads > MAX_BLOCK_THREADS:
@@ -126,7 +126,7 @@ def delta_decode_sm90_tl(
         full_state_shape = [batch, value_heads, dim, dim]
 
         @T.prim_func
-        def delta_decode_sm90(
+        def delta_decode(
             q: T.Tensor(token_shape, dtype),
             k: T.Tensor(token_shape, dtype),
             v: T.Tensor(value_shape, dtype),
@@ -239,6 +239,6 @@ def delta_decode_sm90_tl(
                 if k_rank == 0:
                     o[batch_idx, 0, head_idx, value_idx] = T.cast(out_partial, dtype)
 
-        return delta_decode_sm90
+        return delta_decode
 
     return _decode
