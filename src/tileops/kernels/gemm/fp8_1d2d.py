@@ -2,7 +2,10 @@
 
 A persistent grid of one producer and two consumer warp-groups: the producer
 fills a shared-memory ring through TMA, each consumer runs WGMMA over 64 of the
-tile's 128 rows and folds every K-step's partial in under its two scales.
+tile's rows and folds every K-step's partial in under its two scales. Two builders
+share that plan: ``_gemm_fp8_1d2d_kernel`` holds 128-row tiles, and
+``_gemm_fp8_1d2d_wave_kernel`` holds tiles of one or two 128-row waves that reuse
+one partial accumulator, so the second wave costs one more accumulator only.
 """
 
 import functools
@@ -11,10 +14,14 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import (
     TMA_DTYPE_BFLOAT16,
+    TMA_DTYPE_UINT8,
     TMA_INTERLEAVE_NONE,
     TMA_L2_PROMOTION_128B,
     TMA_OOB_FILL_NONE,
@@ -36,7 +43,9 @@ _SCALE_A_BUFFERS = 2
 
 
 # Schedules measured per (m, n, k), by calibrated board (``tileops.utils.calibration_key``);
-# any other board or shape takes the analytic ``block_n`` band of ``default_config``.
+# any other board or shape takes the analytic ``block_n`` band of ``default_config``. A
+# schedule with ``waves`` runs ``_gemm_fp8_1d2d_wave_kernel``, whose tile is that many
+# 128-row waves; every other one runs ``_gemm_fp8_1d2d_kernel``.
 _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
     "h200": {
         (128, 2112, 7168): {
@@ -49,24 +58,35 @@ _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
             "sm_count": 112,
         },
         (4096, 2112, 7168): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
             "shared_epilogue": True,
+            "sm_count": 118,
         },
         (4096, 4096, 7168): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
             "shared_epilogue": True,
+            "sm_count": 128,
         },
         (4096, 7168, 2048): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 1},
+            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
             "shared_epilogue": True,
+            "sm_count": 128,
         },
         (4096, 7168, 16384): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": False,
+            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+            "shared_epilogue": True,
+            "sm_count": 128,
         },
         (4096, 24576, 1536): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 3},
+            "kernel": {
+                "block_n": 128,
+                "num_stages": 3,
+                "group_size_m": 8,
+                "waves": 2,
+                "prefetch_b": 1,
+            },
             "shared_epilogue": True,
+            "sm_count": 128,
         },
     },
 }
@@ -465,6 +485,516 @@ def _gemm_fp8_1d2d_kernel(
     return kernel_func
 
 
+# CUDA the wave kernel calls: TMA prefetch, a warp broadcast, and the WGMMA issue.
+_WAVE_SRC = r"""
+namespace tl {
+
+// A value every lane of the warp already holds, broadcast from lane 0 so the
+// compiler can prove it warp-uniform and keep it in a uniform register.
+TL_DEVICE int fp8_uniform(int value) {
+  return __shfl_sync(0xffffffffu, value, 0);
+}
+
+// Prefetch one 2-D TMA box into L2 without a shared-memory destination or barrier.
+TL_DEVICE void fp8_tma_prefetch_2d(const CUtensorMap& descriptor, int x, int y) {
+  uint64_t desc = reinterpret_cast<uint64_t>(&descriptor);
+  asm volatile(
+      "cp.async.bulk.prefetch.tensor.2d.L2.global.tile [%0, {%1, %2}];"
+      :
+      : "l"(desc), "r"(x), "r"(y)
+      : "memory");
+}
+
+// One consumer warpgroup's share of a 128-row wave: 64 rows x BlockN x 128 as four
+// m64nBlockNk32 WGMMAs from 128B-swizzled K-major A and B stages. The consumer
+// warpgroups are threads 0..255 and own rows 0..63 and 64..127. The warpgroup comes
+// from __shfl_sync, so the compiler can prove it warp-uniform and keeps both
+// descriptors in uniform registers; a per-thread value would cost an R2UR per issue.
+template <int BlockN>
+__device__ __forceinline__ void fp8_wave_wgmma_64xN(float* accumulator,
+                                                    fp8_e4_t* a_wave,
+                                                    fp8_e4_t* b_stage) {
+  int const group =
+      __shfl_sync(0xffffffffu, static_cast<int>(threadIdx.x) >> 7, 0);
+  GmmaDescriptor desc_a;
+  GmmaDescriptor desc_b;
+  initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_wave + group * 64 * 128);
+  initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_stage);
+  warpgroup_fence_operand(accumulator, BlockN / 2);
+  warpgroup_arrive();
+#pragma unroll
+  for (int ki = 0; ki < 4; ++ki) {
+    wgmma_ss<DataType::kFloat8_e4m3, DataType::kFloat8_e4m3, DataType::kFloat32,
+             64, BlockN, 32, false, false, 1, 1>(
+        uint64_t(desc_a + ((ki * 32) >> 4)),
+        uint64_t(desc_b + ((ki * 32) >> 4)),
+        reinterpret_cast<uint32_t*>(accumulator), 0 < ki ? 1 : 0);
+  }
+  warpgroup_commit_batch();
+  warpgroup_fence_operand(accumulator, BlockN / 2);
+}
+
+#define TL_DEFINE_FP8_WAVE_WGMMA(N)                                           \
+  __device__ __forceinline__ void fp8_wave_wgmma_64x##N(                      \
+      float* acc, fp8_e4_t* a, fp8_e4_t* b) {                                 \
+    fp8_wave_wgmma_64xN<N>(acc, a, b);                                        \
+  }
+
+TL_DEFINE_FP8_WAVE_WGMMA(64)
+TL_DEFINE_FP8_WAVE_WGMMA(128)
+TL_DEFINE_FP8_WAVE_WGMMA(192)
+
+#undef TL_DEFINE_FP8_WAVE_WGMMA
+
+}  // namespace tl
+"""
+
+
+# One M wave: the rows the two consumer warpgroups cover with one 64-row WGMMA each.
+_WAVE_M = 128
+_WAVE_BLOCK_K = 128
+_WAVE_CONSUMER_THREADS = 256
+# K steps one staging of the tile's scales covers: the most that divides ``ceil(K/128)``.
+# Eight fp32 of a ``scale_a`` row fill one 32-byte sector; four are TMA's 16-byte unit.
+_WAVE_SCALE_GROUPS = (8, 4)
+# Buffers of the scale ring, so one group is written while the other is read.
+_WAVE_SCALE_BUFFERS = 2
+# fp32 per ``scale_b`` staging buffer. A group reads at most eight, but buffers of
+# eight or sixteen fault on a misaligned shared address in this kernel; 32 (128
+# bytes) does not.
+_WAVE_SCALE_B_SPAN = 32
+# Registers a producer and a consumer thread hold after the warpgroup handoff.
+_WAVE_PRODUCER_REGS = 24
+_WAVE_CONSUMER_REGS = 240
+# Named barrier the consumer warpgroups meet at around the output staging tile.
+_WAVE_EPILOGUE_BAR = 1
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_fp8_1d2d_wave_kernel(m: int, n: int, k: int, *, sm_count: int) -> Callable:
+    """Persistent 1D2D FP8 GEMM whose output tile is ``waves`` x 128 rows by ``block_n``.
+
+    One producer warp issues every TMA: per K block the tile's A waves and its B
+    tile into a ``num_stages`` ring, and per group of K blocks the tile's
+    ``scale_a`` rows and ``scale_b`` entry into a two-buffer ring. Two consumer
+    warpgroups each own 64 rows of every wave. Per K block and wave they form one
+    WGMMA product and fold it into that wave's accumulator under the row scale
+    ``scale_a[row, kb] * scale_b[n_block, kb]``, so one partial is live beside the
+    accumulators whatever the wave count. Each tile lands in bf16 through shared
+    memory and a TMA store that overlaps the next tile's mainloop.
+
+    Args:
+        m: Rows of ``a`` and of the output.
+        n: Rows of ``b``, columns of the output.
+        k: Contraction dim; ``ceil(k / 128)`` is a multiple of 4.
+        sm_count: Persistent grid width.
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
+        group_size_m, waves)`` returns the compiled ``prim_func``.
+    """
+    k_blocks = -(-k // _WAVE_BLOCK_K)
+    scale_n = -(-n // 128)
+    # TMA moves every operand: a global row must be a multiple of 16 bytes, and a scale
+    # group must be a whole number of 16-byte scale_a boxes.
+    if n % 8 != 0 or k % 16 != 0:
+        raise ValueError(f"the wave kernel needs n % 8 == 0 and k % 16 == 0, got n={n}, k={k}")
+    if k_blocks % min(_WAVE_SCALE_GROUPS) != 0:
+        raise ValueError(
+            f"the wave kernel needs ceil(k / {_WAVE_BLOCK_K}) to be a multiple of "
+            f"{min(_WAVE_SCALE_GROUPS)}, got {k_blocks}"
+        )
+    scale_group = next(g for g in _WAVE_SCALE_GROUPS if k_blocks % g == 0)
+    num_scale_groups = k_blocks // scale_group
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16", "-include", _FP8_1D2D_HELPER_PATH],
+    )
+    def _gemm_fp8_1d2d_wave_func(
+        block_n: int = 128,
+        num_stages: int = 3,
+        group_size_m: int = 8,
+        waves: int = 2,
+        prefetch_b: int = 0,
+    ) -> Callable:
+        # Each value divides 128, so a tile reads one B-scale block.
+        if block_n not in (16, 32, 64, 128, 192):
+            raise ValueError(f"block_n must be one of 16/32/64/128/192, got {block_n}")
+        # block_n=192 spans two 128-wide B-scale blocks: columns below ``former``
+        # use the first, the rest the second (DeepGEMM's num_former_iters).
+        two_sb = block_n == 192
+        sb_rows = 2 if two_sb else 1
+        # The scale ring has no barriers of its own (see the producer), which holds only
+        # while a stage is released before the scale buffer it shares is refilled.
+        if num_stages > scale_group + 1:
+            raise ValueError(
+                f"num_stages must be at most scale_group + 1 = {scale_group + 1}, got {num_stages}"
+            )
+        if waves not in (1, 2):
+            raise ValueError(f"waves must be 1 or 2, got {waves}")
+        block_m = _WAVE_M * waves
+
+        def consumer_acc_layout(buf):
+            """The accumulator layout T.wgmma_gemm infers for the two consumer warpgroups."""
+            base = acc_emitter.make_mma_store_layout(buf)
+            return T.Fragment(
+                [_WAVE_M, block_n],
+                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0],
+                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+            )
+
+        def consumer_row_layout(buf):
+            """One value per accumulator row, held by the four lanes of that row's quad.
+
+            Row i lives in consumer warp i // 16; its quad is lane (i % 8) * 4..+3 and
+            the value is register (i % 16) // 8, as in the accumulator layout.
+            """
+            return T.Fragment(
+                [_WAVE_M],
+                forward_fn=lambda i, rep: (
+                    (i // 16) * 32 + (i % 8) * 4 + rep,
+                    (i % 16) // 8,
+                ),
+                replicate=4,
+            )
+
+        # The accumulator layout of a 128 x block_n WGMMA tile over two consumer
+        # warpgroups (eight warps along M), as T.wgmma_gemm infers it.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=T.float8_e4m3fn,
+            b_dtype=T.float8_e4m3fn,
+            accum_dtype=T.float32,
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=8,
+            block_col_warps=1,
+            warp_row_tiles=_WAVE_M // 8,
+            warp_col_tiles=block_n,
+            chunk=_WAVE_BLOCK_K,
+        )
+        num_pid_m = -(-m // block_m)
+        num_pid_n = -(-n // block_n)
+        total_tiles = num_pid_m * num_pid_n
+        max_tiles = -(-total_tiles // sm_count)
+        consumer_warps = _WAVE_CONSUMER_THREADS // 32
+
+        @T.macro
+        def decode(flat_id, mt, nt):
+            tiles_per_group = T.int32(group_size_m * num_pid_n)
+            group_id = flat_id // tiles_per_group
+            first_m = group_id * T.int32(group_size_m)
+            group_m = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+            mt[0] = first_m + (flat_id % tiles_per_group) % group_m
+            nt[0] = (flat_id % tiles_per_group) // group_m
+
+        @T.macro
+        def wave_step(
+            partial,
+            row_scale,
+            row_scale1,
+            row_scale_mid,
+            former,
+            a_wave,
+            b_smem,
+            scale_a_ring,
+            scale_b_ring,
+            slot,
+            buf,
+            col,
+            wave,
+        ):
+            """Multiply one 128-row wave of a K block into ``partial``; form its row scales."""
+            for i in T.Parallel(_WAVE_M):
+                row_scale[i] = (
+                    scale_a_ring[buf, wave * _WAVE_M + i, col] * scale_b_ring[buf, 0, col]
+                )
+                if two_sb:
+                    row_scale1[i] = (
+                        scale_a_ring[buf, wave * _WAVE_M + i, col] * scale_b_ring[buf, 1, col]
+                    )
+                    # Columns 64..127 take the first B scale when the tile starts a 128 block.
+                    row_scale_mid[i] = T.if_then_else(former[0] == 128, row_scale[i], row_scale1[i])
+            T.call_extern(
+                "handle",
+                f"tl::fp8_wave_wgmma_64x{block_n}",
+                partial.data,
+                T.address_of(a_wave[slot, 0, 0]),
+                T.address_of(b_smem[slot, 0, 0]),
+            )
+            T.wait_wgmma(0)
+
+        @T.macro
+        def wave_fold(final, partial, row_scale, row_scale1, row_scale_mid):
+            """Fold one wave's K-block product into its accumulator under its row scales."""
+            for i, j in T.Parallel(_WAVE_M, block_n):
+                if two_sb:
+                    final[i, j] += partial[i, j] * T.if_then_else(
+                        j < 64,
+                        row_scale[i],
+                        T.if_then_else(j < 128, row_scale_mid[i], row_scale1[i]),
+                    )
+                else:
+                    final[i, j] += partial[i, j] * row_scale[i]
+
+        @T.prim_func
+        def _gemm_fp8_1d2d_wave_main(
+            a: T.Tensor((m, k), "float8_e4m3fn"),  # type: ignore
+            b: T.Tensor((n, k), "float8_e4m3fn"),  # type: ignore
+            scale_a: T.Tensor((m, k_blocks), "float32"),  # type: ignore
+            scale_b: T.Tensor((scale_n, k_blocks), "float32"),  # type: ignore
+            c: T.Tensor((m, n), "bfloat16"),  # type: ignore
+        ) -> None:
+            with T.Kernel(sm_count, threads=128 + _WAVE_CONSUMER_THREADS) as (pid,):
+                T.import_source(_WAVE_SRC)
+                a_wave0 = T.alloc_shared((num_stages, _WAVE_M, _WAVE_BLOCK_K), "float8_e4m3fn")
+                a_wave1 = T.alloc_shared((num_stages, _WAVE_M, _WAVE_BLOCK_K), "float8_e4m3fn")
+                b_smem = T.alloc_shared((num_stages, block_n, _WAVE_BLOCK_K), "float8_e4m3fn")
+                scale_a_ring = T.alloc_shared(
+                    (_WAVE_SCALE_BUFFERS, block_m, scale_group), "float32"
+                )
+                scale_b_ring = T.alloc_shared(
+                    (_WAVE_SCALE_BUFFERS, sb_rows, _WAVE_SCALE_B_SPAN), "float32"
+                )
+                c_smem = T.alloc_shared((block_m, block_n), "bfloat16")
+                partial = T.alloc_fragment((_WAVE_M, block_n), "float32")
+                final0 = T.alloc_fragment((_WAVE_M, block_n), "float32")
+                final1 = T.alloc_fragment((_WAVE_M, block_n), "float32")
+                c_cast = T.alloc_fragment((_WAVE_M, block_n), "bfloat16")
+                row_scale = T.alloc_fragment((_WAVE_M,), "float32")
+                row_scale1 = T.alloc_fragment((_WAVE_M,), "float32")
+                row_scale_mid = T.alloc_fragment((_WAVE_M,), "float32")
+                former = T.alloc_local((1,), "int32")
+                T.annotate_layout(
+                    {
+                        a_wave0: tilelang.layout.make_swizzled_layout(a_wave0),
+                        a_wave1: tilelang.layout.make_swizzled_layout(a_wave1),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem: tilelang.layout.make_swizzled_layout(c_smem),
+                        partial: consumer_acc_layout(partial),
+                        final0: consumer_acc_layout(final0),
+                        final1: consumer_acc_layout(final1),
+                        c_cast: consumer_acc_layout(c_cast),
+                        row_scale: consumer_row_layout(row_scale),
+                        row_scale1: consumer_row_layout(row_scale1),
+                        row_scale_mid: consumer_row_layout(row_scale_mid),
+                    }
+                )
+
+                # One arrival per consumer warp releases a slot: ``wait_wgmma`` is
+                # warp-convergent, so lane 0 speaks for its warp.
+                full = T.alloc_barrier([1] * num_stages)
+                empty = T.alloc_barrier([consumer_warps] * num_stages)
+
+                producer_index = T.alloc_var("uint32", init=0)
+                consumer_index = T.alloc_var("uint32", init=0)
+                scale_producer = T.alloc_var("uint32", init=0)
+                scale_consumer = T.alloc_var("uint32", init=0)
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((1,), "int32")
+                tx = T.get_thread_binding()
+
+                # Consumers are threads 0..255, the producer warpgroup 256..383, so the
+                # accumulator layouts' thread numbers are the threads themselves.
+                if tx >= _WAVE_CONSUMER_THREADS:
+                    T.dec_max_nreg(_WAVE_PRODUCER_REGS)
+                    if tx < _WAVE_CONSUMER_THREADS + 32:
+                        for w in T.serial(max_tiles):
+                            flat_id = T.int32(sm_count) * w + pid
+                            if flat_id < total_tiles:
+                                decode(flat_id, mt, nt)
+                                m_start = mt[0] * block_m
+                                n_start = nt[0] * block_n
+                                scale_row = n_start // 128
+                                for group in T.serial(num_scale_groups):
+                                    for col in T.unroll(scale_group):
+                                        kb = group * scale_group + col
+                                        ks = kb * _WAVE_BLOCK_K
+                                        slot = T.cast(producer_index % num_stages, "int32")
+                                        T.barrier_wait(
+                                            empty[slot], ((producer_index // num_stages) & 1) ^ 1
+                                        )
+                                        if col == 0:
+                                            buf = T.cast(
+                                                scale_producer % _WAVE_SCALE_BUFFERS, "int32"
+                                            )
+                                            # The group's scales ride the full barrier of
+                                            # its first K step. Group g + 2 reuses this
+                                            # buffer once stage (kb - num_stages) is
+                                            # released, at or after group g's last K step
+                                            # since num_stages <= scale_group + 1. Rows
+                                            # past m and columns past ceil(k/128) are
+                                            # zero-filled.
+                                            T.tma_copy(
+                                                scale_a[
+                                                    m_start : m_start + block_m,
+                                                    kb : kb + scale_group,
+                                                ],
+                                                scale_a_ring[buf, :, :],
+                                                barrier=full[slot],
+                                            )
+                                            T.tma_copy(
+                                                scale_b[
+                                                    scale_row : scale_row + sb_rows,
+                                                    kb : kb + _WAVE_SCALE_B_SPAN,
+                                                ],
+                                                scale_b_ring[buf, :, :],
+                                                barrier=full[slot],
+                                            )
+                                            scale_producer = scale_producer + 1
+                                        T.tma_copy(
+                                            a[m_start : m_start + _WAVE_M, ks : ks + _WAVE_BLOCK_K],
+                                            a_wave0[slot, :, :],
+                                            barrier=full[slot],
+                                        )
+                                        if waves == 2:
+                                            T.tma_copy(
+                                                a[
+                                                    m_start + _WAVE_M : m_start + 2 * _WAVE_M,
+                                                    ks : ks + _WAVE_BLOCK_K,
+                                                ],
+                                                a_wave1[slot, :, :],
+                                                barrier=full[slot],
+                                            )
+                                        T.tma_copy(
+                                            b[n_start : n_start + block_n, ks : ks + _WAVE_BLOCK_K],
+                                            b_smem[slot, :, :],
+                                            barrier=full[slot],
+                                        )
+                                        if prefetch_b:  # noqa: SIM102 -- a trace-time switch
+                                            # Pull the next K block of B into L2 now, so its
+                                            # TMA load a stage later does not wait on DRAM.
+                                            if (
+                                                tx == _WAVE_CONSUMER_THREADS
+                                                and ks + _WAVE_BLOCK_K < k
+                                            ):
+                                                b_prefetch = T.create_tma_descriptor(
+                                                    TMA_DTYPE_UINT8,
+                                                    2,
+                                                    b.data,
+                                                    k,
+                                                    n,
+                                                    1,
+                                                    k,
+                                                    _WAVE_BLOCK_K,
+                                                    block_n,
+                                                    1,
+                                                    1,
+                                                    TMA_INTERLEAVE_NONE,
+                                                    TMA_SWIZZLE_NONE,
+                                                    TMA_L2_PROMOTION_128B,
+                                                    TMA_OOB_FILL_NONE,
+                                                )
+                                                T.call_extern(
+                                                    "handle",
+                                                    "tl::fp8_tma_prefetch_2d",
+                                                    b_prefetch,
+                                                    ks + _WAVE_BLOCK_K,
+                                                    n_start,
+                                                )
+                                        if tx == _WAVE_CONSUMER_THREADS:
+                                            T.barrier_arrive(full[slot])
+                                        producer_index = producer_index + 1
+                else:
+                    T.inc_max_nreg(_WAVE_CONSUMER_REGS)
+                    for w in T.serial(max_tiles):
+                        flat_id = T.int32(sm_count) * w + pid
+                        if flat_id < total_tiles:
+                            decode(flat_id, mt, nt)
+                            m_start = mt[0] * block_m
+                            n_start = nt[0] * block_n
+                            if two_sb:
+                                former[0] = T.min(T.int32(block_n), 128 - n_start % 128)
+                            T.clear(final0)
+                            if waves == 2:
+                                T.clear(final1)
+                            for _group in T.serial(num_scale_groups):
+                                for col in T.unroll(scale_group):
+                                    # Every consumer thread holds the same counters; the
+                                    # broadcast lets the compiler keep what derives from
+                                    # them in uniform registers.
+                                    slot = T.call_extern(
+                                        "int32",
+                                        "tl::fp8_uniform",
+                                        T.cast(consumer_index % num_stages, "int32"),
+                                    )
+                                    buf = T.call_extern(
+                                        "int32",
+                                        "tl::fp8_uniform",
+                                        T.cast(scale_consumer % _WAVE_SCALE_BUFFERS, "int32"),
+                                    )
+                                    T.barrier_wait(full[slot], (consumer_index // num_stages) & 1)
+                                    wave_step(
+                                        partial,
+                                        row_scale,
+                                        row_scale1,
+                                        row_scale_mid,
+                                        former,
+                                        a_wave0,
+                                        b_smem,
+                                        scale_a_ring,
+                                        scale_b_ring,
+                                        slot,
+                                        buf,
+                                        col,
+                                        0,
+                                    )
+                                    # The stage and, after its last K step, the scale group are
+                                    # released once the tile's last wave has read them.
+                                    if waves == 1 and tx % 32 == 0:
+                                        T.barrier_arrive(empty[slot])
+                                    wave_fold(final0, partial, row_scale, row_scale1, row_scale_mid)
+                                    if waves == 2:
+                                        wave_step(
+                                            partial,
+                                            row_scale,
+                                            row_scale1,
+                                            row_scale_mid,
+                                            former,
+                                            a_wave1,
+                                            b_smem,
+                                            scale_a_ring,
+                                            scale_b_ring,
+                                            slot,
+                                            buf,
+                                            col,
+                                            1,
+                                        )
+                                        if tx % 32 == 0:
+                                            T.barrier_arrive(empty[slot])
+                                        wave_fold(
+                                            final1, partial, row_scale, row_scale1, row_scale_mid
+                                        )
+                                    if col == scale_group - 1:
+                                        scale_consumer = scale_consumer + 1
+                                    consumer_index = consumer_index + 1
+                            # The previous tile's TMA store may still read c_smem; waiting
+                            # here lets that store overlap this tile's mainloop.
+                            T.tma_store_wait(0)
+                            T.sync_threads(
+                                barrier_id=_WAVE_EPILOGUE_BAR, arrive_count=_WAVE_CONSUMER_THREADS
+                            )
+                            T.copy(final0, c_cast)
+                            T.copy(c_cast, c_smem[0:_WAVE_M, :])
+                            if waves == 2:
+                                T.copy(final1, c_cast)
+                                T.copy(c_cast, c_smem[_WAVE_M : 2 * _WAVE_M, :])
+                            T.fence_proxy_async()
+                            T.sync_threads(
+                                barrier_id=_WAVE_EPILOGUE_BAR, arrive_count=_WAVE_CONSUMER_THREADS
+                            )
+                            T.tma_copy(
+                                c_smem, c[m_start : m_start + block_m, n_start : n_start + block_n]
+                            )
+                    # Drain the last tile's store before the CTA's shared memory goes.
+                    T.tma_store_wait(0)
+
+        return _gemm_fp8_1d2d_wave_main
+
+    return _gemm_fp8_1d2d_wave_func
+
+
 class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     """FP8 NT GEMM for 1D2D scales, bfloat16 output, no bias.
 
@@ -603,15 +1133,18 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         if refusal is not None:
             raise ValueError(f"{type(self).__name__} cannot serve m={m} n={n} k={k}: {refusal}")
 
-        self.kernel = _gemm_fp8_1d2d_kernel(
-            m,
-            n,
-            k,
-            self.dtype_str,
-            self.out_dtype_str,
-            sm_count=self.sm_count,
-            shared_epilogue=self.shared_epilogue,
-        )
+        if self._calibrated is not None and "waves" in self._calibrated["kernel"]:
+            self.kernel = _gemm_fp8_1d2d_wave_kernel(m, n, k, sm_count=self.sm_count)
+        else:
+            self.kernel = _gemm_fp8_1d2d_kernel(
+                m,
+                n,
+                k,
+                self.dtype_str,
+                self.out_dtype_str,
+                sm_count=self.sm_count,
+                shared_epilogue=self.shared_epilogue,
+            )
         self.init_config(config, tune)
 
     @property
