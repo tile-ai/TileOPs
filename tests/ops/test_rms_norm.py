@@ -6,8 +6,10 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.kernels.tiling import ALIGNMENT
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from tileops.utils import get_shared_memory_optin, get_sm_count
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
@@ -227,6 +229,18 @@ def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> No
         dtype
     )
     actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
+    compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
+
+
+@pytest.mark.smoke
+def test_rms_norm_widest_row_past_the_sm_count() -> None:
+    # The widest row shared memory holds, at more rows than SMs: staged beside the reduction's
+    # scratch it would pass the budget, so the row kernel holds it in registers.
+    n = get_shared_memory_optin() // 2 // ALIGNMENT * ALIGNMENT
+    x = torch.randn(get_sm_count() + 1, n, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(n, device=x.device, dtype=x.dtype)
+    expected = F.rms_norm(x.float(), (n,), weight.float(), eps=1e-6).to(x.dtype)
+    actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)(x, weight)
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
