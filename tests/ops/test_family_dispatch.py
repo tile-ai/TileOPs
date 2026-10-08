@@ -17,6 +17,7 @@ from tileops.kernels.linear_attention import (
     GLADecodeCall,
 )
 from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
+from tileops.kernels.sampling.call_spec import SamplingCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
@@ -25,6 +26,7 @@ from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
 from workloads.device import run_device_available
 
 pytestmark = [
@@ -51,6 +53,20 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
 
     with pytest.raises(ValueError, match="k must span at least one"):
         op.select_implementation("gemm", call)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
+    """A full batch folds each row of 926463 weights into 28952 float64 entries, which with the
+    block's other shared buffers, each starting at a multiple of 16 bytes, compile to 232464
+    bytes. Counting the entries and only part of the rest admitted it."""
+    call = SamplingCall(
+        arch=_SM90, sm_count=132, batch=132, num_draft=1, vocab=926463, dtype=torch.float32
+    )
+
+    with pytest.raises(ValueError, match="shared float64 entries"):
+        ChainSpeculativeSamplingFwdOp().select_implementation("chain_speculative_sampling", call)
 
 
 @pytest.mark.cuda_only
