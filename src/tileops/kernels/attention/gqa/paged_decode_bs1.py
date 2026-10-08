@@ -26,7 +26,7 @@ from tileops.kernels.attention.gqa.decode_bs1_common import (
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
-from tileops.kernels.attention.gqa.decode_paged import (
+from tileops.kernels.attention.gqa.paged_decode import (
     gqa_decode_no_split_paged_kernel,
     gqa_decode_paged_block_ns,
 )
@@ -148,6 +148,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             call.max_seqlen_q == 1
             and call.paged_decode_refusal is None
             and call.decode_bs1_region
+            # The warp-specialized softmax reduces raw QK before applying the scale.
+            and (call.sm_scale is None or call.sm_scale >= 0.0)
             and cls.block_n_for_page_size(call.page_size) is not None
         )
 
@@ -234,6 +236,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         c = self.config

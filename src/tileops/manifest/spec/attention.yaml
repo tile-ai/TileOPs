@@ -164,7 +164,7 @@ GQAPagedFwdOp:
       page_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
       # Cached length per request, its query tokens (the last q_len) included;
       # q_len <= cache_seqlens is the caller's obligation.
-      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * PS + 1)"]}
+      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * PS + 1)", "in_range(0, P + 1 if pos_encoding_mode == 'rope' else W * PS + 1)"]}
       cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
       q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
       # A per-tensor scale is [1]; a per-request, per-KV-head one is [B, H_kv].
@@ -210,6 +210,9 @@ GQAPagedFwdOp:
   - {T_q: 526, NP: 512, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(2048, 16)", window_size_left: 128, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-120b-window}
   # Irregular: a page no key tile divides, a cache length no page fills, a ragged packing.
   - {T_q: 1007, NP: 774, PS: 48, W: 86, H: 32, H_kv: 8, D: 128, q_lens: [1000, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(4099, 9)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: qwen3-ragged-odd}
+  - {T_q: 8, NP: 512, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-decode, P: 4096, pos_encoding_mode: rope}
+  - {T_q: 2048, NP: 256, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-prefill, P: 4096, pos_encoding_mode: rope}
+  - {T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: qwen-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
   roofline:
     func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 
