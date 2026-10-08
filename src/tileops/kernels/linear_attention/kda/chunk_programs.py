@@ -11,7 +11,7 @@ Inside ``chunk_prepare`` the unit-triangular WY inverse is six nilpotent
 Neumann factors, so every step of it is a tensor-core matmul rather than a
 row-sequential forward substitution. Each of the four reference blocks rescales
 one pre-exponentiated tile instead of taking its own exponential, which is what
-keeps the shared-memory footprint at two CTAs per SM.
+keeps the shared-memory footprint at two CTAs per SM on SM90.
 """
 
 import functools
@@ -43,8 +43,14 @@ def chunk_prepare_program(
     total_tokens: int,
     num_seqs: int,
     threads: int = 256,
+    lean: bool = False,
 ):
-    """Build the chunk-local program for one static packed shape."""
+    """Build the chunk-local program for one static packed shape.
+
+    *lean* writes the gated query and key, the intra-chunk attention and the decay
+    as soon as the Gram matrices exist and holds the causal mask in registers. The
+    inverse's two tiles then reuse the shared memory those writes freed.
+    """
     BT = chunk_size
     tiling = GroupTiling(num_seqs, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
@@ -61,6 +67,30 @@ def chunk_prepare_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
+        def gated_query(qa_s, gc_s, i, j):
+            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]), dtype)
+
+        def gated_key(kb_s, gc_s, rows, i, j):
+            return T.cast(
+                T.cast(kb_s[i, j], accum)
+                * T.exp2(gc_s[rows - 1, j] - gc_s[(i // BC) * BC + REF, j]),
+                dtype,
+            )
+
+        @T.macro
+        def fill_causal(mask):
+            for i, j in T.Parallel(BT, BT):
+                mask[i, j] = T.cast(T.if_then_else(i >= j, 1.0, 0.0), dtype)
+
+        @T.macro
+        def store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv):
+            for i, j in T.Parallel(BT, BT):
+                if i < rows:
+                    aqk[0, bos + i, ihv, j] = T.cast(T.if_then_else(i >= j, aq[i, j], 0.0), dtype)
+            last = T.max(rows - 1, 0)
+            for j in T.Parallel(K):
+                dec[ic, ihv, j] = T.exp2(gc_s[last, j])
+
         @T.prim_func
         def main(
             q: T.Tensor([1, total_tokens, H, K], dtype),
@@ -92,6 +122,8 @@ def chunk_prepare_program(
                 p_s = T.alloc_shared([BT, BT], dtype)
                 gc_s = T.alloc_shared([BT, K], accum)
                 bt_s = T.alloc_shared([BT], accum)
+                if lean:
+                    mask_s = T.alloc_fragment([BT, BT], dtype)
 
                 akk = T.alloc_fragment([BT, BT], accum)
                 aq = T.alloc_fragment([BT, BT], accum)
@@ -119,8 +151,7 @@ def chunk_prepare_program(
                     qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
                     ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
                     b_s[i, j] = T.if_then_else(i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype))
-                for i, j in T.Parallel(BT, BT):
-                    m_s[i, j] = T.cast(T.if_then_else(i >= j, 1.0, 0.0), dtype)
+                fill_causal(mask_s if lean else m_s)
                 for i in T.Parallel(BT):
                     bt_s[i] = T.if_then_else(
                         i < rows, T.cast(beta[0, bos + i, ihv], accum), T.cast(0, accum)
@@ -130,7 +161,7 @@ def chunk_prepare_program(
                 # The chunk-local inclusive prefix sum of the log gate, in log2
                 # space: bf16 gates summed into an f32 accumulator.
                 T.clear(acc)
-                T.gemm(m_s, b_s, acc)
+                T.gemm(mask_s if lean else m_s, b_s, acc)
                 for i, j in T.Parallel(BT, K):
                     gc_s[i, j] = acc[i, j] * LOG2E
 
@@ -200,6 +231,13 @@ def chunk_prepare_program(
                         aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
                     T.sync_threads()
 
+                if lean:
+                    for i, j in T.Parallel(BT, K):
+                        if i < rows:
+                            qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
+                            kg[0, bos + i, ihv, j] = gated_key(kb_s, gc_s, rows, i, j)
+                    store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
+
                 # (I - N)^-1 = (I+N)(I+N^2)(I+N^4)(I+N^8)(I+N^16)(I+N^32) for the
                 # nilpotent strictly-lower N: six tensor-core factors, no row
                 # the chunk solves in sequence.
@@ -237,23 +275,11 @@ def chunk_prepare_program(
                 for i, j in T.Parallel(BT, K):
                     if i < rows:
                         w[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
-                        qg[0, bos + i, ihv, j] = T.cast(
-                            T.cast(qa_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]),
-                            dtype,
-                        )
-                        kg[0, bos + i, ihv, j] = T.cast(
-                            T.cast(kb_s[i, j], accum)
-                            * T.exp2(gc_s[rows - 1, j] - gc_s[(i // BC) * BC + REF, j]),
-                            dtype,
-                        )
-                for i, j in T.Parallel(BT, BT):
-                    if i < rows:
-                        aqk[0, bos + i, ihv, j] = T.cast(
-                            T.if_then_else(i >= j, aq[i, j], 0.0), dtype
-                        )
-                last = T.max(rows - 1, 0)
-                for j in T.Parallel(K):
-                    dec[ic, ihv, j] = T.exp2(gc_s[last, j])
+                        if not lean:
+                            qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
+                            kg[0, bos + i, ihv, j] = gated_key(kb_s, gc_s, rows, i, j)
+                if not lean:
+                    store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
                 T.sync_threads()
                 for i, j in T.Parallel(BT, V):
                     b_s[i, j] = T.cast(
@@ -283,12 +309,19 @@ def chunk_scan_program(
     total_tokens: int,
     num_seqs: int,
     threads: int = 256,
+    value_tile: int | None = None,
 ):
-    """Build the sequential chunk scan for one static packed shape."""
+    """Build the sequential chunk scan for one static packed shape.
+
+    The state's value columns update independently, so a CTA may take a *value_tile*
+    wide slice of them (all of them by default).
+    """
     BT = chunk_size
     tiling = GroupTiling(num_seqs, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
     HV, K, V = value_heads, dim_k, dim_v
+    BV = V if value_tile is None else value_tile
+    value_tiles = V // BV
     accum = "float32"
 
     @tilelang.jit(
@@ -310,7 +343,8 @@ def chunk_scan_program(
             o: T.Tensor([1, total_tokens, HV, V], dtype),
             ht: T.Tensor([num_seqs, HV, K, V], accum),
         ):
-            with T.Kernel(num_seqs, HV, threads=threads) as (iseq, ihv):
+            with T.Kernel(num_seqs, HV, value_tiles, threads=threads) as (iseq, ihv, iv):
+                v0 = iv * BV if value_tiles > 1 else 0
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
 
                 # The scan walks one sequence, so it needs where that sequence's
@@ -320,25 +354,25 @@ def chunk_scan_program(
                 length = T.cast(cu_seqlens[iseq + 1], "int32") - bos
                 chunk0 = tile_cum[iseq]
 
-                state_s = T.alloc_shared([K, V], dtype)
+                state_s = T.alloc_shared([K, BV], dtype)
                 w_s = T.alloc_shared([BT, K], dtype)
                 qg_s = T.alloc_shared([BT, K], dtype)
                 kg_s = T.alloc_shared([BT, K], dtype)
                 a_s = T.alloc_shared([BT, BT], dtype)
-                vn_s = T.alloc_shared([BT, V], dtype)
-                state_f = T.alloc_fragment([K, V], accum)
-                vn_f = T.alloc_fragment([BT, V], accum)
-                ws_f = T.alloc_fragment([BT, V], accum)
-                o_f = T.alloc_fragment([BT, V], accum)
-                upd = T.alloc_fragment([K, V], accum)
+                vn_s = T.alloc_shared([BT, BV], dtype)
+                state_f = T.alloc_fragment([K, BV], accum)
+                vn_f = T.alloc_fragment([BT, BV], accum)
+                ws_f = T.alloc_fragment([BT, BV], accum)
+                o_f = T.alloc_fragment([BT, BV], accum)
+                upd = T.alloc_fragment([K, BV], accum)
 
-                for i, j in T.Parallel(K, V):
-                    state_f[i, j] = h0[iseq, ihv, i, j]
+                for i, j in T.Parallel(K, BV):
+                    state_f[i, j] = h0[iseq, ihv, i, v0 + j]
 
                 for c in T.serial(T.ceildiv(length, BT)):
                     base = bos + c * BT
                     rows = T.min(BT, length - c * BT)
-                    for i, j in T.Parallel(K, V):
+                    for i, j in T.Parallel(K, BV):
                         state_s[i, j] = T.cast(state_f[i, j], dtype)
                     for i, j in T.Parallel(BT, K):
                         w_s[i, j] = T.if_then_else(
@@ -354,15 +388,15 @@ def chunk_scan_program(
                         a_s[i, j] = T.if_then_else(
                             i < rows, aqk[0, base + i, ihv, j], T.cast(0, dtype)
                         )
-                    for i, j in T.Parallel(BT, V):
+                    for i, j in T.Parallel(BT, BV):
                         vn_f[i, j] = T.if_then_else(
-                            i < rows, T.cast(u[0, base + i, ihv, j], accum), T.cast(0, accum)
+                            i < rows, T.cast(u[0, base + i, ihv, v0 + j], accum), T.cast(0, accum)
                         )
                     T.sync_threads()
 
                     T.clear(ws_f)
                     T.gemm(w_s, state_s, ws_f)
-                    for i, j in T.Parallel(BT, V):
+                    for i, j in T.Parallel(BT, BV):
                         vn_s[i, j] = T.cast(vn_f[i, j] - ws_f[i, j], dtype)
                     T.clear(o_f)
                     T.sync_threads()
@@ -370,15 +404,15 @@ def chunk_scan_program(
                     T.gemm(a_s, vn_s, o_f)
                     T.clear(upd)
                     T.gemm(kg_s, vn_s, upd, transpose_A=True)
-                    for i, j in T.Parallel(K, V):
+                    for i, j in T.Parallel(K, BV):
                         state_f[i, j] = state_f[i, j] * dec[chunk0 + c, ihv, i] + upd[i, j]
-                    for i, j in T.Parallel(BT, V):
+                    for i, j in T.Parallel(BT, BV):
                         if i < rows:
-                            o[0, base + i, ihv, j] = T.cast(o_f[i, j], dtype)
+                            o[0, base + i, ihv, v0 + j] = T.cast(o_f[i, j], dtype)
                     T.sync_threads()
 
-                for i, j in T.Parallel(K, V):
-                    ht[iseq, ihv, i, j] = state_f[i, j]
+                for i, j in T.Parallel(K, BV):
+                    ht[iseq, ihv, i, v0 + j] = state_f[i, j]
 
         return main
 
