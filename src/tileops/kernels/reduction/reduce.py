@@ -59,7 +59,8 @@ __all__ = [
 
 # The tiled simple reduce's reduction across threads takes one fp32 per thread of shared
 # memory besides its tile, at the widest thread count the tuner offers. Welford's plan
-# already counts a second tile, held only in its second pass and wider than this.
+# already counts a second tile, held only in its second pass and wider than this. The
+# untiled kernels' row buffer is dead by their reductions, so the scratch reuses it.
 _TILED_WORKSPACE_BYTES = max(AUTOTUNE_THREADS) * 4
 
 

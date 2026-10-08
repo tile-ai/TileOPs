@@ -460,6 +460,15 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
         return 2 + out_stage
 
     @classmethod
+    def row_scratch_per_thread(cls, call: SoftmaxCall) -> int:
+        """Shared bytes a thread's reduction scratch takes beside the one-tile row.
+
+        log_softmax reads its staged row again after both reductions, so their scratch,
+        one fp32 a thread, sits beside the row. softmax stages no row.
+        """
+        return 4 if call.op_kind == "log_softmax" else 0
+
+    @classmethod
     def row_plan(cls, call: SoftmaxCall) -> "tuple[int, int]":
         """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
         return cls._plan_rows(
@@ -467,6 +476,7 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
             call.dtype.itemsize,
             call.smem_budget,
             cls.num_buffers(call),
+            cls.row_scratch_per_thread(call),
         )
 
     @classmethod
@@ -500,13 +510,19 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     @staticmethod
     @functools.lru_cache(maxsize=256)
     def _plan_rows(
-        n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int
+        n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int, row_scratch: int
     ) -> "tuple[int, int]":
         """One tile keeps the *smallest* block_m: each extra row hands every thread
         another ``N_padded / threads`` registers until the fragment spills. Tiled rows
         take the block_m with strictly the fewest tiles, since fewer tiles means fewer
         global passes, and the smallest one on a tie, for occupancy."""
-        planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget, num_buffers=num_buffers)
+        planner = BlockConfigPlanner(
+            n_padded,
+            elem_bytes,
+            smem_budget,
+            num_buffers=num_buffers,
+            row_scratch_per_thread=row_scratch,
+        )
         threads = max(AUTOTUNE_THREADS)
         best_bm = 1
         best_tile_n = planner.tile_n_for(1, threads)
@@ -660,7 +676,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         self._elem_bytes = call.dtype.itemsize
         self._smem_budget = call.smem_budget
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget, num_buffers=self.num_buffers(call)
+            self.N_padded,
+            self._elem_bytes,
+            self._smem_budget,
+            num_buffers=self.num_buffers(call),
+            row_scratch_per_thread=self.row_scratch_per_thread(call),
         )
         self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)

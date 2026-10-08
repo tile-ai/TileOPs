@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.kernels.reduction.call_spec import SoftmaxCall
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
@@ -917,3 +918,32 @@ def test_subnormal_probabilities_survive(dtype, low: float) -> None:
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="selection reads the device architecture")
+@pytest.mark.parametrize(
+    "n",
+    [
+        # 101376 bytes: the row alone fills a 99 KB SM89 block.
+        pytest.param(25344, id="row-fills-budget"),
+        # 100352 bytes: the row fits beside 256 threads' scratch, not beside 512's.
+        pytest.param(25088, id="row-fits-default-threads-only"),
+    ],
+)
+def test_log_softmax_row_leaves_room_for_reduction_scratch(n: int) -> None:
+    """log_softmax keeps its staged row in shared memory across both reductions, so the
+    one-tile kernel serves a row only where it fits beside the scratch of every thread
+    count the tuner offers; a wider row streams."""
+    call = SoftmaxCall(
+        arch=89,
+        sm_count=128,
+        smem_budget=99 * 1024,
+        shape=(4096, n),
+        axis=1,
+        op_kind="log_softmax",
+        dtype=torch.float32,
+        out_dtype=torch.float32,
+    )
+
+    assert LogSoftmaxFwdOp(dim=-1).select_implementation("softmax", call) == "softmax_streaming"

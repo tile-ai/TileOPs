@@ -426,6 +426,7 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
 
 # The tiled kernel's two reductions across threads, the tile's max and then its sum, each
 # take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
+# The one-tile kernel's row buffer is dead by its reductions, so their scratch reuses it.
 _TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
 

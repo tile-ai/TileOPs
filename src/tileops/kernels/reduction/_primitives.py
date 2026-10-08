@@ -144,6 +144,10 @@ class BlockConfigPlanner:
             such as the scratch of a reduction across threads.
         split_workspace: Whether ``workspace_bytes`` applies only to a row split over more
             than one tile; a tile that holds the whole row keeps the full budget.
+        row_scratch_per_thread: Shared memory, per thread, the one-tile kernel holds beside
+            its staged row: the scratch of a reduction across threads that runs while the
+            row is still to be read. Zero where the row's buffer is dead by the reduction,
+            since the scratch then reuses it.
     """
 
     @staticmethod
@@ -169,6 +173,7 @@ class BlockConfigPlanner:
         frag_slots: int = 1,
         workspace_bytes: int = 0,
         split_workspace: bool = False,
+        row_scratch_per_thread: int = 0,
     ):
         self.N_padded = N_padded
         self.elem_bytes = elem_bytes
@@ -177,6 +182,7 @@ class BlockConfigPlanner:
         self.frag_slots = frag_slots
         self.workspace_bytes = workspace_bytes
         self.split_workspace = split_workspace
+        self.row_scratch_per_thread = row_scratch_per_thread
 
     @property
     def _row_bytes(self) -> int:
@@ -186,6 +192,10 @@ class BlockConfigPlanner:
         untiled kernels keep their second pass in fragments.
         """
         return self.N_padded * self.elem_bytes
+
+    def _row_budget(self, threads: int) -> int:
+        """Shared memory left for untiled rows beside the scratch of *threads* threads."""
+        return self.smem_budget - self.row_scratch_per_thread * threads
 
     def frag_elems(self, block_m: int, cols: int, threads: int) -> int:
         """Tile elements one thread holds across every live fragment."""
@@ -203,10 +213,12 @@ class BlockConfigPlanner:
         cap, shared memory, and the register file. The register question is
         asked of the narrowest untiled configuration, one row over
         ``DEFAULT_THREADS`` threads, since a larger ``block_m`` only adds to it.
+        The shared-memory question is asked at the widest candidate thread count,
+        whose scratch is the largest.
         """
         return (
             self.N_padded > MAX_SINGLE_TILE_COLS
-            or self._row_bytes > self.smem_budget
+            or self._row_bytes > self._row_budget(max(AUTOTUNE_THREADS))
             or not self.frag_fits(1, self.N_padded, DEFAULT_THREADS)
         )
 
@@ -229,7 +241,8 @@ class BlockConfigPlanner:
                 shared memory for this pair.
         """
         # Single-tile probe: one buffer, because the single-tile kernels hold
-        # the row in fragments and allocate no second shared copy.
+        # the row in fragments and allocate no second shared copy, beside the
+        # scratch *threads* threads take.
         if self.N_padded <= MAX_SINGLE_TILE_COLS and self.frag_fits(
             block_m, self.N_padded, threads
         ):
@@ -237,7 +250,7 @@ class BlockConfigPlanner:
                 block_m,
                 self.elem_bytes,
                 self.N_padded,
-                budget=self.smem_budget,
+                budget=self._row_budget(threads),
             )
             if single == self.N_padded:
                 return 0
@@ -361,7 +374,8 @@ class BlockConfigPlanner:
         and the sweep passes the device budget.  Capacity only, not a ranking:
         which of these to run untuned is ``default_config``'s call.
         """
-        max_block_m = (budget or self.smem_budget) // self._row_bytes
+        scratch = self.row_scratch_per_thread * threads
+        max_block_m = ((budget or self.smem_budget) - scratch) // self._row_bytes
         return [
             bm
             for bm in self._BLOCK_MS
