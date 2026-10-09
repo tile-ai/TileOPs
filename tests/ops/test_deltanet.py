@@ -9,7 +9,7 @@ from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
 )
-from tileops.ops import DeltaNetInferenceFwdOp, DeltaNetRecurrentFwdOp
+from tileops.ops import DeltaNetFwdOp, DeltaNetRecurrentFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.deltanet import (
     DeltaNetDecodeWorkload,
@@ -188,7 +188,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 
         return kernel
 
-    registry.register_kernel_builder("DeltaNetInferenceFwdOp", "deltanet_test", build_kernel)
+    registry.register_kernel_builder("DeltaNetFwdOp", "deltanet_test", build_kernel)
 
     q = torch.randn(1, 7, 2, 8, dtype=torch.float16)
     k = torch.randn_like(q)
@@ -198,7 +198,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
     cu_seqlens = torch.tensor([0, 3, 7], dtype=torch.int64)
     cu_seqlens_cpu = cu_seqlens.clone()
 
-    op = DeltaNetInferenceFwdOp(scale=0.125, use_qk_l2norm_in_kernel=True, target="deltanet_test")
+    op = DeltaNetFwdOp(scale=0.125, use_qk_l2norm_in_kernel=True, target="deltanet_test")
     o, final_state = op(q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)
 
     assert o.shape == v.shape
@@ -238,7 +238,7 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 128, 4, 64, dtype)
     inputs = test.gen_inputs()
-    op = DeltaNetInferenceFwdOp()
+    op = DeltaNetFwdOp()
     if dtype == torch.float16:
         test.check(op, *inputs)
         test.check(op, *inputs[:4])
@@ -254,7 +254,7 @@ def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
     """``use_qk_l2norm_in_kernel`` takes Q and K unnormalized and matches FLA."""
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
-    op = DeltaNetInferenceFwdOp(use_qk_l2norm_in_kernel=True)
+    op = DeltaNetFwdOp(use_qk_l2norm_in_kernel=True)
     test.check(op, *test.gen_inputs())
 
 
@@ -265,7 +265,7 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
     """Lengths below, across and on a chunk boundary in one packed call."""
     torch.manual_seed(42)
     test = DeltaNetInferenceTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
+    test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -274,7 +274,7 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
 def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = DeltaNetInferenceTest(2, 100, 4, 64, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
+    test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -285,7 +285,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
     # 16 chunks fall to the four-chunk partition floor, so sequences cross partitions.
-    test.check(DeltaNetInferenceFwdOp(target=BUILTIN), *inputs)
+    test.check(DeltaNetFwdOp(target=BUILTIN), *inputs)
 
 
 @pytest.mark.smoke
@@ -297,7 +297,7 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
-    op = DeltaNetInferenceFwdOp()
+    op = DeltaNetFwdOp()
     # The workload preserves the single-step 4e-8 bound (measured error 4e-9).
     test.check(op, *inputs)
     test.check(op, *inputs[:4])
@@ -310,7 +310,7 @@ def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 1024, 4, 128, torch.bfloat16)
     # 16 chunks a row over a four-chunk partition: a 128-wide state crosses partitions.
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
+    test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -320,7 +320,7 @@ def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs())
+    test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
 class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):

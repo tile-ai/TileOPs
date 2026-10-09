@@ -20,7 +20,7 @@ from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
 from tileops.kernels.sampling.call_spec import SamplingCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
-from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
@@ -220,7 +220,7 @@ def test_deltanet_inference_refuses_what_the_kernel_does_not_serve(
     call: DeltaNetInferenceCall, reason: str
 ) -> None:
     with pytest.raises(ValueError, match=reason):
-        DeltaNetInferenceFwdOp().select_implementation("deltanet_inference", call)
+        DeltaNetFwdOp().select_implementation("deltanet_inference", call)
 
 
 def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
@@ -250,8 +250,8 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
     return [
         (DeltaNetChunkFwdOp(), "deltanet_fwd", chunk),
         (DeltaNetChunkBwdOp(), "deltanet_bwd", chunk),
-        (DeltaNetInferenceFwdOp(), "deltanet_inference", _inference_call(heads=heads)),
-        (DeltaNetInferenceFwdOp(), "deltanet_inference", _inference_call(seq_len=1, heads=heads)),
+        (DeltaNetFwdOp(), "deltanet_inference", _inference_call(heads=heads)),
+        (DeltaNetFwdOp(), "deltanet_inference", _inference_call(seq_len=1, heads=heads)),
         (
             DeltaNetRecurrentFwdOp(),
             "deltanet_decode",

@@ -15,7 +15,7 @@ from benchmarks.baselines import (
 from tileops.ops import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
-    DeltaNetInferenceFwdOp,
+    DeltaNetFwdOp,
     DeltaNetRecurrentFwdOp,
 )
 
@@ -32,9 +32,9 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(DeltaNetInferenceFwdOp), ids=lambda case: case.id)
-def test_deltanet_inference_bench(case) -> None:
-    op = DeltaNetInferenceFwdOp(**case.arguments)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetFwdOp), ids=lambda case: case.id)
+def test_deltanet_fwd_bench(case) -> None:
+    op = DeltaNetFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fla": case.reference})
 
 

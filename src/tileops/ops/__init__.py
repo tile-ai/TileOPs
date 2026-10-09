@@ -32,7 +32,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from tileops.ops.linear_attention import (
         DeltaNetChunkBwdOp,
         DeltaNetChunkFwdOp,
-        DeltaNetInferenceFwdOp,
+        DeltaNetFwdOp,
         DeltaNetRecurrentFwdOp,
         GDNFwdOp,
         GLAChunkBwdOp,
@@ -250,7 +250,7 @@ _LAZY = {
     # Linear attention
     "DeltaNetChunkFwdOp": ".linear_attention",
     "DeltaNetChunkBwdOp": ".linear_attention",
-    "DeltaNetInferenceFwdOp": ".linear_attention",
+    "DeltaNetFwdOp": ".linear_attention",
     "DeltaNetRecurrentFwdOp": ".linear_attention",
     "GDNFwdOp": ".linear_attention",
     "GLAChunkFwdOp": ".linear_attention",

@@ -15,10 +15,10 @@ from tileops.kernels.linear_attention import (
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["DeltaNetInferenceFwdOp"]
+__all__ = ["DeltaNetFwdOp"]
 
 
-class DeltaNetInferenceFwdOp(Op):
+class DeltaNetFwdOp(Op):
     """Inference forward for the ungated delta rule.
 
     The input layout is ``[B, T, H, D]``. One call covers equal-length

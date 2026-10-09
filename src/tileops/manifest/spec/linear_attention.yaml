@@ -3,7 +3,7 @@
 # Source of truth for linear-attention op interfaces. Spec-only entries define
 # the public Op contract before the implementation conforms.
 
-DeltaNetInferenceFwdOp:
+DeltaNetFwdOp:
   # One inference contract for equal-length prefill, packed varlen, and decode.
   # The five training buffers of the chunkwise forward are not public outputs.
   # A packed call (cu_seqlens) carries one state per sequence.

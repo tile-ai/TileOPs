@@ -45,7 +45,7 @@ from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
 from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
-from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwdOp
+from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
@@ -453,7 +453,7 @@ def _linear_attention_cases():
 
     def deltanet_inference():
         k = torch.nn.functional.normalize(_x(_B, _S, _H, _D, dtype=torch.float32), dim=-1)
-        return DeltaNetInferenceFwdOp(), (
+        return DeltaNetFwdOp(), (
             _x(_B, _S, _H, _D) * 0.1,
             k.to(_DTYPE),
             _x(_B, _S, _H, _D) * 0.1,
@@ -800,7 +800,7 @@ for _op_cls in (
     DeltaNetChunkFwdOp,
     DeltaNetChunkBwdOp,
     DeltaNetRecurrentFwdOp,
-    DeltaNetInferenceFwdOp,
+    DeltaNetFwdOp,
     GDNFwdOp,
     KDAFwdOp,
     FFTC2CFwdOp,
