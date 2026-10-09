@@ -48,6 +48,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemmFP8BlockScaleKernel,
         GemmFP8TensorScaleKernel,
         GemmFP81D2DFwdKernel,
+        GemmFP81D2DWaveFwdKernel,
         GemmTMAKernel,
         GemvKernel,
     )
@@ -168,6 +169,7 @@ _LAZY = {
     "GDNDensePrefillFwdKernel": ".linear_attention",
     "GemmCpAsyncKernel": ".gemm",
     "GemmFP81D2DFwdKernel": ".gemm",
+    "GemmFP81D2DWaveFwdKernel": ".gemm",
     "GemmFP8BlockScaleKernel": ".gemm",
     "GemmFP8TensorScaleKernel": ".gemm",
     "GemmTMAKernel": ".gemm",

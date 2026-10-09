@@ -161,4 +161,46 @@ TL_DEFINE_FP8_GEMM_1D2D_HELPERS(128)
 
 #undef TL_DEFINE_FP8_GEMM_1D2D_HELPERS
 
+// A value every lane of the warp already holds, broadcast from lane 0 so the
+// compiler can prove it warp-uniform and keep it in a uniform register.
+TL_DEVICE int fp8_uniform(int value) {
+  return __shfl_sync(0xffffffffu, value, 0);
+}
+
+// Prefetch one 2-D TMA box into L2 without a shared-memory destination or
+// barrier.
+TL_DEVICE void fp8_tma_prefetch_2d(const CUtensorMap& descriptor, int x,
+                                   int y) {
+  uint64_t desc = reinterpret_cast<uint64_t>(&descriptor);
+  asm volatile("cp.async.bulk.prefetch.tensor.2d.L2.global.tile [%0, {%1, %2}];"
+               :
+               : "l"(desc), "r"(x), "r"(y)
+               : "memory");
+}
+
+// Warpgroup g's 64 rows, 64g..64g+63, of a 128-row A wave times a B stage, both
+// 128B-swizzled and K-major. The warpgroup index is broadcast from lane 0, so
+// the compiler can prove it warp-uniform and keeps both descriptors in uniform
+// registers; a per-thread value would cost an R2UR per issue.
+template <int BlockN>
+__device__ __forceinline__ void fp8_wave_wgmma_64xN(float* accumulator,
+                                                    fp8_e4_t* a_wave,
+                                                    fp8_e4_t* b_stage) {
+  int const group = fp8_uniform(static_cast<int>(threadIdx.x) >> 7);
+  fp8_gemm_wgmma_64x128_by_128xN<BlockN>(accumulator, a_wave + group * 64 * 128,
+                                         b_stage);
+}
+
+#define TL_DEFINE_FP8_WAVE_WGMMA(N)                      \
+  __device__ __forceinline__ void fp8_wave_wgmma_64x##N( \
+      float* acc, fp8_e4_t* a, fp8_e4_t* b) {            \
+    fp8_wave_wgmma_64xN<N>(acc, a, b);                   \
+  }
+
+TL_DEFINE_FP8_WAVE_WGMMA(64)
+TL_DEFINE_FP8_WAVE_WGMMA(128)
+TL_DEFINE_FP8_WAVE_WGMMA(192)
+
+#undef TL_DEFINE_FP8_WAVE_WGMMA
+
 }  // namespace tl
