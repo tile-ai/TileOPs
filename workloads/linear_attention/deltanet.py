@@ -384,10 +384,20 @@ class DeltaNetInferenceCall(CallWorkload):
 
 
 def decode_verification(dtype):
-    from workloads.numerics import Exact
+    from workloads.numerics import Custom, Exact, assert_rounded
 
     tol = {torch.float32: 2e-06, torch.float16: 0.0001, torch.bfloat16: 0.002}[dtype]
-    return Exact(atol=tol, rtol=tol)
+    if dtype == torch.float32:
+        return Exact(atol=tol, rtol=tol)
+
+    def validate(got, expected):
+        # This op stores its state in the token dtype too, so the state takes the allowance.
+        got = got if isinstance(got, (tuple, list)) else (got,)
+        expected = expected if isinstance(expected, (tuple, list)) else (expected,)
+        for produced, reference in zip(got, expected, strict=True):
+            assert_rounded(produced, reference, atol=tol, rtol=tol)
+
+    return Custom(validate, "one rounding unit, then the decode bound")
 
 
 def inference_verification(dtype, *, decode=False, l2norm=False):

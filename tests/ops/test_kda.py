@@ -82,14 +82,12 @@ def test_kda_prefill_serves_a_64_wide_state() -> None:
     _check(1, 256, 4, 64, torch.bfloat16)
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
 def test_kda_decode_matches_reference(batch: int) -> None:
     torch.manual_seed(42)
     _check(batch, 1, 4, 128, torch.bfloat16)
 
 
-@pytest.mark.sm90
 def test_kda_decode_runs_from_a_zero_state() -> None:
     torch.manual_seed(42)
     _check(4, 1, 4, 128, torch.bfloat16, has_initial_state=False)

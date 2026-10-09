@@ -217,7 +217,6 @@ def test_gdn_partitioned_dense_prefill_matches_reference(
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state)
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
 def test_gdn_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> None:
@@ -226,7 +225,6 @@ def test_gdn_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> N
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "flags",
     [
@@ -261,7 +259,6 @@ def test_gdn_decode_runs_each_recurrence_flag(flags: dict) -> None:
     test.check(GDNFwdOp(**flags), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 def test_gdn_decode_groups_value_heads_over_a_64_wide_state() -> None:
     """A batch and head counts that are neither powers of two nor warp multiples."""
     torch.manual_seed(42)
@@ -269,7 +266,6 @@ def test_gdn_decode_groups_value_heads_over_a_64_wide_state() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 def test_gdn_dense_decode_propagates_fp32_state() -> None:
     torch.manual_seed(42)
     workload = GDNFwdWorkload(

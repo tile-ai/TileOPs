@@ -16,9 +16,9 @@ __all__ = ["KDARecurrentDecodeFwdKernel"]
 
 
 class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
-    """SM90 decode: one recurrence step per sequence, one value channel per thread."""
+    """One recurrence step per sequence, one value channel per thread."""
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
 
     @classmethod
     def applies(cls, call: KDACall) -> bool:

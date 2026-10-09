@@ -1,4 +1,4 @@
-"""SM90 single-token DeltaNet inference decode."""
+"""Single-token DeltaNet inference decode."""
 
 from typing import Optional, Tuple
 
@@ -10,20 +10,20 @@ from tileops.kernels.linear_attention.call_spec import (
     DeltaNetInferenceFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
+from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_tl
 
 __all__ = ["DeltaNetDenseDecodeFwdKernel"]
 
 
 class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
-    """SM90 FP16/BF16 ungated decode with FP32 recurrent state.
+    """FP16/BF16 ungated decode with FP32 recurrent state.
 
     The shared delta-rule decode program is built with its gate left out, so no
     decay is read, exponentiated or multiplied into the state slice. The Q/K L2
     normalization and the starting state are build flags of the same program.
     """
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
 
     @classmethod
     def applies(cls, call: DeltaNetInferenceCall) -> bool:
@@ -100,7 +100,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         self.dtype = dtype
         self.has_initial_state = has_initial_state
         self.init_config()
-        self._kernel_fn = delta_decode_sm90_tl(
+        self._kernel_fn = delta_decode_tl(
             batch,
             heads,
             heads,

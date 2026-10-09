@@ -1,4 +1,4 @@
-"""SM90 single-token Gated DeltaNet (GDN) inference decode."""
+"""Single-token Gated DeltaNet (GDN) inference decode."""
 
 from typing import Optional, Tuple
 
@@ -10,23 +10,21 @@ from tileops.kernels.linear_attention.call_spec import (
     GDNFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_sm90_tl
+from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_tl
 
 __all__ = ["GDNDenseDecodeFwdKernel"]
 
 
 class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
-    """SM90 FP16/BF16 decode with FP32 recurrent state.
+    """FP16/BF16 decode with FP32 recurrent state.
 
-    One warp owns a 16-column state tile. Two lanes reduce the K dimension for
-    each output column, keeping the decayed state slice in registers so the
-    state update and output projection reuse the same load. The gate transform,
-    the beta sigmoid, the Q/K L2 normalization and the starting state are build
-    flags of the program, so a call that asks for none of them runs a program
-    that contains none of them.
+    The decayed state slice stays in registers, so the state update and output
+    projection reuse the same load. The gate transform, the beta sigmoid, the Q/K
+    L2 normalization and the starting state are build flags of the program, so a
+    call that asks for none of them runs a program that contains none of them.
     """
 
-    supported_archs = [90]
+    supported_archs = [80, 89, 90]
 
     @classmethod
     def applies(cls, call: GDNCall) -> bool:
@@ -118,7 +116,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.state_v_first = state_v_first
         self.gate_in_kernel = gate_in_kernel
         self.init_config()
-        self._kernel_fn = delta_decode_sm90_tl(
+        self._kernel_fn = delta_decode_tl(
             batch,
             heads,
             value_heads,
