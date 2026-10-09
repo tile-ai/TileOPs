@@ -52,17 +52,16 @@ def _softmax_on_chip_kernel(
     # The output's exponent is raised by this many before the exp2 and the result scaled
     # back by a multiply, which keeps a subnormal probability.
     exp_bias = 64
-    # One MUFU.EX2, which flushes a subnormal result to zero. ``exp2f`` guards the same
-    # instruction with a test and two multiplies to keep it.
-    prelude = r"""
-static __device__ __forceinline__ float tl_approx_exp2(float x) {
-  float r;
-  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
-  return r;
-}
-"""
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-include", csrc_path("cluster_partials.h")])
+    @tilelang.jit(
+        out_idx=[1],
+        compile_flags=[
+            "-include",
+            csrc_path("cluster_partials.h"),
+            "-include",
+            csrc_path("approx_math.h"),
+        ],
+    )
     def build():
         def fold(peak, total, other_peak, other_total):
             """The ``(max, sum)`` of two partial pairs; two empty ones stay empty."""
@@ -74,7 +73,7 @@ static __device__ __forceinline__ float tl_approx_exp2(float x) {
             """``exp(value - peak)`` of one element for the sum, which is at least one: a
             subnormal term reads as zero."""
             return T.call_extern(
-                "float32", "tl_approx_exp2", (T.cast(value, "float32") - peak) * LOG2E
+                "float32", "tl::approx_exp2", (T.cast(value, "float32") - peak) * LOG2E
             )
 
         def row_scale(total):
@@ -90,7 +89,7 @@ static __device__ __forceinline__ float tl_approx_exp2(float x) {
                 # The division is one more term of the exponent, which the scaling
                 # takes in the same FFMA.
                 biased = T.call_extern(
-                    "float32", "tl_approx_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
+                    "float32", "tl::approx_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
                 )
                 return biased * (2.0**-exp_bias)
             return T.cast(value, "float32") - peak - scale
@@ -100,9 +99,7 @@ static __device__ __forceinline__ float tl_approx_exp2(float x) {
             x: T.Tensor[(M * cluster, chunk), dtype],
             y: T.Tensor[(M * cluster, chunk), out_dtype],
         ):
-            with T.ClusterKernel(
-                M * cluster, threads=threads, cluster_dims=cluster, prelude=prelude
-            ) as cta:
+            with T.ClusterKernel(M * cluster, threads=threads, cluster_dims=cluster) as cta:
                 T.annotate_min_blocks_per_sm(ctas_per_sm)
                 tx = T.get_thread_binding()
                 rank = cta % cluster

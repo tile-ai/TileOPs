@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 from tvm import DataType
 
+from tileops._csrc import csrc_path
 from tileops.kernels.elementwise._broadcast import (
     broadcast_plan_for,
     compute_broadcast_offsets,
@@ -14,7 +15,6 @@ from tileops.kernels.elementwise._broadcast import (
     row_tile_leaves_tail,
 )
 from tileops.kernels.elementwise._op_body import GuardedOpFunc, op_func_for
-from tileops.kernels.elementwise._prelude import PRELUDE
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
@@ -26,6 +26,10 @@ _TAIL_PACK_RATIO = 4
 # than 32 registers, which leaves fewer threads resident; asking for blocks enough
 # to fill this many threads holds it at 32.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
+# Every builder compiles with the device helpers an op body may call
+# (``tl::approx_reciprocal``). They are forceinline, so a kernel that calls none of
+# them compiles to the same SASS as one built without the header.
+_COMPILE_FLAGS = ["-include", csrc_path("approx_math.h")]
 
 
 def _fast_of(op_func):
@@ -66,13 +70,13 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg, prelude=PRELUDE) as bx:
+            with T.Kernel(T.ceildiv(N, threads_arg), threads=threads_arg) as bx:
                 for i in T.Parallel(threads_arg):
                     idx = bx * threads_arg + i
                     y[idx] = op_func(x[idx])
@@ -87,7 +91,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_pe
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
@@ -98,7 +102,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_pe
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg, prelude=PRELUDE) as bx:
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 if contiguous:
                     base = bx * block_size + T.get_thread_binding() * npt_arg
                     x_run = T.alloc_local((npt_arg,), dtype)
@@ -352,7 +356,7 @@ def _row_broadcast_prim(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(grid_vecs, threads=threads, prelude=PRELUDE) as bx:
+            with T.Kernel(grid_vecs, threads=threads) as bx:
                 if fast is not None and stage:
                     T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
                 if stage:
@@ -377,7 +381,7 @@ def _row_broadcast_prim(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(body_blocks + tail_blocks, threads=threads, prelude=PRELUDE) as bx:  # noqa: SIM117
+            with T.Kernel(body_blocks + tail_blocks, threads=threads) as bx:  # noqa: SIM117
                 with T.If(bx < body_blocks):
                     with T.Then():
                         by = bx // full_blocks
@@ -413,7 +417,7 @@ def _row_broadcast_prim(
         b: T.Tensor((b_numel,), dtype),
         y: T.Tensor((N_total,), out_dtype),
     ):
-        with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads, prelude=PRELUDE) as (
+        with T.Kernel(T.ceildiv(inner, block_cols), rows, threads=threads) as (
             bx,
             by,
         ):
@@ -450,7 +454,7 @@ def make_binary_register_copy(
     """Binary register_copy: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
     def kernel(threads, num_per_thread):
         def _vector_lanes(dtype, count):
             """Elements of *dtype* in one 16-byte vector, at most *count*."""
@@ -476,7 +480,7 @@ def make_binary_register_copy(
             b: T.Tensor((N_total,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE) as bx:
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
                 if contiguous:
                     base = bx * block_size + T.get_thread_binding() * num_per_thread
                     a_run = T.alloc_local((num_per_thread,), dtype)
@@ -539,7 +543,7 @@ def make_binary_direct(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
         def kernel(threads):
             op_func = op_func_for(op_name)
 
@@ -549,7 +553,7 @@ def make_binary_direct(
                 b: T.Tensor((N_total,), dtype),
                 y: T.Tensor((N_total,), out_dtype),
             ):
-                with T.Kernel(T.ceildiv(N_total, threads), threads=threads, prelude=PRELUDE) as bx:
+                with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
                     for i in T.Parallel(threads):
                         idx = bx * threads + i
                         y[idx] = op_func(a[idx], b[idx])
@@ -560,7 +564,7 @@ def make_binary_direct(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
         def kernel(threads):
             return _row_broadcast_prim(
                 N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, 1
@@ -568,7 +572,7 @@ def make_binary_direct(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
     def kernel(threads):
         op_func = op_func_for(op_name)
         ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -579,7 +583,7 @@ def make_binary_direct(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, threads), threads=threads, prelude=PRELUDE) as bx:
+            with T.Kernel(T.ceildiv(N_total, threads), threads=threads) as bx:
                 for i in T.Parallel(threads):
                     flat_idx = bx * threads + i
                     a_off, b_off = compute_broadcast_offsets(
@@ -615,7 +619,7 @@ def make_binary_explicit(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
         def kernel(threads, num_per_thread):
             return _row_broadcast_prim(
                 N_total,
@@ -634,7 +638,7 @@ def make_binary_explicit(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
         def kernel(threads, num_per_thread):
             op_func = op_func_for(op_name)
             block_size = threads * num_per_thread
@@ -645,9 +649,7 @@ def make_binary_explicit(
                 b: T.Tensor((N_total,), dtype),
                 y: T.Tensor((N_total,), out_dtype),
             ):
-                with T.Kernel(
-                    T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE
-                ) as bx:
+                with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
                     for i, j in T.Parallel(threads, num_per_thread):
                         idx = (bx * threads + i) * num_per_thread + j
                         y[idx] = op_func(a[idx], b[idx])
@@ -656,7 +658,7 @@ def make_binary_explicit(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
     def kernel(threads, num_per_thread):
         op_func = op_func_for(op_name)
         ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -668,7 +670,7 @@ def make_binary_explicit(
             b: T.Tensor((b_numel,), dtype),
             y: T.Tensor((N_total,), out_dtype),
         ):
-            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads, prelude=PRELUDE) as bx:
+            with T.Kernel(T.ceildiv(N_total, block_size), threads=threads) as bx:
                 for i, j in T.Parallel(threads, num_per_thread):
                     flat_idx = (bx * threads + i) * num_per_thread + j
                     a_off, b_off = compute_broadcast_offsets(
@@ -689,14 +691,14 @@ def make_binary_explicit(
 def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread."""
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg
 
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
-            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg, prelude=PRELUDE) as (
+            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (
                 bx,
                 by,
             ):

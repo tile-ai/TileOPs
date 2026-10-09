@@ -15,7 +15,6 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
-from tileops.kernels.elementwise._prelude import approx_reciprocal
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
     LerpCall,
@@ -203,6 +202,16 @@ _NUDGED_QUOTIENT = {"float16": float(1 << 8), "bfloat16": float(1 << 11)}
 _NUDGE = 2.0**-21
 
 
+def _approx_reciprocal(x):
+    """``1 / x`` to two ulp for a normal *x* whose reciprocal is normal, else a zero.
+
+    A subnormal *x* reads as a zero of its sign and returns an infinity; a reciprocal
+    that would be subnormal returns a zero. A caller takes those two answers as a
+    refusal and computes the value another way.
+    """
+    return T.call_extern("float32", "tl::approx_reciprocal", x)
+
+
 def _nudged_floor(num, den, dtype, fast_body):
     """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
 
@@ -214,13 +223,13 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
     on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
     or NaN operand, every quotient that underflows and every divisor
-    ``approx_reciprocal`` does not cover.
+    ``_approx_reciprocal`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
-    # One reciprocal serves every element that shares b. ``approx_reciprocal`` answers a
+    # One reciprocal serves every element that shares b. ``_approx_reciprocal`` answers a
     # zero or an infinity for the divisors it does not cover, and ``holds`` refuses both,
     # so the operand pairs it declines reach the exact body below instead.
-    quotient = num * approx_reciprocal(den)
+    quotient = num * _approx_reciprocal(den)
 
     def value(q):
         nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
