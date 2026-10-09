@@ -126,7 +126,7 @@ repos:
 
       - id: native-source-strings-in-csrc
         name: C++/CUDA source strings belong in src/tileops/csrc
-        entry: '\b(import_source\s*\(|prelude\s*=|asm(\s+volatile)?\s*\()|__(device|global)__'
+        entry: '\b(import_source\s*\(|prelude\s*=|(__)?asm(__)?(\s+(__)?volatile(__)?)?\s*\()|__(device|global)__'
         language: pygrep
         files: ^(src/tileops|workloads|benchmarks|tests)/.*\.py$
 
