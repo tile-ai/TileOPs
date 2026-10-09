@@ -13,13 +13,11 @@ from benchmarks.baselines import (
     backward_of,
     compiled_reference,
     flashinfer_op,
-    private_inputs,
 )
 from tileops.ops import (
     GQABwdOp,
     GQADenseFwdOp,
     GQAPagedFwdOp,
-    GQAPrefillPagedWithKVCacheFwdOp,
     GQAVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
@@ -28,7 +26,6 @@ from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,
     GQADensePrefillCall,
 )
-from workloads.attention.gqa.prefill_paged_kv_append import paged_prefill_result
 from workloads.attention.gqa.varlen import (
     GQAVarlenCall,
     GQAVarlenScaledCall,
@@ -451,91 +448,6 @@ def test_gqa_varlen_fwd_bench(case) -> None:
         if flashinfer_fn is not None:
             implementations[FLASHINFER_TAG] = flashinfer_fn
     op = GQAVarlenFwdOp(**case.arguments)
-    bench.Runner(op, case).compare(implementations)
-
-
-def _fa3_gqa_prefill_paged(workload, inputs):
-    """FA3 paged append, including rotation and FP8 cache adaptation when required."""
-    from flash_attn_interface import flash_attn_with_kvcache
-
-    q, _, _, _, _, _, _, _, _, table = inputs
-    page = workload.page_size
-    shape = (-1, page, workload.heads_kv, workload.dim)
-    positions = torch.cat(
-        [
-            torch.arange(old, old + length, device=q.device)
-            for old, length in zip(workload.cache_lens, workload.q_lens, strict=True)
-        ]
-    ).int()
-    requests = torch.repeat_interleave(
-        torch.arange(workload.batch, device=q.device),
-        torch.tensor(workload.q_lens, device=q.device),
-    )
-    rows = table[requests, positions.long() // page].long() * page + positions % page
-    rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
-    rotary_cache = None
-    if workload.fuse_rope:
-        rotary_dim = workload.rotary_dim or workload.dim
-        half = rotary_dim // 2
-        frequency = workload.rope_base ** (-torch.arange(half, device=q.device).float() / half)
-        angles = (
-            torch.arange(
-                max(a + b for a, b in zip(workload.cache_lens, workload.q_lens, strict=True)),
-                device=q.device,
-            )[:, None]
-            * frequency
-        )
-        rotary_cache = torch.cat((angles.cos().to(q.dtype), angles.sin().to(q.dtype)), -1).float()
-
-    def run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table):
-        if rotary_cache is not None:
-            q_rot, k_rot = rotate(
-                positions, q.flatten(1), k_new.flatten(1), workload.dim, rotary_cache, True
-            )
-            q, k_new = q_rot.reshape_as(q), k_rot.reshape_as(k_new)
-        quantized = k_pages.dtype == torch.float8_e4m3fn
-        if quantized:
-            keys = (k_pages.float() * k_scale[0]).to(q.dtype)
-            values = (v_pages.float() * v_scale[0]).to(q.dtype)
-        else:
-            keys, values = k_pages, v_pages
-        out = flash_attn_with_kvcache(
-            q,
-            keys.view(shape),
-            values.view(shape),
-            k=k_new,
-            v=v_new,
-            cache_seqlens=seqlens,
-            page_table=table,
-            cu_seqlens_q=cu_q,
-            cu_seqlens_k_new=cu_q,
-            max_seqlen_q=workload.max_seqlen_q,
-            causal=workload.is_causal,
-            softmax_scale=workload.sm_scale,
-            softcap=float(workload.softcap or 0.0),
-        )
-        if quantized:
-            # Persist only newly appended tokens in the caller's quantized cache.
-            k_pages[rows] = (k_new.float() / k_scale[0]).to(k_pages.dtype)
-            v_pages[rows] = (v_new.float() / v_scale[0]).to(v_pages.dtype)
-        return out[0] if isinstance(out, tuple) else out
-
-    return run
-
-
-@pytest.mark.parametrize(
-    "case", bench.cases(GQAPrefillPagedWithKVCacheFwdOp), ids=lambda case: case.id
-)
-def test_gqa_prefill_paged_with_kv_cache_fwd_bench(case) -> None:
-    inputs = case.inputs
-    op = GQAPrefillPagedWithKVCacheFwdOp(**case.arguments)
-    # Every implementation writes k_new and v_new into k_pages and v_pages.
-    implementations = {"torch-ref": private_inputs(case.reference, inputs, 3, 4)}
-    fa3_fn = _fa3_gqa_prefill_paged(case.workload, inputs)
-    if fa3_fn is not None:
-        implementations["fa3"] = private_inputs(
-            lambda *args: paged_prefill_result(fa3_fn, *args), inputs, 3, 4
-        )
     bench.Runner(op, case).compare(implementations)
 
 

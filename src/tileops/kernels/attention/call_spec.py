@@ -20,7 +20,6 @@ __all__ = [
     "GQABwdInterface",
     "GQADenseFwdInterface",
     "GQAPagedFwdInterface",
-    "GQAPrefillPagedFwdInterface",
     "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
@@ -348,56 +347,6 @@ class MHAPagedDecodeFwdInterface(KernelInterface):
 
         Returns:
             A new output shaped like *q*, in ``call.dtype``.
-        """
-
-
-class GQAPrefillPagedFwdInterface(KernelInterface):
-    """Packed GQA prefill that appends its keys and values to a paged cache."""
-
-    request = AttentionCall
-
-    @abstractmethod
-    def forward(
-        self,
-        q: torch.Tensor,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        k_scale: torch.Tensor,
-        v_scale: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-        max_seqlen_q: int,
-        cos_table: Optional[torch.Tensor] = None,
-        sin_table: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Append the new tokens to each request's pages, then attend the chunk to the cache.
-
-        Every tensor is on ``call.device`` and all but the pools are contiguous. ``k_pages``
-        and ``v_pages`` are written in place: the rows the block table names past each
-        ``cache_seqlens`` entry receive the new keys and values (rotated keys under
-        ``call.fuse_rope``).
-
-        Args:
-            q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
-            k_new: ``(total_q, heads_kv, dim)`` in ``call.dtype``.
-            v_new: The same, for the values.
-            k_pages: ``(pool_rows, heads_kv, dim)`` in ``call.cache_dtype``.
-            v_pages: The same, for the values.
-            k_scale: ``float32`` ``(1,)`` dequantization scale of an FP8 pool.
-            v_scale: The same, for ``v_pages``.
-            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in ``q``.
-            cache_seqlens: ``int32`` ``(batch,)`` cache lengths before the append.
-            block_table: ``int32`` ``(batch, max_pages_per_req)``.
-            max_seqlen_q: The longest request the launch covers.
-            cos_table: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
-                when ``call.fuse_rope``.
-            sin_table: The same layout, passed exactly when ``cos_table`` is.
-
-        Returns:
-            A new ``(total_q, heads, dim)`` output in ``call.dtype``.
         """
 
 

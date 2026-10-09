@@ -257,59 +257,6 @@ class TestBytesOracle:
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
 
-    def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
-        """The cache is one pool and the call touches the pages its block table
-        names, so the recount prices that subset rather than the pool. The scales
-        travel with every call and the kernel reads them only for fp8 pages."""
-        from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
-
-        name = "GQAPrefillPagedWithKVCacheFwdOp"
-        base = next(r for r in _manifest_rows(name) if "cache_dtype" not in r)
-        # One token against an empty or single-page cache names one or two entries of
-        # its block-table row; a length that does not divide by the page size is
-        # rounded up to a page.
-        batch = len(_manifest_call(name, base).values("cache_seqlens"))
-        short = dict(base, T_q=batch, q_lens=[1] * batch, cache_lens=[0, 64] * (batch // 2))
-        rows = {
-            "cached": base,
-            "fp8 cache": dict(base, cache_dtype="float8_e4m3fn"),
-            "short": short,
-        }
-        for label, row in rows.items():
-            call = _manifest_call(name, row)
-            ix = call.ix
-            heads, heads_kv, dim, page_size = ix["H"], ix["H_kv"], ix["D"], ix["page_size"]
-            offsets, cache_lens = call.values("cu_seqlens_q"), call.values("cache_seqlens")
-            q_lens = [b - a for a, b in zip(offsets, offsets[1:], strict=False)]
-            total_q, cached, batch = sum(q_lens), sum(cache_lens), len(q_lens)
-            cache = torch.float8_e4m3fn if "cache_dtype" in row else torch.float16
-            pages_named = sum(
-                -(-(q + c) // page_size) for q, c in zip(q_lens, cache_lens, strict=True)
-            )
-            new_kv = ((total_q, heads_kv, dim), torch.float16)
-            fp8 = cache is torch.float8_e4m3fn
-            oracle = _ledger(
-                name,
-                q=((total_q, heads, dim), torch.float16),
-                k_new=new_kv,
-                v_new=new_kv,
-                # the cached tokens the block table points at, not the whole pool
-                k_pages=((cached, heads_kv, dim), cache),
-                v_pages=((cached, heads_kv, dim), cache),
-                # the new tokens are appended into those same pages
-                k_pages_write=((total_q, heads_kv, dim), cache),
-                v_pages_write=((total_q, heads_kv, dim), cache),
-                k_scale=((1,), torch.float32) if fp8 else None,
-                v_scale=((1,), torch.float32) if fp8 else None,
-                k_scale_unread=not fp8,
-                v_scale_unread=not fp8,
-                cu_seqlens_q=((batch + 1,), torch.int32),
-                cache_seqlens=((batch,), torch.int32),
-                block_table=((pages_named,), torch.int32),
-                o=((total_q, heads, dim), torch.float16),
-            )
-            assert gqa_prefill_paged_with_kv_cache_fwd_roofline(call)[1] == oracle, label
-
     def test_gqa_paged_reads_the_rows_its_page_table_names(self):
         """The cache is one pool, and the call reads the rows its page table names as far
         as each request's cached length; the pages it never names move nothing."""
@@ -756,7 +703,6 @@ HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoEFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoESharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GQAPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "GQAPagedFwdOp": "it reads the rows its page table names, not the pool",
