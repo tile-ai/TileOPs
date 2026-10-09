@@ -22,7 +22,7 @@ from tilelang.profiler import do_bench
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    GLABwdInterface,
+    GLAChunkBwdInterface,
     GLAChunkCall,
     head_count_refusal,
 )
@@ -30,7 +30,7 @@ from tileops.kernels.linear_attention.gla.chunk_fwd import gla_precompute_g_kern
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops.utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
-__all__ = ["GLABwdKernel"]
+__all__ = ["GLAChunkBwdKernel"]
 
 
 def _dh_tile_refusal(dim_k_part: int, dim_v_part: int, threads: int) -> Optional[str]:
@@ -618,7 +618,7 @@ def _gla_bwd_fused_kernel(
     return _fused_func
 
 
-class GLABwdKernel(Kernel, GLABwdInterface):
+class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     """GLA backward kernel — two-pass architecture.
 
     Pass 1 (sequential reverse, B*H*Vp*Kp blocks): Accumulate dh per chunk.

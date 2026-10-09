@@ -14,20 +14,20 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
-    "DeltaNetBwdInterface",
+    "DeltaNetCall",
+    "DeltaNetChunkBwdInterface",
     "DeltaNetChunkCall",
+    "DeltaNetChunkFwdInterface",
     "DeltaNetDecodeCall",
     "DeltaNetDecodeFwdInterface",
     "DeltaNetFwdInterface",
-    "DeltaNetInferenceCall",
-    "DeltaNetInferenceFwdInterface",
     "GDNCall",
     "GDNFwdInterface",
-    "GLABwdInterface",
+    "GLAChunkBwdInterface",
     "GLAChunkCall",
+    "GLAChunkFwdInterface",
     "GLADecodeCall",
     "GLADecodeFwdInterface",
-    "GLAFwdInterface",
     "KDACall",
     "KDAFwdInterface",
     "head_count_refusal",
@@ -72,7 +72,7 @@ class DeltaNetDecodeCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class DeltaNetInferenceCall(CallSpec):
+class DeltaNetCall(CallSpec):
     """One ungated DeltaNet inference call, with the recurrence semantics the op fixed."""
 
     batch: int = 0
@@ -200,7 +200,7 @@ class KDACall(CallSpec):
         return None
 
 
-class DeltaNetFwdInterface(KernelInterface):
+class DeltaNetChunkFwdInterface(KernelInterface):
     """Chunked ungated delta rule, forward, keeping what the backward reads."""
 
     request = DeltaNetChunkCall
@@ -229,7 +229,7 @@ class DeltaNetFwdInterface(KernelInterface):
         """
 
 
-class DeltaNetBwdInterface(KernelInterface):
+class DeltaNetChunkBwdInterface(KernelInterface):
     """Chunked ungated delta rule, backward, from what the forward kept."""
 
     request = DeltaNetChunkCall
@@ -303,10 +303,10 @@ class DeltaNetDecodeFwdInterface(KernelInterface):
         """
 
 
-class DeltaNetInferenceFwdInterface(KernelInterface):
+class DeltaNetFwdInterface(KernelInterface):
     """Ungated delta rule for inference: one prefill or decode step over caller-owned state."""
 
-    request = DeltaNetInferenceCall
+    request = DeltaNetCall
 
     @abstractmethod
     def forward(
@@ -339,7 +339,7 @@ class DeltaNetInferenceFwdInterface(KernelInterface):
         """
 
 
-class GLAFwdInterface(KernelInterface):
+class GLAChunkFwdInterface(KernelInterface):
     """Chunked Gated Linear Attention (GLA), forward, keeping the states the backward reads."""
 
     request = GLAChunkCall
@@ -372,7 +372,7 @@ class GLAFwdInterface(KernelInterface):
         """
 
 
-class GLABwdInterface(KernelInterface):
+class GLAChunkBwdInterface(KernelInterface):
     """Chunked Gated Linear Attention (GLA), backward, from the forward's hidden states."""
 
     request = GLAChunkCall

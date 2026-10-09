@@ -23,7 +23,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetChunkCall,
-    DeltaNetFwdInterface,
+    DeltaNetChunkFwdInterface,
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.deltanet.autotune import (
@@ -39,7 +39,7 @@ from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import 
 from tileops.kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 from tileops.utils import get_shared_memory_optin
 
-__all__ = ["DeltaNetFwdKernel"]
+__all__ = ["DeltaNetChunkFwdKernel"]
 
 
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
@@ -248,7 +248,7 @@ def _output_o_tl(
     return _func
 
 
-class DeltaNetFwdKernel(Kernel, DeltaNetFwdInterface):
+class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     @classmethod
     def applies(cls, call: DeltaNetChunkCall) -> bool:
         return cls.refusal(call) is None

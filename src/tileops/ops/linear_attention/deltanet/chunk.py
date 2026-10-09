@@ -5,11 +5,11 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
-    DeltaNetBwdInterface,
-    DeltaNetBwdKernel,
+    DeltaNetChunkBwdInterface,
+    DeltaNetChunkBwdKernel,
     DeltaNetChunkCall,
-    DeltaNetFwdInterface,
-    DeltaNetFwdKernel,
+    DeltaNetChunkFwdInterface,
+    DeltaNetChunkFwdKernel,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -35,9 +35,11 @@ class DeltaNetChunkFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"deltanet_fwd": DeltaNetFwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "deltanet_chunk_fwd": DeltaNetChunkFwdKernel
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "deltanet_fwd": DeltaNetFwdInterface
+        "deltanet_chunk_fwd": DeltaNetChunkFwdInterface
     }
 
     def __init__(
@@ -107,7 +109,7 @@ class DeltaNetChunkFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        kernel = self.kernel_for("deltanet_fwd", self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
         return kernel(q, k, v, beta)
 
     def compute_roof(self) -> str:
@@ -123,9 +125,11 @@ class DeltaNetChunkBwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"deltanet_bwd": DeltaNetBwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "deltanet_chunk_bwd": DeltaNetChunkBwdKernel
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "deltanet_bwd": DeltaNetBwdInterface
+        "deltanet_chunk_bwd": DeltaNetChunkBwdInterface
     }
 
     def __init__(
@@ -214,7 +218,7 @@ class DeltaNetChunkBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_bwd", self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

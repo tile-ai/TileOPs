@@ -8,8 +8,8 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    DeltaNetInferenceCall,
-    DeltaNetInferenceFwdInterface,
+    DeltaNetCall,
+    DeltaNetFwdInterface,
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.deltanet.partition_scan import partition_scan
@@ -25,17 +25,17 @@ from tileops.utils import get_sm_count
 __all__ = ["DeltaNetDensePrefillFwdKernel"]
 
 
-class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
+class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
     """Ungated delta rule: the Gated DeltaNet (GDN) block solve and partitioned recurrence, g=0."""
 
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: DeltaNetInferenceCall) -> bool:
+    def applies(cls, call: DeltaNetCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: DeltaNetInferenceCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         The pipeline runs chunks of 64 tokens over a square 16-bit state, equal-length or
@@ -63,7 +63,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         return "does not support " + ", ".join(unsupported) if unsupported else None
 
     @classmethod
-    def entry_for(cls, call: DeltaNetInferenceCall) -> Entry:
+    def entry_for(cls, call: DeltaNetCall) -> Entry:
         index = call.device.index if call.device is not None else None
         arguments = dict(
             batch=call.batch,

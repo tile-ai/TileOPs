@@ -7,10 +7,10 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
+    DeltaNetCall,
     DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
-    DeltaNetInferenceCall,
-    DeltaNetInferenceFwdInterface,
+    DeltaNetFwdInterface,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -44,9 +44,7 @@ class DeltaNetFwdOp(Op):
         "deltanet_dense_decode": DeltaNetDenseDecodeFwdKernel,
         "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "deltanet_inference": DeltaNetInferenceFwdInterface
-    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"deltanet": DeltaNetFwdInterface}
 
     def __init__(
         self,
@@ -106,7 +104,7 @@ class DeltaNetFwdOp(Op):
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)
         )
         batch, seq_len, heads, dim_k = q.shape
-        call = DeltaNetInferenceCall(
+        call = DeltaNetCall(
             batch=batch,
             seq_len=seq_len,
             heads=heads,
@@ -120,4 +118,4 @@ class DeltaNetFwdOp(Op):
             num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
             device=q.device,
         )
-        return self.kernel_for("deltanet_inference", call)(*inputs)
+        return self.kernel_for("deltanet", call)(*inputs)

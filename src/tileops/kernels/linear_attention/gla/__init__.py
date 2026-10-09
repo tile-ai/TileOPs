@@ -1,5 +1,5 @@
-from tileops.kernels.linear_attention.gla.chunk_bwd import GLABwdKernel
-from tileops.kernels.linear_attention.gla.chunk_fwd import GLAFwdKernel
+from tileops.kernels.linear_attention.gla.chunk_bwd import GLAChunkBwdKernel
+from tileops.kernels.linear_attention.gla.chunk_fwd import GLAChunkFwdKernel
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill import GLADensePrefillFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
@@ -12,13 +12,13 @@ from tileops.kernels.linear_attention.gla.varlen_prefill_partitioned import (
 )
 
 __all__ = [
-    "GLABwdKernel",
+    "GLAChunkBwdKernel",
+    "GLAChunkFwdKernel",
     "GLADecodeFP32Kernel",
     "GLADecodeKernel",
     "GLADenseDecodeFwdKernel",
     "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
-    "GLAFwdKernel",
     "GLAVarlenPrefillFwdKernel",
     "GLAVarlenPrefillPartitionedFwdKernel",
 ]

@@ -9,14 +9,14 @@ import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention import (
+    DeltaNetCall,
     DeltaNetChunkCall,
     DeltaNetDecodeCall,
-    DeltaNetInferenceCall,
     GDNCall,
     GLAChunkCall,
     GLADecodeCall,
 )
-from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
+from tileops.kernels.linear_attention.gla.call_spec import GLACall
 from tileops.kernels.sampling.call_spec import SamplingCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
@@ -101,22 +101,28 @@ def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64)
     [
         pytest.param(
             _chunk_call(128, 128, chunk_size=48),
-            ("gla_fwd", "gla_bwd"),
+            ("gla_chunk_fwd", "gla_chunk_bwd"),
             "chunk_size=48 must be",
             id="chunk-48",
         ),
         pytest.param(
-            _chunk_call(128, 16), ("gla_fwd", "gla_bwd"), "dim_v=16", id="value-below-a-tile"
+            _chunk_call(128, 16),
+            ("gla_chunk_fwd", "gla_chunk_bwd"),
+            "dim_v=16",
+            id="value-below-a-tile",
         ),
         pytest.param(
-            _chunk_call(32, 64), ("gla_bwd",), "dim_k=32, dim_v=64", id="bwd-narrow-key-half-value"
+            _chunk_call(32, 64),
+            ("gla_chunk_bwd",),
+            "dim_k=32, dim_v=64",
+            id="bwd-narrow-key-half-value",
         ),
     ],
 )
 def test_gla_chunked_refuses_what_no_kernel_serves(
     call: GLAChunkCall, interfaces: tuple, reason: str
 ) -> None:
-    ops = {"gla_fwd": GLAChunkFwdOp, "gla_bwd": GLAChunkBwdOp}
+    ops = {"gla_chunk_fwd": GLAChunkFwdOp, "gla_chunk_bwd": GLAChunkBwdOp}
     for interface in interfaces:
         with pytest.raises(ValueError, match=reason):
             ops[interface](chunk_size=call.chunk_size).select_implementation(interface, call)
@@ -137,15 +143,15 @@ def test_gla_bwd_refuses_what_this_device_cannot_place(dim_k: int, dim_v: int, r
         batch=1, seq_len=128, heads=2, dim_k=dim_k, dim_v=dim_v, chunk_size=64, dtype=torch.float32
     )
     with pytest.raises(ValueError, match=reason):
-        GLAChunkBwdOp(chunk_size=64).select_implementation("gla_bwd", call)
+        GLAChunkBwdOp(chunk_size=64).select_implementation("gla_chunk_bwd", call)
 
 
-def _gla_inference_call(
+def _gla_call(
     seq_len: int, varlen: bool = False, dim: int = 64, heads: int = 4, sequences: int = 1
-) -> GLAInferenceCallSpec:
+) -> GLACall:
     # Multiprocessors of the board the GLA inference regions are read against.
     sm_count = 132
-    return GLAInferenceCallSpec(
+    return GLACall(
         arch=_SM90,
         sm_count=sm_count,
         batch=1,
@@ -193,8 +199,8 @@ def test_gdn_refuses_what_no_kernel_serves(call: GDNCall, reason: str) -> None:
         GDNFwdOp().select_implementation("gdn", call)
 
 
-def _inference_call(**facts: object) -> DeltaNetInferenceCall:
-    return DeltaNetInferenceCall(
+def _deltanet_call(**facts: object) -> DeltaNetCall:
+    return DeltaNetCall(
         arch=_SM90,
         batch=1,
         seq_len=facts.pop("seq_len", 128),
@@ -212,15 +218,15 @@ def _inference_call(**facts: object) -> DeltaNetInferenceCall:
 @pytest.mark.parametrize(
     ("call", "reason"),
     [
-        pytest.param(_inference_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
-        pytest.param(_inference_call(dtype=torch.float32), "dtype other than", id="fp32"),
+        pytest.param(_deltanet_call(dim_v=64), "K/V dimensions", id="dim-k-not-dim-v"),
+        pytest.param(_deltanet_call(dtype=torch.float32), "dtype other than", id="fp32"),
     ],
 )
-def test_deltanet_inference_refuses_what_the_kernel_does_not_serve(
-    call: DeltaNetInferenceCall, reason: str
+def test_deltanet_fwd_refuses_what_the_kernel_does_not_serve(
+    call: DeltaNetCall, reason: str
 ) -> None:
     with pytest.raises(ValueError, match=reason):
-        DeltaNetFwdOp().select_implementation("deltanet_inference", call)
+        DeltaNetFwdOp().select_implementation("deltanet", call)
 
 
 def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
@@ -248,10 +254,10 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
     )
     decode = {"arch": _SM90, "batch": 1, "heads": heads, "dim_k": 128, "dim_v": 128}
     return [
-        (DeltaNetChunkFwdOp(), "deltanet_fwd", chunk),
-        (DeltaNetChunkBwdOp(), "deltanet_bwd", chunk),
-        (DeltaNetFwdOp(), "deltanet_inference", _inference_call(heads=heads)),
-        (DeltaNetFwdOp(), "deltanet_inference", _inference_call(seq_len=1, heads=heads)),
+        (DeltaNetChunkFwdOp(), "deltanet_chunk_fwd", chunk),
+        (DeltaNetChunkBwdOp(), "deltanet_chunk_bwd", chunk),
+        (DeltaNetFwdOp(), "deltanet", _deltanet_call(heads=heads)),
+        (DeltaNetFwdOp(), "deltanet", _deltanet_call(seq_len=1, heads=heads)),
         (
             DeltaNetRecurrentFwdOp(),
             "deltanet_decode",
@@ -272,16 +278,16 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
             "gdn",
             _gated_call(1, True, heads=heads, value_heads=2 * heads),
         ),
-        (GLAChunkFwdOp(), "gla_fwd", gla_chunk),
-        (GLAChunkBwdOp(), "gla_bwd", gla_chunk),
+        (GLAChunkFwdOp(), "gla_chunk_fwd", gla_chunk),
+        (GLAChunkBwdOp(), "gla_chunk_bwd", gla_chunk),
         *(
-            (GLAFwdOp(), "gla_inference", call)
+            (GLAFwdOp(), "gla", call)
             for call in (
-                _gla_inference_call(1, heads=heads),
-                _gla_inference_call(2048, heads=heads),
-                _gla_inference_call(100, heads=heads),
-                _gla_inference_call(4096, varlen=True, heads=heads),
-                _gla_inference_call(4096, varlen=True, dim=128, heads=heads, sequences=4),
+                _gla_call(1, heads=heads),
+                _gla_call(2048, heads=heads),
+                _gla_call(100, heads=heads),
+                _gla_call(4096, varlen=True, heads=heads),
+                _gla_call(4096, varlen=True, dim=128, heads=heads, sequences=4),
             )
         ),
         (

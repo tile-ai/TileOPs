@@ -6,11 +6,11 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "DeltaNetChunkwiseCall",
+    "DeltaNetChunkwiseWorkload",
     "DeltaNetDecodeCall",
     "DeltaNetDecodeWorkload",
+    "DeltaNetFwdCall",
     "DeltaNetFwdWorkload",
-    "DeltaNetInferenceCall",
-    "DeltaNetInferenceWorkload",
     "compute_w_u_torch",
     "deltanet_autograd_bwd_torch",
     "deltanet_decode_torch",
@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 
-class DeltaNetFwdWorkload(WorkloadBase):
+class DeltaNetChunkwiseWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -95,7 +95,7 @@ class DeltaNetDecodeWorkload(WorkloadBase):
         return decode_verification(inputs[0].dtype)
 
 
-class DeltaNetInferenceWorkload(WorkloadBase):
+class DeltaNetFwdWorkload(WorkloadBase):
     """BTHD ungated DeltaNet prefill or single-token decode with recurrent state.
 
     ``sequence_lengths`` packs the rows into one ``B = 1`` token axis and makes the call
@@ -342,7 +342,7 @@ class DeltaNetChunkwiseCall(CallWorkload):
         )
 
 
-class DeltaNetInferenceCall(CallWorkload):
+class DeltaNetFwdCall(CallWorkload):
     """A manifest call of DeltaNetFwdOp.
 
     FLA's ``chunk_delta_rule`` is the reference for a prefill call and its

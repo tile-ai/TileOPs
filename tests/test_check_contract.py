@@ -310,12 +310,12 @@ def test_broadcast_input_views_restore_shared_storage():
 def test_inference_decode_keeps_its_strict_output_and_state_bound(family, dtype, wrong_output):
     from types import SimpleNamespace
 
-    from workloads.linear_attention.deltanet import DeltaNetInferenceCall, DeltaNetInferenceWorkload
-    from workloads.linear_attention.gla import GLAInferenceCall, GLAInferenceWorkload
+    from workloads.linear_attention.deltanet import DeltaNetFwdCall, DeltaNetFwdWorkload
+    from workloads.linear_attention.gla import GLAFwdCall, GLAFwdWorkload
 
     workload_type, call_type = {
-        "gla": (GLAInferenceWorkload, GLAInferenceCall),
-        "deltanet": (DeltaNetInferenceWorkload, DeltaNetInferenceCall),
+        "gla": (GLAFwdWorkload, GLAFwdCall),
+        "deltanet": (DeltaNetFwdWorkload, DeltaNetFwdCall),
     }[family]
     dimensions = {"dim_k": 64, "dim_v": 64} if family == "gla" else {"dim": 64}
     workload = workload_type(batch=1, seq_len=1, heads=1, dtype=dtype, **dimensions)

@@ -23,7 +23,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    DeltaNetBwdInterface,
+    DeltaNetChunkBwdInterface,
     DeltaNetChunkCall,
     head_count_refusal,
 )
@@ -31,7 +31,7 @@ from tileops.kernels.linear_attention.v_tile import min_gemm_n
 from tileops.utils import get_shared_memory_optin
 
 __all__ = [
-    "DeltaNetBwdKernel",
+    "DeltaNetChunkBwdKernel",
 ]
 
 
@@ -334,7 +334,7 @@ def _dh_recurrence_bwd_tl(
     return _func
 
 
-class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
+class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     """DeltaNet backward kernel.
 
     Full backward: do -> (dq, dk, dv, dbeta).
@@ -637,7 +637,7 @@ class DeltaNetBwdKernel(Kernel, DeltaNetBwdInterface):
             "parallel_threads": parallel_best["threads"],
             "recurrence_threads": recurrence_best["threads"],
         }
-        print(f"DeltaNetBwdKernel autotuned config: {self.config}")
+        print(f"DeltaNetChunkBwdKernel autotuned config: {self.config}")
 
     def forward(
         self,

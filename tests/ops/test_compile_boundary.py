@@ -375,7 +375,7 @@ def _linear_attention_cases():
 
     chunks = _S // _CHUNK + 1
 
-    def gla_fwd():
+    def gla_chunk_fwd():
         op = GLAChunkFwdOp(chunk_size=_CHUNK, scale=_SCALE)
         # ``g`` is a log-space decay, so it must be non-positive.
         return op, (
@@ -386,7 +386,7 @@ def _linear_attention_cases():
             None,
         )
 
-    def gla_bwd():
+    def gla_chunk_bwd():
         op = GLAChunkBwdOp(chunk_size=_CHUNK, scale=_SCALE)
         return op, (
             _x(_B, _S, _H, _D),
@@ -408,9 +408,9 @@ def _linear_attention_cases():
             _x(_B, _H, _D, _D),
         )
 
-    def deltanet_fwd():
+    def deltanet_chunk_fwd():
         # The delta rule is a recurrence over S steps; unit-variance operands overflow it
-        # into NaN, which compares unequal to itself. Scale as ``DeltaNetFwdWorkload`` does.
+        # into NaN, which compares unequal to itself. Scale as ``DeltaNetChunkwiseWorkload`` does.
         op = DeltaNetChunkFwdOp(chunk_size=_CHUNK)
         return op, (
             _x(_B, _H, _S, _D) * 0.1,
@@ -419,7 +419,7 @@ def _linear_attention_cases():
             _x(_B, _H, _S).sigmoid() * 0.5,
         )
 
-    def deltanet_bwd():
+    def deltanet_chunk_bwd():
         op = DeltaNetChunkBwdOp(chunk_size=_CHUNK)
         return op, (
             _x(_B, _H, _S, _D),
@@ -443,7 +443,7 @@ def _linear_attention_cases():
             _x(_B, _H, _D, _D),
         )
 
-    def gla_inference():
+    def gla():
         return GLAFwdOp(scale=_SCALE), (
             _x(_B, _S, _H, _D) * 0.1,
             _x(_B, _S, _H, _D) * 0.1,
@@ -451,7 +451,7 @@ def _linear_attention_cases():
             -_x(_B, _S, _H, _D).abs() * 0.1,
         )
 
-    def deltanet_inference():
+    def deltanet():
         k = torch.nn.functional.normalize(_x(_B, _S, _H, _D, dtype=torch.float32), dim=-1)
         return DeltaNetFwdOp(), (
             _x(_B, _S, _H, _D) * 0.1,
@@ -483,14 +483,14 @@ def _linear_attention_cases():
         )
 
     return (
-        ("gla-fwd", gla_fwd),
-        ("gla-bwd", gla_bwd),
+        ("gla-chunk-fwd", gla_chunk_fwd),
+        ("gla-chunk-bwd", gla_chunk_bwd),
         ("gla-decode", gla_decode),
-        ("deltanet-fwd", deltanet_fwd),
-        ("deltanet-bwd", deltanet_bwd),
+        ("deltanet-chunk-fwd", deltanet_chunk_fwd),
+        ("deltanet-chunk-bwd", deltanet_chunk_bwd),
         ("deltanet-decode", deltanet_decode),
-        ("gla-inference", gla_inference),
-        ("deltanet-inference", deltanet_inference),
+        ("gla", gla),
+        ("deltanet", deltanet),
         ("gdn", gdn),
         ("kda", kda),
     )

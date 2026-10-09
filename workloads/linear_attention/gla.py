@@ -9,8 +9,8 @@ __all__ = [
     "GLAChunkwiseWorkload",
     "GLADecodeCall",
     "GLADecodeWorkload",
-    "GLAInferenceCall",
-    "GLAInferenceWorkload",
+    "GLAFwdCall",
+    "GLAFwdWorkload",
     "gla_autograd_bwd_torch",
     "gla_decode_torch",
     "gla_fwd_chunked_torch",
@@ -95,7 +95,7 @@ class GLAChunkwiseWorkload(WorkloadBase):
         return q, k, v, g, initial_state
 
 
-class GLAInferenceWorkload(GLAChunkwiseWorkload):
+class GLAFwdWorkload(GLAChunkwiseWorkload):
     """Inference GLA prefill with a caller-owned optional recurrent state."""
 
     def __init__(
@@ -269,7 +269,7 @@ class GLAChunkwiseCall(CallWorkload):
         )
 
 
-class GLAInferenceCall(CallWorkload):
+class GLAFwdCall(CallWorkload):
     """A manifest call of GLAFwdOp; FLA's chunk_gla is the reference."""
 
     def gen_inputs(self):
