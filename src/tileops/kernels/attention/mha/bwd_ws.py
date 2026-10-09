@@ -5,6 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
     AttentionCall,
@@ -22,25 +23,6 @@ _BLOCK_M = 128
 _BLOCK_N = 64
 # f32 per row of the dQ half tile a consumer warpgroup owns.
 _DQ_ROW = 128
-
-
-_SCHED_SRC = r"""
-// Lane 0 claims the next tile for its CTA; every lane of the warp gets it.
-__device__ __forceinline__ int claim_tile(int* sched) {
-  int t = 0;
-  if ((threadIdx.x & 31) == 0) t = atomicAdd(sched, 1) + gridDim.x;
-  return __shfl_sync(0xffffffffu, t, 0);
-}
-// Called once per CTA after all its claims: the last CTA out zeroes the counters, so
-// every launch finds them zeroed.
-__device__ __forceinline__ void retire(int* sched) {
-  __threadfence();
-  if (atomicAdd(sched + 1, 1) == gridDim.x - 1) {
-    sched[0] = 0;
-    sched[1] = 0;
-  }
-}
-"""
 
 
 @functools.lru_cache(maxsize=32)
@@ -72,7 +54,7 @@ def _mha_bwd_ws_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", "-include", csrc_path("tile_claim.h")],
     )
     def _mha_bwd_ws_func() -> Callable:
         def _dq_slot(i, j):
@@ -289,7 +271,6 @@ def _mha_bwd_ws_kernel(
             sched: T.Tensor([2], "int32"),  # type: ignore
         ) -> None:
             with T.Kernel(min(num_ctas, n_tiles), threads=384) as bid:
-                T.import_source(_SCHED_SRC)
                 k_s = T.alloc_shared([2, half_m, dim], dtype)
                 v_s = T.alloc_shared([2, half_m, dim], dtype)
                 q_s = T.alloc_shared([2, block_n, dim], dtype)
@@ -379,7 +360,7 @@ def _mha_bwd_ws_kernel(
                                 T.barrier_arrive(do_full[slot])
                                 g = g + 1
                             tcur = T.call_extern(
-                                "int32", "claim_tile", T.access_ptr(sched[0], "rw")
+                                "int32", "tl::claim_tile", T.access_ptr(sched[0], "rw")
                             )
                             ti = ti + 1
                         # An out-of-range tile tells every role the list is done.
@@ -407,7 +388,7 @@ def _mha_bwd_ws_kernel(
                     )  # fmt: skip
                 T.sync_threads()
                 if tx == 0:
-                    T.call_extern("handle", "retire", T.access_ptr(sched[0], "rw"))
+                    T.call_extern("handle", "tl::retire", T.access_ptr(sched[0], "rw"))
 
         return _mha_bwd_ws_main
 
