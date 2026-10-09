@@ -31,7 +31,7 @@ from tileops.kernels.gemm.dense import (
     GemmTMAKernel,
     GemvKernel,
 )
-from tileops.kernels.gemm.fp8_1d2d import GemmFP81D2DFwdKernel
+from tileops.kernels.gemm.fp8_1d2d import GemmFP81D2DFwdKernel, GemmFP81D2DWaveFwdKernel
 from tileops.kernels.gemm.w4a16 import GemmW4A16Kernel, GemmW4A16MMAKernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 
@@ -55,6 +55,7 @@ __all__ = [
     "GemmFP8FwdInterface",
     "GemmFP8TensorScaleKernel",
     "GemmFP81D2DFwdKernel",
+    "GemmFP81D2DWaveFwdKernel",
     "GemmFwdInterface",
     "GemmTMAKernel",
     "GemmW4A16Call",
