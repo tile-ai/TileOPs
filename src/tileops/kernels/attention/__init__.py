@@ -39,7 +39,7 @@ from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKern
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
 from tileops.kernels.attention.nsa.compressed_varlen import NSACompressedFwdVarlenKernel
 from tileops.kernels.attention.nsa.topk_varlen import NSATopKVarlenKernel
-from tileops.kernels.attention.nsa.varlen import NSAFwdVarlenKernel
+from tileops.kernels.attention.nsa.varlen import NSAFwdVarlenKernel, NSAFwdVarlenTMAKernel
 from tileops.kernels.attention.topk_select import (
     TopKSelectCall,
     TopKSelectFwdInterface,
@@ -85,6 +85,7 @@ __all__ = [
     "MLAVarlenPrefillWSFwdKernel",
     "NSACompressedFwdVarlenKernel",
     "NSAFwdVarlenKernel",
+    "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
     "TopKSelectCall",
     "TopKSelectFwdInterface",
