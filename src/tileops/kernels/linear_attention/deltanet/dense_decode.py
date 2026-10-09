@@ -6,8 +6,8 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
-    DeltaNetInferenceCall,
-    DeltaNetInferenceFwdInterface,
+    DeltaNetCall,
+    DeltaNetFwdInterface,
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_decode_tl
@@ -15,7 +15,7 @@ from tileops.kernels.linear_attention.delta_decode import decode_launch, delta_d
 __all__ = ["DeltaNetDenseDecodeFwdKernel"]
 
 
-class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
+class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
     """FP16/BF16 ungated decode with FP32 recurrent state.
 
     The shared delta-rule decode program is built with its gate left out, so no
@@ -26,11 +26,11 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: DeltaNetInferenceCall) -> bool:
+    def applies(cls, call: DeltaNetCall) -> bool:
         return cls.refusal(call) is None
 
     @classmethod
-    def refusal(cls, call: DeltaNetInferenceCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         One 16-bit token over a 64- or 128-wide square float32 state.
@@ -57,7 +57,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetInferenceFwdInterface):
         return "does not support " + ", ".join(unsupported) if unsupported else None
 
     @classmethod
-    def entry_for(cls, call: DeltaNetInferenceCall) -> Entry:
+    def entry_for(cls, call: DeltaNetCall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.batch,

@@ -10,8 +10,8 @@ from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.kernel_base import Entry
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
     build_entry,
     serves_dense,
 )
@@ -232,22 +232,22 @@ def _gla_fwd_o_from_a_kernel(
     return _o_func
 
 
-class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterface):
+class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     """Retain the proven state pass while replacing the costly output pass."""
 
     supported_archs = [80, 89, 90]
     general = True
 
     @classmethod
-    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> Optional[str]:
         return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
-    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+    def applies(cls, call: GLACall) -> bool:
         return serves_dense(call) and call.seq_len >= 64 and call.seq_len % 64 == 0
 
     @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    def entry_for(cls, call: GLACall) -> Entry:
         return build_entry(
             cls,
             call,

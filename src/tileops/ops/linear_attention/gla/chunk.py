@@ -5,11 +5,11 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
-    GLABwdInterface,
-    GLABwdKernel,
+    GLAChunkBwdInterface,
+    GLAChunkBwdKernel,
     GLAChunkCall,
-    GLAFwdInterface,
-    GLAFwdKernel,
+    GLAChunkFwdInterface,
+    GLAChunkFwdKernel,
 )
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -27,8 +27,10 @@ class GLAChunkFwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_fwd": GLAFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gla_fwd": GLAFwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_fwd": GLAChunkFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gla_chunk_fwd": GLAChunkFwdInterface
+    }
 
     def __init__(
         self,
@@ -107,7 +109,7 @@ class GLAChunkFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         call = self._call(q, v, initial_state is not None)
-        kernel = self.kernel_for("gla_fwd", call)
+        kernel = self.kernel_for("gla_chunk_fwd", call)
         return kernel(q, k, v, g, initial_state)
 
     def compute_roof(self) -> str:
@@ -127,8 +129,10 @@ class GLAChunkBwdOp(Op):
     """
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_bwd": GLABwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gla_bwd": GLABwdInterface}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_bwd": GLAChunkBwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gla_chunk_bwd": GLAChunkBwdInterface
+    }
 
     def __init__(
         self,
@@ -216,7 +220,7 @@ class GLAChunkBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, k, v, g, h, do, dht)
-        kernel = self.kernel_for("gla_bwd", self._call(q, v, self.has_initial_state))
+        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
         return kernel(*inputs, self.has_initial_state)
 
     def compute_roof(self) -> str:

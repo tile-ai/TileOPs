@@ -367,7 +367,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
     At dim_v=48 a tiled width of 32 gives one tile covering 32 of 48 columns.
     The width rules are checked on the helper; this checks the kernel uses them.
     """
-    kernel_cls = deltanet_fwd.DeltaNetFwdKernel
+    kernel_cls = deltanet_fwd.DeltaNetChunkFwdKernel
     kernel = kernel_cls(
         batch=1,
         head=1,
@@ -387,7 +387,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
 @pytest.mark.cuda_only
 def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
     """``init_config`` must not fall back for want of declared candidates."""
-    kernel_cls = deltanet_fwd.DeltaNetFwdKernel
+    kernel_cls = deltanet_fwd.DeltaNetChunkFwdKernel
     calls: list[str] = []
     monkeypatch.setattr(
         kernel_cls, "autotune", lambda self, **kwargs: calls.append(type(self).__name__)

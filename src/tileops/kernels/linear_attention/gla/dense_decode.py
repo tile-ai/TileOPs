@@ -19,8 +19,8 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
     build_entry,
     serves_dense,
 )
@@ -133,21 +133,21 @@ def _gla_dense_decode_tl(
     return decode()
 
 
-class GLADenseDecodeFwdKernel(Kernel, GLAInferenceFwdInterface):
+class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
     """Fuse one GLA recurrence step and output projection in one state pass."""
 
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> Optional[str]:
         return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
-    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+    def applies(cls, call: GLACall) -> bool:
         return serves_dense(call) and call.seq_len == 1
 
     @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    def entry_for(cls, call: GLACall) -> Entry:
         return build_entry(
             cls,
             call,

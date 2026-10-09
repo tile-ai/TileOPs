@@ -28,8 +28,8 @@ from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
     build_entry,
     serves_extents,
 )
@@ -467,7 +467,7 @@ def gla_varlen_partitioned_output_kernel(
     return _fn
 
 
-class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
+class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
     """Packed prefill whose state walk is partitioned, for the calls where that pays.
 
     Each chunk-parallel launch covers ``total_tokens // 64 + num_sequences`` chunks, the most
@@ -512,7 +512,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
     _blocks_per_sm = 1
 
     @classmethod
-    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> Optional[str]:
         """Why the call cannot run, or ``None``; a call refused here takes the per-sequence walk."""
         reason = head_count_refusal(call.heads) or super().refusal(call)
         if reason is not None or not call.smem_budget:
@@ -526,7 +526,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
         )
 
     @classmethod
-    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+    def applies(cls, call: GLACall) -> bool:
         """A packed or part-chunk call whose sequences the per-sequence walk serves badly.
 
         Two cases reach that, and each is read from the shapes alone. A call whose rows are
@@ -564,7 +564,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAInferenceFwdInterface):
         return (cls._state_stages + 1) * stage + -(-4 * (num_sequences + 1) // 16) * 16
 
     @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    def entry_for(cls, call: GLACall) -> Entry:
         k_partitions, v_partitions = cls._partitions(call.dim_k, call.dim_v)
         # The longest partition whose blocks still cover the device.
         chunks = call.batch * call.seq_len // CHUNK_TOKENS

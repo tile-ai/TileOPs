@@ -17,8 +17,8 @@ from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
     build_entry,
     serves_extents,
 )
@@ -472,7 +472,7 @@ def gla_varlen_output_kernel(
     return _fn
 
 
-class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
+class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
     """Run the chunked recurrence per sequence, with every launch bounded by the shapes.
 
     Each chunk-parallel launch covers ``total_tokens // 64 + num_sequences`` chunks, the most
@@ -495,7 +495,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
     _state_stages = 4
 
     @classmethod
-    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> Optional[str]:
         reason = head_count_refusal(call.heads) or super().refusal(call)
         if reason is not None or not call.smem_budget:
             return reason
@@ -508,7 +508,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
         )
 
     @classmethod
-    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+    def applies(cls, call: GLACall) -> bool:
         """Either the call is packed, or its rows are equal-length and not a whole chunk.
 
         The two are the same work once the rows are read as one packed sequence each.
@@ -542,7 +542,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAInferenceFwdInterface):
         return max(cls._state_stages * stage, output) + -(-4 * (num_sequences + 1) // 16) * 16
 
     @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    def entry_for(cls, call: GLACall) -> Entry:
         k_partitions, v_partitions = cls._partitions(call.dim_k, call.dim_v)
         return build_entry(
             cls,

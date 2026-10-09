@@ -11,8 +11,8 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
     build_entry,
     serves_dense,
 )
@@ -389,17 +389,17 @@ class _PartitionFit(NamedTuple):
 _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
 
 
-class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInterface):
+class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]
 
     @classmethod
-    def refusal(cls, call: GLAInferenceCallSpec) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> Optional[str]:
         return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
-    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+    def applies(cls, call: GLACall) -> bool:
         fit = _PARTITION_FITS.get(call.calibration)
         return (
             fit is not None
@@ -411,7 +411,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAInferenceFwdInter
         )
 
     @classmethod
-    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+    def entry_for(cls, call: GLACall) -> Entry:
         return build_entry(
             cls,
             call,

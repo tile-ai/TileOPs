@@ -10,7 +10,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GLAChunkCall,
-    GLAFwdInterface,
+    GLAChunkFwdInterface,
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
@@ -601,7 +601,7 @@ class GLAChunkedFwdKernel(Kernel):
         return o, final_state
 
 
-class GLAFwdKernel(GLAChunkedFwdKernel, GLAFwdInterface):
+class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     """The chunked forward as the training op calls it, with its own recurrent state."""
 
     @classmethod

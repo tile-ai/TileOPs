@@ -8,8 +8,8 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention.gla.call_spec import (
-    GLAInferenceCallSpec,
-    GLAInferenceFwdInterface,
+    GLACall,
+    GLAFwdInterface,
 )
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
@@ -46,9 +46,7 @@ class GLAFwdOp(Op):
         "gla_varlen_prefill": GLAVarlenPrefillFwdKernel,
         "gla_varlen_prefill_partitioned": GLAVarlenPrefillPartitionedFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gla_inference": GLAInferenceFwdInterface
-    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gla": GLAFwdInterface}
 
     def __init__(
         self,
@@ -108,7 +106,7 @@ class GLAFwdOp(Op):
             for tensor in (q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu)
         )
         batch, seq_len, heads, dim_k = q.shape
-        call = GLAInferenceCallSpec(
+        call = GLACall(
             batch=batch,
             seq_len=seq_len,
             heads=heads,
@@ -121,4 +119,4 @@ class GLAFwdOp(Op):
             num_sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
             device=q.device,
         )
-        return self.kernel_for("gla_inference", call)(*inputs)
+        return self.kernel_for("gla", call)(*inputs)

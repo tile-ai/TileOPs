@@ -6,10 +6,10 @@ from benchmarks._cases import Entry
 from workloads.linear_attention.deltanet import (
     DeltaNetChunkwiseCall,
     DeltaNetDecodeCall,
-    DeltaNetInferenceCall,
+    DeltaNetFwdCall,
 )
 from workloads.linear_attention.gdn import GDNFwdCall
-from workloads.linear_attention.gla import GLAChunkwiseCall, GLADecodeCall, GLAInferenceCall
+from workloads.linear_attention.gla import GLAChunkwiseCall, GLADecodeCall, GLAFwdCall
 from workloads.linear_attention.kda import KDAFwdCall
 
 
@@ -31,21 +31,21 @@ def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     arguments = workload.arguments()
     fwd_op = GLAChunkFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
-    (fwd_kernel,) = fwd_op.built_kernels("gla_fwd").values()
+    (fwd_kernel,) = fwd_op.built_kernels("gla_chunk_fwd").values()
     h = fwd_kernel._h_out
     dht = torch.zeros_like(_dht)
     return q, k, v, g, h, do, dht
 
 
 ENTRIES = {
-    "DeltaNetFwdOp": Entry(DeltaNetInferenceCall),
+    "DeltaNetFwdOp": Entry(DeltaNetFwdCall),
     "DeltaNetChunkFwdOp": Entry(DeltaNetChunkwiseCall),
     "DeltaNetChunkBwdOp": Entry(DeltaNetChunkwiseCall, inputs=_deltanet_bwd_inputs),
     "DeltaNetRecurrentFwdOp": Entry(DeltaNetDecodeCall),
     "GDNFwdOp": Entry(GDNFwdCall),
     "GLAChunkFwdOp": Entry(GLAChunkwiseCall),
     "GLAChunkBwdOp": Entry(GLAChunkwiseCall, inputs=_gla_bwd_inputs),
-    "GLAFwdOp": Entry(GLAInferenceCall),
+    "GLAFwdOp": Entry(GLAFwdCall),
     "GLARecurrentFwdOp": Entry(GLADecodeCall),
     "KDAFwdOp": Entry(KDAFwdCall),
 }

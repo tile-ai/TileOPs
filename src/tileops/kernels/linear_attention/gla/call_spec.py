@@ -12,8 +12,8 @@ from tileops.kernels.kernel_base import Entry, KernelInterface
 from tileops.kernels.linear_attention.call_spec import head_count_refusal
 
 __all__ = [
-    "GLAInferenceCallSpec",
-    "GLAInferenceFwdInterface",
+    "GLACall",
+    "GLAFwdInterface",
     "build_entry",
     "serves_dense",
     "serves_extents",
@@ -21,7 +21,7 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class GLAInferenceCallSpec(CallSpec):
+class GLACall(CallSpec):
     """One inference call, as the op knows it after reading its inputs."""
 
     batch: int = 0
@@ -37,10 +37,10 @@ class GLAInferenceCallSpec(CallSpec):
     num_sequences: int = 0
 
 
-class GLAInferenceFwdInterface(KernelInterface):
+class GLAFwdInterface(KernelInterface):
     """Gated Linear Attention (GLA) for inference: one prefill or decode step over caller-owned state."""
 
-    request = GLAInferenceCallSpec
+    request = GLACall
 
     @abstractmethod
     def forward(
@@ -73,12 +73,12 @@ class GLAInferenceFwdInterface(KernelInterface):
         """
 
 
-def serves_dense(call: GLAInferenceCallSpec) -> bool:
+def serves_dense(call: GLACall) -> bool:
     """Whether *call* is a dense (not packed) call with K = V in {64, 128} in fp16 or bf16."""
     return not call.varlen and serves_extents(call)
 
 
-def serves_extents(call: GLAInferenceCallSpec) -> bool:
+def serves_extents(call: GLACall) -> bool:
     """Whether the in-tree GLA kernels compile *call*'s head count, widths and dtype."""
     return (
         head_count_refusal(call.heads) is None
@@ -88,7 +88,7 @@ def serves_extents(call: GLAInferenceCallSpec) -> bool:
     )
 
 
-def build_entry(cls: type, call: GLAInferenceCallSpec, **build_arguments: int | bool) -> Entry:
+def build_entry(cls: type, call: GLACall, **build_arguments: int | bool) -> Entry:
     """Build *cls* from the call's scale, dtype and device plus the *build_arguments* it compiles."""
     device_index = call.device.index if call.device is not None else None
     arguments = dict(build_arguments, scale=call.scale, dtype=call.dtype, device_index=device_index)

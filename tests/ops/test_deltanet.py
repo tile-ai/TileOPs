@@ -12,9 +12,9 @@ from tileops.linear_attention import (
 from tileops.ops import DeltaNetFwdOp, DeltaNetRecurrentFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.deltanet import (
+    DeltaNetChunkwiseWorkload,
     DeltaNetDecodeWorkload,
     DeltaNetFwdWorkload,
-    DeltaNetInferenceWorkload,
     chunkwise_verification,
     decode_verification,
     deltanet_autograd_bwd_torch,
@@ -23,11 +23,11 @@ from workloads.linear_attention.deltanet import (
 from workloads.numerics import compare_outputs
 
 
-class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
+class DeltaNetChunkwiseTest(DeltaNetChunkwiseWorkload, TestBase):
     pass
 
 
-class DeltaNetFwdFixture(FixtureBase):
+class DeltaNetChunkFwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
@@ -69,7 +69,7 @@ class DeltaNetFwdFixture(FixtureBase):
     ]
 
 
-@DeltaNetFwdFixture
+@DeltaNetChunkFwdFixture
 def test_deltanet_fwd(
     batch: int,
     seq_len: int,
@@ -81,12 +81,12 @@ def test_deltanet_fwd(
     tune: bool,
 ) -> None:
     torch.manual_seed(42)
-    test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = DeltaNetChunkwiseTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     op = DeltaNetChunkFwdOp(chunk_size=chunk_size, tune=tune)
     test.check(op, *test.gen_inputs())
 
 
-class DeltaNetBwdFixture(FixtureBase):
+class DeltaNetChunkBwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
@@ -114,7 +114,7 @@ class DeltaNetBwdFixture(FixtureBase):
     ]
 
 
-@DeltaNetBwdFixture
+@DeltaNetChunkBwdFixture
 def test_deltanet_bwd(
     batch: int,
     seq_len: int,
@@ -154,7 +154,7 @@ def test_deltanet_bwd(
     )
 
 
-class DeltaNetInferenceTest(DeltaNetInferenceWorkload, TestBase):
+class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
     pass
 
 
@@ -172,7 +172,7 @@ def isolated_registry():
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
+def test_deltanet_fwd_reaches_target_with_optional_inputs() -> None:
     calls = []
 
     def build_kernel(*specs, **params):
@@ -236,7 +236,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 128, 4, 64, dtype)
+    test = DeltaNetFwdTest(2, 128, 4, 64, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetFwdOp()
     if dtype == torch.float16:
@@ -253,7 +253,7 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
     """``use_qk_l2norm_in_kernel`` takes Q and K unnormalized and matches FLA."""
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
+    test = DeltaNetFwdTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
     op = DeltaNetFwdOp(use_qk_l2norm_in_kernel=True)
     test.check(op, *test.gen_inputs())
 
@@ -264,7 +264,7 @@ def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
 def test_deltanet_prefill_packs_ragged_sequences() -> None:
     """Lengths below, across and on a chunk boundary in one packed call."""
     torch.manual_seed(42)
-    test = DeltaNetInferenceTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
+    test = DeltaNetFwdTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
@@ -273,7 +273,7 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
 @pytest.mark.cuda_only
 def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
-    test = DeltaNetInferenceTest(2, 100, 4, 64, torch.bfloat16)
+    test = DeltaNetFwdTest(2, 100, 4, 64, torch.bfloat16)
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 
@@ -282,7 +282,7 @@ def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
 @pytest.mark.cuda_only
 def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
+    test = DeltaNetFwdTest(2, 512, 4, 64, torch.bfloat16)
     inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
     # 16 chunks fall to the four-chunk partition floor, so sequences cross partitions.
     test.check(DeltaNetFwdOp(target=BUILTIN), *inputs)
@@ -295,7 +295,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
 def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     """One token continues a caller-owned state, and starts from zero without one."""
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 1, 4, 128, dtype)
+    test = DeltaNetFwdTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetFwdOp()
     # The workload preserves the single-step 4e-8 bound (measured error 4e-9).
@@ -308,7 +308,7 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
 @pytest.mark.cuda_only
 def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(2, 1024, 4, 128, torch.bfloat16)
+    test = DeltaNetFwdTest(2, 1024, 4, 128, torch.bfloat16)
     # 16 chunks a row over a four-chunk partition: a 128-wide state crosses partitions.
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
@@ -319,7 +319,7 @@ def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
 @pytest.mark.cuda_only
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
-    test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
+    test = DeltaNetFwdTest(1, 256, 4, 128, torch.bfloat16)
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
 
 

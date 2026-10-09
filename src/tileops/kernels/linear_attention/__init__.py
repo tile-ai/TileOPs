@@ -10,28 +10,28 @@ gated and ungated DeltaNet inference kernels share ``delta_decode``.
 """
 
 from tileops.kernels.linear_attention.call_spec import (
-    DeltaNetBwdInterface,
+    DeltaNetCall,
+    DeltaNetChunkBwdInterface,
     DeltaNetChunkCall,
+    DeltaNetChunkFwdInterface,
     DeltaNetDecodeCall,
     DeltaNetDecodeFwdInterface,
     DeltaNetFwdInterface,
-    DeltaNetInferenceCall,
-    DeltaNetInferenceFwdInterface,
     GDNCall,
     GDNFwdInterface,
-    GLABwdInterface,
+    GLAChunkBwdInterface,
     GLAChunkCall,
+    GLAChunkFwdInterface,
     GLADecodeCall,
     GLADecodeFwdInterface,
-    GLAFwdInterface,
     KDACall,
     KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.deltanet import (
-    DeltaNetBwdKernel,
+    DeltaNetChunkBwdKernel,
+    DeltaNetChunkFwdKernel,
     DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
-    DeltaNetFwdKernel,
 )
 from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeFP32Kernel,
@@ -43,10 +43,10 @@ from tileops.kernels.linear_attention.gdn import (
     GDNDensePrefillFwdKernel,
 )
 from tileops.kernels.linear_attention.gla import (
-    GLABwdKernel,
+    GLAChunkBwdKernel,
+    GLAChunkFwdKernel,
     GLADensePrefillFwdKernel,
     GLADensePrefillSubchunkKernel,
-    GLAFwdKernel,
 )
 from tileops.kernels.linear_attention.gla.recurrent import GLADecodeFP32Kernel, GLADecodeKernel
 from tileops.kernels.linear_attention.kda import (
@@ -56,9 +56,12 @@ from tileops.kernels.linear_attention.kda import (
 )
 
 __all__ = [
-    "DeltaNetBwdInterface",
-    "DeltaNetBwdKernel",
+    "DeltaNetCall",
+    "DeltaNetChunkBwdInterface",
+    "DeltaNetChunkBwdKernel",
     "DeltaNetChunkCall",
+    "DeltaNetChunkFwdInterface",
+    "DeltaNetChunkFwdKernel",
     "DeltaNetDecodeCall",
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeFwdInterface",
@@ -67,24 +70,21 @@ __all__ = [
     "DeltaNetDenseDecodeFwdKernel",
     "DeltaNetDensePrefillFwdKernel",
     "DeltaNetFwdInterface",
-    "DeltaNetFwdKernel",
-    "DeltaNetInferenceCall",
-    "DeltaNetInferenceFwdInterface",
     "GDNCall",
     "GDNDenseDecodeFwdKernel",
     "GDNDensePrefillFwdKernel",
     "GDNFwdInterface",
-    "GLABwdInterface",
-    "GLABwdKernel",
+    "GLAChunkBwdInterface",
+    "GLAChunkBwdKernel",
     "GLAChunkCall",
+    "GLAChunkFwdInterface",
+    "GLAChunkFwdKernel",
     "GLADecodeCall",
     "GLADecodeFP32Kernel",
     "GLADecodeFwdInterface",
     "GLADecodeKernel",
     "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
-    "GLAFwdInterface",
-    "GLAFwdKernel",
     "KDACall",
     "KDAChunkPrefillFwdKernel",
     "KDAFusedPrefillFwdKernel",
