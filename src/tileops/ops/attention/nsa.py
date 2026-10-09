@@ -6,6 +6,7 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     NSACompressedFwdVarlenKernel,
     NSAFwdVarlenKernel,
+    NSAFwdVarlenTMAKernel,
     NSATopKVarlenKernel,
 )
 from tileops.kernels.attention.call_spec import (
@@ -152,7 +153,8 @@ class NSAVarlenFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel
+        "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel,
+        "nsa_fwd_varlen_tma_kernel": NSAFwdVarlenTMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdInterface

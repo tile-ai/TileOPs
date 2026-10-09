@@ -8,10 +8,12 @@ from tileops.kernels.attention.nsa.topk_varlen import (
 )
 from tileops.kernels.attention.nsa.varlen import (
     NSAFwdVarlenKernel,
+    NSAFwdVarlenTMAKernel,
 )
 
 __all__ = [
     "NSACompressedFwdVarlenKernel",
     "NSAFwdVarlenKernel",
+    "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
 ]
