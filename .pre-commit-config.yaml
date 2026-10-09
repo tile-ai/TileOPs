@@ -124,6 +124,12 @@ repos:
         language: fail
         files: ^src/tileops/(?!csrc/).*\.(c|cc|cpp|cxx|cu|cuh|h|hpp|inl)$
 
+      - id: native-source-strings-in-csrc
+        name: C++/CUDA source strings belong in src/tileops/csrc
+        entry: '\b(import_source\s*\(|prelude\s*=|(__)?asm(__)?(\s+(__)?volatile(__)?)?\s*\()|__(device|global)__'
+        language: pygrep
+        files: ^(src/tileops|workloads|benchmarks|tests)/.*\.py$
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v23.1.1
     hooks:
