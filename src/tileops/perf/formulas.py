@@ -34,8 +34,6 @@ __all__ = [
     "gqa_dense_fwd_roofline",
     "gqa_paged_cache_rows",
     "gqa_paged_fwd_roofline",
-    "gqa_prefill_paged_cache_rows",
-    "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_varlen_fwd_roofline",
     "hadamard_roofline",
     "lightning_indexer_scored_keys",
@@ -483,39 +481,6 @@ def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _derived_bytes(call)
 
 
-def gqa_prefill_paged_with_kv_cache_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Paged GQA prefill with KV append, against the cached lengths the call carries.
-
-    Each request's queries see its cached keys and, causally, the new ones before them. The
-    distinct cache rows the requests' cached tokens name are read once, the new tokens are
-    appended into the cache, and the block table is read as far as each request's pages reach.
-    """
-    ix = call.ix
-    heads_kv, dim, page_size = ix["H_kv"], ix["D"], ix["page_size"]
-    q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.values("cache_seqlens")
-    is_causal = ix["is_causal"]
-    visible = sum(
-        q * c + q * (q + 1) // 2 if is_causal else q * (c + q)
-        for q, c in zip(q_lens, cache_lens, strict=True)
-    )
-    # Every query sees at least its own new key.
-    flops = attention_flops(ix["H"], visible, sum(q_lens), dim, dim, _softcap(call))
-    cache_elem = call.bytes("k_pages") // max(1, prod(call.tensors["k_pages"][0]))
-    old_kv = 2 * gqa_prefill_paged_cache_rows(call) * heads_kv * dim
-    append = 2 * ix["T_q"] * heads_kv * dim
-    # A request with no new token consults no block-table entry.
-    pages_named = sum(
-        -(-(c + q) // page_size) for q, c in zip(q_lens, cache_lens, strict=True) if q
-    )
-    moved = call.bytes("q") + call.bytes("k_new") + call.bytes("v_new") + call.bytes("o")
-    moved += (old_kv + append) * cache_elem
-    moved += call.bytes("cu_seqlens_q") + call.bytes("cache_seqlens") + pages_named * 4
-    if call.tensors["k_pages"][1] != call.tensors["q"][1]:
-        # A narrower cache is dequantized, and then the call reads both scales.
-        moved += call.bytes("k_scale") + call.bytes("v_scale")
-    return flops, moved
-
-
 def paged_rows(table: list, lengths: list, page_size: int, starts: "list | None" = None):
     """Distinct pool rows a paged read covers, and the block-table entries it consults.
 
@@ -781,14 +746,6 @@ def topk_select_roofline(call: "CallView") -> tuple[int, int]:
     shape = call.tensors["index_score"][0]
     read = widths * ix["G"] * call.bytes("index_score") // max(1, prod(shape))
     return ix["G"] * widths, _derived_bytes(call) - call.bytes("index_score") + read
-
-
-def gqa_prefill_paged_cache_rows(call: "CallView") -> int:
-    """Distinct cache rows the paged prefill call reads, which its cache traffic follows."""
-    q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.values("cache_seqlens")
-    # A request with no new token attends nothing and reads none of its cache.
-    read_lens = [c if q else 0 for q, c in zip(q_lens, cache_lens, strict=True)]
-    return paged_rows(call.values("block_table"), read_lens, call.ix["page_size"])[0]
 
 
 # ---------------------------------------------------------------- paged caches and MLA

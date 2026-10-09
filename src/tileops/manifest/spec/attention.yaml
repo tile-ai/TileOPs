@@ -213,69 +213,6 @@ GQAPagedFwdOp:
   roofline:
     func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 
-GQAPrefillPagedWithKVCacheFwdOp:
-  family: attention
-  status: implemented
-  ref_api: flash_attn_interface.flash_attn_with_kvcache
-  signature:
-    forall: {B: Dim, T_q: Dim, PT: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
-    params:
-      page_size: {type: int}
-      max_seqlen_q: {type: int}
-      is_causal: {type: bool, default: true}
-      cache_dtype: {type: "float16 | bfloat16 | float8_e4m3fn | None", default: null}
-      sm_scale: {type: "float | None", default: null}
-      softcap: {type: "float | None", default: null}
-      fuse_rope: {type: bool, default: false}
-      rope_base: {type: float, default: 10000.0}
-      max_position: {type: "int | None", default: null}
-      rotary_dim: {type: "int | None", default: null}
-      validate_inputs: {type: bool, default: false, kw_only: true}
-    inputs:
-      q: {dtype: T, shape: "[T_q, H, D]"}
-      k_new: {dtype: T, shape: "[T_q, H_kv, D]"}
-      v_new: {dtype: T, shape: "[T_q, H_kv, D]"}
-      # The new tokens are appended into the pool, so the call writes these as
-      # well as reading the pages the block table names.
-      k_pages: {dtype: "coalesce_dtype(cache_dtype, T)", shape: "[PT, H_kv, D]", mutated: true, contiguous: true}
-      v_pages: {dtype: "coalesce_dtype(cache_dtype, T)", shape: "[PT, H_kv, D]", mutated: true, contiguous: true}
-      # Dequantization scales of an FP8 cache; an unquantized cache ignores them.
-      k_scale: {dtype: float32, shape: "[1]"}
-      v_scale: {dtype: float32, shape: "[1]"}
-      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)", "max_segment(max_seqlen_q)"]}
-      # Each request's cache length before the append. Fused RoPE indexes its table by
-      # the appended positions, so they also stay below max_position.
-      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * page_size + 1)", "attn.paged_fits(cu_seqlens_q, W * page_size)", "attn.paged_fits(cu_seqlens_q, max_position.value if fuse_rope and present(max_position) else W * page_size)"]}
-      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
-    outputs:
-      o: {dtype: T, shape: "[T_q, H, D]"}
-    let:
-      NP: "PT // page_size"
-    shape_rules:
-    - "H_kv > 0 and H % H_kv == 0"
-    - "page_size > 0 and max_seqlen_q > 0"
-    - "PT % page_size == 0"
-    - "not present(cache_dtype) or cache_dtype.value == T or cache_dtype.value == 'float8_e4m3fn'"
-    - "not present(rotary_dim) or fuse_rope"
-    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
-    - "not fuse_rope or (present(max_position) and max_position.value > 0)"
-    - "not present(sm_scale) or -inf < sm_scale.value < inf"
-    - "not fuse_rope or rope_base > 0"
-  workloads:
-  - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(32768, 8)", page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-rope}
-  - {T_q: 4608, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-mixed}
-  - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", page_size: 64, max_seqlen_q: 512, is_causal: true, fuse_rope: true, max_position: 4608, dtype_cases: [{T: float16}], label: llama-8b-rope}
-  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: synthetic-softcap}
-  - {T_q: 2048, PT: 18432, W: 72, H: 71, H_kv: 1, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(1536, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, dtype_cases: [{T: bfloat16}], label: falcon-7b}
-  - {T_q: 2048, PT: 18432, W: 72, H: 48, H_kv: 1, D: 128, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, dtype_cases: [{T: float16}], label: starcoder}
-  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 1, D: 256, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, dtype_cases: [{T: bfloat16}], label: gemma-2b}
-  - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(32768, 8)", page_size: 64, max_seqlen_q: 1024, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: qwen35-9b}
-  - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: llama-8b}
-  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: synthetic-softcap}
-  roofline:
-    # Scores and the cached pages each request reaches, from the lengths the call carries.
-    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
-
 GQABwdOp:
   family: attention
   status: implemented

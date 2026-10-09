@@ -3,9 +3,6 @@ from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa.bwd import GQABwdOp
 from tileops.ops.attention.gqa.dense import GQADenseFwdOp
 from tileops.ops.attention.gqa.paged import GQAPagedFwdOp
-from tileops.ops.attention.gqa.prefill_paged_kv_append import (
-    GQAPrefillPagedWithKVCacheFwdOp,
-)
 from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops.ops.attention.mha import MHADecodePagedWithKVCacheFwdOp
 from tileops.ops.attention.mla import (
@@ -25,7 +22,6 @@ __all__ = [
     "GQABwdOp",
     "GQADenseFwdOp",
     "GQAPagedFwdOp",
-    "GQAPrefillPagedWithKVCacheFwdOp",
     "GQAVarlenFwdOp",
     "MHADecodePagedWithKVCacheFwdOp",
     "MLADecodeWithKVCacheFwdOp",
