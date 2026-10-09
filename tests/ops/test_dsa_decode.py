@@ -163,3 +163,32 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
     # NaN rows in every slot must not change the output.
     op(q, torch.full_like(kv, float("nan")), torch.zeros_like(in_range_pad))
     assert torch.equal(op(q, kv, in_range_pad), expected)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim_tail", "topk", "stride_kv", "dtype"),
+    [
+        pytest.param(128, 1, 64, 256, 1, torch.bfloat16, id="tail-two-head-blocks"),
+        pytest.param(64, 1, 0, 512, 1, torch.bfloat16, id="no-tail"),
+        pytest.param(128, 2, 0, 256, 1, torch.float16, id="two-kv-groups"),
+        pytest.param(64, 1, 64, 256, 2, torch.bfloat16, id="kv-stride-2"),
+    ],
+)
+def test_dsa_decode_seesaw_kernel_serves_value_dim_512(
+    heads, heads_kv, dim_tail, topk, stride_kv, dtype
+) -> None:
+    """On SM90, value dim 512 runs the seesaw kernel, with or without the key tail.
+
+    Short rows leave slots of the top-k list padded, so every case also masks.
+    """
+    q_start = 256
+    test = DSADecodeTest(
+        1, heads, 33, 1024, 512, dim_tail, topk, stride_kv, heads_kv, q_start, dtype=dtype
+    )
+    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
+    q, kv, indices = test.gen_inputs()
+    call = op._dsa_decode_call(q, kv, indices).on_device(q.device)
+    assert op.select_implementation("dsa_decode", call) == "dsa_decode_ws_kernel"
+    test.check(op, q, kv, indices)

@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeKernel
+from tileops.kernels.attention import DSADecodeBasicKernel, DSADecodeKernel, DSADecodeWSKernel
 from tileops.kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
@@ -25,9 +25,11 @@ class DSADecodeWithKVCacheFwdOp(Op):
     """
 
     compile_boundary = True
-    # The WGMMA warp-specialized kernel serves SM90; the architecture-agnostic basic kernel
+    # The WGMMA warp-specialized kernels serve SM90 -- the seesaw kernel value dim 512,
+    # the older one the other widths it covers; the architecture-agnostic basic kernel
     # serves everywhere else. Selection reads the device when a call arrives.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "dsa_decode_ws_kernel": DSADecodeWSKernel,
         "dsa_decode_kernel": DSADecodeKernel,
         "dsa_decode_basic_kernel": DSADecodeBasicKernel,
     }
