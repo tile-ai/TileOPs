@@ -3,7 +3,7 @@
 from tileops.ops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
-    DeltaNetInferenceFwdOp,
+    DeltaNetFwdOp,
     DeltaNetRecurrentFwdOp,
     GDNFwdOp,
     GLAChunkBwdOp,
@@ -16,7 +16,7 @@ from tileops.ops.linear_attention import (
 __all__ = [
     "DeltaNetChunkBwdOp",
     "DeltaNetChunkFwdOp",
-    "DeltaNetInferenceFwdOp",
+    "DeltaNetFwdOp",
     "DeltaNetRecurrentFwdOp",
     "GDNFwdOp",
     "GLAChunkBwdOp",

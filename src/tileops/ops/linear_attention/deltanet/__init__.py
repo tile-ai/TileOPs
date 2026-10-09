@@ -4,8 +4,8 @@ from tileops.ops.linear_attention.deltanet.chunk import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
 )
-from tileops.ops.linear_attention.deltanet.inference import (
-    DeltaNetInferenceFwdOp,
+from tileops.ops.linear_attention.deltanet.fwd import (
+    DeltaNetFwdOp,
 )
 from tileops.ops.linear_attention.deltanet.recurrent import (
     DeltaNetRecurrentFwdOp,
@@ -14,6 +14,6 @@ from tileops.ops.linear_attention.deltanet.recurrent import (
 __all__ = [
     "DeltaNetChunkBwdOp",
     "DeltaNetChunkFwdOp",
-    "DeltaNetInferenceFwdOp",
+    "DeltaNetFwdOp",
     "DeltaNetRecurrentFwdOp",
 ]

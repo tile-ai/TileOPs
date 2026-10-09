@@ -38,7 +38,7 @@ def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
 
 
 ENTRIES = {
-    "DeltaNetInferenceFwdOp": Entry(DeltaNetInferenceCall),
+    "DeltaNetFwdOp": Entry(DeltaNetInferenceCall),
     "DeltaNetChunkFwdOp": Entry(DeltaNetChunkwiseCall),
     "DeltaNetChunkBwdOp": Entry(DeltaNetChunkwiseCall, inputs=_deltanet_bwd_inputs),
     "DeltaNetRecurrentFwdOp": Entry(DeltaNetDecodeCall),

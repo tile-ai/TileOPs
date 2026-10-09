@@ -343,7 +343,7 @@ class DeltaNetChunkwiseCall(CallWorkload):
 
 
 class DeltaNetInferenceCall(CallWorkload):
-    """A manifest call of DeltaNetInferenceFwdOp.
+    """A manifest call of DeltaNetFwdOp.
 
     FLA's ``chunk_delta_rule`` is the reference for a prefill call and its
     ``fused_recurrent_delta_rule`` for a single-token one, which is the kernel FLA
