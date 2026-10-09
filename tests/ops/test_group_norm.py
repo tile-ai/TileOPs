@@ -23,6 +23,13 @@ class GroupNormFixture(FixtureBase):
                 pytest.param(2, 32, (8, 8), 8, torch.float16, False, marks=pytest.mark.smoke),
                 # Small CI-friendly shapes -- bf16
                 pytest.param(2, 32, (8, 8), 8, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # Wide groups: Stable Diffusion's 64 x 64 latent (40960 a group, held in
+                # registers), an SDXL latent no block holds, a bf16 group of 262144 cut
+                # across blocks, and an fp32 row past SM89's shared memory.
+                pytest.param(2, 320, (64, 64), 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 320, (152, 104), 32, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 128, (256, 256), 32, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 128, (50, 125), 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.bfloat16, False, marks=pytest.mark.full),
@@ -131,6 +138,9 @@ class GroupNormNoAffineFixture(FixtureBase):
                 pytest.param(2, 32, (8, 8), 8, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
+                # Wide groups, cut across blocks and held in registers.
+                pytest.param(2, 320, (152, 104), 32, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 320, (64, 64), 32, torch.float16, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.float16, marks=pytest.mark.full),
                 # Non-aligned spatial: exercises padding path.
                 pytest.param(2, 32, (7, 7), 8, torch.float16, marks=pytest.mark.full),
@@ -201,6 +211,14 @@ def test_group_norm_under_tuning(tune: bool) -> None:
     candidates."""
     test = GroupNormTest(2, 32, (32, 32), 4, torch.float16)
     test.check(GroupNormFwdOp(num_groups=4, tune=tune), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_group_norm_constant_group() -> None:
+    """A group of equal elements normalizes to zero, at a width the row is cut across blocks."""
+    test = GroupNormTest(1, 32, (4096,), 1, torch.float16)
+    x, _, _ = test.gen_inputs()
+    test.check(GroupNormFwdOp(num_groups=1), torch.full_like(x, 10000.0))
 
 
 def _misaligned(t: torch.Tensor) -> torch.Tensor:
