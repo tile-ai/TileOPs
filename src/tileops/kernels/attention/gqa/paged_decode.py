@@ -54,6 +54,7 @@ def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
 def _softmax_scale(dim, sm_scale, softcap):
     """The score scale, the exp2-domain factor the softmax applies, and whether scores are 0.
 
+    Negative scales are applied before masking; softmax then uses a positive exp2 factor.
     A zero scale makes every score zero. The kernel then zeroes the scores before the
     mask and applies a unit factor, so a masked key stays at -inf instead of -inf * 0.
     """
@@ -62,6 +63,8 @@ def _softmax_scale(dim, sm_scale, softcap):
         return score_scale, LOG2E, False
     if score_scale == 0.0:
         return score_scale, 1.0, True
+    if score_scale < 0.0:
+        return score_scale, LOG2E, False
     return score_scale, score_scale * LOG2E, False
 
 
@@ -140,6 +143,9 @@ def _make_tile_steps(
             T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
             if zero_scores:
                 T.clear(acc_s)
+            elif softcap <= 0.0 and score_scale < 0.0:
+                for i, j in T.Parallel(block_M, tile_n):
+                    acc_s[i, j] *= score_scale
             if softcap > 0.0:
                 apply_softcap(acc_s)
             if is_causal:
@@ -708,6 +714,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ):
         """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache.
 

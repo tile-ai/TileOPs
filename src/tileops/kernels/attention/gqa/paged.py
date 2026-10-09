@@ -28,12 +28,13 @@ from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+from tileops.kernels.attention.varlen_rope import rope_channel_pair
 from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin
 
-__all__ = ["GQAPagedVarlenFwdKernel"]
+__all__ = ["GQAPagedFwdKernel"]
 
 
 def _make_tile_parts(
@@ -51,6 +52,9 @@ def _make_tile_parts(
     zero_scores,
     dtype,
     accum_dtype,
+    fuse_rope,
+    rotary_dim,
+    rope_layout,
 ):
     """The key-tile pieces the unsplit and the split program share.
 
@@ -63,15 +67,68 @@ def _make_tile_parts(
     one_page_holds_tile = page_size % block_N == 0
 
     @T.macro
-    def load_kv(K, V, page_table, k_shared, v_shared, request, kv_head, key0, kv_len):
+    def load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, kv_head, align):
+        if fuse_rope:
+            for i, freq in T.Parallel(block_M, rotary_dim // 2):
+                r = T.min(row0 + i, rows - 1)
+                pos = r // group + align
+                head = kv_head * group + r % group
+                d0, d1 = rope_channel_pair(rope_layout, rotary_dim // 2, freq)
+                x0 = T.cast(Q[q_start + r // group, head, d0], accum_dtype)
+                x1 = T.cast(Q[q_start + r // group, head, d1], accum_dtype)
+                c = T.cast(rope_cos[pos, freq], accum_dtype)
+                s = T.cast(rope_sin[pos, freq], accum_dtype)
+                q_shared[i, d0] = T.cast(x0 * c - x1 * s, dtype)
+                q_shared[i, d1] = T.cast(x1 * c + x0 * s, dtype)
+            if rotary_dim < dim:
+                for i, d in T.Parallel(block_M, dim - rotary_dim):
+                    r = T.min(row0 + i, rows - 1)
+                    q_shared[i, rotary_dim + d] = Q[
+                        q_start + r // group, kv_head * group + r % group, rotary_dim + d
+                    ]
+        else:
+            for i, d in T.Parallel(block_M, dim):
+                r = T.min(row0 + i, rows - 1)
+                q_shared[i, d] = T.if_then_else(
+                    row0 + i < rows,
+                    Q[q_start + r // group, kv_head * group + r % group, d],
+                    T.cast(0, dtype),
+                )
+
+    @T.macro
+    def load_kv(
+        K, V, page_table, rope_cos, rope_sin, k_shared, v_shared, request, kv_head, key0, kv_len
+    ):
         """Read one key tile through the page table.
 
-        Rows past the cache are not guarded: they land in a page the table names, so they
-        are cached values rather than unmapped memory, the mask sends their scores to
-        -inf, and the zero weight that follows removes them from the value sum. A guard
-        here would cost the whole tile its vector width.
+        The non-RoPE contiguous copy keeps its full vector width and relies on finite
+        padded values. Gathered rows, including every RoPE read, clamp to the final
+        valid row before the attention mask excludes their scores.
         """
-        if one_page_holds_tile:
+        if fuse_rope:
+            # Positions belong to logical cache rows, not to the physical page pool.
+            # Clamp padded rows before reading either the table or V: masked NaN values
+            # would otherwise survive their zero attention weight.
+            for j, freq in T.Parallel(block_N, rotary_dim // 2):
+                key = T.min(key0 + j, kv_len - 1)
+                row = page_table[request, key // page_size] * page_size + key % page_size
+                d0, d1 = rope_channel_pair(rope_layout, rotary_dim // 2, freq)
+                x0 = T.cast(K[row, kv_head, d0], accum_dtype)
+                x1 = T.cast(K[row, kv_head, d1], accum_dtype)
+                c = T.cast(rope_cos[key, freq], accum_dtype)
+                s = T.cast(rope_sin[key, freq], accum_dtype)
+                k_shared[j, d0] = T.cast(x0 * c - x1 * s, dtype)
+                k_shared[j, d1] = T.cast(x1 * c + x0 * s, dtype)
+            if rotary_dim < dim:
+                for j, d in T.Parallel(block_N, dim - rotary_dim):
+                    key = T.min(key0 + j, kv_len - 1)
+                    row = page_table[request, key // page_size] * page_size + key % page_size
+                    k_shared[j, rotary_dim + d] = K[row, kv_head, rotary_dim + d]
+            for j, d in T.Parallel(block_N, dim):
+                key = T.min(key0 + j, kv_len - 1)
+                row = page_table[request, key // page_size] * page_size + key % page_size
+                v_shared[j, d] = V[row, kv_head, d]
+        elif one_page_holds_tile:
             base = page_table[request, key0 // page_size] * page_size + key0 % page_size
             T.copy(K[base : base + block_N, kv_head, :], k_shared)
             T.copy(V[base : base + block_N, kv_head, :], v_shared)
@@ -127,7 +184,7 @@ def _make_tile_parts(
         if softcap > 0.0
         else None
     )
-    return load_kv, apply_softcap, apply_mask, online_softmax, make_rescale(block_M, dim)
+    return load_q, load_kv, apply_softcap, apply_mask, online_softmax, make_rescale(block_M, dim)
 
 
 @functools.lru_cache(maxsize=32)
@@ -144,15 +201,19 @@ def _gqa_paged_varlen_kernel(
     sm_scale: float,
     softcap: float,
     dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
     producer_warpgroup: bool,
 ):
     """Build the paged packed-query attention program for one fixed set of call facts."""
     accum_dtype = "float"
     group = heads // heads_kv
-    # Under a zero score scale the scores are zeroed before the mask and the exp2 factor is
-    # one, so a masked key stays at -inf rather than becoming -inf * 0.
+    # Nonpositive scales are applied before masking so softmax always sees a positive
+    # exp2 factor. Zero scores are cleared to avoid multiplying a mask sentinel by zero.
     zero_scores = softcap <= 0.0 and sm_scale == 0.0
-    softmax_scale = LOG2E if softcap > 0.0 or zero_scores else sm_scale * LOG2E
+    softmax_scale = LOG2E if softcap > 0.0 or sm_scale <= 0.0 else sm_scale * LOG2E
 
     @tilelang.jit(
         out_idx=[-1],
@@ -170,6 +231,7 @@ def _gqa_paged_varlen_kernel(
         pool_rows = T.dynamic("pool_rows")
         shape_q = (total_q, heads, dim)
         shape_kv = (pool_rows, heads_kv, dim)
+        rope_shape = (max_position, rotary_dim // 2) if fuse_rope else (1, 1)
         tiling = GroupTiling(batch, block_M, rows_per_offset=group)
         parts = _make_tile_parts(
             block_M,
@@ -186,8 +248,11 @@ def _gqa_paged_varlen_kernel(
             zero_scores,
             dtype,
             accum_dtype,
+            fuse_rope,
+            rotary_dim,
+            rope_layout,
         )
-        load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
+        load_q, load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
 
         @T.prim_func
         def gqa_paged_varlen(
@@ -197,6 +262,8 @@ def _gqa_paged_varlen_kernel(
             cache_seqlens: T.Tensor([batch], T.int32),
             page_table: T.Tensor([batch, max_pages_per_req], T.int32),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
+            rope_cos: T.Tensor(rope_shape, dtype),
+            rope_sin: T.Tensor(rope_shape, dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(tiling.tile_upper_bound(total_q * group), heads_kv, threads=threads) as (
@@ -236,13 +303,7 @@ def _gqa_paged_varlen_kernel(
                     # Queries sit at the end of the cache: position i is key kv_len - q_len + i.
                     align = kv_len - q_len
 
-                    for i, d in T.Parallel(block_M, dim):
-                        r = T.min(row0 + i, rows - 1)
-                        q_shared[i, d] = T.if_then_else(
-                            row0 + i < rows,
-                            Q[q_start + r // group, by * group + r % group, d],
-                            T.cast(0, dtype),
-                        )
+                    load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, by, align)
                     T.clear(acc_o)
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -264,7 +325,19 @@ def _gqa_paged_varlen_kernel(
                         T.max(0, T.ceildiv(key_end, block_N) - tile0), num_stages=num_stages
                     ):
                         key0 = (tile0 + t) * block_N
-                        load_kv(K, V, page_table, k_shared, v_shared, request, by, key0, kv_len)
+                        load_kv(
+                            K,
+                            V,
+                            page_table,
+                            rope_cos,
+                            rope_sin,
+                            k_shared,
+                            v_shared,
+                            request,
+                            by,
+                            key0,
+                            kv_len,
+                        )
                         T.clear(acc_s)
                         # The GEMM runs even for zero scores: it fixes the layout the row
                         # statistics share.
@@ -277,6 +350,9 @@ def _gqa_paged_varlen_kernel(
                         )
                         if zero_scores:
                             T.clear(acc_s)
+                        elif softcap <= 0.0 and sm_scale < 0.0:
+                            for i, j in T.Parallel(block_M, block_N):
+                                acc_s[i, j] *= sm_scale
                         if softcap > 0.0:
                             apply_softcap(acc_s)
                         apply_mask(acc_s, key0, row0, rows, align, kv_len)
@@ -321,6 +397,10 @@ def _gqa_paged_varlen_split_kernel(
     sm_scale: float,
     softcap: float,
     dtype: str,
+    fuse_rope: bool,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
 ):
     """The same scan with the key range cut into ``num_split`` chunks, combined afterwards.
 
@@ -331,7 +411,7 @@ def _gqa_paged_varlen_split_kernel(
     accum_dtype = "float"
     group = heads // heads_kv
     zero_scores = softcap <= 0.0 and sm_scale == 0.0
-    softmax_scale = LOG2E if softcap > 0.0 or zero_scores else sm_scale * LOG2E
+    softmax_scale = LOG2E if softcap > 0.0 or sm_scale <= 0.0 else sm_scale * LOG2E
     # Below this a split saw no key at all. A threshold, not an equality with -inf: fast math
     # folds comparisons with infinity away.
     no_key_lse = -1.0e30
@@ -350,6 +430,7 @@ def _gqa_paged_varlen_split_kernel(
         tiles = T.dynamic("tiles")
         shape_q = (total_q, heads, dim)
         shape_kv = (pool_rows, heads_kv, dim)
+        rope_shape = (max_position, rotary_dim // 2) if fuse_rope else (1, 1)
         shape_lse = (tiles, heads_kv, num_split, block_M)
         shape_partial = (tiles, heads_kv, num_split, block_M, dim)
         tiling = GroupTiling(batch, block_M, rows_per_offset=group)
@@ -368,8 +449,11 @@ def _gqa_paged_varlen_split_kernel(
             zero_scores,
             dtype,
             accum_dtype,
+            fuse_rope,
+            rotary_dim,
+            rope_layout,
         )
-        load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
+        load_q, load_kv, apply_softcap, apply_mask, online_softmax, rescale = parts
 
         @T.macro
         def scan(
@@ -379,6 +463,8 @@ def _gqa_paged_varlen_split_kernel(
             cache_seqlens: T.Tensor([batch], T.int32),
             page_table: T.Tensor([batch, max_pages_per_req], T.int32),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
+            rope_cos: T.Tensor(rope_shape, dtype),
+            rope_sin: T.Tensor(rope_shape, dtype),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
         ):
@@ -412,13 +498,7 @@ def _gqa_paged_varlen_split_kernel(
                     rows = q_len * group
                     align = kv_len - q_len
 
-                    for i, d in T.Parallel(block_M, dim):
-                        r = T.min(row0 + i, rows - 1)
-                        q_shared[i, d] = T.if_then_else(
-                            row0 + i < rows,
-                            Q[q_start + r // group, by * group + r % group, d],
-                            T.cast(0, dtype),
-                        )
+                    load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, by, align)
                     T.clear(acc_o)
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
@@ -442,7 +522,19 @@ def _gqa_paged_varlen_split_kernel(
                     mine = T.max(0, T.min(per_split, span - bz * per_split))
                     for t in T.Pipelined(mine, num_stages=num_stages):
                         key0 = (tile0 + bz * per_split + t) * block_N
-                        load_kv(K, V, page_table, k_shared, v_shared, request, by, key0, kv_len)
+                        load_kv(
+                            K,
+                            V,
+                            page_table,
+                            rope_cos,
+                            rope_sin,
+                            k_shared,
+                            v_shared,
+                            request,
+                            by,
+                            key0,
+                            kv_len,
+                        )
                         T.clear(acc_s)
                         T.gemm(
                             q_shared,
@@ -453,6 +545,9 @@ def _gqa_paged_varlen_split_kernel(
                         )
                         if zero_scores:
                             T.clear(acc_s)
+                        elif softcap <= 0.0 and sm_scale < 0.0:
+                            for i, j in T.Parallel(block_M, block_N):
+                                acc_s[i, j] *= sm_scale
                         if softcap > 0.0:
                             apply_softcap(acc_s)
                         apply_mask(acc_s, key0, row0, rows, align, kv_len)
@@ -534,11 +629,15 @@ def _gqa_paged_varlen_split_kernel(
             cache_seqlens: T.Tensor([batch], T.int32),
             page_table: T.Tensor([batch, max_pages_per_req], T.int32),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
+            rope_cos: T.Tensor(rope_shape, dtype),
+            rope_sin: T.Tensor(rope_shape, dtype),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
-            scan(Q, K, V, cache_seqlens, page_table, cu_seqlens_q, glse, partial)
+            scan(
+                Q, K, V, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin, glse, partial
+            )
             combine(cu_seqlens_q, glse, partial, Output)
 
         return gqa_paged_varlen_split
@@ -546,7 +645,7 @@ def _gqa_paged_varlen_split_kernel(
     return _func
 
 
-class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
+class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     """Paged attention over packed queries of any per-request length, or a restricted window."""
 
     supported_archs: list[int] = [80, 89, 90]
@@ -561,7 +660,7 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
 
         It serves every call whose query and cache are float16 or bfloat16 of the same dtype:
         any mix of per-request query lengths, any positive page size, both window bounds,
-        causal and bidirectional. An FP8 tensor and a fused rotation are refused.
+        causal and bidirectional. An FP8 tensor is refused; rotary positions follow each request's logical cache.
         """
         if call.dtype not in ATTENTION_DTYPES:
             return "requires float16 or bfloat16 Q"
@@ -569,8 +668,6 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             return "requires Q and KV to share a dtype"
         if call.is_fp8:
             return "does not serve FP8"
-        if call.fuse_rope:
-            return "does not serve RoPE"
         if call.page_size <= 0:
             return "requires a positive page size"
         if call.tensor_core_dim_refusal is not None:
@@ -596,8 +693,16 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
-            rows_fill_tile=call.is_uniform
-            and call.max_seqlen_q * call.heads // call.heads_kv >= 128,
+            # RoPE gathers and rotates K per query tile; amortise that work when the
+            # packing has at least 128 query/head rows per request on average.
+            rows_fill_tile=(
+                call.is_uniform and call.max_seqlen_q * call.heads // call.heads_kv >= 128
+            )
+            or (
+                call.fuse_rope
+                and call.max_seqlen_q * call.heads // call.heads_kv >= 128 * call.batch
+            ),
+            **call.rope_args,
         )
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
@@ -616,6 +721,10 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         rows_fill_tile: bool = False,
+        fuse_rope: bool = False,
+        max_position: int = 1,
+        rotary_dim: int = 0,
+        rope_layout: str = "neox",
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: Optional[int] = None,
@@ -640,6 +749,13 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.rows_fill_tile = rows_fill_tile
+        self.fuse_rope = fuse_rope
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim or dim
+        self.rope_layout = rope_layout
+        self._unused_rope = torch.empty(
+            (1, 1), dtype=dtype, device=torch.device("cuda", self.device_index)
+        )
         # Read once: reading it per call costs more than the kernel does on a short row.
         self._processors = torch.cuda.get_device_properties(device_index).multi_processor_count
         self._builder_args = (
@@ -655,6 +771,10 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             self.sm_scale,
             softcap,
             self.dtype_str,
+            fuse_rope,
+            max_position,
+            self.rotary_dim,
+            rope_layout,
         )
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
@@ -679,7 +799,7 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """The 128-row query tile where every request fills one, the 64-row tile otherwise,
+        """The 128-row query tile for full requests (average fill with RoPE), 64 otherwise,
         over the widest key tile up to 128 rows that one page holds, or, where a tile row is
         128 bytes or less, a width the page does not hold so the tile is gathered.
 
@@ -786,13 +906,16 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         # One row tile of query tokens a request, against the cache its table spans: a
         # synthetic tuning point, not a claim about any packing.
         tokens_per_request = 8
-        cache_len = width * page_size
+        cache_len = (
+            min(width * page_size, self.max_position) if self.fuse_rope else width * page_size
+        )
+        tokens_per_request = min(tokens_per_request, cache_len)
 
         def supply_prog(params):
-            if len(params) != 6:
+            if len(params) != 8:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, the two pools, the cache "
-                    f"lengths, the page table and the query offsets, got {len(params)} "
+                    f"lengths, the page table, query offsets and rotary tables, got {len(params)} "
                     f"parameters"
                 )
             device = torch.cuda.current_device()
@@ -814,6 +937,12 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
                     dtype=torch.int32,
                     device=device,
                 ),
+                torch.ones((self.max_position, self.rotary_dim // 2), dtype=dtype, device=device)
+                if self.fuse_rope
+                else self._unused_rope,
+                torch.zeros((self.max_position, self.rotary_dim // 2), dtype=dtype, device=device)
+                if self.fuse_rope
+                else self._unused_rope,
             ]
 
         return supply_prog
@@ -867,7 +996,11 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        rope_cos = rope_cos if self.fuse_rope else self._unused_rope
+        rope_sin = rope_sin if self.fuse_rope else self._unused_rope
         c = self.config
         tiles = self._tile_bound(q.shape[0], c["block_M"])
         splits = c.get("num_split") or self._splits_for(
@@ -875,7 +1008,9 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
         )
         if splits == 1:
             program = self.kernel(c["block_M"], c["block_N"], c["num_stages"], c["threads"])
-            return program(q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q)
+            return program(
+                q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin
+            )
         program = _gqa_paged_varlen_split_kernel(*self._builder_args)(
             c["block_M"], c["block_N"], splits, c["num_stages"], c["threads"]
         )
@@ -887,4 +1022,15 @@ class GQAPagedVarlenFwdKernel(Kernel, GQAPagedFwdInterface):
             dtype=self.dtype,
             device=q.device,
         )
-        return program(q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q, glse, partial)
+        return program(
+            q,
+            k_pool,
+            v_pool,
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+            rope_cos,
+            rope_sin,
+            glse,
+            partial,
+        )

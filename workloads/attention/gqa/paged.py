@@ -76,6 +76,12 @@ class GQAPagedFwdWorkload(WorkloadBase):
         v_pages = torch.randn(pages_shape, dtype=self.dtype, device=device)
         page_table = make_fragmented_block_table(self.batch, self.max_pages_per_req, self.num_pages)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
+        cos, sin = None, None
+        if self.pos_encoding_mode == "rope":
+            half = (self.rotary_dim or self.dim) // 2
+            frequency = 10000.0 ** (-torch.arange(half, device=device).float() / half)
+            angles = torch.arange(max(self.cache_lens), device=device)[:, None] * frequency
+            cos, sin = angles.cos().to(self.dtype), angles.sin().to(self.dtype)
         return (
             q,
             k_pages,
@@ -86,8 +92,8 @@ class GQAPagedFwdWorkload(WorkloadBase):
             None,
             None,
             None,
-            None,
-            None,
+            cos,
+            sin,
         )
 
     def ref_program(
@@ -151,6 +157,17 @@ class GQAPagedFwdWorkload(WorkloadBase):
             outputs.append(torch.matmul(probs, v_b).transpose(0, 1))
         return torch.cat(outputs).to(self.out_dtype or q.dtype).contiguous()
 
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        if self.pos_encoding_mode == "rope" and inputs[0].dtype == torch.float16:
+            # Q and K each round their rotated values to FP16 before the score product;
+            # the reference retains FP32 rotations. On a partial-width call at scale 0.25,
+            # FlashInfer rotation + FA3 and the fused path both reach 0.00232 absolute error
+            # across three seeds. Budget these intermediate roundings for every comparator.
+            return Exact(rtol=2e-3, atol=2e-3)
+        return Exact()
+
 
 class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
     """A manifest call of GQAPagedFwdOp."""
@@ -180,4 +197,17 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
             rope_layout=params["rope_layout"],
         )
 
-    gen_inputs = CallWorkload.gen_inputs
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        """Keep manifest metadata, drawing cosine/sine pairs from rotation angles.
+
+        Independent normal draws for the two tables scale channels as well as rotating
+        them, sharpening the softmax instead of representing the declared RoPE workload.
+        """
+        inputs = list(CallWorkload.gen_inputs(self))
+        if self.pos_encoding_mode == "rope":
+            table = inputs[9]
+            angles = torch.rand(
+                table.shape, device=table.device, generator=self.rng("rope", device=table.device)
+            ) * (2 * torch.pi)
+            inputs[9], inputs[10] = angles.cos().to(table.dtype), angles.sin().to(table.dtype)
+        return tuple(inputs)

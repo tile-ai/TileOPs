@@ -572,6 +572,74 @@ def _fa3_gqa_paged(workload):
     return baseline_fn
 
 
+def _fa3_gqa_paged_rope(workload, inputs):
+    """Gather read-only pages, rotate with FlashInfer, then run FA3 packed attention.
+
+    FA3's cache entry rotates newly appended keys, not historical read-only keys. This
+    adapter materializes each request's keys, so even a physical page shared at different
+    logical positions is rotated correctly. Gathering and rotation are inside timing.
+    """
+    from flash_attn_interface import flash_attn_varlen_func
+    from flashinfer.rope import apply_rope_with_cos_sin_cache
+
+    q, _, _, table = inputs[:4]
+    device, dim = q.device, workload.dim
+    key_positions = torch.cat([torch.arange(n, device=device) for n in workload.cache_lens])
+    requests = torch.repeat_interleave(
+        torch.arange(workload.batch, device=device),
+        torch.tensor(workload.cache_lens, device=device),
+    )
+    key_pages = table[requests, key_positions // workload.page_size].long()
+    key_offsets = key_positions % workload.page_size
+    query_positions = torch.cat(
+        [
+            torch.arange(kv - qn, kv, device=device)
+            for qn, kv in zip(workload.q_lens, workload.cache_lens, strict=True)
+        ]
+    ).int()
+    key_positions = key_positions.int()
+    cu_k = torch.tensor([0, *accumulate(workload.cache_lens)], device=device, dtype=torch.int32)
+    scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=q.dtype)
+    scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=q.dtype)
+
+    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin):
+        k = k_pages[key_pages, key_offsets]
+        v = v_pages[key_pages, key_offsets]
+        rotary_cache = torch.cat((cos, sin), -1).float()
+        q_rot, _ = apply_rope_with_cos_sin_cache(
+            query_positions,
+            q.flatten(1),
+            scratch_k,
+            dim,
+            rotary_cache,
+            workload.rope_layout == "neox",
+        )
+        _, k_rot = apply_rope_with_cos_sin_cache(
+            key_positions,
+            scratch_q,
+            k.flatten(1),
+            dim,
+            rotary_cache,
+            workload.rope_layout == "neox",
+        )
+        out = flash_attn_varlen_func(
+            q_rot.view_as(q),
+            k_rot.view_as(k),
+            v,
+            cu_q,
+            cu_k,
+            max(workload.q_lens),
+            max(workload.cache_lens),
+            causal=workload.is_causal,
+            softmax_scale=workload.sm_scale,
+            window_size=(workload.window_size_left, workload.window_size_right),
+            softcap=float(workload.softcap or 0.0),
+        )
+        return out[0] if isinstance(out, tuple) else out
+
+    return run
+
+
 def _flashinfer_gqa_paged_prefill(workload, inputs):
     """FlashInfer's packed-query paged attention, or None where it cannot serve the row.
 
@@ -660,6 +728,10 @@ def test_gqa_paged_fwd_bench(case) -> None:
     inputs = case.inputs
     op = GQAPagedFwdOp(**case.arguments)
     implementations = {"torch-ref": case.reference}
+    if workload.pos_encoding_mode == "rope":
+        implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
+        bench.Runner(op, case).compare(implementations)
+        return
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
         implementations["fa3"] = fa3_fn
