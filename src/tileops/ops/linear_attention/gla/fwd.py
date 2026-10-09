@@ -25,10 +25,10 @@ from tileops.kernels.linear_attention.gla.varlen_prefill_partitioned import (
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GLAInferenceFwdOp"]
+__all__ = ["GLAFwdOp"]
 
 
-class GLAInferenceFwdOp(Op):
+class GLAFwdOp(Op):
     """Gated Linear Attention (GLA) for inference, with caller-owned FP32 state.
 
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call is

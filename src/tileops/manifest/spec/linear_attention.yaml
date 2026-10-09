@@ -525,7 +525,7 @@ DeltaNetChunkBwdOp:
       + (bytes(Aw) + bytes(Au)) * (chunk_size - 1) // (2 * chunk_size)
       + bytes(w) + bytes(u) + bytes(dq) + bytes(dk) + bytes(dv) + bytes(dbeta)
 
-GLAInferenceFwdOp:
+GLAFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
   family: linear_attention
   status: implemented

@@ -15,7 +15,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
+from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
 from workloads.linear_attention.gla import (
     GLADecodeWorkload,
@@ -282,14 +282,14 @@ def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
 
         return kernel
 
-    registry.register_kernel_builder("GLAInferenceFwdOp", "gla_test", build_kernel)
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
     q = torch.randn(1, 7, 2, 8, dtype=torch.float16)
     k = torch.randn_like(q)
     v = torch.randn(1, 7, 2, 6, dtype=torch.float16)
     g = -torch.rand_like(q)
     state = torch.zeros(2, 2, 8, 6, dtype=torch.float32)
     cu = torch.tensor([0, 3, 7], dtype=torch.int64)
-    op = GLAInferenceFwdOp(scale=0.125, target="gla_test")
+    op = GLAFwdOp(scale=0.125, target="gla_test")
 
     o, final_state = op(q, k, v, g, state, cu, cu.clone())
     assert o.shape == v.shape
@@ -329,8 +329,8 @@ def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
 
         return kernel
 
-    registry.register_kernel_builder("GLAInferenceFwdOp", "gla_test", build_kernel)
-    op = GLAInferenceFwdOp(target="gla_test")
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
+    op = GLAFwdOp(target="gla_test")
     q, k, g = (torch.empty(1, 7, 2, 8, dtype=torch.float16) for _ in range(3))
     v = torch.empty(1, 7, 2, 6, dtype=torch.float16)
     packed_state = torch.empty(2, 2, 8, 6, dtype=torch.float32) if seeded else None
@@ -355,7 +355,7 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
     _skip_unless_kernel_serves(GLADensePrefillSubchunkKernel, test)
     inputs = test.gen_inputs()
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     test.check(op, *inputs)
     test.check(op, *inputs[:4])
     inputs[3].mul_(3.0)
@@ -385,7 +385,7 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
     g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype)
     cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
     seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
-    op = GLAInferenceFwdOp(scale)
+    op = GLAFwdOp(scale)
     for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
         o, final_state = op(q, k, v, g, state, cu_seqlens, host)
         ref_o, ref_state = chunk_gla(
@@ -423,7 +423,7 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
     v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
     g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype) * 10.0
     cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
-    o, final_state = GLAInferenceFwdOp()(q, k, v, g, None, cu_seqlens, None)
+    o, final_state = GLAFwdOp()(q, k, v, g, None, cu_seqlens, None)
     ref_o, ref_state = chunk_gla(
         q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
     )
@@ -438,7 +438,7 @@ def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
     """An equal-length call whose rows are not a multiple of 64 runs the packed kernel."""
     torch.manual_seed(2237)
     test = GLAInferenceTest(2, 100, 4, 64, 64, torch.bfloat16, has_initial_state=True)
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     test.check(op, *test.gen_inputs())
 
 
@@ -457,7 +457,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     _skip_unless_kernel_serves(GLADensePrefillPartitionedKernel, test)
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     test.check(
         op,
         *inputs,
@@ -482,7 +482,7 @@ def test_gla_dense_decode_matches_fla(
     test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state, scale)
     _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
     inputs = test.gen_inputs()
-    op = GLAInferenceFwdOp(scale)
+    op = GLAFwdOp(scale)
     # The workload checks FP32 state at 3e-7 and permits one output rounding unit.
     test.check(op, *inputs)
 
@@ -500,7 +500,7 @@ def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     )
     q, k, v, g, state = test.gen_inputs()
     ref_o, ref_state = test.ref_program(q, k, v, g, state)
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     outputs = []
     for t in range(steps):
         o, state = op(*(x[:, t : t + 1] for x in (q, k, v, g)), state)

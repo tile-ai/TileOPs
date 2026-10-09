@@ -4,8 +4,8 @@ from tileops.ops.linear_attention.gla.chunk import (
     GLAChunkBwdOp,
     GLAChunkFwdOp,
 )
-from tileops.ops.linear_attention.gla.inference import (
-    GLAInferenceFwdOp,
+from tileops.ops.linear_attention.gla.fwd import (
+    GLAFwdOp,
 )
 from tileops.ops.linear_attention.gla.recurrent import (
     GLARecurrentFwdOp,
@@ -14,6 +14,6 @@ from tileops.ops.linear_attention.gla.recurrent import (
 __all__ = [
     "GLAChunkBwdOp",
     "GLAChunkFwdOp",
-    "GLAInferenceFwdOp",
+    "GLAFwdOp",
     "GLARecurrentFwdOp",
 ]
