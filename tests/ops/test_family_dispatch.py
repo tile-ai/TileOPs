@@ -24,7 +24,7 @@ from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwd
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
 from workloads.device import run_device_available
@@ -275,7 +275,7 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
         (GLAChunkFwdOp(), "gla_fwd", gla_chunk),
         (GLAChunkBwdOp(), "gla_bwd", gla_chunk),
         *(
-            (GLAInferenceFwdOp(), "gla_inference", call)
+            (GLAFwdOp(), "gla_inference", call)
             for call in (
                 _gla_inference_call(1, heads=heads),
                 _gla_inference_call(2048, heads=heads),

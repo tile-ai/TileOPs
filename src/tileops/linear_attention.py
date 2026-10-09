@@ -8,7 +8,7 @@ from tileops.ops.linear_attention import (
     GDNFwdOp,
     GLAChunkBwdOp,
     GLAChunkFwdOp,
-    GLAInferenceFwdOp,
+    GLAFwdOp,
     GLARecurrentFwdOp,
     KDAFwdOp,
 )
@@ -21,7 +21,7 @@ __all__ = [
     "GDNFwdOp",
     "GLAChunkBwdOp",
     "GLAChunkFwdOp",
-    "GLAInferenceFwdOp",
+    "GLAFwdOp",
     "GLARecurrentFwdOp",
     "KDAFwdOp",
 ]

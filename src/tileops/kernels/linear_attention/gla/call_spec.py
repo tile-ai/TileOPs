@@ -1,4 +1,4 @@
-"""The facts of one GLAInferenceFwdOp call that its in-tree kernels select and build on,
+"""The facts of one GLAFwdOp call that its in-tree kernels select and build on,
 and the kernel interface its implementations inherit."""
 
 import dataclasses

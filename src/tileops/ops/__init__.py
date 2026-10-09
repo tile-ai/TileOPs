@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GDNFwdOp,
         GLAChunkBwdOp,
         GLAChunkFwdOp,
-        GLAInferenceFwdOp,
+        GLAFwdOp,
         GLARecurrentFwdOp,
         KDAFwdOp,
     )
@@ -254,7 +254,7 @@ _LAZY = {
     "DeltaNetRecurrentFwdOp": ".linear_attention",
     "GDNFwdOp": ".linear_attention",
     "GLAChunkFwdOp": ".linear_attention",
-    "GLAInferenceFwdOp": ".linear_attention",
+    "GLAFwdOp": ".linear_attention",
     "GLAChunkBwdOp": ".linear_attention",
     "GLARecurrentFwdOp": ".linear_attention",
     "KDAFwdOp": ".linear_attention",

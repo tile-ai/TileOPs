@@ -49,7 +49,7 @@ from tileops.ops.linear_attention.deltanet.inference import DeltaNetInferenceFwd
 from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
 from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla.inference import GLAInferenceFwdOp
+from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.linear_attention.kda import KDAFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
@@ -444,7 +444,7 @@ def _linear_attention_cases():
         )
 
     def gla_inference():
-        return GLAInferenceFwdOp(scale=_SCALE), (
+        return GLAFwdOp(scale=_SCALE), (
             _x(_B, _S, _H, _D) * 0.1,
             _x(_B, _S, _H, _D) * 0.1,
             _x(_B, _S, _H, _D) * 0.1,
@@ -796,7 +796,7 @@ for _op_cls in (
     GLAChunkFwdOp,
     GLAChunkBwdOp,
     GLARecurrentFwdOp,
-    GLAInferenceFwdOp,
+    GLAFwdOp,
     DeltaNetChunkFwdOp,
     DeltaNetChunkBwdOp,
     DeltaNetRecurrentFwdOp,

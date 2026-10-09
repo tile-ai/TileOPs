@@ -270,7 +270,7 @@ class GLAChunkwiseCall(CallWorkload):
 
 
 class GLAInferenceCall(CallWorkload):
-    """A manifest call of GLAInferenceFwdOp; FLA's chunk_gla is the reference."""
+    """A manifest call of GLAFwdOp; FLA's chunk_gla is the reference."""
 
     def gen_inputs(self):
         q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu = super().gen_inputs()

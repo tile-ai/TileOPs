@@ -45,7 +45,7 @@ ENTRIES = {
     "GDNFwdOp": Entry(GDNFwdCall),
     "GLAChunkFwdOp": Entry(GLAChunkwiseCall),
     "GLAChunkBwdOp": Entry(GLAChunkwiseCall, inputs=_gla_bwd_inputs),
-    "GLAInferenceFwdOp": Entry(GLAInferenceCall),
+    "GLAFwdOp": Entry(GLAInferenceCall),
     "GLARecurrentFwdOp": Entry(GLADecodeCall),
     "KDAFwdOp": Entry(KDAFwdCall),
 }

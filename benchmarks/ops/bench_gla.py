@@ -10,7 +10,7 @@ from benchmarks.baselines import (
     backward_of,
     compiled_reference,
 )
-from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAInferenceFwdOp, GLARecurrentFwdOp
+from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 
 try:
     from fla.ops.gla import fused_recurrent_gla
@@ -21,7 +21,7 @@ except ImportError:
 # Chunkwise: FLA's chunk_gla is required; a torch reference is not a comparison worth recording.
 # TileOPs and FLA both use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
 @pytest.mark.parametrize("case", bench.cases(GLAChunkFwdOp), ids=lambda case: case.id)
-def test_gla_fwd_bench(case) -> None:
+def test_gla_chunk_fwd_bench(case) -> None:
     from fla.ops.gla import chunk_gla
 
     q, k, v, g, initial_state = case.inputs
@@ -52,9 +52,9 @@ def test_gla_bwd_bench(case) -> None:
     bench.Runner(bwd_op, case).compare({"fla": bench.Implementation(run=fla_bwd, args=())})
 
 
-@pytest.mark.parametrize("case", bench.cases(GLAInferenceFwdOp), ids=lambda case: case.id)
-def test_gla_inference_bench(case) -> None:
-    op = GLAInferenceFwdOp(**case.arguments)
+@pytest.mark.parametrize("case", bench.cases(GLAFwdOp), ids=lambda case: case.id)
+def test_gla_fwd_bench(case) -> None:
+    op = GLAFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fla": case.reference})
 
 
