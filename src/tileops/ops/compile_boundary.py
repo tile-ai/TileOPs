@@ -9,7 +9,8 @@ The op passes its key instead, and the operator body trades the key back for the
 
     @torch.library.custom_op("tileops::foo", mutates_args=())
     def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        return get_instance(instance_key)._serve(x)
+        op = get_instance(instance_key)
+        return op._serve((x,), op._eager_forward)
 
 ``Op.dispatch_kernel`` assigns ``self._instance_key`` during ``__init__``, so an op gets a
 key without writing any registration code. Keys read as ``RMSNormFwdOp#3``, so a key in a

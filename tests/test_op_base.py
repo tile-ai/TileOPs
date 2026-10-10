@@ -443,6 +443,26 @@ class TestDelegateFor:
         op._unsettle()
         assert delegate.settled_target is None and dict(delegate.built_kernels("fwd")) == {}
 
+    def test_a_call_that_fails_before_selecting_a_target_leaves_the_sub_ops_bound(self):
+        class CompositeOp(_SlottedOp):
+            delegate_types = {"stage": _SlottedOp}
+
+        op = CompositeOp([])
+        delegate = op.delegate_for("stage", None, _SlottedOp([]))
+        delegate._builder = None
+        entry = delegate.build("fwd", torch.float16, "fp16")
+
+        def refuse(tensors):
+            raise ValueError("outside the signature")
+
+        # The probe has no manifest signature, so its tensors and its check are stubbed.
+        op._named_tensors = lambda inputs, writes: {}
+        op._check_signature = refuse
+        with pytest.raises(ValueError, match="outside the signature"):
+            op._serve((), op.forward)
+        assert delegate._builder is None
+        assert list(delegate.built_kernels("fwd").values()) == [entry]
+
 
 class TestInstanceKeys:
     def test_a_collected_instances_key_is_never_handed_out_again(self):

@@ -1255,7 +1255,7 @@ class _Boundary:
             op = get_instance(key)
             writes = {"out": values[count]} if out else {}
             execution = dict(zip((n for n, _ in self.execution), values[tail:], strict=True))
-            result = op._serve(*values[:count], _written=written, _execution=execution, **writes)
+            result = op._serve(tuple(values[:count]), op._eager_forward, writes, written, execution)
             if not returned:
                 return None
             if len(sig.outputs) == 1:
