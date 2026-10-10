@@ -9,7 +9,7 @@ belong to the kernel. Kernels are cached by shape, axes, dtype and device.
 
 import math
 import warnings
-from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar, List, Mapping, Optional, Tuple, Union
 
 import torch
 
@@ -86,8 +86,6 @@ class _ReduceOpBase(Op):
         keepdim: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Construct a reduce op.
 
@@ -96,14 +94,10 @@ class _ReduceOpBase(Op):
             keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default ``False``).
         """
         self.dim = dim
         self.keepdim = keepdim
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce *x* over the configured axes.
@@ -201,8 +195,6 @@ class _CastReduceOp(ReduceCallOp):
         *,
         dtype: Optional[torch.dtype] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Construct the op.
 
@@ -213,11 +205,9 @@ class _CastReduceOp(ReduceCallOp):
                 ``None`` keeps the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default ``False``).
         """
         self.dtype = dtype
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
 
 class SumFwdOp(_CastReduceOp):
@@ -264,8 +254,6 @@ class ProdFwdOp(_CastReduceOp):
         *,
         dtype: Optional[torch.dtype] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Construct ProdFwdOp.
 
@@ -276,10 +264,8 @@ class ProdFwdOp(_CastReduceOp):
                 ``None`` keeps the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default ``False``).
         """
-        super().__init__(dim, keepdim, dtype=dtype, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, dtype=dtype, target=target)
 
 
 class _WelfordReduceOp(ReduceCallOp):
@@ -299,8 +285,6 @@ class _WelfordReduceOp(ReduceCallOp):
         correction: "float | None" = 1,
         keepdim: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Construct a variance-family op.
 
@@ -311,11 +295,9 @@ class _WelfordReduceOp(ReduceCallOp):
             keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default ``False``).
         """
         self.correction = correction
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
     @property
     def _dof_correction(self) -> float:

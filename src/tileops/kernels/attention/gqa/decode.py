@@ -577,7 +577,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -642,7 +641,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         # num_split to the runtime KV extent instead of gating dispatch on it
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self):
         """Supply a representative value for the dynamic KV sequence extent."""

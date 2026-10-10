@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -52,8 +52,6 @@ class _MaxPoolFwdOpBase(Op):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -64,17 +62,13 @@ class _MaxPoolFwdOpBase(Op):
             dilation: Manifest ``params.dilation``, an int or one per spatial axis.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.ceil_mode = ceil_mode
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         nd = self.ndim
         self._kernel_size = _per_axis(kernel_size, nd)
         self._stride = self._kernel_size if stride is None else _per_axis(stride, nd)
@@ -117,8 +111,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -129,8 +121,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -139,8 +129,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
 
@@ -164,8 +152,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -176,8 +162,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -186,8 +170,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -221,8 +203,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -233,8 +213,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int, int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -243,8 +221,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
 
@@ -269,8 +245,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -281,8 +255,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int, int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -291,8 +263,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -323,8 +293,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -335,8 +303,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int, int, int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -345,8 +311,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
 
@@ -370,8 +334,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         ceil_mode: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -382,8 +344,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation: Manifest ``params.dilation``, ``int | tuple[int, int, int]``, default ``1``.
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         super().__init__(
             kernel_size=kernel_size,
@@ -392,8 +352,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
             dilation=dilation,
             ceil_mode=ceil_mode,
             target=target,
-            kernel_map=kernel_map,
-            tune=tune,
         )
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -115,7 +115,10 @@ def _make_op(
     from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     order = {"l1": 1, "l2": 2, "inf": inf}[op_kind]
-    return VectorNormFwdOp(order, dim=dim, keepdim=keepdim, tune=tune, target=target)
+    op = VectorNormFwdOp(order, dim=dim, keepdim=keepdim, target=target)
+    if tune:
+        op.autotune()
+    return op
 
 
 @VectorNormBasicFixture
@@ -493,7 +496,8 @@ def test_vector_norm_tiled_autotune() -> None:
     """
     m, n, dtype = 4, 39999, torch.float16
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2", tune=True)
+    op = _make_op("l2")
+    op.autotune()
     test.check(op, *test.gen_inputs())
 
 

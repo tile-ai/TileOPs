@@ -239,7 +239,6 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -274,7 +273,7 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
             self.accum_dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def autotune_supply_prog(self):

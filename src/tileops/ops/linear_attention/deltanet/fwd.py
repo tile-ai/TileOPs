@@ -1,6 +1,6 @@
 """Inference-facing DeltaNet forward contract, and its dense prefill and decode dispatch."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -50,8 +50,6 @@ class DeltaNetFwdOp(Op):
         use_qk_l2norm_in_kernel: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Configure the attention scale, Q/K normalization, and target.
 
@@ -60,14 +58,10 @@ class DeltaNetFwdOp(Op):
             use_qk_l2norm_in_kernel: Normalize Q and K internally.
             target: Backend target, or ``None`` to resolve from the input
                 device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """The state contractions are priced on tensor cores."""

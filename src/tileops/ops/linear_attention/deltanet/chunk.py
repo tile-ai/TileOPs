@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -46,8 +46,6 @@ class DeltaNetChunkFwdOp(Op):
         chunk_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -55,13 +53,9 @@ class DeltaNetChunkFwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -122,8 +116,6 @@ class DeltaNetChunkBwdOp(Op):
         chunk_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -131,13 +123,9 @@ class DeltaNetChunkBwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

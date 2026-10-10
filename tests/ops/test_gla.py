@@ -98,8 +98,9 @@ def test_gla_fwd(
     fwd_op = GLAChunkFwdOp(
         chunk_size=BC,
         scale=scale,
-        tune=tune,
     )
+    if tune:
+        fwd_op.autotune()
     op_o, _ = fwd_op(q, k, v, g)
 
     cos = cosine_sim(ref_o, op_o)
@@ -198,7 +199,9 @@ def test_gla_bwd(
     _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
+    if tune:
+        bwd_op.autotune()
     op_dq, op_dk, op_dv, op_dg = bwd_op(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
@@ -574,7 +577,9 @@ def test_gla_decode(
 ) -> None:
     torch.manual_seed(42)
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = GLARecurrentFwdOp(tune=tune)
+    op = GLARecurrentFwdOp()
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -592,7 +597,9 @@ def test_gla_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = GLARecurrentFwdOp(tune=tune)
+    op = GLARecurrentFwdOp()
+    if tune:
+        op.autotune()
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -638,7 +645,9 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    op = GLARecurrentFwdOp(scale=scale, tune=tune)
+    op = GLARecurrentFwdOp(scale=scale)
+    if tune:
+        op.autotune()
     with torch.no_grad():
         o_tile, s_tile = op(q, k, v, gk, state)
 

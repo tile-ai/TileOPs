@@ -12,7 +12,7 @@ and runs the op's ``forward`` inside it:
     # What the generated ``FooOp._call_boundary`` does, which ``FooOp.__call__`` calls:
     _foo(x, self._instance_key)
 
-``Op.dispatch_kernel`` assigns ``self._instance_key`` during ``__init__``, so an op gets a
+``Op.__init__`` assigns ``self._instance_key``, so an op gets a
 key without writing any registration code. Keys read as ``RMSNormFwdOp#3``, so a key in a
 graph dump or traceback says whose it is.
 
@@ -39,12 +39,11 @@ _KEY_COUNTER = itertools.count()
 # Broken invariant: the key should be the op's specialization, so that two interchangeable
 #   instances share one artifact. It is an identity instead, so no two ever share, and no
 #   process reuses a previous one's compile.
-# Why: the specialization is `_manifest_params()` digested, but `register_instance` runs
-#   from `dispatch_kernel`, which some ops call as `__init__`'s first statement, before
-#   they have assigned those params.
-# Cleanup: register on first `_instance_key` access and key on the digest, once every op
-#   on this boundary has a param set audited as complete — an incomplete one shares an
-#   artifact silently, so the digest has to refuse a value it cannot hash stably.
+# Why: the specialization is `_manifest_params()` digested, and no op on this boundary has
+#   had its param set audited as complete; an incomplete one shares an artifact silently.
+# Cleanup: key on the digest, which `Op.__init__` can compute since every op assigns its
+#   params before calling it, once every op on this boundary has a param set audited as
+#   complete, with a digest that refuses a value it cannot hash stably.
 _RUN = uuid.uuid4().hex
 
 

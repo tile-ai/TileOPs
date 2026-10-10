@@ -70,7 +70,8 @@ def _flashinfer_bmm_fp8_row(
 
 @pytest.mark.parametrize("case", bench.cases(BmmFwdOp), ids=lambda case: case.id)
 def test_bmm_bench(case) -> None:
-    op = BmmFwdOp(**case.arguments, tune=True)
+    op = BmmFwdOp(**case.arguments)
+    op.autotune()
     quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
     def quack_fn(a, b):
@@ -92,7 +93,8 @@ def test_bmm_fp8_bench(case) -> None:
     workload = case.workload
     a, b, scale_a, scale_b = case.inputs
     b_kn = b.transpose(-2, -1) if workload.trans_b else b
-    op = BmmFP8FwdOp(**case.arguments, tune=True)
+    op = BmmFP8FwdOp(**case.arguments)
+    op.autotune()
     implementations = {"torch-fp32-ref": case.reference}
     row = _flashinfer_bmm_fp8_row(workload, a, b_kn, scale_a, scale_b)
     if row is not None:

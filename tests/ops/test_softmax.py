@@ -98,7 +98,9 @@ class SoftmaxTest(SoftmaxCase, TestBase):
 @SoftmaxFixture
 def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(shape, dtype, dim=dim)
-    op = SoftmaxFwdOp(dim=dim, tune=tune)
+    op = SoftmaxFwdOp(dim=dim)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -230,7 +232,9 @@ class LogSoftmaxTest(LogSoftmaxCase, TestBase):
 @LogSoftmaxFixture
 def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(shape, dtype, dim=dim)
-    op = LogSoftmaxFwdOp(dim=dim, tune=tune)
+    op = LogSoftmaxFwdOp(dim=dim)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -367,7 +371,9 @@ class LogSumExpTest(LogSumExpCase, TestBase):
 @LogSumExpFixture
 def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(shape, dtype, dim=dim)
-    op = LogSumExpFwdOp(dim=dim, tune=tune)
+    op = LogSumExpFwdOp(dim=dim)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

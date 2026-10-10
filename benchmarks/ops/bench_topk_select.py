@@ -53,7 +53,9 @@ def _flashinfer_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch
 def test_topk_select_bench(case) -> None:
     inputs = case.inputs
 
-    op = TopKSelectFwdOp(**case.arguments, tune=_TUNE)
+    op = TopKSelectFwdOp(**case.arguments)
+    if _TUNE:
+        op.autotune()
 
     implementations = {
         "torch": case.reference,

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -31,9 +31,8 @@ class _AvgPoolFwdOpBase(Op):
 
     ndim: ClassVar[int]
 
-    def _setup(self, kernel_map: Optional[Dict[str, Kernel]]) -> None:
-        """Resolve the kernel map, then the per-axis parameters the kernels take."""
-        self.dispatch_kernel(kernel_map)
+    def _setup(self) -> None:
+        """Expand the manifest parameters into the per-axis values the kernels take."""
         nd = self.ndim
         self._kernel_size = _per_axis(self.kernel_size, nd)
         self._stride = self._kernel_size if self.stride is None else _per_axis(self.stride, nd)
@@ -80,8 +79,6 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
         count_include_pad: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         # No divisor_override: torch.nn.functional.avg_pool1d does not take one.
         """Build the op. Shapes and dtype are taken from the first call.
@@ -93,17 +90,14 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
             ceil_mode: Manifest ``params.ceil_mode``, ``bool``, default ``False``.
             count_include_pad: Manifest ``params.count_include_pad``, ``bool``, default ``True``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
-        self.target = target
-        self.tune = tune
-        self._setup(kernel_map)
+        super().__init__(target=target)
+        self._setup()
 
 
 class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
@@ -126,8 +120,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         divisor_override: Optional[int] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -139,8 +131,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
             count_include_pad: Manifest ``params.count_include_pad``, ``bool``, default ``True``.
             divisor_override: Manifest ``params.divisor_override``, ``int | None``, default ``None``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.kernel_size = kernel_size
         self.stride = stride
@@ -148,9 +138,8 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
-        self.target = target
-        self.tune = tune
-        self._setup(kernel_map)
+        super().__init__(target=target)
+        self._setup()
 
 
 class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
@@ -170,8 +159,6 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
         divisor_override: Optional[int] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -183,8 +170,6 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
             count_include_pad: Manifest ``params.count_include_pad``, ``bool``, default ``True``.
             divisor_override: Manifest ``params.divisor_override``, ``int | None``, default ``None``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.kernel_size = kernel_size
         self.stride = stride
@@ -192,6 +177,5 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
-        self.target = target
-        self.tune = tune
-        self._setup(kernel_map)
+        super().__init__(target=target)
+        self._setup()

@@ -166,7 +166,6 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a hidden size and dtype.
 
@@ -178,8 +177,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         self.eps = eps
         self.dtype = dtype
         self.N_padded = align_up(N, ALIGNMENT)
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -430,7 +428,6 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a hidden size and dtype.
 
@@ -441,15 +438,13 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
             eps: Epsilon for numerical stability.
             dtype: Element type the rows are stored in.
             config: Optional ``{"threads": ...}`` override, for the row-per-CTA case.
-            tune: Ignored -- the block width follows from the row width; see
-                ``autotune_configs``.
         """
         super().__init__()
         self.N = N
         self.eps = eps
         self.dtype = dtype
         self.N_padded = align_up(N, ALIGNMENT)
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

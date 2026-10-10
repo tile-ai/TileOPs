@@ -1574,7 +1574,6 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         n: Transform length; (n, dtype) must have a one-factor plan.
         dtype: complex64 or complex128.
         config: Optional ``{"row", "grp"}`` shared-memory padding override.
-        tune: Whether to autotune.
         device_index: The device the kernel runs on.
     """
 
@@ -1601,7 +1600,6 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         n: int,
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1612,7 +1610,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
             self._check_config(config)
         (self.kernel,) = _fft_builders(self.plan)
         self._tables: dict = {}
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _check_config(self, config: Dict[str, Any]) -> None:
         """Refuse strides below the record's floor or past the shared-memory limit.
@@ -1703,7 +1701,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         n: Transform length; (n, dtype) must have a decomposed plan.
         dtype: complex64 or complex128.
         config: Optional ``{"tile", "pad"}`` override, one entry per kernel.
-        tune: Whether to autotune. Each kernel of the plan is swept separately.
         device_index: The device the kernel runs on.
     """
 
@@ -1730,7 +1727,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         n: int,
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1741,7 +1737,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
             self._check_config(config)
         self.kernel = _fft_builders(self.plan)
         self._tables: dict = {}
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _fits(self, index: int, tw: int, strides: tuple) -> bool:
         """Whether kernel *index* at width *tw* and *strides* fits a block."""

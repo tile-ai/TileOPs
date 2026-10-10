@@ -407,7 +407,6 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
     Args:
         call: The call's shape, dtype and device facts.
         config: Unused; the launch follows from the call.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -467,9 +466,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             return f"folds a row into {leaves} shared float64 entries, past {budget // 8}"
         return None
 
-    def __init__(
-        self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
@@ -477,7 +474,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
         self.kernel = _chain_speculative_sampling_kernel(
             call.batch, call.num_draft, call.vocab, vec, threads, self._parts, self._PACE
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -479,7 +479,6 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
         is_causal: bool,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -506,7 +505,7 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
             if device_index is not None
             else torch.device("cuda"),
         )
-        self.init_config(config, tune)
+        self.init_config(config)
         self.main_kernel = self.kernel()
         self.post_kernel = _mha_bwd_ws_post_kernel(batch, heads, seq_len, dim, self.dtype_str)()
 

@@ -354,7 +354,6 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         dtype: Torch dtype of the input scores.
         out_dtype: Torch dtype of the emitted indices.
         config: Optional dict with "BLOCK_SIZE".
-        tune: Whether to autotune.
     """
 
     @staticmethod
@@ -399,7 +398,6 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -421,7 +419,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
             self.out_dtype_str,
         )
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self):
         import torch as _torch

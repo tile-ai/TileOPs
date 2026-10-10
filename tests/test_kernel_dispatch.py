@@ -90,9 +90,8 @@ class _ScaleOp(Op):
     }
     interfaces = {"scale": _Scaling}
 
-    def __init__(self, kernel_map=None, tune: bool = False) -> None:
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+    def __init__(self, *, target=None) -> None:
+        super().__init__(target=target)
 
     def _infer_output_shapes(self, *shapes, dtypes=None):
         return {}
@@ -164,24 +163,21 @@ def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
     assert _selected(_NoGeneralOp(), 0) == {0: "no implementation serves this call"}
 
 
-def test_a_replacement_keeps_the_rule_of_the_key_it_replaces() -> None:
-    """``kernel_map=`` changes what runs under a key, never which calls select the key.
-
-    The replacement serves every call the key is selected for, and one it does not serve is
-    an error; a call selecting another key never asks it.
-    """
-    narrow = _implementation("NarrowBand", lambda c: 10 < c.n <= 30)
-    op = _ScaleOp(kernel_map={"band": narrow})
-    assert _selected(op, 0, 5, 20, 200, -1) == {
-        0: "general",
-        5: "positive",
-        20: "band",
-        200: "hundreds",
-        -1: "negative",
-    }
-    assert type(op.entry(20)).__name__ == "NarrowBand"
-    with pytest.raises(ValueError, match="the kernel supplied for band"):
-        op.entry(40)
+def test_an_added_implementation_its_device_cannot_run_leaves_the_call_to_the_original() -> None:
+    """A registered implementation built for another architecture is unavailable, so the
+    implementation it is preferred over builds the entry."""
+    register_implementation(
+        "_ScaleOp",
+        "sm90_positive",
+        _implementation(
+            "Sm90Positive",
+            lambda c: c.n > 0,
+            devices=frozenset({"cpu"}),
+            supported_archs=[90],
+            preferred_over=frozenset({"positive"}),
+        ),
+    )
+    assert type(_ScaleOp().entry(5)).__name__ == "Positive"
 
 
 def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,25 +216,37 @@ class _NotScaling(Kernel):
         return x
 
 
+class _ScalingOnly(_Scaling):
+    """Inherits the interface but is no ``Kernel``."""
+
+    @classmethod
+    def entry_for(cls, call):
+        return call, cls
+
+    def forward(self, x):
+        return x
+
+
 @pytest.mark.parametrize(
-    ("kernel_map", "error", "match"),
+    ("implementation", "error", "match"),
     [
-        ({"positive": _NotScaling}, TypeError, "does not implement _Scaling; .* inherits _Scaling"),
+        (_ScalingOnly, TypeError, "does not implement _Scaling; .* inherits _Scaling"),
         (
-            {"positive": _implementation("TwoArgs", forward=lambda self, x, y: x)},
+            _implementation("TwoArgs", forward=lambda self, x, y: x),
             TypeError,
             "does not take _Scaling's arguments",
         ),
         (
-            {"positive": _implementation("StaticEntry", entry_for=staticmethod(lambda call: 0))},
+            _implementation("StaticEntry", entry_for=staticmethod(lambda call: 0)),
             TypeError,
             "entry_for is not a classmethod",
         ),
     ],
 )
-def test_what_runs_under_a_key_implements_its_interface(kernel_map, error, match) -> None:
+def test_a_registered_implementation_implements_its_interface(implementation, error, match) -> None:
+    register_implementation("_ScaleOp", "added", implementation)
     with pytest.raises(error, match=match):
-        _ScaleOp(kernel_map=kernel_map)
+        _ScaleOp()
 
 
 @pytest.mark.parametrize(
@@ -296,12 +304,20 @@ def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
 
 
 def test_an_installed_implementation_set_cannot_change() -> None:
+    """The installed set is read-only. A later registration reaches an instance when it
+    installs again, which drops the entries built from the previous set."""
     op = _ScaleOp()
     op.entry(5)
     with pytest.raises(TypeError):
-        op.kernel_map["positive"] = _NEGATIVE
-    op.dispatch_kernel({"positive": _implementation("Reinstalled")})
-    assert type(op.entry(5)).__name__ == "Reinstalled"
+        op._registered["positive"] = _NEGATIVE
+    register_implementation(
+        "_ScaleOp",
+        "later",
+        _implementation("Later", lambda c: c.n > 0, preferred_over=frozenset({"positive"})),
+    )
+    assert type(op.entry(5)).__name__ == "Positive"
+    op._install_kernel_types()
+    assert type(op.entry(5)).__name__ == "Later"
 
 
 @pytest.mark.cuda_only
@@ -377,9 +393,13 @@ def _layer_norm(op, n: int):
     return [type(k).__name__ for k in op.built_kernels("layer_norm").values()]
 
 
-def test_a_replacement_needs_only_the_published_contract() -> None:
-    op = LayerNormFwdOp((256,), kernel_map={"layer_norm": _TorchLayerNorm}, target=BUILTIN)
-    assert _layer_norm(op, 256) == ["_TorchLayerNorm"]
+def test_an_added_implementation_needs_only_the_published_contract() -> None:
+    class _EveryRowTorchLayerNorm(_TorchLayerNorm):
+        preferred_over = frozenset(LayerNormFwdOp.kernel_types)
+
+    register_implementation("LayerNormFwdOp", "torch_layer_norm", _EveryRowTorchLayerNorm)
+    op = LayerNormFwdOp((256,), target=BUILTIN)
+    assert _layer_norm(op, 256) == ["_EveryRowTorchLayerNorm"]
 
 
 @pytest.mark.cuda_only

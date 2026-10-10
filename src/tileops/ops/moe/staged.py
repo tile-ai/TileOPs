@@ -51,8 +51,6 @@ class MoEPrePermuteFwdOp(Op):
         num_local_experts: int,
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure a pre-permute boundary for one layout and expert domain.
 
@@ -61,14 +59,10 @@ class MoEPrePermuteFwdOp(Op):
             num_local_experts: Number of local experts the ids index.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.num_local_experts = num_local_experts
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -139,8 +133,6 @@ class MoEGroupedGemmFwdOp(Op):
         activation: str | None = None,
         out_dtype: torch.dtype | None = None,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Fix the expert layout, the fused activation and the output dtype policy.
 
@@ -153,15 +145,11 @@ class MoEGroupedGemmFwdOp(Op):
                 fp32 accumulator.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.activation = activation
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -235,8 +223,6 @@ class MoEExpertMLPFwdOp(Op):
         activation: str = "silu_and_mul",
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure two grouped GEMMs on ``layout``, the first fusing the gated activation.
 
@@ -245,14 +231,10 @@ class MoEExpertMLPFwdOp(Op):
             activation: ``"silu_and_mul"`` or ``"gelu_and_mul"``, fused into the gate_up
                 GEMM's epilogue.
             target: Which backend serves the delegates.
-            kernel_map: Optional overrides, forwarded to both GEMMs.
-            tune: Whether to autotune the GEMM kernels.
         """
         self.layout = layout
         self.activation = activation
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
         self.down = self.delegate_for("down", None, layout=layout)
 
@@ -301,8 +283,6 @@ class MoEPostPermuteFwdOp(Op):
         out_dtype: torch.dtype | None = None,
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure inverse permutation and the exactly-once routing epilogue.
 
@@ -313,15 +293,11 @@ class MoEPostPermuteFwdOp(Op):
                 expert output's own.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.epilogue = epilogue
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

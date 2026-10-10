@@ -86,7 +86,6 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         c_x,
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune=False,
     ):
         super().__init__()
         self.batch = batch
@@ -96,7 +95,7 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         self.weights_dtype = torch.float32
         self.kernel = _mhc_post_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str)
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

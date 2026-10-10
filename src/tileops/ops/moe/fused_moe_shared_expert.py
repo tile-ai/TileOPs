@@ -23,12 +23,11 @@ Usage (TP, tp_size>1):
     # Must use the TP process group, not the default group (important in EP/DP setups).
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoE
 from tileops.ops.moe.shared_expert_mlp import SharedExpertMLPFwdOp
@@ -73,8 +72,6 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
     ):
@@ -91,8 +88,6 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
                 supports ``silu_and_mul`` only.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Kernel overrides, handed to the sub-ops.
-            tune: Whether the kernels tune themselves when built.
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
         """
@@ -103,9 +98,8 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         self.tp_size = tp_size
         self.tp_rank = tp_rank
         self.activation = activation
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self._settle_activation(experts)
+        super().__init__(target=target)
         self._build_pipeline(prepare_finalize, experts)
         self._shared_expert = self.delegate_for("shared_expert", None)
 

@@ -207,16 +207,14 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
         self.kernel = _fp8_quant_per_block_kernel(
             call.rows, call.cols, self.dtype_str, self._aligned
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -266,7 +264,6 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``min_blocks`` and ``evict_first``.
-        tune: Whether to autotune.
     """
 
     _aligned = True
@@ -288,7 +285,6 @@ class FP8QuantPerBlockUnalignedFwdKernel(_FP8QuantPerBlockFwdKernel):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``min_blocks`` and ``evict_first``.
-        tune: Whether to autotune.
     """
 
     _aligned = False

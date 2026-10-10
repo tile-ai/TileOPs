@@ -10,7 +10,8 @@ from tileops.quantization import INT4QuantPerGroupFwdOp
 @pytest.mark.parametrize("case", bench.cases(INT4QuantPerGroupFwdOp), ids=lambda case: case.id)
 def test_int4_quant_per_group_bench(case) -> None:
     workload = case.workload
-    op = INT4QuantPerGroupFwdOp(**case.arguments, tune=True)
+    op = INT4QuantPerGroupFwdOp(**case.arguments)
+    op.autotune()
     quantize = deepspeed_op("quantize")
     asymmetric = deepspeed_op("Asymmetric")
 

@@ -1,5 +1,5 @@
 import math
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -41,8 +41,6 @@ class MHCPreFwdOp(Op):
         sinkhorn_eps: float = 0.02,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -54,17 +52,13 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps: Manifest ``params.sinkhorn_eps``, Sinkhorn entropy scale.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.alpha_pre = alpha_pre
         self.alpha_post = alpha_post
         self.alpha_res = alpha_res
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sinkhorn_eps = sinkhorn_eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -125,20 +119,14 @@ class MHCPostFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor

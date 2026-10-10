@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -67,8 +67,6 @@ class GQAPagedFwdOp(Op):
         rope_layout: str = "neox",
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Configure paged GQA semantics without owning or mutating the cache.
 
@@ -83,8 +81,6 @@ class GQAPagedFwdOp(Op):
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
             target: Backend target, or ``None`` to resolve from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
@@ -95,9 +91,7 @@ class GQAPagedFwdOp(Op):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""

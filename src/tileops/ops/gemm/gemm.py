@@ -1,5 +1,5 @@
 import warnings
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -59,8 +59,6 @@ class GemmFwdOp(Op):
         trans_b: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -69,14 +67,10 @@ class GemmFwdOp(Op):
             trans_b: Whether ``b`` is stored transposed ($[N \\times K]$). Default ``True`` (NT).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune (applied when a kernel is first built).
         """
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiply the two matrices under the layout the constructor selected.
@@ -136,8 +130,6 @@ class GemmFP8FwdOp(Op):
         out_dtype: torch.dtype = torch.bfloat16,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -145,13 +137,9 @@ class GemmFP8FwdOp(Op):
             out_dtype: Output dtype, ``torch.bfloat16`` or ``torch.float16``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -231,8 +219,6 @@ class GemmW4A16FwdOp(Op):
         group_size: int = 128,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -240,24 +226,13 @@ class GemmW4A16FwdOp(Op):
             group_size: Weights per dequantization group along K (default 128).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Accepted for the common op interface and ignored with a warning.
-                W4A16 uses its calibrated selector because generic autotuning cannot
-                time the composite path.
         """
         self.group_size = group_size
-        if tune:
-            warnings.warn(
-                "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
-                UserWarning,
-                stacklevel=2,
-            )
-        self.tune = False
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def autotune(self) -> None:
-        """Keep the op out of tuned mode until composite-path tuning is supported."""
+        """Warn and stay out of tuned mode: W4A16 uses its calibrated selector, because
+        generic autotuning cannot time the composite path."""
         warnings.warn(
             "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
             UserWarning,
@@ -268,8 +243,7 @@ class GemmW4A16FwdOp(Op):
         """Put a row-major packed weight into the order ``forward`` reads.
 
         The order is a contract between this op's repack and its GEMM, so both come
-        from the same set of kernels: replacing one through ``kernel_map=`` replaces
-        the other with it.
+        from the same set of kernels.
 
         Args:
             packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:

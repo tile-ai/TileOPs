@@ -148,7 +148,8 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
     monkeypatch.setattr(FFTC2CFourStepKernel, "tune_jit_kernel", fake_tune)
     # The shortest decomposed length: two kernels.
     x = torch.randn(2, 1 << 14, device=run_device(), dtype=torch.complex128)
-    op = FFTC2CFwdOp(tune=True)
+    op = FFTC2CFwdOp()
+    op.autotune()
     got = op(x)
 
     workload = FFTWorkload(x.shape[-1], x.dtype)

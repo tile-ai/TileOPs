@@ -67,7 +67,6 @@ class _RowNormKernel(Kernel):
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
         config: Optional tile config dict.
-        tune: If True, autotune tile config.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -87,15 +86,13 @@ class _RowNormKernel(Kernel):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.D = D
         self.eps = eps
         self.dtype = dtype
         self.D_padded = row_padding(D, dtype.itemsize)
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @classmethod
     def _holds_row_in_registers(cls, D: int, D_padded: int) -> bool:
@@ -359,7 +356,6 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         num_groups: Number of groups G.
         channels_per_group: C / G.
         config: Optional tile config dict.
-        tune: If True, autotune tile config.
     """
 
     @classmethod
@@ -382,7 +378,6 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         num_groups: int,
         channels_per_group: int,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a row length, dtype and group layout.
 
@@ -391,7 +386,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         """
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
-        super().__init__(D, eps, dtype, config=config, tune=tune)
+        super().__init__(D, eps, dtype, config=config)
 
     def forward(
         self,
@@ -569,7 +564,6 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
         config: Optional tile config dict.
-        tune: If True, autotune tile config.
     """
 
     @classmethod

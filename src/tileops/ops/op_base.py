@@ -11,7 +11,6 @@ from typing import (
     Callable,
     ClassVar,
     Hashable,
-    Iterable,
     Iterator,
     Mapping,
     Optional,
@@ -35,10 +34,6 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops.ops._signature_codegen import check_result
 from tileops.ops.compile_boundary import register_instance
-
-# Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
-# it and every sub-op it builds, so every key that can replace something in that op is here.
-_DISPATCH_KEYS: set[str] = set()
 
 
 class _Unresolved:
@@ -92,35 +87,31 @@ class Op(ABC):
     _settled_target: Target = None
     # Whether this instance has warned that a tuning request cannot reach its target.
     _tune_warned: bool = False
+    # Whether this instance is in tuned mode. Only ``autotune()`` sets it; every entry and
+    # sub-op built while it is set is put in tuned mode too.
+    _tune_requested: bool = False
 
-    # The implementation that runs under each key, ``kernel_map=`` included: read-only once
-    # installed.
-    kernel_map: Optional[Mapping[str, Kernel]] = None
-    # The implementation registered under each key, in-tree or by a backend. Its applicability
-    # and precedence select the key, whatever ``kernel_map=`` put there to run.
+    # The implementation installed under each key, in-tree or registered by a backend.
+    # A composite that declares no kernel of its own keeps this empty class value.
     _registered: Mapping[str, type[Kernel]] = MappingProxyType({})
-    # Each key mapped to the keys its registered implementation is preferred over, transitively.
+    # Each key mapped to the keys its implementation is preferred over, transitively.
     _preferred: Mapping[str, frozenset[str]] = MappingProxyType({})
-    # Built entries, ``{interface: {key: entry}}``. Annotation only: the instance
-    # attribute appears on the first ``kernel_for`` call, so an op that
-    # has built nothing carries no dict, and no constructor declares one.
-    _built_entries: dict[str, dict[Hashable, object]]
     # The keys of each kernel interface's implementations, as installed.
     _interface_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
-    # Resolved entries, ``{(interface, call spec): entry}``. Annotation only, like
-    # ``_built_entries``.
+    # The binding caches, built empty by ``__init__`` and emptied by ``_unsettle``: resolved
+    # entries by ``(interface, call spec)``, built entries by interface and
+    # ``(implementation, identity)``, and the kernels a target built by device and inputs.
     _dispatched: dict[tuple[str, Hashable], object]
-    # The ``kernel_map=`` the caller passed, as given; what every sub-op this op builds is handed.
-    _given_kernel_map: Optional[dict[str, Kernel]] = None
-    # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_built_entries``.
+    _built_entries: dict[str, dict[Hashable, object]]
+    _target_kernels: dict[tuple, object]
+    # Held sub-ops, ``{stage: {identity: op}}``, and which stage holds each sub-op, by its
+    # ``id``. Built empty by ``__init__``; a failed call keeps them.
     _delegates: dict[str, dict[Hashable, "Op"]]
-    # Which stage holds each sub-op, by its ``id``, grown as ``delegate_for`` builds them.
     _delegate_stages: dict[int, str]
+    # The effect branch of each presence of the optional inputs, filled by the generated
+    # compile boundary. Built empty by ``__init__``.
+    _effect_branches: dict[tuple, tuple]
     dtype: Optional[torch.dtype] = None
-    # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
-    # that offer one, and what ``autotune()`` sets; a factory reads it when it
-    # runs, so it governs every build that follows.
-    tune: bool = False
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Install what the subclass's manifest entry generates, and the param names a
@@ -130,7 +121,6 @@ class Op(ABC):
         its signature generates.
         """
         super().__init_subclass__(**kwargs)
-        _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))
         from tileops.ops._params_codegen import maybe_install_param_names
         from tileops.ops._signature_codegen import maybe_install_signature
 
@@ -174,6 +164,39 @@ class Op(ABC):
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     execution_parameters: ClassVar[tuple[str, ...]] = ()
+
+    def __init__(self, *, target: Target = None) -> None:
+        """Do the part of construction every op shares, once the subclass has assigned its
+        manifest parameters.
+
+        Loads the backend registry, checks the manifest parameters, installs the
+        implementations and registers the instance for its compile boundary. It selects and
+        builds no kernel and reads no device property: an op constructs wherever it is
+        imported, and a device it cannot run on is refused at the first call.
+
+        Args:
+            target: Which set of kernels serves this op: a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the call's device.
+
+        Raises:
+            ValueError: A manifest parameter is outside its signature, or an implementation
+                breaks its kernel interface's contract.
+            TypeError: An implementation breaks its kernel interface's contract.
+        """
+        self.target = target
+        # Before any traced region, which the first call may be inside.
+        ensure_loaded()
+        check = getattr(type(self), "_check_construction", None)
+        if check is not None:
+            self._construction_ix = check(self)
+        self._install_kernel_types()
+        self._instance_key = register_instance(self)
+        # The binding caches and the sub-op tables, so no method asks whether they exist;
+        # installing built the two entry caches.
+        self._target_kernels = {}
+        self._delegates = {}
+        self._delegate_stages = {}
+        self._effect_branches = {}
 
     @abstractmethod
     def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
@@ -237,70 +260,32 @@ class Op(ABC):
         """
         return "cuda_core.fp32"
 
-    def _refuse_unknown_keys(self, override: dict[str, Kernel], own: "Iterable[str]") -> None:
-        """Raise for a replacement under a name neither this op nor any other has.
+    def _install_kernel_types(self) -> None:
+        """Install the implementation of each key, from ``kernel_types`` or a backend.
 
-        Such a name replaces nothing, and the call that follows runs the shipped
-        implementation as if the caller had asked for it — which is what a key that was
-        renamed looks like from the outside. A name some other op has is left alone: a
-        composite hands every sub-op the whole set, so one sub-op's key reaches the rest.
-        *own* covers an op the manifest does not describe, such as one a test declares.
-        Only an op with a map of its own asks this: a composite stores what it is given
-        verbatim and hands it down, and the sub-op that owns the name is the one that can
-        tell a stale key from a sibling's.
-
-        Raises:
-            ValueError: *override* names a key nothing declares.
-        """
-        if not _DISPATCH_KEYS:
-            return
-        stale = sorted(set(override) - _DISPATCH_KEYS - set(own))
-        if stale:
-            raise ValueError(
-                f"{type(self).__name__} was given kernel_map keys no op has: {stale}. "
-                f"A key nothing declares replaces nothing, so the call would run the "
-                f"shipped implementation. This op's keys: {sorted(own)}"
-            )
-
-    def _install_kernel_map(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
-        """Install the resolved kernel map onto ``self.kernel_map``, read-only.
-
-        Each key's registered implementation, from ``kernel_types`` or a backend, is
-        replaced by *kernel_map*'s under the same name; only what runs changes, not what
-        selects the key. A name no op in the library declares is refused; a name this op does
-        not have but another does is kept out of the resolved map and ignored, because that
-        is how a composite's sub-ops see each other's keys. Resolving a kernel *class* needs
-        no device, so construction does not probe one: an op constructs wherever it is
-        imported, and a target that cannot run it surfaces when a kernel is first selected,
-        built or called. Installing again drops everything the previous installation built.
+        Resolving a kernel *class* needs no device, so installation probes none: a target
+        that cannot run the op surfaces when a kernel is first selected, built or called. A
+        composite that declares no kernel of its own installs nothing; its sub-ops install
+        their own. Installing again drops every entry the previous installation built.
 
         Raises:
             ValueError: A backend registered a key this op already has, or what
-                :meth:`_refuse_unknown_keys` or :meth:`_install_interfaces` raises.
+                :meth:`_install_interfaces` raises.
             TypeError: What :meth:`_install_interfaces` raises.
         """
-        for built in ("_built_entries", "_selected_entries", "_dispatched"):
-            self.__dict__.pop(built, None)
-        default_map = self.kernel_types
-        override = dict(kernel_map) if kernel_map else {}
-        self._given_kernel_map = override or None
-        if default_map is None or len(default_map) == 0:
-            # Composite op: store override verbatim. Its keys belong to the sub-ops it
-            # builds, which is where a name nothing declares is refused.
-            self.kernel_map = MappingProxyType(override)
+        # An entry built from a previous installation may come from a kernel type the new
+        # one no longer selects, so installing again drops every in-tree entry.
+        self._dispatched = {}
+        self._built_entries = {}
+        if not self.kernel_types:
             return
         name = type(self).__name__
         added = IMPLEMENTATIONS.get(name, {})
-        taken = sorted(set(added) & set(default_map))
+        taken = sorted(set(added) & set(self.kernel_types))
         if taken:
             raise ValueError(f"implementations registered for {name} reuse keys it has: {taken}")
-        registered = {**default_map, **added}
-        if override:
-            self._refuse_unknown_keys(override, registered)
+        registered = {**self.kernel_types, **added}
         self._registered = MappingProxyType(registered)
-        self.kernel_map = MappingProxyType(
-            {key: override.get(key, cls) for key, cls in registered.items()}
-        )
         preferred = {}
         for key in registered:
             seen: set[str] = set()
@@ -317,9 +302,9 @@ class Op(ABC):
     def _install_interfaces(self) -> Mapping[str, tuple[str, ...]]:
         """Return each kernel interface's keys, each implementation checked against it.
 
-        A key belongs to every interface its registered implementation inherits. What runs
-        under the key, ``kernel_map=`` included, must inherit the same interface, take its
-        ``forward`` arguments, and state ``entry_for`` as a classmethod.
+        A key belongs to every interface its implementation inherits. The implementation
+        must take the interface's ``forward`` arguments and state ``entry_for`` as a
+        classmethod.
 
         Raises:
             TypeError: An implementation breaks its interface's contract.
@@ -333,13 +318,13 @@ class Op(ABC):
             keys = tuple(k for k, cls in self._registered.items() if issubclass(cls, interface))
             arguments = list(inspect.signature(interface.forward).parameters)[1:]
             for key in keys:
-                runs = self.kernel_map[key]
-                if not (issubclass(runs, Kernel) and issubclass(runs, interface)):
+                runs = self._registered[key]
+                if not issubclass(runs, Kernel):
                     raise TypeError(
                         f"{name}.{where} {key!r}: {runs.__name__} does not implement "
-                        f"{interface.__name__}; an implementation, a kernel_map= replacement "
-                        f"included, is a Kernel that inherits {interface.__name__} and is "
-                        f"built through its classmethod entry_for(call)"
+                        f"{interface.__name__}; an implementation is a Kernel that inherits "
+                        f"{interface.__name__} and is built through its classmethod "
+                        f"entry_for(call)"
                     )
                 if not isinstance(inspect.getattr_static(runs, "entry_for"), classmethod):
                     raise TypeError(
@@ -377,36 +362,25 @@ class Op(ABC):
     def key_for(self, interface: str, call: CallSpec) -> str:
         """Return the key of the one implementation of *interface* that serves *call*.
 
-        A key is available where its registered implementation or the one ``kernel_map=``
-        put there can run, and it applies where the registered one's ``refusal`` accepts the
-        call. Among the available keys that apply, the answer is the unique one no other is
-        preferred over: ``preferred_over`` orders them, transitively, and the general one is
-        below every other. Neither the order of the keys nor any numeric priority decides it.
-
-        A key selected with a ``kernel_map=`` replacement is served by the replacement, and
-        a replacement that cannot run or does not serve the call is an error rather than
-        the registered implementation standing in for it.
+        A key is available where its implementation can run, and it applies where the
+        implementation's ``refusal`` accepts the call. Among the available keys that apply,
+        the answer is the unique one no other is preferred over: ``preferred_over`` orders
+        them, transitively, and the general one is below every other. Neither the order of
+        the keys nor any numeric priority decides it.
 
         Raises:
             OpNotAvailableError: No key runs on the call's device type.
-            ValueError: When no implementation serves the call, when the replacement
-                behind the selected key cannot, or when several are preferred over none.
+            ValueError: When no implementation serves the call, or when several are
+                preferred over none.
         """
-        keys = self._interface_keys[interface]
         device = getattr(call, "device", None)
         on_device = device is None
         rules: dict[str, type[Kernel]] = {}
         rejected: list[str] = []
-        for key in keys:
-            runs = (self.kernel_map or {}).get(key)
-            if runs is None:
-                continue
-            rule = self._registered.get(key, runs)
-            on_device = on_device or device.type in rule.devices or device.type in runs.devices
-            reason = rule.unavailable(call)
-            if reason is not None and runs is not rule and runs.unavailable(call) is None:
-                reason = None
-            reason = reason or rule.refusal(call)
+        for key in self._interface_keys[interface]:
+            rule = self._registered[key]
+            on_device = on_device or device.type in rule.devices
+            reason = rule.unavailable(call) or rule.refusal(call)
             if reason is None:
                 rules[key] = rule
             else:
@@ -421,15 +395,7 @@ class Op(ABC):
             )
         ]
         if len(chosen) == 1:
-            (key,) = chosen
-            runs = self.kernel_map[key]
-            reason = None if runs is rules[key] else runs.unavailable(call) or runs.refusal(call)
-            if reason is not None:
-                raise ValueError(
-                    f"the kernel supplied for {key} through kernel_map= ({runs.__name__}) "
-                    f"cannot serve this call: {reason}. Call: {call}"
-                )
-            return key
+            return chosen[0]
         if not on_device and rejected:
             raise OpNotAvailableError(
                 f"{type(self).__name__}'s in-tree kernels do not run on {device}; known "
@@ -447,15 +413,6 @@ class Op(ABC):
             f"through ``preferred_over``, and an interface has at most one general one. "
             f"Call: {call}"
         )
-
-    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
-        """Resolve and install the kernel map (auto-discovery entry point)."""
-        ensure_loaded()  # before any traced region, which the first call may be inside
-        check = getattr(type(self), "_check_construction", None)
-        if check is not None:
-            check(self)
-        self._install_kernel_map(kernel_map)
-        self._instance_key = register_instance(self)
 
     def kernel_for(self, interface: str, call: object) -> object:
         """Return the in-tree entry that serves *call* for *interface*, resolving it on a miss.
@@ -485,10 +442,7 @@ class Op(ABC):
         if isinstance(call, CallSpec) and call.device is None and torch.cuda.is_available():
             # A call without a device runs on the current one, which the cache key must name.
             call = call.on_device(torch.device("cuda", torch.cuda.current_device()))
-        dispatched = getattr(self, "_dispatched", None)
-        if dispatched is None:
-            dispatched = {}
-            self._dispatched = dispatched
+        dispatched = self._dispatched
         try:
             entry = dispatched.get((interface, call))
         except TypeError:
@@ -527,20 +481,16 @@ class Op(ABC):
                 f"{type(self).__name__}.{interface} reads the device facts from the call's "
                 f"device; this call spec states {sorted(call.stated_device_facts)}"
             )
-        cls = self.kernel_map[self.key_for(interface, call)]
+        cls = self._registered[self.key_for(interface, call)]
         identity, build = cls.entry_for(call)
-        roles = getattr(self, "_built_entries", None)
-        if roles is None:
-            roles = {}
-            self._built_entries = roles
-        entries = roles.setdefault(interface, {})
+        entries = self._built_entries.setdefault(interface, {})
         entry = entries.get((cls, identity))
         on_cuda = call.device is not None and call.device.type == "cuda"
         with torch.cuda.device(call.device) if on_cuda else contextlib.nullcontext():
             if entry is None:
                 entry = build()
                 entries[(cls, identity)] = entry
-            if self.tune:
+            if self._tune_requested:
                 # A tuner allocates its candidates' inputs and rebuilds the program, so it
                 # runs on the call's device like the build it acts on.
                 for kernel in self._entry_kernels(entry):
@@ -665,7 +615,7 @@ class Op(ABC):
         mine = bool(calls) and calls[-1][0] is self
         collected = calls[-1][1] if mine else []
         if collected:
-            stage_of = getattr(self, "_delegate_stages", None) or {}
+            stage_of = self._delegate_stages
             stages = {stage: [] for stage in self.delegate_types}
             for op, done in collected:
                 stage = stage_of.get(id(op))
@@ -777,9 +727,7 @@ class Op(ABC):
             None if t is None else (t.dtype, tuple(t.shape)) for t in inputs
         )
         named = dict(zip(names, inputs, strict=True))
-        kernels = getattr(self, "_target_kernels", None)
-        if kernels is None:
-            kernels = self._target_kernels = {}
+        kernels = self._target_kernels
         kernel = kernels.get(signature)
         if kernel is None:
             kernel = kernels[signature] = self._build_target_kernel(named)
@@ -796,7 +744,7 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
         """
-        if self.tune:
+        if self._tune_requested:
             self._warn_tune_not_passed()
         params = self._manifest_params()
         specs = tuple(None if t is None else TensorSpec.of(t) for t in inputs.values())
@@ -844,9 +792,8 @@ class Op(ABC):
         asks ``kernel_for`` so a miss builds rather than raises.
         """
         if self._served_by_target():
-            return MappingProxyType(getattr(self, "_target_kernels", None) or {})
-        roles = getattr(self, "_built_entries", None) or {}
-        return MappingProxyType(roles.get(interface, {}))
+            return MappingProxyType(self._target_kernels)
+        return MappingProxyType(self._built_entries.get(interface, {}))
 
     def delegate_for(
         self, stage: str, key: Hashable, given: "Op | None" = None, /, **params: object
@@ -854,9 +801,10 @@ class Op(ABC):
         """Return the sub-op held for *stage* under *key*, building it on a miss.
 
         The one way an op holds a sub-op. A miss builds ``delegate_types[stage](**params)``
-        with this op's ``target``, the caller's ``kernel_map`` as given and this op's current
-        ``tune``; *given*, an implementation the caller injected for the stage, is held as is
-        instead. Eager only, like :meth:`kernel_for`: a traced ``forward`` reaches no miss.
+        with this op's ``target``; *given*, an implementation the caller injected for the
+        stage, is held instead. A sub-op first held while this op is in tuned mode, built or
+        given, is put in tuned mode too. Eager only, like :meth:`kernel_for`: a traced
+        ``forward`` reaches no miss.
 
         Args:
             stage: A key of ``delegate_types``.
@@ -869,19 +817,9 @@ class Op(ABC):
             ValueError: *given* is already held under another stage or identity.
         """
         cls = self.delegate_types[stage]
-        held = getattr(self, "_delegates", None)
-        if held is None:
-            held = {}
-            self._delegates, self._delegate_stages = held, {}
-        entries = held.setdefault(stage, {})
+        entries = self._delegates.setdefault(stage, {})
         if key not in entries:
-            delegate = (
-                given
-                if given is not None
-                else cls(
-                    **params, target=self.target, kernel_map=self._given_kernel_map, tune=self.tune
-                )
-            )
+            delegate = given if given is not None else cls(**params, target=self.target)
             # A sub-op's completed calls are filed under the one stage that holds it.
             if id(delegate) in self._delegate_stages:
                 raise ValueError(
@@ -893,6 +831,9 @@ class Op(ABC):
             entries[key] = delegate
             # Which stage holds each sub-op, extended here rather than rebuilt per call.
             self._delegate_stages[id(delegate)] = stage
+            # A sub-op held while this op is in tuned mode joins it, built or given.
+            if self._tune_requested:
+                delegate.autotune()
         return entries[key]
 
     def kernel_delegates(self) -> Sequence["Op"]:
@@ -900,7 +841,7 @@ class Op(ABC):
 
         Derived from what :meth:`delegate_for` holds; an op does not override it.
         """
-        held = getattr(self, "_delegates", None) or {}
+        held = self._delegates
         return tuple(op for stage in self.delegate_types for op in held.get(stage, {}).values())
 
     @property
@@ -945,8 +886,7 @@ class Op(ABC):
         """
         seen: set[int] = set()
         for op in self._walk_ops():
-            roles = getattr(op, "_built_entries", None) or {}
-            held = [entry for entries in roles.values() for entry in entries.values()]
+            held = [entry for entries in op._built_entries.values() for entry in entries.values()]
             for entry in held:
                 for kernel in self._entry_kernels(entry):
                     if id(kernel) not in seen:
@@ -1012,16 +952,16 @@ class Op(ABC):
         """Put the op in tuned mode: what it holds now, and what it builds next.
 
         It applies to specializations that do not exist yet — an op tuned before its
-        first fp16 call is tuned when bf16 arrives later — because ``tune`` is what
+        first fp16 call is tuned when bf16 arrives later — because ``_tune_requested`` is what
         carries it: every entry built while it is set has its kernels put in tuned mode, so
         no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
         Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
 
-        A target's builder is not passed ``tune``, so the flag cannot reach what a target
+        A target's builder is not told to tune, so the request cannot reach what a target
         builds; an op a target serves warns once instead of ignoring the request.
         """
         for op in self._walk_ops():
-            op.tune = True
+            op._tune_requested = True
             if op.settled_target not in (None, BUILTIN):
                 op._warn_tune_not_passed()
         for kernel in self.iter_kernels():
@@ -1100,7 +1040,8 @@ class Op(ABC):
         return None if not values else values[0] if len(values) == 1 else tuple(values)
 
     def _unsettle(self) -> None:
-        """Undo a settling whose call did not finish, dropping what it built.
+        """Undo a settling whose call did not finish: reset the binding group to what
+        ``__init__`` built, dropping every kernel built under the target.
 
         The sub-ops are unsettled with it, so none keeps what the failed call settled.
         """
@@ -1108,11 +1049,9 @@ class Op(ABC):
             delegate._unsettle()
         self._builder = _UNRESOLVED
         self._settled_target = None
-        self._built_entries = {}
-        self._selected_entries = {}
         self._dispatched = {}
+        self._built_entries = {}
         self._target_kernels = {}
-        self._target_checked = set()
 
     def _resolve_builder(
         self, args: tuple, kwargs: dict, device: "torch.device | None" = None

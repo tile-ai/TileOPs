@@ -96,9 +96,9 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
         dtype, value = _bool_as_uint8(call.dtype, call.value)
         return call, lambda: cls(call.n_total, dtype, value)
 
-    def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
+    def __init__(self, N_total, dtype, fill_value, config=None):
         self.fill_value = clamp_to_dtype_range(fill_value, dtype)
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def _builder_fn():

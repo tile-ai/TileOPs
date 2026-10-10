@@ -829,8 +829,6 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         k: Contraction dim.
         dtype: Activation/output torch dtype; the accumulation is FP32.
         config: Optional explicit config; defaults to :attr:`default_config`.
-        tune: Accepted for the common kernel interface; this composite path uses
-            :attr:`default_config` instead of generic autotuning.
         group_size: Weights per dequantization group.
         device_index: CUDA device the kernel is built for.
     """
@@ -885,7 +883,6 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         group_size: int = GROUP_SIZE,
         device_index: Optional[int] = None,
     ) -> None:
@@ -896,7 +893,7 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         self.dtype = dtype
         self.group_size = group_size
         self.kernel = _gemm_w4a16_kernel(m, n, k, self.dtype_str, group_size)
-        self.init_config(config, tune)
+        self.init_config(config)
         block_m, block_n = self.config["block_m"], self.config["block_n"]
         # Only the narrow decode tile uses logical M; other tiles use a whole-tile extent.
         self.m_pad = m if _narrow_tile(block_m) else -(-m // block_m) * block_m
@@ -1059,7 +1056,6 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         group_size: int = GROUP_SIZE,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1070,7 +1066,7 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
         self.dtype = dtype
         self.group_size = group_size
         self.kernel = _gemm_w4a16_mma_kernel(m, n, k, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -1,6 +1,6 @@
 """Logical reduction operators (all, any, count_nonzero)."""
 
-from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar, List, Mapping, Tuple, Union
 
 import torch
 
@@ -100,8 +100,6 @@ class CountNonzeroFwdOp(_LogicalReduceOpBase):
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -109,7 +107,5 @@ class CountNonzeroFwdOp(_LogicalReduceOpBase):
             dim: Axes to reduce: an ``int``, a sequence of them, or ``None`` for all.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel map.
-            tune: Whether to autotune the kernel.
         """
-        super().__init__(dim, False, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, False, target=target)

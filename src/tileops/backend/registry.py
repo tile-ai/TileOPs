@@ -97,8 +97,8 @@ def register_implementation(op: str, key: str, implementation: type) -> None:
 
     Args:
         op: The op's manifest key, e.g. ``"LayerNormFwdOp"``.
-        key: The implementation's dispatch key, which ``kernel_map=`` and ``preferred_over``
-            name it by.
+        key: The implementation's dispatch key, which ``preferred_over`` names it by. It
+            must not be a key the op already has.
         implementation: A ``Kernel`` subclass inheriting one of the op's kernel interfaces.
 
     Raises:

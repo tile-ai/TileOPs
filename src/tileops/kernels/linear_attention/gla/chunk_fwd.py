@@ -371,7 +371,6 @@ class GLAChunkedFwdKernel(Kernel):
         output_final_state: bool = False,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -386,9 +385,8 @@ class GLAChunkedFwdKernel(Kernel):
         reason = self.region_refusal(dim_k, dim_v, chunk_size)
         if reason:
             raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
-        self.init_config(config, tune)
-        if not tune:
-            self._build_kernels(self.config)
+        self.init_config(config)
+        self._build_kernels(self.config)
 
     @staticmethod
     def region_refusal(dim_k: int, dim_v: int, chunk_size: int) -> Optional[str]:

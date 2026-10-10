@@ -321,7 +321,6 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
     Args:
         call: The call's shape, dtype and device facts.
         config: Unused; the launch follows from the call.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -370,9 +369,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
             )
         return None
 
-    def __init__(
-        self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
@@ -382,7 +379,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         self.kernel = _sampling_from_probs_kernel(
             call.batch, call.vocab, self._vec, self._THREADS, self._parts, self._PACE
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def forward(
         self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor

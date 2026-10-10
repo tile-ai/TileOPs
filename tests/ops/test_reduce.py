@@ -192,7 +192,8 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
 
     m, n, dtype = 8, 7935, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dim=-1, tune=True)
+    op = SumFwdOp(dim=-1)
+    op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -215,10 +216,12 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     m, n, dtype = 4, 39999, torch.float16
     if op_kind == "sum":
         test = ReduceTest(m, n, dtype, "sum")
-        op = SumFwdOp(dim=-1, tune=True)
+        op = SumFwdOp(dim=-1)
+        op.autotune()
     else:
         test = WelfordTest(m, n, dtype, "var", correction=1)
-        op = VarFwdOp(dim=-1, tune=True)
+        op = VarFwdOp(dim=-1)
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

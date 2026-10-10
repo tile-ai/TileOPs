@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -54,8 +54,6 @@ class NSATopKVarlenFwdOp(Op):
         bs: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -65,16 +63,12 @@ class NSATopKVarlenFwdOp(Op):
             bs: Compression block size.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.scale = scale
         self.selected_block_num = selected_block_num
         self.bs = bs
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
@@ -151,8 +145,6 @@ class NSAVarlenFwdOp(Op):
         block_size: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -162,16 +154,12 @@ class NSAVarlenFwdOp(Op):
             block_size: Tokens per selected block.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.is_causal = is_causal
         self.scale = scale
         self.block_size = block_size
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The key rows this call's selection scores and the distinct rows it reads."""
@@ -249,8 +237,6 @@ class NSACompressedVarlenFwdOp(Op):
         bs: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -259,15 +245,11 @@ class NSACompressedVarlenFwdOp(Op):
             bs: Compression block size.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.scale = scale
         self.bs = bs
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""

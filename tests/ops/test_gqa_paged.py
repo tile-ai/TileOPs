@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.backend import register_implementation, registry
 from tileops.ops import GQAPagedFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 
@@ -58,7 +59,16 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
     workload = GQAPagedFwdWorkload(
         16, 4, 128, [3, 1], [257, 33], 64, 5, 10, torch.float16, **semantics
     )
-    op = GQAPagedFwdOp(**semantics, kernel_map={"gqa_paged_varlen_kernel": FixedSplitKernel})
+
+    class PreferredFixedSplitKernel(FixedSplitKernel):
+        preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
+
+    state = registry.snapshot()
+    try:
+        register_implementation("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
+        op = GQAPagedFwdOp(**semantics)
+    finally:
+        registry.restore(state)
     _check(op, workload, workload.gen_inputs())
 
 
@@ -72,9 +82,23 @@ def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
     from tileops.kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 
     workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len, sm_scale=-0.125)
-    # Keep single-token dispatch natural to guard the batch-1 specialization's refusal.
-    kernel_map = {"gqa_paged_varlen_kernel": GQADecodePagedKernel} if q_len > 1 else None
-    _check(GQAPagedFwdOp(sm_scale=-0.125, kernel_map=kernel_map), workload, workload.gen_inputs())
+    # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
+    # longer query is held to the decode kernel, registered above every in-tree key.
+    state = registry.snapshot()
+    try:
+        if q_len > 1:
+
+            class PreferredDecodePagedKernel(GQADecodePagedKernel):
+                general = False
+                preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
+
+            register_implementation(
+                "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
+            )
+        op = GQAPagedFwdOp(sm_scale=-0.125)
+    finally:
+        registry.restore(state)
+    _check(op, workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke

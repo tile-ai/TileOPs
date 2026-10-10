@@ -196,7 +196,6 @@ class MHCPreKernel(Kernel, MHCPreFwdInterface):
         c_x,
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune=False,
     ):
         super().__init__()
         self.batch = batch
@@ -207,7 +206,7 @@ class MHCPreKernel(Kernel, MHCPreFwdInterface):
         self.kernel = _mhc_pre_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str)
 
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self):
         """Create a supply_prog that handles scalar parameters (alpha_*, sinkhorn_*)."""

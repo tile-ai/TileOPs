@@ -318,7 +318,6 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``reg_tiles``, ``smem_tiles`` and ``batch``.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -356,9 +355,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
             return f"indexes elements with int32, and M * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.dtype = call.dtype
         self.numel = call.rows * call.cols
@@ -373,7 +370,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
         whole_tiles = self.numel // (threads * vec) // self._grid
         self._reg_tiles = min(max(whole_tiles - self._smem_tiles, 0), self._REG_TILES[self.dtype])
         self.kernel = _int8_quant_per_tensor_kernel(self.numel, self.dtype_str, self._grid, threads)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

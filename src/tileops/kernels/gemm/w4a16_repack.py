@@ -66,7 +66,6 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
         n: Output columns of the weight this repacks.
         packed_k: Bytes per weight row, ``K / 2``.
         config: Optional explicit config; defaults to :attr:`default_config`.
-        tune: Whether to autotune over :attr:`autotune_configs`.
         device_index: CUDA device the kernel is built for.
     """
 
@@ -89,14 +88,13 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
         n: int,
         packed_k: int,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
         self.packed_k = packed_k
         self.kernel = _w4a16_repack_kernel(n, packed_k)
-        self.init_config(config, tune)
+        self.init_config(config)
         while n % self.config["block_n"]:
             self.config["block_n"] //= 2
 

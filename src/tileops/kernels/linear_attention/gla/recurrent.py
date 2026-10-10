@@ -183,7 +183,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -193,10 +192,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.dtype = dtype
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the decode program the current config states."""
@@ -408,7 +405,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         if dtype != "float32":
@@ -419,10 +415,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         self.dim_v = dim_v
         self.scale = scale if scale > 0 else dim_k**-0.5
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the fp32 decode program the current config states."""

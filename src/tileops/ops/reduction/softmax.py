@@ -2,7 +2,7 @@
 
 import math
 import warnings
-from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar, List, Mapping, Optional, Tuple, Union
 
 import torch
 
@@ -57,8 +57,6 @@ class _SoftmaxBaseOp(Op):
         *,
         dtype: Optional[torch.dtype] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -69,14 +67,10 @@ class _SoftmaxBaseOp(Op):
                 the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default False).
         """
         self.dim = dim
         self.dtype = dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize *x* along the configured axis.
@@ -152,8 +146,6 @@ class LogSumExpFwdOp(_ReduceOpBase):
         keepdim: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -162,10 +154,8 @@ class LogSumExpFwdOp(_ReduceOpBase):
             keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default False).
         """
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> LogSumExpCall:
         """The input as the manifest declares it, and the device it runs on."""

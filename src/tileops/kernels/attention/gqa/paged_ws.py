@@ -546,7 +546,6 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -564,7 +563,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         self.softcap = softcap
         # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

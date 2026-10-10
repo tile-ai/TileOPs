@@ -1,7 +1,7 @@
 """Inference-facing GLA contract with dense-prefill and decode dispatch."""
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -51,8 +51,6 @@ class GLAFwdOp(Op):
         scale: Optional[float] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Fix the query scale and optional backend target for this instance.
 
@@ -60,15 +58,11 @@ class GLAFwdOp(Op):
             scale: Positive query scale, or ``None`` for ``K**-0.5``.
             target: Backend target, or ``None`` to resolve from the input
                 device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         if scale is not None and (not math.isfinite(scale) or scale <= 0):
             raise ValueError("scale must be a positive finite value")
         self.scale = scale
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """Prefill contracts chunks on tensor cores; a decode step is a matvec on CUDA cores."""

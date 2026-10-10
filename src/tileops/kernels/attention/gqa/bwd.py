@@ -78,7 +78,6 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         dim: Head dimension.
         dtype: Torch dtype of ``o`` / ``do``.
         config: Optional config dict. This kernel exposes no tunable knobs.
-        tune: Whether to autotune. No-op for this kernel; see above.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -96,7 +95,6 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         dim: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -108,7 +106,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         self.kernel = _flashattn_bwd_preprocess_kernel(
             self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def forward(self, o: torch.Tensor, do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return ``(delta, dq_accum)``, the second zero-filled.
@@ -454,7 +452,6 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         is_causal: bool,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -480,7 +477,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     # Default configs, widest first. A 256-thread program lays out its shared tiles only at
     # a head dim that is a multiple of 32; the 128-thread ones take any multiple of 16.

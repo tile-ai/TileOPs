@@ -247,7 +247,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         dt_min: float = 0.0,
         dt_max: float = float("inf"),
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -272,7 +271,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
             dt_min,
             dt_max,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

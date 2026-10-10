@@ -98,7 +98,9 @@ def test_mha_decode_paged_op(
     tune: bool,
 ) -> None:
     test = MHADecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
-    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal, tune=tune)
+    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

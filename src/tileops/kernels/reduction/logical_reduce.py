@@ -317,7 +317,6 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
                complex64, or complex128).
         keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
-        tune: Whether to autotune (default False).
         device_index: CUDA device the input lives on.
     """
 
@@ -351,7 +350,6 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
         dtype: torch.dtype,
         keepdim: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -363,7 +361,7 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
         self.N = prod(self.shape[a] for a in self.reduce_axes)
         self.M = prod(self.shape) // self.N
         self._scalar_dtype, self._components = _SCALAR_VIEWS.get(dtype, (dtype, 1))
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

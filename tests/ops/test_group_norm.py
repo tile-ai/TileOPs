@@ -210,7 +210,10 @@ def test_group_norm_under_tuning(tune: bool) -> None:
     """A group of 8192 elements, past the register-held row, where multi-row blocks are
     candidates."""
     test = GroupNormTest(2, 32, (32, 32), 4, torch.float16)
-    test.check(GroupNormFwdOp(num_groups=4, tune=tune), *test.gen_inputs())
+    op = GroupNormFwdOp(num_groups=4)
+    if tune:
+        op.autotune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

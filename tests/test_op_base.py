@@ -115,9 +115,8 @@ def _gated_op(name: str, forward, delegate_types=None) -> type:
     """An op on the gated activation's signature whose ``forward`` is *forward*."""
     from tileops.ops._signature_codegen import install
 
-    def construct(self, *, target=None, kernel_map=None, tune=False):
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+    def construct(self, *, target=None):
+        Op.__init__(self, target=target)
 
     cls = type(
         name,
@@ -128,29 +127,33 @@ def _gated_op(name: str, forward, delegate_types=None) -> type:
     return cls
 
 
-class TestCompositeKernelMapOverride:
-    """Composite ops (empty ``kernel_types``) accept a non-empty override and store it verbatim."""
+class TestConstruction:
+    """``Op.__init__`` builds the instance state every base method reads."""
 
-    def test_empty_default_with_empty_override_yields_empty_map(self):
-        Cls = _make_op_subclass()
-        op = Cls()
-        op.dispatch_kernel(None)
-        assert op.kernel_map == {}
+    def test_construction_builds_the_caches_and_sub_op_tables_empty(self):
+        op = _make_op_subclass()(target="acme")
+        assert op.target == "acme"
+        assert op._registered == {} and op._interface_keys == {}
+        for field in (
+            "_dispatched",
+            "_built_entries",
+            "_target_kernels",
+            "_delegates",
+            "_delegate_stages",
+            "_effect_branches",
+        ):
+            assert vars(op)[field] == {}, field
 
-    def test_empty_default_with_non_empty_override_stores_override(self):
-        Cls = _make_op_subclass()
-        op = Cls()
-        override = {"first": object(), "second": object()}
-        op.dispatch_kernel(override)
-        assert op.kernel_map == override
-
-    def test_empty_default_override_is_copied_not_aliased(self):
-        Cls = _make_op_subclass()
-        op = Cls()
-        override = {"first": object()}
-        op.dispatch_kernel(override)
-        override["extra"] = object()
-        assert "extra" not in op.kernel_map
+    def test_a_failed_settling_call_resets_the_binding_group_to_what_construction_built(self):
+        op = _SlottedOp([])
+        op._builder = None
+        op.build("fwd", torch.float16, "fp16")
+        op._target_kernels[("cpu",)] = object()
+        held = op._delegates
+        op._unsettle()
+        assert op.settled_target is None
+        assert op._dispatched == op._built_entries == op._target_kernels == {}
+        assert op._delegates is held
 
 
 class _SlottedOp(Op):
@@ -158,13 +161,12 @@ class _SlottedOp(Op):
 
     interfaces = {"fwd": _FwdRecording, "aux": _AuxRecording}
 
-    def __init__(self, tuned: list):
+    def __init__(self, tuned: list, *, target=None):
         self._tuned = tuned
         self.builds: list[tuple[str, object]] = []
-        self.tune = False
         fwd, aux = _recording_kernels(tuned, self.builds)
         self.kernel_types = {"fwd": fwd, "aux": aux}
-        self._install_kernel_map(None)
+        super().__init__(target=target)
 
     def _infer_output_shapes(self, *shapes):
         return {}
@@ -226,7 +228,7 @@ class TestIterKernels:
             compute_dtype: torch.dtype
 
         op = _SlottedOp(tuned)
-        fwd, aux = op.kernel_map["fwd"], op.kernel_map["aux"]
+        fwd, aux = op._registered["fwd"], op._registered["aux"]
         fwd.entry_for = classmethod(lambda cls, call: (call.key, lambda: (cls("pre"), cls("bwd"))))
         aux.entry_for = classmethod(
             lambda cls, call: (call.key, lambda: Entry(cls("record"), torch.float32))
@@ -239,7 +241,7 @@ class TestIterKernels:
         """Enumeration is explicit: an unregistered attribute is not searched."""
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.some_other_attribute = op.kernel_map["fwd"]("hidden")
+        op.some_other_attribute = op._registered["fwd"]("hidden")
         assert list(op.iter_kernels()) == []
 
     def test_ignores_a_kernel_dict_the_op_owns(self):
@@ -251,7 +253,7 @@ class TestIterKernels:
         """
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.private_cache = {torch.float16: op.kernel_map["fwd"]("private")}
+        op.private_cache = {torch.float16: op._registered["fwd"]("private")}
         assert list(op.iter_kernels()) == []
         op.autotune()
         assert tuned == []
@@ -279,7 +281,7 @@ class TestIterKernels:
             delegate_types = {"stage": _SlottedOp}
 
         composite = CompositeOp(tuned)
-        composite.kernel_map["fwd"].entry_for = classmethod(
+        composite._registered["fwd"].entry_for = classmethod(
             lambda cls, call: (call.key, lambda: shared)
         )
         composite.delegate_for("stage", None, delegate)
@@ -316,11 +318,7 @@ class TestAutotune:
 
 
 class _TunableOp(_SlottedOp):
-    """Op whose builds the dispatcher puts in tuned mode from ``self.tune``."""
-
-    def __init__(self, tuned: list, *, tune: bool = False):
-        super().__init__(tuned)
-        self.tune = tune
+    """Op whose builds the dispatcher puts in tuned mode once ``autotune()`` is asked."""
 
     def build(self, dtype):
         return super().build("fwd", dtype, str(dtype))
@@ -386,8 +384,8 @@ class TestTunedMode:
         tuned: list[str] = []
 
         class DelegateOp(_TunableOp):
-            def __init__(self, rec, *, target=None, kernel_map=None, tune=False):
-                super().__init__(rec, tune=tune)
+            def __init__(self, rec, *, target=None):
+                super().__init__(rec, target=target)
 
         class CompositeOp(_TunableOp):
             delegate_types = {"stage": DelegateOp}
@@ -395,6 +393,18 @@ class TestTunedMode:
         op = CompositeOp(tuned)
         op.autotune()
         op.delegate_for("stage", None, rec=tuned).build(torch.float16)
+        assert tuned == ["torch.float16"]
+
+    def test_a_delegate_given_after_autotune_inherits_tuned_mode(self):
+        """A sub-op the caller injects joins tuned mode the first time it is held."""
+        tuned: list[str] = []
+
+        class CompositeOp(_TunableOp):
+            delegate_types = {"stage": _TunableOp}
+
+        op = CompositeOp(tuned)
+        op.autotune()
+        op.delegate_for("stage", None, _TunableOp(tuned)).build(torch.float16)
         assert tuned == ["torch.float16"]
 
 
@@ -405,23 +415,22 @@ class TestDelegateFor:
         seen: list[dict] = []
 
         class DelegateOp(_SlottedOp):
-            def __init__(self, *, width, target=None, kernel_map=None, tune=False):
-                super().__init__([])
-                seen.append({"width": width, "target": target, "kernel_map": kernel_map})
+            def __init__(self, *, width, target=None):
+                super().__init__([], target=target)
+                seen.append({"width": width, "target": target})
 
         class CompositeOp(_SlottedOp):
             delegate_types = {"stage": DelegateOp}
 
-        op = CompositeOp([])
-        op.target = "acme"
+        op = CompositeOp([], target="acme")
         first = op.delegate_for("stage", 1, width=1)
         assert op.delegate_for("stage", 1, width=1) is first
         second = op.delegate_for("stage", 2, width=2)
         assert type(first) is DelegateOp and second is not first
-        assert seen == [
-            {"width": 1, "target": "acme", "kernel_map": None},
-            {"width": 2, "target": "acme", "kernel_map": None},
-        ]
+        assert seen == [{"width": 1, "target": "acme"}, {"width": 2, "target": "acme"}]
+        assert not first._tune_requested
+        op.autotune()
+        assert op.delegate_for("stage", 3, width=3)._tune_requested
 
     def test_enumerates_held_sub_ops_in_stage_order(self):
         class CompositeOp(_SlottedOp):
@@ -578,58 +587,3 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
                 if re.search(rf"(?<![\w.]){name}\(", line):
                     offenders.append(f"{path.relative_to(root)}:{lineno} {name}")
     assert offenders == [], offenders
-
-
-_RENAMED_KEYS = [
-    "gemm_kernel",
-    "gemm_basic_kernel",
-    "small_batch_kernel",
-    "gemm_fp8_epilogue_kernel",
-    "gemm_fp8_block_scaled_kernel",
-    "gemm_w4a16_decode_kernel",
-    "bmm_template_kernel",
-]
-
-
-@pytest.mark.parametrize("stale", _RENAMED_KEYS)
-def test_a_key_no_op_declares_is_refused(stale: str) -> None:
-    """A name nothing in the library has replaces nothing, so construction refuses it.
-
-    Every key this rename retired is one: dropping it silently would hand the caller the
-    shipped implementation under the name it asked to replace.
-    """
-    from tileops.kernels.gemm import GemmTMAKernel
-    from tileops.ops import GemmFwdOp
-
-    with pytest.raises(ValueError, match="no op has"):
-        GemmFwdOp(kernel_map={stale: GemmTMAKernel})
-
-
-def test_a_key_another_op_declares_passes_through() -> None:
-    """A composite hands every sub-op the whole set, so a sibling's key is not an error."""
-    from tileops.kernels.gemm import GemmTMAKernel
-    from tileops.ops import GemmFwdOp
-
-    op = GemmFwdOp(kernel_map={"shared_expert_mlp": GemmTMAKernel})
-    assert "shared_expert_mlp" not in op.kernel_map
-
-
-def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
-    """An override may name only a key some
-    created op class declares."""
-    from tileops.kernels.gemm import GemmTMAKernel
-    from tileops.kernels.gemm.call_spec import GemmFwdInterface
-
-    attrs = {
-        "kernel_types": {"probe_kernel": GemmTMAKernel},
-        "interfaces": {"gemm": GemmFwdInterface},
-        "forward": lambda self, *a, **kw: None,
-        "_infer_output_shapes": lambda self, *shapes: {},
-        "eval_roofline": lambda self: (0, 0),
-    }
-    keyed = type("KeyedOp", (Op,), attrs)
-    op = keyed()
-    op.dispatch_kernel({"probe_kernel": GemmTMAKernel})
-    assert op.kernel_map == {"probe_kernel": GemmTMAKernel}
-    with pytest.raises(ValueError, match="no op has"):
-        keyed().dispatch_kernel({"stale_kernel": GemmTMAKernel})

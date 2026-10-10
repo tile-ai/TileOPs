@@ -340,7 +340,6 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
         dtype: torch.dtype,
         sm_scale: Optional[float] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -356,7 +355,6 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             dtype: Input and output dtype.
             sm_scale: Score scale, or ``None`` for ``(dim_nope + dim_pe) ** -0.5``.
             config: Tile sizes and pipeline depth, or ``None`` for the default.
-            tune: Whether to autotune when the kernel is first built.
             device_index: CUDA device the program is built for.
         """
         super().__init__(device_index=device_index)
@@ -379,7 +377,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             self.dtype_str,
         )
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self) -> Callable:
         """Supply valid packed tensors and offsets while autotuning.

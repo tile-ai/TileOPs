@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -67,8 +67,6 @@ class GDNFwdOp(Op):
         use_gate_in_kernel: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Fix recurrence semantics; tensor metadata comes from each call.
 
@@ -87,8 +85,6 @@ class GDNFwdOp(Op):
                 ``g`` must already contain the log-space decay.
             target: Backend target, or ``None`` to resolve from the input
                 device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
@@ -96,9 +92,7 @@ class GDNFwdOp(Op):
         self.allow_neg_eigval = allow_neg_eigval
         self.state_v_first = state_v_first
         self.use_gate_in_kernel = use_gate_in_kernel
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """The state contractions are priced on tensor cores."""

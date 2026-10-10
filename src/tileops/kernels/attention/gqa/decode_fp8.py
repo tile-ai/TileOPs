@@ -289,7 +289,6 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
         **unused,
@@ -305,7 +304,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         self.softcap = softcap
         if heads_kv <= 0 or heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        self.init_config(config, tune)
+        self.init_config(config)
         if heads // heads_kv > self.config["block_m"]:
             raise ValueError("block_m must cover every query head sharing one KV head")
 

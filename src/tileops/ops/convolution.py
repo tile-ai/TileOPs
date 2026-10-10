@@ -6,7 +6,7 @@ Provides:
   - Conv3dFwdOp: torch.nn.functional.conv3d
 """
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -92,8 +92,6 @@ class Conv1dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -104,16 +102,12 @@ class Conv1dFwdOp(Op):
             dilation: Dilation, an int or a 1-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -196,8 +190,6 @@ class Conv2dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -208,16 +200,12 @@ class Conv2dFwdOp(Op):
             dilation: Dilation, an int or a 2-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -293,8 +281,6 @@ class Conv3dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -305,16 +291,12 @@ class Conv3dFwdOp(Op):
             dilation: Dilation, an int or a 3-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

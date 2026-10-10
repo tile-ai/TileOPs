@@ -683,7 +683,6 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         scale: float = -1.0,
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -705,9 +704,8 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         # The default fused pass only where every buffer it allocates fits the device.
         default = self._fused_shared_bytes(chunk_size, dim_k, dim_v, dtype.itemsize)
         self.lean = default > get_shared_memory_optin(self.device_index)
-        self.init_config(config, tune)
-        if not tune:
-            self._build_kernels(self.config)
+        self.init_config(config)
+        self._build_kernels(self.config)
 
     @staticmethod
     def region_refusal(

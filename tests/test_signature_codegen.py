@@ -23,7 +23,7 @@ def _op(name, params):
     install(cls, _ENTRIES[name], _CASES["adts"])
     op = cls()
     vars(op).update(params)
-    op._check_construction()
+    op._construction_ix = op._check_construction()
     return op
 
 
@@ -49,7 +49,7 @@ def _gemm(**roofline):
     cls = type("GemmFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
     install(cls, {**_ENTRIES["GemmFwdOp"], "roofline": roofline}, _CASES["adts"])
     op = cls(trans_a=False, trans_b=True)
-    op._check_construction()
+    op._construction_ix = op._check_construction()
     return op
 
 
@@ -133,7 +133,7 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
 
     def construct(self, **params):
         vars(self).update(params)
-        self.dispatch_kernel(None)
+        Op.__init__(self)
 
     body = {"__init__": construct, "forward": forward}
     cls = type(name, (Op,), body)

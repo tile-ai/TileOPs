@@ -829,7 +829,6 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
         pe_dim,
         dtype,
         config: Optional[dict] = None,
-        tune=False,
         *,
         device_index: Optional[int] = None,
     ):
@@ -852,7 +851,7 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def lse_dtype(self) -> torch.dtype:

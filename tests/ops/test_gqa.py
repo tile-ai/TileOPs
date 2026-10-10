@@ -529,7 +529,9 @@ def test_gqa_bwd(
     tune: bool,
 ) -> None:
     test = GQABwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GQABwdOp(causal, tune=tune)
+    op = GQABwdOp(causal)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -674,8 +676,11 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
     q = torch.randn(batch, 1, heads, dim, device=run_device(), dtype=torch.float16)
     k = torch.randn(batch, 4096, heads_kv, dim, device=run_device(), dtype=torch.float16)
     v = torch.randn_like(k)
+    op = GQADenseFwdOp()
+    if tune:
+        op.autotune()
     compare_outputs(
-        GQADenseFwdOp(tune=tune)(q, k, v),
+        op(q, k, v),
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
         dense_gqa_verification(q.dtype),
     )

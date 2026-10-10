@@ -71,10 +71,9 @@ _ENTRY_KEYS = {
 }
 _REQUIRED = ("family", "status", "signature", "workloads", "roofline")
 _OP_KEY = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Op")
-# Execution-policy parameters every op takes, in order with their defaults, and the reserved one
-# it may take (docs/design/manifest.md § Signature).
-_POLICY_PARAMETERS = {"target": None, "kernel_map": None, "tune": False}
-_RESERVED_POLICY = "config"
+# Execution-policy parameters every op takes, in order with their defaults
+# (docs/design/manifest.md § Signature).
+_POLICY_PARAMETERS = {"target": None}
 
 
 def _key_format_errors(
@@ -327,10 +326,10 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     (docs/design/manifest.md § Signature, § Composition).
 
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
-    `*`, then keyword-only `target`, `kernel_map` and `tune`, and only the injected objects the
-    class lists in `execution_parameters` or the reserved `config`. `forward` begins with the
-    call-time inputs in order, positional, the optional ones defaulting to `None` and the
-    others to nothing, then `out` when an output is a buffer. The `op` stages of `composition`
+    `*`, then keyword-only `target`, and only the injected objects the class lists in
+    `execution_parameters`. `forward` begins with the call-time inputs in order, positional,
+    the optional ones defaulting to `None` and the others to nothing, then `out` when an
+    output is a buffer. The `op` stages of `composition`
     are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
     stages, each in order. The class names compile-boundary operators in `compile_op_names`
     exactly when the entry has a call-time tensor input and no composition.
@@ -371,7 +370,7 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     ):
         suffix = ", ".join(f"{n}={d}" for n, d in _POLICY_PARAMETERS.items())
         errors.append(f"{where}: __init__ must end its policy parameters with *, {suffix}")
-    allowed = {*_POLICY_PARAMETERS, _RESERVED_POLICY, *getattr(cls, "execution_parameters", ())}
+    allowed = {*_POLICY_PARAMETERS, *getattr(cls, "execution_parameters", ())}
     errors += [
         f"{where}: __init__ parameter {p.name!r} is not a signature or execution-policy parameter"
         for p in rest.values()

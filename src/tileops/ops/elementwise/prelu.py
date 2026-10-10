@@ -1,14 +1,14 @@
 """PReLU op: y = x if x > 0 else weight[channel] * x."""
 
 from math import prod
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.elementwise.call_spec import PreluCall, PreluFwdInterface
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
@@ -28,21 +28,14 @@ class PreluFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``kernel_types``.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``weight``."""

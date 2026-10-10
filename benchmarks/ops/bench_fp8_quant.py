@@ -13,7 +13,8 @@ from tileops.ops import FP8QuantFwdOp
 
 @pytest.mark.parametrize("case", bench.cases(FP8QuantFwdOp), ids=lambda case: case.id)
 def test_fp8_quant_bench(case) -> None:
-    op = FP8QuantFwdOp(**case.arguments, tune=True)
+    op = FP8QuantFwdOp(**case.arguments)
+    op.autotune()
 
     quantize = vllm_op(
         "per_token_group_quant_fp8", "model_executor.layers.quantization.utils.fp8_utils"

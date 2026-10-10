@@ -5,7 +5,7 @@ Provides:
     value per key channel, returning the output and the FP32 final state.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -73,8 +73,6 @@ class KDAFwdOp(Op):
         lower_bound: Optional[float] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Fix recurrence semantics; tensor metadata comes from each call.
 
@@ -94,8 +92,6 @@ class KDAFwdOp(Op):
             lower_bound: Lower bound of the forget gate in log space, or
                 ``None``. Only used with ``use_gate_in_kernel=True``.
             target: Backend target, or ``None`` to resolve from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
@@ -104,9 +100,7 @@ class KDAFwdOp(Op):
         self.state_v_first = state_v_first
         self.use_gate_in_kernel = use_gate_in_kernel
         self.lower_bound = lower_bound
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """The state contractions are priced on tensor cores."""

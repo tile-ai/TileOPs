@@ -168,15 +168,13 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.kernel = _int4_quant_per_group_kernel(
             call.rows, call.cols, call.group_size, self._PER_CTA
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -206,7 +204,6 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
         call: The call's shape, dtype, group size and device facts.
         config: Optional dict with ``threads``, ``cpt`` (always 1), ``evict_first`` and
             ``min_blocks``.
-        tune: Whether to autotune.
     """
 
     _PER_CTA = False
@@ -251,7 +248,6 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     Args:
         call: The call's shape, dtype, group size and device facts.
         config: Optional dict with ``threads``, ``cpt``, ``evict_first`` and ``min_blocks``.
-        tune: Whether to autotune.
     """
 
     _PER_CTA = True

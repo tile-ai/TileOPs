@@ -1,6 +1,6 @@
 """MoE permute-align op: routes tokens to experts and pads to tile boundary."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -41,8 +41,6 @@ class MoEPermuteAlignFwdOp(Op):
         block_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. The routed extents are taken from each call.
 
@@ -51,14 +49,10 @@ class MoEPermuteAlignFwdOp(Op):
             block_size: GEMM tile size (M dimension); default 64.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.num_experts = num_experts
         self.block_size = block_size
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Mapping, Optional
+from typing import ClassVar, List, Mapping
 
 import torch
 
@@ -43,8 +43,6 @@ class EngramGateConvFwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -55,16 +53,12 @@ class EngramGateConvFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -133,8 +127,6 @@ class EngramGateConvBwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -145,16 +137,12 @@ class EngramGateConvBwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

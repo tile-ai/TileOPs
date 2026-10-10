@@ -261,7 +261,9 @@ def test_conv1d(
     tune: bool,
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv1dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    op = Conv1dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -382,7 +384,10 @@ def test_conv1d_unit_stride_under_tuning(tune: bool) -> None:
     """c_in = 130 puts each tap's weight columns off a 16-byte boundary and needs two channel
     blocks; the padding gives boundary CTAs, whichever taps per k tile tuning picks."""
     test = Conv1dTest(1, 130, 260, 67, 4, 1, 3, 2, 1, torch.float16)
-    test.check(Conv1dFwdOp(padding=3, dilation=2, tune=tune), *test.gen_inputs())
+    op = Conv1dFwdOp(padding=3, dilation=2)
+    if tune:
+        op.autotune()
+    test.check(op, *test.gen_inputs())
 
 
 class Conv2dFixture(FixtureBase):
@@ -657,7 +662,9 @@ def test_conv2d(
     tune: bool,
 ) -> None:
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    op = Conv2dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    op = Conv2dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -966,7 +973,9 @@ def test_conv3d(
     test = Conv3dTest(
         n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype
     )
-    op = Conv3dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups, tune=tune)
+    op = Conv3dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

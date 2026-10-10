@@ -10,8 +10,8 @@ explicit config.
 # Broken invariant: a numerical test reaches its kernel through an op's dispatch.
 # Why: the template picks its config per call outside ``Kernel.default_config``, so an op
 #   cannot pin a spec; the tests below construct ``GemmTemplate`` with one.
-# Cleanup: when config selection moves into the standard Kernel mechanism, pin each spec
-#   through ``kernel_map`` and move these tests to ``tests/ops``.
+# Cleanup: when config selection moves into the standard Kernel mechanism, register each
+#   spec through ``register_implementation`` and move these tests to ``tests/ops``.
 
 import dataclasses
 import math

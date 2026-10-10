@@ -1034,15 +1034,15 @@ class _Plan:
                 point[key] = tensors.get(name) is not None
         return point
 
-    def construct(self, op) -> None:
-        """Check what construction decides and keep what it solved on *op*."""
+    def construct(self, op) -> dict:
+        """Check what construction decides and return what it solved: the index values."""
         key = self.built_key(self.point(op, {}, self.built_axes))
         if key in self._pending:
             self._emit(key)
         fn = self.constructions.get(key)
         if fn is None:
             raise CheckError(f"{self.sig.name}: discriminants {key} are outside their types")
-        op._construction_ix = fn(op)
+        return fn(op)
 
     def check(self, op, tensors: dict) -> SignatureCall:
         return self._lookup(self.checks, op, tensors)(op, tensors)
@@ -1059,9 +1059,7 @@ class _Plan:
         reads once and keeps as ``_construction_ix``, so the branch is settled by *present*
         alone and is looked up once per instance and presence.
         """
-        cache = getattr(op, "_effect_branches", None)
-        if cache is None:
-            cache = op._effect_branches = {}
+        cache = op._effect_branches
         branch = cache.get(present)
         if branch is None:
             tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
@@ -1142,7 +1140,7 @@ def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
 
 def _construction_check(plan: _Plan):
     """`_check_construction`: parameter values against their `type`, construction-time tensor
-    presence, then what the construction point decides."""
+    presence, then what the construction point decides; it returns the index values solved."""
     sig = plan.sig
     dtypes = {
         p
@@ -1150,14 +1148,14 @@ def _construction_check(plan: _Plan):
         if param_kind(d.get("type"), sig.adts).payload().tag == "DType"
     }
 
-    def check(self) -> None:
+    def check(self) -> dict:
         for p, decl in sig.params.items():
             value = getattr(self, p)
             try:
                 convert(_dname(value) if p in dtypes else value, decl.get("type"), sig.adts)
             except ValueError as exc:
                 raise CheckError(f"{sig.name}: {p} = {exc}") from None
-        plan.construct(self)
+        return plan.construct(self)
 
     return check
 
