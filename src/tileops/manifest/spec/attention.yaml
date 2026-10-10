@@ -764,7 +764,7 @@ PagedKVCacheGatherFwdOp:
   # cache is dequantized by scale into out_dtype. dst carries the length cu_seq_lens[-1],
   # which no input shape states.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.gather_and_maybe_dequant_cache
   signature:
     forall: {B: Dim, T_q: Dim, NP: Dim, PS: Dim, W: Dim, E: Shape, KV: "DType[float16 | bfloat16 | float8_e4m3fn]", seq_lens: "Seq[Int]", starts: "Seq[Int]"}
@@ -786,6 +786,9 @@ PagedKVCacheGatherFwdOp:
   - {T_q: 131072, NP: 2048, PS: 64, W: 256, E: [576], seq_lens: "repeat(16384, 8)", out_dtype: bfloat16, some: [scale], dtype_cases: [{KV: float8_e4m3fn}], label: ds-v3-chunk-fp8}
   - {T_q: 129024, NP: 6144, PS: 64, W: 1024, E: [576], seq_lens: [2048, 4096, 8192, 16384, 32768, 65536], dtype_cases: [{KV: bfloat16}], label: ds-v3-mixed}
   - {T_q: 32768, NP: 4096, PS: 16, W: 512, E: [8, 128], seq_lens: "repeat(4096, 8)", starts: "repeat(2048, 8)", some: [seq_starts], dtype_cases: [{KV: bfloat16}], label: llama-70b-cp}
+  - {T_q: 31, NP: 8, PS: 64, W: 4, E: [576], seq_lens: [17, 14], dtype_cases: [{KV: float16}], label: mla-small}
+  - {T_q: 8192, NP: 256, PS: 64, W: 128, E: [576], seq_lens: [2048, 6144], starts: [3, 127], out_dtype: float16, some: [seq_starts, scale], dtype_cases: [{KV: float8_e4m3fn}], label: mla-chunk-fp8-fp16}
+  - {T_q: 1024, NP: 128, PS: 16, W: 64, E: [8, 128], seq_lens: [17, 1007], starts: [15, 1], some: [seq_starts], dtype_cases: [{KV: bfloat16}], label: llama-cp-unaligned}
   roofline:
     # The cache rows each request's range reaches through the block table.
     func: "tileops.perf.formulas.paged_kv_cache_gather_roofline"
