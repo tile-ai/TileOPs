@@ -122,6 +122,18 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     A cache far shorter than the static bound, or shorter than the causal queries,
     leaves them with no live score. Pool rows no request reads hold NaN.
     """
+    _check_partly_filled_cache(seqlen_q, is_causal, real_lengths)
+
+
+@pytest.mark.sm89
+@pytest.mark.smoke
+def test_mha_decode_paged_without_wgmma_drops_unread_rows() -> None:
+    """SM89 has no TMA or WGMMA, so its paged decode stages the key tile the cache end cuts
+    without them; the NaN rows past the cache end must not reach the output."""
+    _check_partly_filled_cache(1, False, [700])
+
+
+def _check_partly_filled_cache(seqlen_q: int, is_causal: bool, real_lengths: list) -> None:
     batch, heads, seqlen_kv, dim, page_size = len(real_lengths), 8, 1024, 64, 256
     test = MHADecodePagedTest(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, torch.float16
