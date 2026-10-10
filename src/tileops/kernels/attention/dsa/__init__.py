@@ -5,9 +5,11 @@ from tileops.kernels.attention.dsa.decode import (
     DSADecodeKernel,
     DSADecodeKernelBase,
 )
+from tileops.kernels.attention.dsa.decode_ws import DSADecodeWSKernel
 
 __all__ = [
     "DSADecodeBasicKernel",
     "DSADecodeKernel",
     "DSADecodeKernelBase",
+    "DSADecodeWSKernel",
 ]
