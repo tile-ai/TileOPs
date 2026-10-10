@@ -299,7 +299,8 @@ def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
     [
         # Pages of 64 hold copied key tiles of 64 rows, and pages of 256 tiles of 128. Five
         # query tokens a request leave the device short of row tiles, so the key range is
-        # split; 160 fill it, so it is not.
+        # split; 160 fill it, so it is not, and on SM90 they fill warp-specialized query
+        # tiles whose key tile is two 64-row pages or part of a 256-row one.
         pytest.param([63, 130], 64, 5, id="tile-64-split"),
         pytest.param([2047, 1501], 256, 5, id="tile-128-split"),
         pytest.param([700, 450], 64, 160, id="tile-64"),
@@ -320,6 +321,89 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         k_pages[stale] = float("nan")
         v_pages[stale] = float("nan")
     _check(GQAPagedFwdOp(), workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "q_lens", "cache_lens", "page_size", "dtype", "op_kwargs"),
+    [
+        # One query head a KV head: a head's queries span both consumer warpgroups.
+        pytest.param(
+            8, 8, 128, [300, 0, 130], [900, 64, 130], 128, torch.bfloat16, {}, id="group-1"
+        ),
+        # Sixteen query heads a KV head, eight query positions each, over 16-row pages.
+        pytest.param(32, 2, 64, [70, 1, 9], [301, 40, 9], 16, torch.float16, {}, id="group-16"),
+        # A key tile of two 48-row pages, narrower than the 128 rows a page of 64 gives.
+        pytest.param(32, 8, 128, [200, 1], [700, 333], 48, torch.bfloat16, {}, id="pages-48"),
+        pytest.param(
+            32,
+            8,
+            128,
+            [200, 1],
+            [700, 333],
+            64,
+            torch.float16,
+            {"is_causal": False},
+            id="bidirectional",
+        ),  # fmt: skip
+        pytest.param(
+            32, 8, 128, [200, 1], [700, 333], 64, torch.float16, {"softcap": 30.0}, id="softcap"
+        ),
+        # More query tiles than multiprocessors: each persistent CTA claims several.
+        pytest.param(
+            32,
+            8,
+            128,
+            [700, 1, 333],
+            [1500, 777, 333],
+            64,
+            torch.bfloat16,
+            {},
+            id="tiles-past-multiprocessors",
+        ),  # fmt: skip
+    ],
+)
+def test_gqa_paged_warp_specialized_query_tiles(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    op_kwargs: dict,
+) -> None:
+    """SM90 copies pages by TMA into tiles that warp-specialized WGMMA reads; requests that
+    fill query tiles are cut by their own query and cache lengths."""
+    width = -(-max(cache_lens) // page_size)
+    workload = GQAPagedFwdWorkload(
+        heads,
+        heads_kv,
+        dim,
+        q_lens,
+        cache_lens,
+        page_size,
+        width,
+        len(q_lens) * width,
+        dtype,
+        **op_kwargs,
+    )
+    _check(GQAPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_gqa_paged_repeated_calls_claim_every_query_tile() -> None:
+    """SM90 persistent CTAs claim query tiles from a counter one op keeps across calls on a
+    stream; every call claims them all again."""
+    workload = _decode(2, 32, 8, [700, 450], 128, 64, q_len=160)
+    inputs = workload.gen_inputs()
+    op = GQAPagedFwdOp()
+    for length in (700, 513):
+        inputs[4][0] = length
+        workload.cache_lens[0] = length
+        _check(op, workload, inputs)
 
 
 @pytest.mark.smoke
