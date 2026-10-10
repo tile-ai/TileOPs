@@ -1,11 +1,14 @@
 import functools
 import itertools
+import re
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
+import tvm_ffi
 
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import MLADecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -62,6 +65,44 @@ def _split_combine(batch, heads, num_split, dim, dtype, lse_dtype):
     return combine
 
 
+# The warp-specialized kernel issues this call once as a bare statement;
+# _uniform_wgmma_bases rewrites only code that holds it, so the two must agree.
+_UNIFORM_BASES_CALL = "tileops::uniform_wgmma_bases"
+_DESCRIPTOR_BASE = re.compile(
+    r"(tl::initialize_wgmma_descriptor<[^>]*>\(\w+, )(\(&\(\(\(\w+\*\)\w+\)\[0\]\)\))\);"
+)
+
+
+def _uniform_wgmma_bases(code: str) -> str:
+    """Build the warp-specialized kernel's WGMMA descriptors from lane-0 shared-memory bases.
+
+    The consumers hold up to 240 registers each, and ptxas keeps the shared-memory bases
+    in ordinary registers, so every WGMMA issue pays an R2UR. A base broadcast from lane 0
+    is provably uniform, which keeps the descriptors in uniform registers. TileLang has no
+    way to express that broadcast, so the generated CUDA is rewritten instead. Code
+    without the marker statement is returned unchanged.
+    """
+    marker = re.compile(rf"^[ \t]*{re.escape(_UNIFORM_BASES_CALL)}\(\);$", re.MULTILINE)
+    if len(marker.findall(code)) != 1:
+        return code
+    return _DESCRIPTOR_BASE.sub(r"\1tileops::warp_uniform_ptr\2);", code)
+
+
+def _register_uniform_wgmma_bases() -> None:
+    """Chain the rewrite after whatever holds TileLang's one CUDA post-processing slot."""
+    previous = tvm_ffi.get_global_func("tilelang_callback_cuda_postproc", allow_missing=True)
+
+    def postproc(code, target):
+        if previous is not None:
+            code = previous(code, target)
+        return _uniform_wgmma_bases(code)
+
+    tilelang.register_cuda_postproc(postproc)
+
+
+_register_uniform_wgmma_bases()
+
+
 @functools.lru_cache(maxsize=32)
 def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype="float16"):
     sm_scale = (1.0 / (dim + pe_dim)) ** 0.5 * LOG2E
@@ -84,6 +125,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             "--expt-extended-lambda",
             "--ptxas-options=-v,--register-usage-level=10",
             "-DNDEBUG",
+            *csrc_include("warp_uniform.h"),
         ],
     )
     def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=384):
@@ -198,6 +240,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 NI = T.ceildiv(seqlen_kv, block_N)
 
                 tx = T.get_thread_binding()
+                T.evaluate(T.call_extern("handle", _UNIFORM_BASES_CALL))
 
                 # Q/Q_pe -> shared copies must stay inside tx < 128 so that the copy
                 # and the subsequent T.wgmma_gemm share the same 128-thread bounds.
@@ -418,6 +461,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 NI = T.ceildiv(kv_per_split, block_N)
 
                 tx = T.get_thread_binding()
+                T.evaluate(T.call_extern("handle", _UNIFORM_BASES_CALL))
 
                 # Q/Q_pe -> shared copies must stay inside tx < 128 so that the copy
                 # and the subsequent T.wgmma_gemm share the same 128-thread bounds.
