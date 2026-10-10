@@ -118,10 +118,10 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
 
     post_order_visit(primfunc.body, collect)
 
-    # T.Kernel(..., threads=N) binds no threadIdx.x; _HELPER's __tl_thread_idx_x() stands
+    # T.Kernel(..., threads=N) binds no threadIdx.x; _HELPER's tileops::trace_thread_idx_x() stands
     # in for it when electing the thread that writes markers.
     if "threadIdx.x" not in bind:
-        tx_ = T.call_extern("int32", "__tl_thread_idx_x")
+        tx_ = T.call_extern("int32", "tileops::trace_thread_idx_x")
     else:
         tx_ = bind["threadIdx.x"].loop_var
 
@@ -169,7 +169,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         # so a collapsed guard can never address past this slot's event region.
         idx = tx.Min(i, max_events - 1)
         base = _HEADER_WORDS + idx * 2
-        ts = T.call_extern("uint64", "__tl_now")
+        ts = T.call_extern("uint64", "tileops::trace_now")
         w1 = pack_w1_tir(event_id, kind, lane, payload_expr)
         store_w0 = tx.BufferStore(slots_buf, tx.Cast("int64", ts), [cta_flat, gid, base])
         store_w1 = tx.BufferStore(slots_buf, w1, [cta_flat, gid, base + 1])
@@ -231,7 +231,7 @@ def _strip_markers(primfunc):
 
     The always-emit markers are no-opped before codegen so the generated CUDA is
     byte-identical to an un-instrumented build (no ``slots`` param, no
-    ``__tl_now``). Backs the public ``strip`` escape hatch.
+    ``tileops::trace_now``). Backs the public ``strip`` escape hatch.
 
     Args:
         primfunc: A built kernel whose body may contain marker placeholders.
@@ -320,7 +320,7 @@ def strip(primfunc):
 
     The escape hatch: a kernel written with ``trace.*`` markers can be compiled
     zero-cost by passing it through ``strip`` instead of ``lower``. The
-    returned func has no ``slots`` param and emits no ``__tl_now``, so the
+    returned func has no ``slots`` param and emits no ``tileops::trace_now``, so the
     generated CUDA is byte-identical to an un-instrumented build.
 
     Args:

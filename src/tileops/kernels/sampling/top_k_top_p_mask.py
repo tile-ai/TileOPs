@@ -120,7 +120,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 if element(j, 0, 0) < out_of_row:
                     T.call_extern(
                         "handle",
-                        "tl::tileops_store16",
+                        "tileops::store16",
                         T.address_of(dst[at + element(j, 0, 0)]),
                         T.address_of(word[0]),
                     )
@@ -156,7 +156,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                             weight[0] = weight[0] + T.reinterpret(
                                 T.call_extern(
                                     "uint32",
-                                    "tl::tileops_cluster_load_u32",
+                                    "tileops::cluster_load_u32",
                                     T.address_of(wbins[q * walk_bins + i * threads + tx]),
                                     c,
                                 ),
@@ -263,7 +263,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                         if element(j, 0, 0) < out_of_row:
                             T.call_extern(
                                 "handle",
-                                "tl::tileops_load16_evict_first",
+                                "tileops::load16_evict_first",
                                 T.address_of(vals[j * words]),
                                 T.address_of(x[base + element(j, 0, 0)]),
                             )
@@ -477,7 +477,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                                 merged[0],
                                 T.call_extern(
                                     "uint32",
-                                    "tl::tileops_cluster_load_u32",
+                                    "tileops::cluster_load_u32",
                                     T.address_of(rowmax[tx]),
                                     c,
                                 ),

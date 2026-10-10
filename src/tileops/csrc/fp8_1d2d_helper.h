@@ -17,27 +17,27 @@
 #include <cutlass/gemm/collective/builders/sm90_common.inl>
 #include <type_traits>
 
-namespace tl {
+namespace tileops {
 
 template <int BlockN>
 __device__ __forceinline__ void fp8_gemm_wgmma_64x128_by_128xN(
     float* accumulator, fp8_e4_t* a_smem, fp8_e4_t* b_smem) {
-  GmmaDescriptor desc_a;
-  GmmaDescriptor desc_b;
-  initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_smem);
-  initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
-  warpgroup_fence_operand(accumulator, BlockN / 2);
-  warpgroup_arrive();
+  tl::GmmaDescriptor desc_a;
+  tl::GmmaDescriptor desc_b;
+  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_smem);
+  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
+  tl::warpgroup_fence_operand(accumulator, BlockN / 2);
+  tl::warpgroup_arrive();
 #pragma unroll
   for (int ki = 0; ki < 4; ++ki) {
-    wgmma_ss<DataType::kFloat8_e4m3, DataType::kFloat8_e4m3, DataType::kFloat32,
-             64, BlockN, 32, false, false, 1, 1>(
+    tl::wgmma_ss<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
+                 tl::DataType::kFloat32, 64, BlockN, 32, false, false, 1, 1>(
         uint64_t(desc_a + ((ki * 32) >> 4)),
         uint64_t(desc_b + ((ki * 32) >> 4)),
         reinterpret_cast<uint32_t*>(accumulator), 0 < ki ? 1 : 0);
   }
-  warpgroup_commit_batch();
-  warpgroup_fence_operand(accumulator, BlockN / 2);
+  tl::warpgroup_commit_batch();
+  tl::warpgroup_fence_operand(accumulator, BlockN / 2);
 }
 
 // Issue one 2-D TMA store and nothing else.  The caller commits the bulk
@@ -135,7 +135,7 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_store_global_vec2(
   }
 }
 
-#define TL_DEFINE_FP8_GEMM_1D2D_HELPERS(N)                                   \
+#define TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS(N)                              \
   __device__ __forceinline__ void fp8_gemm_wgmma_64x128_by_128x##N(          \
       float* acc, fp8_e4_t* a, fp8_e4_t* b) {                                \
     fp8_gemm_wgmma_64x128_by_128xN<N>(acc, a, b);                            \
@@ -154,12 +154,12 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_store_global_vec2(
     fp8_gemm_1d2d_promote<N>(p, f, sa0, sa1, sb);                            \
   }
 
-TL_DEFINE_FP8_GEMM_1D2D_HELPERS(16)
-TL_DEFINE_FP8_GEMM_1D2D_HELPERS(32)
-TL_DEFINE_FP8_GEMM_1D2D_HELPERS(64)
-TL_DEFINE_FP8_GEMM_1D2D_HELPERS(128)
+TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS(16)
+TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS(32)
+TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS(64)
+TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS(128)
 
-#undef TL_DEFINE_FP8_GEMM_1D2D_HELPERS
+#undef TILEOPS_DEFINE_FP8_GEMM_1D2D_HELPERS
 
 // A value every lane of the warp already holds, broadcast from lane 0 so the
 // compiler can prove it warp-uniform and keep it in a uniform register.
@@ -191,16 +191,16 @@ __device__ __forceinline__ void fp8_wave_wgmma_64xN(float* accumulator,
                                          b_stage);
 }
 
-#define TL_DEFINE_FP8_WAVE_WGMMA(N)                      \
+#define TILEOPS_DEFINE_FP8_WAVE_WGMMA(N)                 \
   __device__ __forceinline__ void fp8_wave_wgmma_64x##N( \
       float* acc, fp8_e4_t* a, fp8_e4_t* b) {            \
     fp8_wave_wgmma_64xN<N>(acc, a, b);                   \
   }
 
-TL_DEFINE_FP8_WAVE_WGMMA(64)
-TL_DEFINE_FP8_WAVE_WGMMA(128)
-TL_DEFINE_FP8_WAVE_WGMMA(192)
+TILEOPS_DEFINE_FP8_WAVE_WGMMA(64)
+TILEOPS_DEFINE_FP8_WAVE_WGMMA(128)
+TILEOPS_DEFINE_FP8_WAVE_WGMMA(192)
 
-#undef TL_DEFINE_FP8_WAVE_WGMMA
+#undef TILEOPS_DEFINE_FP8_WAVE_WGMMA
 
-}  // namespace tl
+}  // namespace tileops

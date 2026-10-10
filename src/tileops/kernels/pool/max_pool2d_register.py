@@ -98,7 +98,7 @@ def _max_pool2d_register_kernel(
                 if evict_first:
                     T.call_extern(
                         "handle",
-                        "tl::tileops_load16_evict_first",
+                        "tileops::load16_evict_first",
                         T.address_of(values[0]),
                         T.address_of(x[plane, row, start]),
                     )

@@ -338,8 +338,10 @@ def _gqa_varlen_fp8_ws_kernel(
     # therefore counts positions, not rows: FlashAttention-3's ``PackGQA`` traversal.
     positions_per_tile = block_m // groups
     positions_per_half = half_m // groups
-    packed_store = f"tl::fp8_fa3_o_smem_store_global_packed_64x128<{positions_per_half}>"
-    packed_store_tail = f"tl::fp8_fa3_o_smem_store_global_packed_64x128_tail<{positions_per_half}>"
+    packed_store = f"tileops::fp8_fa3_o_smem_store_global_packed_64x128<{positions_per_half}>"
+    packed_store_tail = (
+        f"tileops::fp8_fa3_o_smem_store_global_packed_64x128_tail<{positions_per_half}>"
+    )
     attention_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = attention_scale * LOG2E
     use_softcap = softcap > 0.0
@@ -409,7 +411,9 @@ def _gqa_varlen_fp8_ws_kernel(
             for i in T.Parallel(half_m):
                 logsum[i] = logsum[i] * ss[i]
             # Lane-local row sums; the quad reduction is deferred to the epilogue.
-            T.call_extern("handle", "tl::fp8_partial_row_sum_raw_acc_64x224", acc_s.data, ssum.data)
+            T.call_extern(
+                "handle", "tileops::fp8_partial_row_sum_raw_acc_64x224", acc_s.data, ssum.data
+            )
             for i in T.Parallel(half_m):
                 logsum[i] = logsum[i] + ssum[i]
 
@@ -424,7 +428,7 @@ def _gqa_varlen_fp8_ws_kernel(
             T.barrier_wait(v_raw_full[slot], phase)
             T.call_extern(
                 "handle",
-                "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter",
+                "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter",
                 T.access_ptr(v_smem[slot, 0, 0], "rw"),
                 T.access_ptr(v_smem[slot, 0, 0], "w"),
             )
@@ -605,7 +609,7 @@ def _gqa_varlen_fp8_ws_kernel(
                                 )
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_tma_load_4d_ptx",
+                                    "tileops::fp8_tma_load_4d_ptx",
                                     v_desc,
                                     v_raw_full[issued % stages],
                                     T.access_ptr(v_smem[issued % stages, 0, 0], "w"),
@@ -715,7 +719,7 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.barrier_wait(k_full[gi_k % stages], (gi_k // stages) % 2)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                 q_shared_1.access_ptr("r"),
                                 T.access_ptr(k_smem[gi_k % stages, 0, 0], "r"),
                                 acc_s_1.data,
@@ -735,7 +739,7 @@ def _gqa_varlen_fp8_ws_kernel(
                             if use_softcap:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    "tileops::fp8_apply_softcap_raw_acc_64x224",
                                     acc_s_1.data,
                                     qk_descale * attention_scale / softcap,
                                 )
@@ -779,14 +783,14 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.copy(ss_1, ss_shared_1)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                 acc_o_1.data,
                                 ss_shared_1.access_ptr("r"),
                             )
                             T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
+                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
                                 acc_s_1.data,
                                 T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
                                 acc_o_1.data,
@@ -802,7 +806,7 @@ def _gqa_varlen_fp8_ws_kernel(
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
-                            "tl::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
+                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
                             acc_o_1.data,
                             ls_shared_1.access_ptr("r"),
                             4,
@@ -886,7 +890,7 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.barrier_wait(k_full[gi_k % stages], (gi_k // stages) % 2)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                 q_shared_2.access_ptr("r"),
                                 T.access_ptr(k_smem[gi_k % stages, 0, 0], "r"),
                                 acc_s_2.data,
@@ -906,7 +910,7 @@ def _gqa_varlen_fp8_ws_kernel(
                             if use_softcap:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    "tileops::fp8_apply_softcap_raw_acc_64x224",
                                     acc_s_2.data,
                                     qk_descale * attention_scale / softcap,
                                 )
@@ -950,14 +954,14 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.copy(ss_2, ss_shared_2)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                 acc_o_2.data,
                                 ss_shared_2.access_ptr("r"),
                             )
                             T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
+                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
                                 acc_s_2.data,
                                 T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
                                 acc_o_2.data,
@@ -973,7 +977,7 @@ def _gqa_varlen_fp8_ws_kernel(
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",
-                            "tl::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
+                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
                             acc_o_2.data,
                             ls_shared_2.access_ptr("r"),
                             4,

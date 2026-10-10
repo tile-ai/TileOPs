@@ -360,7 +360,7 @@ def _mha_bwd_ws_kernel(
                                 T.barrier_arrive(do_full[slot])
                                 g = g + 1
                             tcur = T.call_extern(
-                                "int32", "tl::claim_tile", T.access_ptr(sched[0], "rw")
+                                "int32", "tileops::claim_tile", T.access_ptr(sched[0], "rw")
                             )
                             ti = ti + 1
                         # An out-of-range tile tells every role the list is done.
@@ -388,7 +388,7 @@ def _mha_bwd_ws_kernel(
                     )  # fmt: skip
                 T.sync_threads()
                 if tx == 0:
-                    T.call_extern("handle", "tl::retire", T.access_ptr(sched[0], "rw"))
+                    T.call_extern("handle", "tileops::retire", T.access_ptr(sched[0], "rw"))
 
         return _mha_bwd_ws_main
 

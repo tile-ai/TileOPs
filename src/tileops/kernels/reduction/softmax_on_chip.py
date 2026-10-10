@@ -68,7 +68,7 @@ def _softmax_on_chip_kernel(
             """``exp(value - peak)`` of one element for the sum, which is at least one: a
             subnormal term reads as zero."""
             return T.call_extern(
-                "float32", "tl::approx_exp2", (T.cast(value, "float32") - peak) * LOG2E
+                "float32", "tileops::approx_exp2", (T.cast(value, "float32") - peak) * LOG2E
             )
 
         def row_scale(total):
@@ -84,7 +84,9 @@ def _softmax_on_chip_kernel(
                 # The division is one more term of the exponent, which the scaling
                 # takes in the same FFMA.
                 biased = T.call_extern(
-                    "float32", "tl::approx_exp2", (T.cast(value, "float32") - peak) * LOG2E - scale
+                    "float32",
+                    "tileops::approx_exp2",
+                    (T.cast(value, "float32") - peak) * LOG2E - scale,
                 )
                 return biased * (2.0**-exp_bias)
             return T.cast(value, "float32") - peak - scale
@@ -114,7 +116,7 @@ def _softmax_on_chip_kernel(
                 if tx == 0:
                     T.call_extern(
                         "handle",
-                        "tl::tileops_expect_partials",
+                        "tileops::expect_partials",
                         T.address_of(received[0]),
                         8 * (cluster - 1),
                     )
@@ -171,7 +173,7 @@ def _softmax_on_chip_kernel(
                 if tx < cluster and tx != rank:
                     T.call_extern(
                         "handle",
-                        "tl::tileops_send_partial2",
+                        "tileops::send_partial2",
                         T.address_of(sums[own + slot * rank]),
                         T.address_of(received[0]),
                         tx,

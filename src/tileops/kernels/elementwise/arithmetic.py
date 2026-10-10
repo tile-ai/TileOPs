@@ -209,7 +209,7 @@ def _approx_reciprocal(x):
     that would be subnormal returns a zero. A caller takes those two answers as a
     refusal and computes the value another way.
     """
-    return T.call_extern("float32", "tl::approx_reciprocal", x)
+    return T.call_extern("float32", "tileops::approx_reciprocal", x)
 
 
 def _nudged_floor(num, den, dtype, fast_body):

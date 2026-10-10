@@ -1,6 +1,6 @@
 #pragma once
 
-namespace tl {
+namespace tileops {
 
 // Lane 0 claims the next tile for its CTA; every lane of the warp gets it.
 __device__ __forceinline__ int claim_tile(int* sched) {
@@ -19,4 +19,4 @@ __device__ __forceinline__ void retire(int* sched) {
   }
 }
 
-}  // namespace tl
+}  // namespace tileops

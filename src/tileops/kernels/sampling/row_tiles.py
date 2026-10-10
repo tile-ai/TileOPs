@@ -53,14 +53,14 @@ def load_vector(dst, slot, src, at, vec: int, evict_first: bool):
     elif evict_first:
         T.call_extern(
             "handle",
-            "tl::tileops_load16_evict_first",
+            "tileops::load16_evict_first",
             T.address_of(dst[slot, 0]),
             T.address_of(src[at]),
         )
     else:
         T.call_extern(
             "handle",
-            "tl::tileops_load16",
+            "tileops::load16",
             T.address_of(dst[slot, 0]),
             T.address_of(src[at]),
         )

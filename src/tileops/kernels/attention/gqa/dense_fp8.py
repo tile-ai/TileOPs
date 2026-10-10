@@ -102,7 +102,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             # until finalization instead of running once per K/V tile.
             T.call_extern(
                 "handle",
-                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                "tileops::fp8_partial_row_sum_raw_acc_64x224",
                 acc_s.data,
                 scores_sum.data,
             )
@@ -130,7 +130,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
             T.call_extern(
                 "handle",
-                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                "tileops::fp8_partial_row_sum_raw_acc_64x224",
                 acc_s.data,
                 scores_sum.data,
             )
@@ -163,7 +163,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 )
             T.call_extern(
                 "handle",
-                "tl::fp8_partial_row_sum_raw_acc_64x224",
+                "tileops::fp8_partial_row_sum_raw_acc_64x224",
                 acc_s.data,
                 scores_sum.data,
             )
@@ -201,14 +201,14 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         else:
             online_softmax_1 = online_softmax_with_partial_sum
             online_softmax_2 = online_softmax_with_partial_sum
-        pv_begin_accumulate_helper = "tl::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224"
+        pv_begin_accumulate_helper = "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224"
         has_q_tail = seq_len_q % block_m != 0
         has_kv_tail = seq_len_kv % 224 != 0
         use_out_of_place_v = is_causal or has_kv_tail
         v_transform_helper = (
-            "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place"
+            "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place"
             if use_out_of_place_v
-            else "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter"
+            else "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter"
         )
 
         @T.macro
@@ -216,7 +216,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             if not has_q_tail:
                 T.call_extern(
                     "handle",
-                    "tl::fp8_fa3_o_smem_store_global_cute_64x128",
+                    "tileops::fp8_fa3_o_smem_store_global_cute_64x128",
                     o_shared.access_ptr("r"),
                     T.address_of(output[tile_b, row_start, tile_h, 0]),
                     heads * dim,
@@ -225,7 +225,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 if row_start + half_m <= seq_len_q:
                     T.call_extern(
                         "handle",
-                        "tl::fp8_fa3_o_smem_store_global_cute_64x128",
+                        "tileops::fp8_fa3_o_smem_store_global_cute_64x128",
                         o_shared.access_ptr("r"),
                         T.address_of(output[tile_b, row_start, tile_h, 0]),
                         heads * dim,
@@ -233,7 +233,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 elif row_start < seq_len_q:
                     T.call_extern(
                         "handle",
-                        "tl::fp8_fa3_o_smem_store_global_cute_64x128_tail",
+                        "tileops::fp8_fa3_o_smem_store_global_cute_64x128_tail",
                         o_shared.access_ptr("r"),
                         T.address_of(output[tile_b, row_start, tile_h, 0]),
                         heads * dim,
@@ -400,7 +400,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 if gi_vp % 2 == 0:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_tma_load_4d_ptx",
+                                        "tileops::fp8_tma_load_4d_ptx",
                                         v_desc,
                                         v_raw_full[0],
                                         T.access_ptr(v_vt_smem_0, "w"),
@@ -412,7 +412,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_tma_load_4d_ptx",
+                                        "tileops::fp8_tma_load_4d_ptx",
                                         v_desc,
                                         v_raw_full[0],
                                         T.access_ptr(v_vt_smem_1, "w"),
@@ -505,7 +505,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if gi_kc1 % 2 == 0:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                     q_shared_1.access_ptr("r"),
                                     k_smem_0.access_ptr("r"),
                                     acc_s_1.data,
@@ -513,7 +513,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             else:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                     q_shared_1.access_ptr("r"),
                                     k_smem_1.access_ptr("r"),
                                     acc_s_1.data,
@@ -533,7 +533,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if use_softcap:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    "tileops::fp8_apply_softcap_raw_acc_64x224",
                                     acc_s_1.data,
                                     qk_descale * attention_scale / softcap,
                                 )
@@ -590,7 +590,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.sync_threads(barrier_id=6, arrive_count=128)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                 acc_o_1.data,
                                 ss_shared_1.access_ptr("r"),
                             )
@@ -630,7 +630,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
-                            "tl::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
+                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
                             acc_o_1.data,
                             ls_shared_1.access_ptr("r"),
                             4,
@@ -686,7 +686,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if gi_kc2 % 2 == 0:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                     q_shared_2.access_ptr("r"),
                                     k_smem_0.access_ptr("r"),
                                     acc_s_2.data,
@@ -694,7 +694,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             else:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
                                     q_shared_2.access_ptr("r"),
                                     k_smem_1.access_ptr("r"),
                                     acc_s_2.data,
@@ -714,7 +714,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             if use_softcap:
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    "tileops::fp8_apply_softcap_raw_acc_64x224",
                                     acc_s_2.data,
                                     qk_descale * attention_scale / softcap,
                                 )
@@ -769,7 +769,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.sync_threads(barrier_id=7, arrive_count=128)
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                 acc_o_2.data,
                                 ss_shared_2.access_ptr("r"),
                             )
@@ -809,7 +809,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",
-                            "tl::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
+                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
                             acc_o_2.data,
                             ls_shared_2.access_ptr("r"),
                             4,

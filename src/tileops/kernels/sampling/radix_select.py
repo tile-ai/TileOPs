@@ -50,7 +50,7 @@ def merge_counts(hist, total, sum32, q, tx, cluster: int, slabs: int, threads: i
                 for c in T.serial(cluster):
                     sum32[0] = sum32[0] + T.call_extern(
                         "uint32",
-                        "tl::tileops_cluster_load_u32",
+                        "tileops::cluster_load_u32",
                         T.address_of(hist[q * slabs + i * threads + tx]),
                         c,
                     )
