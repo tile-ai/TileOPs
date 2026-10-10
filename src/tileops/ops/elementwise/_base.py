@@ -14,7 +14,7 @@ type is not a construction parameter: an instance serves whichever dtype its cal
 passes, one specialization per element type, built on first use.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -27,7 +27,7 @@ from tileops.kernels.elementwise.call_spec import (
     FusedGatedFwdInterface,
     UnaryElementwiseFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.op_base import Op
 
 # The one name every elementwise op calls its kernel through.
@@ -62,20 +62,14 @@ class UnaryOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> ElementwiseCall:
         """The call record for *input*; a subclass with parameters widens it."""
@@ -103,20 +97,14 @@ class BinaryOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> BroadcastCall:
         """The call record for the two operands; a subclass with parameters widens it."""
@@ -153,20 +141,14 @@ class FusedGatedOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""
@@ -208,16 +190,12 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         *,
         inplace: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             inplace: When True, write the result into ``input`` and return ``input``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.inplace = inplace
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)

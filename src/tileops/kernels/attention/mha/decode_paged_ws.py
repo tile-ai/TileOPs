@@ -439,7 +439,6 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         is_causal: bool = False,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
         max_pages_per_req: Optional[int] = None,
     ) -> None:
@@ -471,7 +470,7 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         )
         self._arrived: dict[int, torch.Tensor] = {}
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     # -- configuration ----------------------------------------------------
 

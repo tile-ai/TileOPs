@@ -1,13 +1,13 @@
 """NanToNum op: replace NaN, +Inf, -Inf with specified values."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.elementwise.call_spec import NanToNumCall, NanToNumFwdInterface
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 
 
@@ -24,8 +24,6 @@ class NanToNumFwdOp(UnaryOp):
         posinf: Optional[float] = None,
         neginf: Optional[float] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -40,15 +38,11 @@ class NanToNumFwdOp(UnaryOp):
                 in the element type of the call.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> NanToNumCall:
         return NanToNumCall(

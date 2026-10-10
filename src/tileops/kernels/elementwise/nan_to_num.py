@@ -36,13 +36,11 @@ class NanToNumFwdKernel(ScalarParamUnaryKernel, NanToNumFwdInterface):
         nan = _cast(call.nan, dtype)
         return call, lambda: cls(call.n_total, dtype, nan, posinf, neginf)
 
-    def __init__(
-        self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None, tune=False
-    ):
+    def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None):
         self.nan_val = clamp_to_dtype_range(nan_val, dtype)
         self.posinf_val = clamp_to_dtype_range(posinf_val, dtype)
         self.neginf_val = clamp_to_dtype_range(neginf_val, dtype)
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
         return f"nan={self.nan_val!r}|posinf={self.posinf_val!r}|neginf={self.neginf_val!r}"

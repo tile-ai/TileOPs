@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -173,8 +173,6 @@ class GQADenseFwdOp(Op):
         out_dtype: Optional[torch.dtype] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         r"""Configure the op. Tensor shapes and input dtype come from each call.
 
@@ -201,8 +199,6 @@ class GQADenseFwdOp(Op):
                 choose and accepts only ``None`` or its own input dtype.
             target: Backend target to serve this op, or ``None`` to decide
                 from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Whether to autotune, applied when a kernel is first built.
 
         Raises:
             ValueError: ``softcap`` is negative.
@@ -218,9 +214,7 @@ class GQADenseFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """Dense attention's contractions are priced on tensor cores."""

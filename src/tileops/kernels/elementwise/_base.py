@@ -132,14 +132,14 @@ class _StrategyKernel(_ElementwiseKernel):
             self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
-    def init_config(self, config=None, tune=False) -> None:
-        Kernel.init_config(self, config, tune)
+    def init_config(self, config=None) -> None:
+        Kernel.init_config(self, config)
         self._compile_program()
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         super().autotune(warmup, rep)
         # ``forward`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
-        # A tune inside construction runs before it exists; ``init_config`` compiles it then.
+        # Before ``init_config`` compiles the first program there is nothing to recompile.
         if hasattr(self, "_compiled_fn"):
             self._compile_program()
 
@@ -167,8 +167,6 @@ class UnaryKernel(_StrategyKernel):
         config: Optional dict with "threads" and "num_per_thread".
             "strategy" is chosen from the dtype: "direct" for bool, else
             "register_copy".
-        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
-            within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -186,7 +184,7 @@ class UnaryKernel(_StrategyKernel):
     def entry_for(cls, call: ElementwiseCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype)
 
-    def __init__(self, N_total, dtype, config=None, tune=False):
+    def __init__(self, N_total, dtype, config=None):
         super().__init__()
         self.N_total = N_total
         self.dtype = dtype
@@ -204,7 +202,7 @@ class UnaryKernel(_StrategyKernel):
         self.output_dtype = self.output_plan.logical_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _get_effective_op_func(self):
         """The op body this kernel builds with, and the name that identifies it."""
@@ -272,8 +270,6 @@ class BinaryKernel(_StrategyKernel):
         config: Optional dict with "threads" and "num_per_thread".
             "strategy" is chosen from the operands: "direct" for bool,
             "register_copy" for same-shape operands, else "explicit_parallel".
-        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
-            within the resolved strategy).
 
     Attributes:
         out_shape: Broadcast output shape.
@@ -300,7 +296,7 @@ class BinaryKernel(_StrategyKernel):
     def entry_for(cls, call: BroadcastCall) -> Entry:
         return call, lambda: cls(call.a_shape, call.b_shape, call.dtype)
 
-    def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
+    def __init__(self, a_shape, b_shape, dtype, config=None):
         super().__init__()
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
@@ -339,7 +335,7 @@ class BinaryKernel(_StrategyKernel):
         self.output_dtype = self.output_plan.logical_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def stage_broadcast(self) -> bool:
@@ -434,8 +430,6 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         dtype: Torch dtype.
         config: Optional dict with "threads" and "num_per_thread".
             "strategy" is "explicit_parallel", the one body these kernels build.
-        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
-            within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -451,7 +445,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     def entry_for(cls, call: FusedGatedCall) -> Entry:
         return call, lambda: cls(call.m, call.n, call.dtype)
 
-    def __init__(self, M, N, dtype, config=None, tune=False):
+    def __init__(self, M, N, dtype, config=None):
         super().__init__()
         self.M = M
         self.N = N
@@ -459,7 +453,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         self.strategy = self.DEFAULT_STRATEGY
         self.output_dtype = dtype
         self.kernel = self._build_kernel(self.strategy)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _get_effective_op_func(self):
         """The op body this kernel builds with, and the name that identifies it."""
@@ -585,7 +579,7 @@ class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
     is baked in at kernel construction time (one specialization per distinct
     ``alpha`` value, matching the lru_cache key shape used by the binary
     builders) so the kernel surface stays scalar-free. It is keyword-only so
-    the positional ``(dtype, config, tune)`` tail stays uniform.
+    the positional ``(dtype, config)`` tail stays uniform.
     """
 
     @staticmethod
@@ -603,12 +597,12 @@ class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
     def entry_for(cls, call: AlphaScaledCall) -> Entry:
         return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, alpha=call.alpha)
 
-    def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, alpha=1):
+    def __init__(self, a_shape, b_shape, dtype, config=None, *, alpha=1):
         # The op's signature admits an integral input only an integral alpha the dtype
         # represents; for uint8 that includes the negative values PyTorch wraps
         # (alpha=-1 -> 255), which the integer path below reproduces.
         self._alpha = alpha
-        super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
+        super().__init__(a_shape, b_shape, dtype, config=config)
 
     def _alpha_op_func(self):
         """Build a binary op_func with ``alpha`` baked in.
@@ -720,7 +714,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     def entry_for(cls, call: ElementwiseCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype)
 
-    def __init__(self, N_total, dtype, config=None, tune=False):
+    def __init__(self, N_total, dtype, config=None):
         super().__init__()
         self.N_total = N_total
         self.dtype = dtype
@@ -733,7 +727,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
             threads=cfg["threads"],
             npt=cfg["num_per_thread"],
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @staticmethod
     def _builder_fn():
@@ -770,14 +764,14 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
             self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
-    def init_config(self, config=None, tune=False):
-        Kernel.init_config(self, config, tune)
+    def init_config(self, config=None):
+        Kernel.init_config(self, config)
         self._compile_program()
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         super().autotune(warmup, rep)
         # ``_run`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
-        # A tune inside construction runs before it exists; ``init_config`` compiles it then.
+        # Before ``init_config`` compiles the first program there is nothing to recompile.
         if hasattr(self, "_compiled_fn"):
             self._compile_program()
 

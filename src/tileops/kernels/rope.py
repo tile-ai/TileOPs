@@ -557,7 +557,6 @@ class _RoPEKernelBase(Kernel):
         batch: Batch size (required for the 2d input layout).
         num_heads: Number of heads (required for the 2d input layout).
         config: Optional config dict.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -584,7 +583,6 @@ class _RoPEKernelBase(Kernel):
         batch: int = 1,
         num_heads: int = 1,
         config: dict | None = None,
-        tune: bool = False,
     ):
         super().__init__()
         if head_dim % 2 != 0:
@@ -600,7 +598,7 @@ class _RoPEKernelBase(Kernel):
         self.num_heads = num_heads
 
         self.kernel = self._build_kernel()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_kernel(self) -> object:
         cfg = self.default_config
@@ -730,7 +728,6 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         dtype: torch.dtype,
         sm_count: int | None = None,
         config: dict | None = None,
-        tune: bool = False,
     ):
         super().__init__()
         if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > head_dim:
@@ -754,7 +751,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         self._status: torch.Tensor | None = None
         self._seen_out_of_range = 0
         self.kernel = self._build_kernel()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_kernel(self) -> object:
         cfg = self.default_config

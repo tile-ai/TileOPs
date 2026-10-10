@@ -874,7 +874,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         is_causal: bool = True,
         cp0: bool = True,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -910,7 +909,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1099,7 +1098,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         is_causal: bool = True,
         cp0: bool = True,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1135,7 +1133,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

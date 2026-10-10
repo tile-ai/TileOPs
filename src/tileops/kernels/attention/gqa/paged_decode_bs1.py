@@ -142,8 +142,6 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
 
     @classmethod
     def refusal(cls, call) -> "str | None":
-        # The page-tile question is asked of this class, so a kernel_map
-        # override answers for its own tiling rather than for the shipped one.
         if call.max_seqlen_q != 1:
             return f"serves one query position, got {call.max_seqlen_q}"
         if call.paged_decode_refusal is not None:
@@ -199,7 +197,6 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
@@ -223,7 +220,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             raise ValueError("page_size must be positive and divide seqlen_kv")
         if self.max_pages_per_req <= 0:
             raise ValueError("max_pages_per_req must be positive")
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

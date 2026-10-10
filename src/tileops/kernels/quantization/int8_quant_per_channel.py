@@ -470,9 +470,7 @@ class _INT8QuantPerRowKernel(Kernel):
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.dtype = call.dtype
         self.rows = call.rows
@@ -485,7 +483,7 @@ class _INT8QuantPerRowKernel(Kernel):
         # Vectors a row's window spans at most.
         self._span = call.cols // vec if call.cols % vec == 0 else -(-(call.cols + vec - 1) // vec)
         self.kernel = self._builder(call.rows, call.cols, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def config_for(self, vpt: int, pair: bool, evict_first: bool, min_blocks: int) -> dict:
         """The launch holding about ``vpt`` vectors per thread."""
@@ -531,7 +529,6 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``vpt``, ``pair``, ``evict_first`` and
             ``min_blocks``.
-        tune: Whether to autotune.
     """
 
     _builder = staticmethod(_int8_quant_per_channel_kernel)
@@ -555,7 +552,6 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``vpt``, ``pair``, ``evict_first``,
             ``min_blocks`` and ``ctas``.
-        tune: Whether to autotune.
     """
 
     _builder = staticmethod(_smooth_quant_kernel)

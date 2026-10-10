@@ -127,7 +127,6 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
             type is fixed at ``torch.float8_e4m3fn`` and the scale at
             ``torch.float32``, so this is the kernel's only free dtype.
         config: Optional dict with "block_m".
-        tune: Whether to autotune.
 
     Raises:
         ValueError: ``block_m`` is not positive, raised where the kernel is built.
@@ -181,7 +180,6 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         index_dim: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -193,7 +191,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         self.kernel = _fp8_quant_kernel(
             batch * seq_len_kv * kv_group, self.index_dim, self.dtype_str, self._threads
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _launch(self) -> tuple[int, int]:
         """Threads a block runs, and rows it owns.

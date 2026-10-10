@@ -251,7 +251,6 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
         count_include_pad: bool,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.n = n
@@ -268,7 +267,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
             divisor_override=None,
         )
         self.kernel = _avg_pool1d_kernel(self.window, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _staging(self) -> _WindowStaging:
         return _WindowStaging(self.window, self.dtype_str)

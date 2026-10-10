@@ -10,12 +10,11 @@ The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
 expert handling belongs to `FusedMoESharedExpertFwdOp`.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import (
     FusedMoEExpertsModular,
     FusedMoEPrepareAndFinalize,
@@ -42,17 +41,37 @@ class FusedMoE(Op):
     }
     execution_parameters: ClassVar[tuple[str, ...]] = ("prepare_finalize", "experts")
 
-    def _build_pipeline(
-        self,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize],
-        experts: Optional[FusedMoEExpertsModular],
-    ) -> None:
-        """Hold the routing sub-op, the prepare/finalize stage and the experts.
+    def _settle_activation(self, experts: Optional[FusedMoEExpertsModular]) -> None:
+        """Take ``activation`` from injected ``experts``, before ``Op.__init__`` checks it.
 
         Raises:
             ValueError: An injected ``experts`` names no ``activation``, or one that
                 conflicts with a non-default ``activation`` passed here.
         """
+        if experts is None:
+            return
+        # A missing attribute on a third-party implementation would otherwise let a
+        # non-matching `activation` pass silently, producing a wrong-activation pipeline.
+        if not hasattr(experts, "activation"):
+            raise ValueError(
+                f"injected experts instance ({type(experts).__name__}) is missing the "
+                "required `.activation` attribute naming the activation it applies"
+            )
+        # The default cannot be told from an omitted argument, so only a conflicting
+        # non-default value is refused.
+        if self.activation != "silu_and_mul" and self.activation != experts.activation:
+            raise ValueError(
+                f"activation conflicts with the injected experts instance: got "
+                f"activation={self.activation!r}, experts.activation={experts.activation!r}"
+            )
+        self.activation = experts.activation
+
+    def _build_pipeline(
+        self,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize],
+        experts: Optional[FusedMoEExpertsModular],
+    ) -> None:
+        """Hold the routing sub-op, the prepare/finalize stage and the experts."""
         self._fused_topk = self.delegate_for(
             "route_select",
             None,
@@ -63,22 +82,6 @@ class FusedMoE(Op):
         self._prepare: FusedMoEPrepareAndFinalize = (
             prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
         )
-        if experts is not None:
-            # A missing attribute on a third-party implementation would otherwise let a
-            # non-matching `activation` pass silently, producing a wrong-activation pipeline.
-            if not hasattr(experts, "activation"):
-                raise ValueError(
-                    f"injected experts instance ({type(experts).__name__}) is missing the "
-                    "required `.activation` attribute naming the activation it applies"
-                )
-            # The default cannot be told from an omitted argument, so only a conflicting
-            # non-default value is refused.
-            if self.activation != "silu_and_mul" and self.activation != experts.activation:
-                raise ValueError(
-                    f"activation conflicts with the injected experts instance: got "
-                    f"activation={self.activation!r}, experts.activation={experts.activation!r}"
-                )
-            self.activation = experts.activation
         self._experts: FusedMoEExpertsModular = self.delegate_for(
             "routed_experts",
             None,
@@ -141,8 +144,6 @@ class FusedMoEFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
     ):
@@ -157,8 +158,6 @@ class FusedMoEFwdOp(FusedMoE):
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
                 The sub-ops it builds are given the same one.
-            kernel_map: Kernel overrides handed to the sub-ops.
-            tune: Whether the sub-ops' kernels tune themselves when built.
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
         """
@@ -167,9 +166,8 @@ class FusedMoEFwdOp(FusedMoE):
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        self._settle_activation(experts)
+        super().__init__(target=target)
         self._build_pipeline(prepare_finalize, experts)
 
     def forward(

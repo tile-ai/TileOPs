@@ -676,7 +676,6 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -697,7 +696,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -786,7 +785,6 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         dilation_l: int = 1,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -818,7 +816,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -984,7 +982,6 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1006,7 +1003,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         if self.groups <= 1:
             raise ValueError(f"{type(self).__name__} requires groups > 1")
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
         self._check_config()
 
     def _build_program(self) -> None:

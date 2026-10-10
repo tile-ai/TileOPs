@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Mapping, Optional
+from typing import ClassVar, List, Mapping
 
 import torch
 
@@ -41,8 +41,6 @@ class EngramDecodeFwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -56,10 +54,7 @@ class EngramDecodeFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.batch = batch
         self.d_mem = d_mem
         self.d = d
@@ -67,8 +62,7 @@ class EngramDecodeFwdOp(Op):
         self.conv_kernel_size = conv_kernel_size
         self.dilation = dilation
         self.eps = eps
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

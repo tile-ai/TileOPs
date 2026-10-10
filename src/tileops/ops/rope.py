@@ -118,8 +118,6 @@ class _RoPEOpBase(Op):
         base: float = 10000.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -129,15 +127,11 @@ class _RoPEOpBase(Op):
             base: Frequency base (default 10000).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.input_layout = input_layout
         self.base = base
-        self.target = target
-        self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _get_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -214,8 +208,6 @@ class RoPEFwdOp(_RoPEOpBase):
         base: float = 10000.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -227,13 +219,11 @@ class RoPEFwdOp(_RoPEOpBase):
             base: Frequency base (default 10000).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         if rope_layout not in ("neox", "interleaved"):
             raise ValueError(f"rope_layout must be 'neox' or 'interleaved', got '{rope_layout}'")
         self.rope_layout = rope_layout
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -262,8 +252,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
         rotary_dim: Optional[int] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -273,16 +261,12 @@ class RoPENeoxPositionIdsFwdOp(Op):
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.max_position = max_position
         self.base = base
         self.rotary_dim = rotary_dim
-        self.target = target
-        self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _get_cos_sin(
         self, rotary_dim: int, dtype: torch.dtype, device: torch.device
@@ -404,8 +388,6 @@ class RoPELlama31FwdOp(_RoPEOpBase):
         original_max_position: int = 8192,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -418,14 +400,12 @@ class RoPELlama31FwdOp(_RoPEOpBase):
             original_max_position: Original max position (default 8192).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.scale_factor = scale_factor
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.original_max_position = original_max_position
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -545,8 +525,6 @@ class YaRNFwdOp(_RoPEOpBase):
         attn_factor: float = 1.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -560,15 +538,13 @@ class YaRNFwdOp(_RoPEOpBase):
             attn_factor: Attention scaling factor (default 1.0).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.scale = scale
         self.original_max_position = original_max_position
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
         self.attn_factor = attn_factor
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -677,8 +653,6 @@ class LongRoPEFwdOp(_RoPEOpBase):
         original_max_position_embeddings: int = 4096,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -692,8 +666,6 @@ class LongRoPEFwdOp(_RoPEOpBase):
                 (default 4096).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
 
         Raises:
             ValueError: A rescale factor is zero or NaN; the frequency divides by it.
@@ -706,7 +678,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device

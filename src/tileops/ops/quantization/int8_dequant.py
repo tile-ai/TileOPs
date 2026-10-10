@@ -1,6 +1,6 @@
 """Symmetric INT8 dequantize operators."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -46,8 +46,6 @@ class INT8DequantPerTensorFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -56,13 +54,9 @@ class INT8DequantPerTensorFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q``.
@@ -103,8 +97,6 @@ class INT8DequantPerChannelFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -113,13 +105,9 @@ class INT8DequantPerChannelFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q`` row by row.
@@ -162,8 +150,6 @@ class INT8DequantPerBlockFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -172,13 +158,9 @@ class INT8DequantPerBlockFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q`` block by block.

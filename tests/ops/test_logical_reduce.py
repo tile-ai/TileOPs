@@ -597,7 +597,8 @@ def test_logical_reduce_autotune() -> None:
 
     m, n, dtype = 4, 40000, torch.bool
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dim=-1, tune=True)
+    op = AnyFwdOp(dim=-1)
+    op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -701,7 +702,9 @@ def test_logical_reduce_edge_axes_fused_dispatch(
         pytest.skip("fused edge logical reduce is selected only on a calibrated board")
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
-    op = op_map[op_kind](dim=[0, 2], tune=tune, target=BUILTIN)
+    op = op_map[op_kind](dim=[0, 2], target=BUILTIN)
+    if tune:
+        op.autotune()
     if dtype == torch.bool:
         x = torch.rand(4, 128, 4096, device="cuda") > 0.999
         if op_kind == "all":

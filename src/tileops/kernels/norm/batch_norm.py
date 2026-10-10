@@ -932,7 +932,6 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         momentum: Running-stat update momentum.
         splits: Untuned pieces a channel is cut into.
         config: Optional ``{"splits", "threads"}``.
-        tune: If True, time the split count and block width together.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -975,7 +974,6 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         momentum: float,
         splits: int,
         config: Optional[dict] = None,
-        tune: bool = False,
         presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
@@ -989,7 +987,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         self.stages = _batch_norm_fwd_train_split_kernel(
             N, C, S, self.dtype_str, eps, momentum, *presence
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1156,7 +1154,6 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         eps: Numerical stability constant.
         momentum: Running-stat update momentum.
         config: Optional ``{"block_l", "threads"}``.
-        tune: If True, autotune the tile config.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -1179,7 +1176,6 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         eps: float = 1e-5,
         momentum: float = 0.1,
         config: Optional[dict] = None,
-        tune: bool = False,
         presence: tuple[bool, bool, bool] = (True, True, True),
         device_index: Optional[int] = None,
     ) -> None:
@@ -1190,7 +1186,7 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         self.kernel = _batch_norm_fwd_train_kernel(
             N, C, S, self.dtype_str, eps, momentum, *presence
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1362,7 +1358,6 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         has_weight: See `_batch_norm_fwd_infer_kernel`.
         has_bias: See `_batch_norm_fwd_infer_kernel`.
         config: Optional tile config dict.
-        tune: If True, autotune tile config.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -1406,7 +1401,6 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         has_weight: bool = True,
         has_bias: bool = True,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1415,7 +1409,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         self.kernel = _batch_norm_fwd_infer_kernel(
             N, C, S, self.dtype_str, eps, input_dtype_params, has_weight, has_bias
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -2160,7 +2154,6 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: grad_out/x/grad_x data type.
         config: Optional ``{"block_l", "threads"}``.
-        tune: If True, autotune the tile config.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -2180,7 +2173,6 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         S: int,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -2188,7 +2180,7 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         self.L = N * S
         self.dtype = dtype
         self.kernel = _batch_norm_bwd_kernel(N, C, S, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

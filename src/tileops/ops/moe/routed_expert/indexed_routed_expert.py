@@ -55,8 +55,6 @@ class IndexedExpertMLPFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         *,
         target: Target = None,
-        kernel_map: dict | None = None,
-        tune: bool = False,
     ) -> None:
         """Fix the scalar applied to the reduced output; the route extents come per call.
 
@@ -64,14 +62,9 @@ class IndexedExpertMLPFwdOp(Op):
             routed_scaling_factor: Scalar applied to the final reduced output.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional dispatch override mapping kernel keys to ``Kernel``
-                subclasses.
-            tune: Whether the kernels tune themselves when built.
         """
         self.routed_scaling_factor = routed_scaling_factor
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def roofline_inputs(self) -> dict[str, int]:
         """The experts this call's routing selected, which its weight reads follow."""

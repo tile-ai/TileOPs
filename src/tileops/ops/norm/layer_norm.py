@@ -1,7 +1,7 @@
 """Layer normalization operator."""
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional, Sequence
+from typing import ClassVar, Mapping, Optional, Sequence
 
 import torch
 
@@ -45,8 +45,6 @@ class LayerNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -55,14 +53,10 @@ class LayerNormFwdOp(Op):
             eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune (default ``False``).
         """
         self.normalized_shape = normalized_shape
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

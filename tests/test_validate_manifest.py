@@ -160,7 +160,7 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
     class ProbeFwdOp:
         compile_op_names = ("tileops::probe_fwd",)
 
-        def __init__(self, dim, *, kernel_map=None, target=None, tune=False, surprise=None):
+        def __init__(self, dim, *, tune=False, surprise=None):
             pass
 
         def forward(self, x=123, y=None):
@@ -175,7 +175,8 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
         },
     }
     assert validator._parity_errors("ProbeFwdOp", entry) == [
-        "[signature] ProbeFwdOp: __init__ must end its policy parameters with *, target=None, kernel_map=None, tune=False",
+        "[signature] ProbeFwdOp: __init__ must end its policy parameters with *, target=None",
+        "[signature] ProbeFwdOp: __init__ parameter 'tune' is not a signature or execution-policy parameter",
         "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
         "[signature] ProbeFwdOp: forward 'x' must have no default",
     ]
@@ -188,7 +189,7 @@ def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch)
         delegate_types = {"first": type("AFwdOp", (), {}), "second": type("BFwdOp", (), {})}
         kernel_types = {"own": object}
 
-        def __init__(self, *, target=None, kernel_map=None, tune=False):
+        def __init__(self, *, target=None):
             pass
 
         def forward(self):
@@ -217,7 +218,7 @@ def test_an_entry_decides_whether_its_class_names_compile_operators(validator, m
     class ProbeFwdOp:
         compile_op_names = ()
 
-        def __init__(self, *, target=None, kernel_map=None, tune=False):
+        def __init__(self, *, target=None):
             pass
 
         def forward(self, x):

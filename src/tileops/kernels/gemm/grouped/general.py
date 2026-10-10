@@ -205,7 +205,6 @@ class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
         transpose_a: bool = False,
         transpose_b: bool = True,
         config: Optional[dict] = None,
-        tune=False,
         *,
         device_index: Optional[int] = None,
     ):
@@ -228,7 +227,7 @@ class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def autotune_supply_prog(self):

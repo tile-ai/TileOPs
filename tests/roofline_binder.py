@@ -42,7 +42,7 @@ def signature_class(op_name: str, entry: dict) -> type:
 def _build_signature_class(op_name: str, entry: dict) -> type:
     def construct(self, **params):
         vars(self).update(params)
-        self.dispatch_kernel(None)
+        Op.__init__(self)
 
     body = {"__init__": construct}
     body["forward"] = lambda self, *args: None

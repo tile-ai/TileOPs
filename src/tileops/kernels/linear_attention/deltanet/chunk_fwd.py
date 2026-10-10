@@ -392,7 +392,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -409,7 +408,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             dim_v,
             getattr(torch, self.dtype_str).itemsize,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

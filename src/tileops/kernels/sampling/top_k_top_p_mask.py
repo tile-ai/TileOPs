@@ -642,7 +642,6 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``cluster`` and ``slots``.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -674,12 +673,12 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
             return f"supports rows of at most {widest} values, and V = {call.vocab}"
         return None
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False):
+    def __init__(self, call: SamplingCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
         self.kernel = _top_k_top_p_mask_kernel(call.batch, call.vocab, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

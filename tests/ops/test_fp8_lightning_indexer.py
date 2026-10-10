@@ -42,7 +42,9 @@ def test_indexer(
     test = FP8LightningIndexerTest(
         batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits
     )
-    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits, tune=tune)
+    op = FP8LightningIndexerFwdOp(clean_logits=clean_logits)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

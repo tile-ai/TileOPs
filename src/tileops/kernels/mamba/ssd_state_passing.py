@@ -278,7 +278,6 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
         has_initial_states: bool = True,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -295,7 +294,7 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
             has_initial_states,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

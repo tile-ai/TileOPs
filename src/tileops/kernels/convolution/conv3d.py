@@ -668,7 +668,6 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
         has_bias: bool = False,
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -733,7 +732,7 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
             pad_h_end=self.pad_h_end,
             pad_w_end=self.pad_w_end,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -843,7 +842,6 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -915,7 +913,7 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
             pad_h_end=self.pad_h_end,
             pad_w_end=self.pad_w_end,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _validate_group_shape(self) -> None:
         if self.groups <= 1:
@@ -1064,7 +1062,6 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
         has_bias: bool = False,
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1124,7 +1121,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
             pad_h_end=self.pad_h_end,
             pad_w_end=self.pad_w_end,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

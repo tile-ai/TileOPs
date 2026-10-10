@@ -1,6 +1,6 @@
 """MoE fused top-k routing operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -39,8 +39,6 @@ class FusedTopKFwdOp(Op):
         renormalize: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -53,15 +51,11 @@ class FusedTopKFwdOp(Op):
             renormalize: If True, normalize top-k weights to sum to 1.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel map override.
-            tune: Whether to autotune the kernel.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

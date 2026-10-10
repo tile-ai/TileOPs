@@ -13,8 +13,6 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormInferFwdInterface,
-    BatchNormTrainFwdInterface,
 )
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
@@ -444,41 +442,6 @@ class _FakeKernel(Kernel):
         self.momentum = call.momentum
 
 
-class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormInferFwdInterface):
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> torch.Tensor:
-        x_cl = _to_cl(x)
-        y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(running_var[:, None] + self.eps)
-        y = y * weight[:, None] + bias[:, None]
-        return _from_cl(y.to(self.dtype), x.shape)
-
-
-class _FakeBatchNormFwdTrainKernel(_FakeKernel, BatchNormTrainFwdInterface):
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x_cl = _to_cl(x)
-        mean = x_cl.float().mean(dim=1)
-        var = x_cl.float().var(dim=1, unbiased=False)
-        rstd = torch.rsqrt(var + self.eps)
-        running_mean.mul_(1 - self.momentum).add_(self.momentum * mean)
-        running_var.mul_(1 - self.momentum).add_(self.momentum * var)
-        y = (x_cl.float() - mean[:, None]) * rstd[:, None]
-        y = y * weight[:, None] + bias[:, None]
-        return _from_cl(y.to(self.dtype), x.shape), mean, rstd
-
-
 class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdInterface):
     def forward(
         self,
@@ -501,17 +464,6 @@ class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdInterface):
             / self.L
         )
         return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
-
-
-# ``kernel_map=`` replaces what runs under a key, never which key is selected: every
-# training key runs the fake, so whichever one a shape selects serves it.
-_FAKE_TRAIN_MAP = {
-    "fwd_train_whole": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_wide": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_split": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-    "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-}
 
 
 def _batch_norm_infer_ref(

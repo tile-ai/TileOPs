@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -37,8 +37,6 @@ class GLAChunkFwdOp(Op):
         scale: float = -1.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -47,14 +45,10 @@ class GLAChunkFwdOp(Op):
             scale: Query scale factor; a non-positive value means ``dim_k ** -0.5``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
         self.scale = scale
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -125,8 +119,6 @@ class GLAChunkBwdOp(Op):
         has_initial_state: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -137,15 +129,11 @@ class GLAChunkBwdOp(Op):
                 an initial state.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
         self.scale = scale
         self.has_initial_state = has_initial_state
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,

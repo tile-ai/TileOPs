@@ -1,4 +1,4 @@
-from typing import Callable, ClassVar, Dict, Mapping, Optional
+from typing import Callable, ClassVar, Mapping, Optional
 
 import torch
 
@@ -69,8 +69,6 @@ class GQAVarlenFwdOp(Op):
         validate_inputs: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Configure packed variable-length GQA semantics.
 
@@ -86,8 +84,6 @@ class GQAVarlenFwdOp(Op):
             rope_layout: ``"neox"`` or ``"interleaved"``.
             validate_inputs: Check cumulative offsets against packed tensors on the CPU.
             target: Backend target, or ``None`` to resolve from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
@@ -99,9 +95,7 @@ class GQAVarlenFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.validate_inputs = validate_inputs
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def compute_roof(self) -> str:
         """Varlen attention's contractions are priced on tensor cores."""

@@ -54,7 +54,9 @@ from workloads.numerics import compare_outputs
     ],
 )
 def test_ssd_chunk_coupling_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
-    op = SSDChunkCouplingFwdOp(chunk_len, tune=tune)
+    op = SSDChunkCouplingFwdOp(chunk_len)
+    if tune:
+        op.autotune()
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
@@ -103,8 +105,9 @@ def test_ssd_chunk_cumsum_fwd(
         chunk_len=chunk_len,
         dt_softplus=dt_softplus,
         out_dtype=dtype,
-        tune=tune,
     )
+    if tune:
+        op.autotune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -133,7 +136,9 @@ def test_ssd_chunk_scan_fwd(
     test = SSDChunkScanFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype
     )
-    op = SSDChunkScanFwdOp(tune=tune)
+    op = SSDChunkScanFwdOp()
+    if tune:
+        op.autotune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -149,7 +154,9 @@ def test_ssd_chunk_state_fwd(
     test = SSDChunkStateFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx
     )
-    op = SSDChunkStateFwdOp(tune=tune)
+    op = SSDChunkStateFwdOp()
+    if tune:
+        op.autotune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -201,7 +208,9 @@ class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
 @SSDStatePassingFwdFixture
 def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune):
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp(tune=tune)
+    op = SSDStatePassingFwdOp()
+    if tune:
+        op.autotune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -213,7 +222,9 @@ class SSDDecodeTest(SSDDecodeWorkload, TestBase):
 @SSDDecodeFixture
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    op = SSDRecurrentFwdOp(tune=tune)
+    op = SSDRecurrentFwdOp()
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs(), runs=lambda *args: ssd_decode_result(op, *args))
 
 

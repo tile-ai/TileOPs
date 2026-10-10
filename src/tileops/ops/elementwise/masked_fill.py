@@ -1,6 +1,6 @@
 """MaskedFill ops (Tensor-value and scalar-value variants)."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -15,7 +15,7 @@ from tileops.kernels.elementwise.call_spec import (
     MaskedFillFwdInterface,
     MaskedFillTensorValueFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.ops.op_base import Op
 
@@ -36,21 +36,14 @@ class MaskedFillTensorFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``kernel_types``.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -87,8 +80,6 @@ class MaskedFillScalarFwdOp(Op):
         *,
         value: bool | int | float = 0.0,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -102,14 +93,9 @@ class MaskedFillScalarFwdOp(Op):
                 via two's complement.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``kernel_types``.
-            tune: Whether to autotune.
         """
         self.value = value
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``mask``."""

@@ -856,8 +856,11 @@ def test_binary_ops_under_tuning(tune: bool) -> None:
     ):
         a = torch.randn(4096, device=run_device(), dtype=torch.float16)
         b = torch.randn(4096, device=run_device(), dtype=torch.float16)
+        op = op_cls()
+        if tune:
+            op.autotune()
         compare_outputs(
-            op_cls(tune=tune)(a, b),
+            op(a, b),
             ref_fn(a, b),
             ElementwiseWorkload(op_cls.__name__, (a, b)).verification(a, b),
         )

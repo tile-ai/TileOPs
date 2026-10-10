@@ -691,7 +691,6 @@ class BmmKernel(Kernel, BmmFwdInterface):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -704,7 +703,7 @@ class BmmKernel(Kernel, BmmFwdInterface):
         self.k = k
         self.dtype = dtype
         self.kernel = _bmm_kernel(batch, m, n, k, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -888,7 +887,6 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -904,7 +902,7 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         self.out_dtype = out_dtype
         self.sm_count = get_sm_count(self.device_index)
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_program(self) -> None:
         """Compile this class's program into ``self.kernel``."""
@@ -1199,7 +1197,6 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
         cols: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1211,13 +1208,12 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
             cols: Extent of the source's third axis.
             dtype: Element dtype; ``torch.float8_e4m3fn`` is what the FP8 BMM passes.
             config: Optional tile override.
-            tune: Whether to autotune the tile.
             device_index: CUDA device the kernel is built for.
         """
         super().__init__(device_index=device_index)
         self.dtype = dtype
         self.kernel = _bmm_fp8_transpose_kernel(batch, rows, cols, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -955,8 +955,6 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: Operand dtype; ``torch.float8_e4m3fn``.
         out_dtype: Output dtype; ``torch.bfloat16``.
         config: Kernel config override; unset keys take their default.
-        tune: Accepted for the common kernel interface; no ``autotune_configs``
-            are declared, so the schedule comes from ``default_config``.
         device_index: The device the kernel is built for.
         shared_epilogue: Whether to stage the tile through shared memory and store
             it with TMA. ``None`` takes the calibrated choice for this shape.
@@ -1053,7 +1051,6 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
         shared_epilogue: Optional[bool] = None,
     ) -> None:
@@ -1092,7 +1089,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
             sm_count=self.sm_count,
             shared_epilogue=self.shared_epilogue,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def out_dtype_str(self) -> str:
@@ -1145,8 +1142,6 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: Operand dtype; ``torch.float8_e4m3fn``.
         out_dtype: Output dtype; ``torch.bfloat16``.
         config: Kernel config override; unset keys take their default.
-        tune: Accepted for the common kernel interface; no ``autotune_configs``
-            are declared, so the schedule comes from ``default_config``.
         device_index: The device the kernel is built for.
     """
 
@@ -1189,7 +1184,6 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1211,7 +1205,7 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
             )
         self.sm_count = int(self._calibrated["sm_count"])
         self.kernel = _gemm_fp8_1d2d_wave_kernel(m, n, k, sm_count=self.sm_count)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

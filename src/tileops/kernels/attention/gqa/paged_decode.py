@@ -572,7 +572,6 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
@@ -620,7 +619,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         # autotune targets the split kernel
         self.kernel = _gqa_decode_split_paged_kernel(*self._builder_args)
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self):
         """Create a supply_prog that handles int32 tensor parameters for paged attention."""

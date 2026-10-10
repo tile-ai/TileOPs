@@ -321,7 +321,6 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         has_weight: Whether ``weight`` is passed.
         has_bias: Whether ``bias`` is passed.
         config: Optional tile config dict.
-        tune: If True, autotune tile config.
     """
 
     # Samples one block normalizes together, at most.
@@ -372,7 +371,6 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         has_weight: bool,
         has_bias: bool,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         self.N = N
         self.C = C
@@ -380,7 +378,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         self.has_weight = has_weight
         self.has_bias = has_bias
         self.block_m = self._block_m(N, D, dtype)
-        super().__init__(D, eps, dtype, config=config, tune=tune)
+        super().__init__(D, eps, dtype, config=config)
 
     @property
     def default_config(self) -> dict:

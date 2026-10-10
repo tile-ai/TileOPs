@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -43,8 +43,6 @@ class TopKSelectFwdOp(Op):
         topk: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -52,15 +50,11 @@ class TopKSelectFwdOp(Op):
             topk: Manifest ``params.topk``, ``int``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.topk = topk
         self.out_dtype = torch.int32
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor

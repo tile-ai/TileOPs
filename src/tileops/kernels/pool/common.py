@@ -237,7 +237,6 @@ class AdaptivePool2dKernelBase(Kernel):
         out_w: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16}:
@@ -250,7 +249,7 @@ class AdaptivePool2dKernelBase(Kernel):
         self.out_w = out_w
         self.dtype = dtype
         self.kernel = type(self)._build(n, c_in, h_in, w_in, out_h, out_w, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

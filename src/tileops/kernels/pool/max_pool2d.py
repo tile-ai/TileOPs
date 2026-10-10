@@ -276,7 +276,6 @@ class _MaxPool2dKernelBase(Kernel):
         ceil_mode: bool,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
@@ -315,7 +314,7 @@ class _MaxPool2dKernelBase(Kernel):
             ceil_mode,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -65,7 +65,9 @@ def test_topk_select_op(
     in_dtype = STR_TO_DTYPE[in_dtype_str]
     out_dtype = STR_TO_DTYPE[out_dtype_str]
     test = TopKSelectTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
-    op = TopKSelectFwdOp(topk=topk, tune=tune)
+    op = TopKSelectFwdOp(topk=topk)
+    if tune:
+        op.autotune()
     inputs = test.gen_inputs()
 
     test.check(op, *inputs)

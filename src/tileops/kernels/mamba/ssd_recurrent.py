@@ -264,7 +264,6 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         n_groups: int = 1,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -281,7 +280,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
             n_groups,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
         cfg = self.config
         bp, bn, threads = cfg.get("block_p"), cfg.get("block_n"), cfg.get("threads")
         _bn_is_pow2 = bn is not None and bn > 0 and (bn & (bn - 1)) == 0

@@ -131,9 +131,9 @@ class Kernel(ABC):
     def entry_for(cls, call: Any) -> Entry:
         """How to build this class for *call*, and what makes two builds one entry.
 
-        The identity is the construction arguments other than ``tune``, so two calls
-        that would compile the same kernel share an entry and none reuses one compiled
-        for different arguments. The thunk runs only on a cache miss.
+        The identity is the construction arguments, so two calls that would compile the
+        same kernel share an entry and none reuses one compiled for different arguments.
+        The thunk runs only on a cache miss.
 
         The default is the identity mapping: this class is constructed from the call
         record itself. A class with a narrower constructor overrides it and states
@@ -192,34 +192,17 @@ class Kernel(ABC):
                     "Another target's backend serves other devices."
                 )
 
-    def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
-        if tune and self.autotune_configs is None:
-            import warnings
+    def init_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """Set ``self.config``: *config*'s value for each key it states, the default for the rest.
 
-            warnings.warn(
-                f"{self.__class__.__name__} does not define autotune_configs; "
-                "falling back to the provided config or default_config.",
-                stacklevel=2,
-            )
-            tune = False
-
-        if tune:
-            if config is not None:
-                import warnings
-
-                warnings.warn(
-                    "Both 'config' and 'tune' are set. "
-                    "'config' will be ignored in favor of autotuning.",
-                    stacklevel=2,
-                )
-            self._tune_requested = True
-            self.autotune()
+        Tuning is not a construction step: ``request_tune()`` puts the kernel in tuned mode
+        once it exists.
+        """
+        if config is not None:
+            for k, v in self.default_config.items():
+                self.config[k] = config[k] if config.get(k) is not None else v
         else:
-            if config is not None:
-                for k, v in self.default_config.items():
-                    self.config[k] = config[k] if config.get(k) is not None else v
-            else:
-                self.config = self.default_config
+            self.config = self.default_config
 
         print(f"{self.__class__.__name__} initialized with config: {self.config}")
 

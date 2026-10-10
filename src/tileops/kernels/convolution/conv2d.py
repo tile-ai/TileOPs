@@ -724,8 +724,6 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
 
     @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
-        # The tile question is asked of this class, so a kernel_map override answers
-        # for its own tiling rather than for the shipped one.
         if call.groups != 1:
             return "serves ungrouped convolution"
         if not (
@@ -780,7 +778,6 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -814,7 +811,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @staticmethod
     def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:
@@ -936,7 +933,6 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
         has_bias: bool = False,
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -981,7 +977,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
             pad_h_end=self.pad_h_end,
             pad_w_end=self.pad_w_end,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1099,7 +1095,6 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1135,7 +1130,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
                 f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
             )
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_program(self) -> None:
         """Compile the grouped implicit GEMM over this call's group shape."""
@@ -1315,7 +1310,6 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1345,7 +1339,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

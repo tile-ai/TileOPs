@@ -250,11 +250,11 @@ def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
     assert list(op.built_kernels("instance_norm").values()) == [shared, shared]
 
 
-@pytest.mark.parametrize("ask", ["constructor", "autotune_first", "autotune_after"])
+@pytest.mark.parametrize("ask", ["autotune_first", "autotune_after"])
 def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
-    """``tune`` does not cross ``build_kernel``, so each way of asking says so."""
+    """``tune`` does not cross ``build_kernel``, so asking before or after the build says so."""
     _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
-    op = InstanceNormFwdOp(tune=ask == "constructor")
+    op = InstanceNormFwdOp()
     if ask == "autotune_first":
         op.autotune()  # nothing is settled yet; the first build is where it is dropped
 
@@ -334,7 +334,8 @@ def test_a_replacement_kernel_runs_on_the_devices_it_declares():
             return torch.full_like(x, 7)
 
     x, weight = _inputs()
-    op = RMSNormFwdOp(NORMALIZED_SHAPE, kernel_map={"rms_norm": CpuRMSNorm}, target=BUILTIN)
+    registry.register_implementation("RMSNormFwdOp", "cpu_rms_norm", CpuRMSNorm)
+    op = RMSNormFwdOp(NORMALIZED_SHAPE, target=BUILTIN)
     assert torch.equal(op(x, weight), torch.full_like(x, 7))
 
 

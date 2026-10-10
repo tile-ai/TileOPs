@@ -277,7 +277,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             weights, scales and logits are fixed at ``torch.float32``.
         config: Optional dict with "block_N", "num_stages", "threads" and
             "block_Q".
-        tune: Whether to autotune.
 
     Raises:
         ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
@@ -373,7 +372,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         clean_logits=True,
         dtype: torch.dtype = torch.float8_e4m3fn,
         config: Optional[dict] = None,
-        tune=False,
     ):
         super().__init__()
         if dtype != torch.float8_e4m3fn:
@@ -400,7 +398,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.clean_logits,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

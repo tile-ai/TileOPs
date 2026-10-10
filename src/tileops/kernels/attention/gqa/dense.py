@@ -670,7 +670,6 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -703,7 +702,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             rope_layout=rope_layout,
             dtype=self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -962,7 +961,6 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -1010,7 +1008,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -55,8 +55,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
         is_causal: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -69,11 +67,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
                         (True for causal, False for non-causal).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map (Optional[Dict[str, Kernel]], default=None):
-                        Optional mapping for custom kernels.
-            tune (bool, default=False): Whether to enable kernel tuning.
         """
-        self.target = target
         self.dim_tail = dim_tail
         self.stride_kv = stride_kv
         self.sm_scale = sm_scale
@@ -83,8 +77,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
         self.q_start_index_s = q_start_index_s
 
         self._cp0 = cp0
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _dsa_decode_call(
         self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor

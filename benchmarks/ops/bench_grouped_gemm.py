@@ -75,7 +75,8 @@ def test_grouped_gemm_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
 
-    op = GroupedGemmFwdOp(**case.arguments, tune=True)
+    op = GroupedGemmFwdOp(**case.arguments)
+    op.autotune()
 
     implementations = {
         "torch-ref": case.reference,

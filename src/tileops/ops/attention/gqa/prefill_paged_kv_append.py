@@ -78,8 +78,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         *,
         validate_inputs: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -101,8 +99,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
                 Synchronizes the device; enable only outside CUDA Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.validate_inputs = validate_inputs
         self.max_seqlen_q = max_seqlen_q
@@ -120,9 +116,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             tuple[torch.device, torch.dtype, int], tuple[torch.Tensor, torch.Tensor]
         ] = {}
 
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _resolved_cache_dtype(self, dtype: torch.dtype) -> torch.dtype:
         """Cache element type for an attention element type of *dtype*."""

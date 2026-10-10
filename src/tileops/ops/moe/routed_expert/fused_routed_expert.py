@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 from torch import Tensor
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
 from tileops.ops.moe.contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from tileops.ops.moe.routed_expert.indexed_routed_expert import IndexedExpertMLPFwdOp
@@ -45,8 +44,6 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -56,14 +53,10 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
                 'gelu_and_mul'.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides handed to the sub-ops.
-            tune: Whether the sub-ops' kernels tune themselves when built.
         """
         self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         self._expert_mlp = self.delegate_for(
             "expert_mlp", None, layout=_TIGHT, activation=activation
         )

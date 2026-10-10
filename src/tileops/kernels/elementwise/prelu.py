@@ -62,10 +62,10 @@ class PreluFwdKernel(MultiInputElementwiseKernel, PreluFwdInterface):
     def entry_for(cls, call: PreluCall) -> Entry:
         return call, lambda: cls(call.n_total, call.num_channels, call.inner_size, call.dtype)
 
-    def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
+    def __init__(self, N_total, C, inner_size, dtype, config=None):
         self.C = C
         self.inner_size = inner_size
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def _builder_fn():

@@ -85,9 +85,9 @@ def test_dsa_decode_decode(
         sm_scale=sm_scale,
         dtype=dtype,
     )
-    op = DSADecodeWithKVCacheFwdOp(
-        dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
-    )
+    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale)
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

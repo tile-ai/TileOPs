@@ -203,13 +203,19 @@ _TUNE = [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=
 @pytest.mark.parametrize("tune", _TUNE)
 def test_ada_layer_norm_under_tuning(tune: bool) -> None:
     test = AdaLayerNormTest(17, 514, torch.float16)
-    test.check(AdaLayerNormFwdOp(eps=test.eps, tune=tune), *test.gen_inputs())
+    op = AdaLayerNormFwdOp(eps=test.eps)
+    if tune:
+        op.autotune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize("tune", _TUNE)
 def test_ada_layer_norm_zero_under_tuning(tune: bool) -> None:
     test = AdaLayerNormZeroTest(17, 514, torch.float16)
-    test.check(AdaLayerNormZeroFwdOp(eps=test.eps, tune=tune), *test.gen_inputs())
+    op = AdaLayerNormZeroFwdOp(eps=test.eps)
+    if tune:
+        op.autotune()
+    test.check(op, *test.gen_inputs())
 
 
 def _misaligned(t: torch.Tensor) -> torch.Tensor:

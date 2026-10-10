@@ -866,7 +866,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -920,7 +919,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             get_sm_version(device_index) >= 90,
         )
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def kernel(self):

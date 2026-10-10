@@ -65,7 +65,9 @@ class LayerNormFixture(FixtureBase):
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
+    op = LayerNormFwdOp(normalized_shape=(n,))
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 
@@ -288,7 +290,9 @@ class FusedAddLayerNormFixture(FixtureBase):
 @FusedAddLayerNormFixture
 def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
-    op = FusedAddLayerNormFwdOp(tune=tune)
+    op = FusedAddLayerNormFwdOp()
+    if tune:
+        op.autotune()
     test.check(op, *test.gen_inputs())
 
 

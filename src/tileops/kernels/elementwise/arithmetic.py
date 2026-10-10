@@ -446,7 +446,7 @@ class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
 
     Args:
         weight: Scalar interpolation weight (default 0.5). Keyword-only so the
-            positional ``(dtype, config, tune)`` tail stays uniform.
+            positional ``(dtype, config)`` tail stays uniform.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -462,9 +462,9 @@ class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
     def entry_for(cls, call: LerpCall) -> Entry:
         return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, weight=call.weight)
 
-    def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, weight=0.5):
+    def __init__(self, a_shape, b_shape, dtype, config=None, *, weight=0.5):
         self._weight = weight
-        super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
+        super().__init__(a_shape, b_shape, dtype, config=config)
 
     def _get_effective_op_func(self):
         weight = self._weight
