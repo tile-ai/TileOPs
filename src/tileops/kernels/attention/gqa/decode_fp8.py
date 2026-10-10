@@ -25,6 +25,7 @@ def _gqa_dense_fp8_decode_ctx_kernel(
     out_dtype: str,
     sm_scale: float,
     softcap: float,
+    has_sinks: bool = False,
 ):
     """Build a GQA-head-packed, context-split FP8 decode program."""
     q_per_kv = heads // heads_kv
@@ -193,7 +194,7 @@ def _gqa_dense_fp8_decode_ctx_kernel(
                         )
 
         @T.macro
-        def combine(glse, output_partial, output):
+        def combine(glse, output_partial, output, sinks):
             with T.Kernel(heads, batch, threads=128) as (hq, bid):
                 lse_vec = T.alloc_fragment([ctx_splits], accum_dtype)
                 lse_max = T.alloc_fragment([1], accum_dtype)
@@ -204,6 +205,9 @@ def _gqa_dense_fp8_decode_ctx_kernel(
                 T.fill(lse_max, -T.infinity(accum_dtype))
                 T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
                 lse_sum[0] = 0.0
+                if has_sinks:
+                    lse_max[0] = T.max(lse_max[0], sinks[hq] * LOG2E)
+                    lse_sum[0] = T.exp2(sinks[hq] * LOG2E - lse_max[0])
                 for sid in T.serial(ctx_splits):
                     lse_sum[0] += T.exp2(glse[bid, hq, sid] - lse_max[0])
                 lse_sum[0] = T.log2(lse_sum[0]) + lse_max[0]
@@ -225,10 +229,13 @@ def _gqa_dense_fp8_decode_ctx_kernel(
             v_descale: T.Tensor(scale_shape, accum_dtype),
             glse: T.Tensor(lse_shape, accum_dtype),
             output_partial: T.Tensor(partial_shape, accum_dtype),
+            sinks: T.Tensor(
+                [heads] if has_sinks else q_shape, "float32" if has_sinks else fp8_dtype
+            ),
             output: T.Tensor(output_shape, out_dtype),
         ):
             split(q, k, v, q_descale, k_descale, v_descale, glse, output_partial)
-            combine(glse, output_partial, output)
+            combine(glse, output_partial, output, sinks)
 
         return main
 
@@ -279,6 +286,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             device_index=call.device.index if call.device is not None else None,
         )
         return tuple(args.values()), lambda: cls(**args)
@@ -295,11 +303,13 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         config: Optional[dict] = None,
         tune: bool = False,
         *,
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
         **unused,
     ) -> None:
         del unused
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -337,6 +347,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_cuda(q=q, k=k, v=v, q_scale=q_scale, k_scale=k_scale, v_scale=v_scale)
         if rope_cos is not None or rope_sin is not None:
@@ -369,6 +380,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             self.dtype_str,
             self.sm_scale,
             self.softcap,
+            self.has_sinks,
         )(c["block_m"], c["block_n"], ctx_splits, c["threads"])(
-            q, k, v, q_scale, k_scale, v_scale, glse, output_partial
+            q, k, v, q_scale, k_scale, v_scale, glse, output_partial, sinks if self.has_sinks else q
         )

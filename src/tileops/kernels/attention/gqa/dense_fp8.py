@@ -17,7 +17,10 @@ from tileops.kernels.attention.fp8_fa3_layouts import (
     fa3_qk_row_fragment,
 )
 from tileops.kernels.attention.gqa.dense import make_dense_qk_rope_preprocessor
-from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
+from tileops.kernels.attention.online_softmax import (
+    make_online_softmax_with_score_scale,
+    make_sink_scale,
+)
 from tileops.kernels.constants import (
     LOG2E,
     TMA_DTYPE_UINT8,
@@ -46,6 +49,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     softcap: float,
     write_lse: bool,
     num_sms: int,
+    has_sinks: bool = False,
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -62,10 +66,14 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     capped_softmax_scale = softcap * LOG2E
     lse_scale = capped_softmax_scale if use_softcap else scale
     defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
+    # Hopper FP8 tensor-core accumulation loses low bits over long reductions.
+    # Reuse the consumed score registers for one PV tile, then promote with
+    # FP32 additions. This avoids another 64 accumulator registers per thread.
+    promote_pv = (seq_len_kv + 223) // 224 >= 16
     causal_offset = seq_len_kv - seq_len_q
 
     @tilelang.jit(
-        out_idx=[6, 7],
+        out_idx=[7, 8],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -78,6 +86,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         ],
     )
     def func():
+        sink_scale = make_sink_scale(lse_scale, half_m)
+
         @T.macro
         def online_softmax_with_partial_sum(
             acc_s,
@@ -248,6 +258,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             q_descale: T.Tensor(descale_shape, accum_dtype),
             k_descale: T.Tensor(descale_shape, accum_dtype),
             v_descale: T.Tensor(descale_shape, accum_dtype),
+            sinks: T.Tensor(
+                [heads] if has_sinks else q_shape, "float32" if has_sinks else fp8_dtype
+            ),
             output: T.Tensor(q_shape, out_dtype),
             lse: T.Tensor([batch, heads, seq_len_q], accum_dtype),
         ) -> None:
@@ -604,7 +617,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_1.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    acc_o_1.data,
+                                    acc_s_1.data if promote_pv else acc_o_1.data,
+                                    promote_pv,
                                 )
                             else:
                                 T.call_extern(
@@ -612,7 +626,17 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_1.data,
                                     v_tc_smem_1.access_ptr("r"),
+                                    acc_s_1.data if promote_pv else acc_o_1.data,
+                                    promote_pv,
+                                )
+                            if promote_pv:
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(acc_s_1, num_regs=64)
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
                                     acc_o_1.data,
+                                    acc_s_1.data,
                                 )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_1, num_regs=64)
@@ -627,6 +651,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for i in T.Parallel(half_m):
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
+                        if has_sinks:
+                            sink_scale(ls_1, sm_1, sinks, ss_1, tile_h, 0, half_m)
+                            T.copy(ss_1, ss_shared_1)
+                            T.sync_threads(barrier_id=3, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                acc_o_1.data,
+                                ss_shared_1.access_ptr("r"),
+                            )
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
@@ -643,6 +677,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         if write_lse:
                             for i in T.Parallel(half_m):
                                 ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * lse_scale
+                                if has_sinks:
+                                    sink_logit = sinks[tile_h] * LOG2E
+                                    maximum = T.max(ls_1[i], sink_logit)
+                                    ls_1[i] = maximum + T.log2(
+                                        T.exp2(ls_1[i] - maximum) + T.exp2(sink_logit - maximum)
+                                    )
                             T.copy(ls_1, lse[tile_b, tile_h, row_base : row_base + half_m])
                         if groups == 8 and defer_row_sum:
                             T.sync_threads(barrier_id=5, arrive_count=384)
@@ -783,7 +823,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_2.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    acc_o_2.data,
+                                    acc_s_2.data if promote_pv else acc_o_2.data,
+                                    promote_pv,
                                 )
                             else:
                                 T.call_extern(
@@ -791,7 +832,17 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_2.data,
                                     v_tc_smem_1.access_ptr("r"),
+                                    acc_s_2.data if promote_pv else acc_o_2.data,
+                                    promote_pv,
+                                )
+                            if promote_pv:
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(acc_s_2, num_regs=64)
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
                                     acc_o_2.data,
+                                    acc_s_2.data,
                                 )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_2, num_regs=64)
@@ -806,6 +857,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for i in T.Parallel(half_m):
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
+                        if has_sinks:
+                            sink_scale(ls_2, sm_2, sinks, ss_2, tile_h, 0, half_m)
+                            T.copy(ss_2, ss_shared_2)
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                acc_o_2.data,
+                                ss_shared_2.access_ptr("r"),
+                            )
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",
@@ -822,6 +883,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         if write_lse:
                             for i in T.Parallel(half_m):
                                 ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * lse_scale
+                                if has_sinks:
+                                    sink_logit = sinks[tile_h] * LOG2E
+                                    maximum = T.max(ls_2[i], sink_logit)
+                                    ls_2[i] = maximum + T.log2(
+                                        T.exp2(ls_2[i] - maximum) + T.exp2(sink_logit - maximum)
+                                    )
                             T.copy(
                                 ls_2,
                                 lse[tile_b, tile_h, row_base + half_m : row_base + block_m],
@@ -925,6 +992,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -951,9 +1019,11 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1014,6 +1084,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_cuda(
             q=q,
@@ -1059,4 +1130,5 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             self.softcap,
             False,
             grid_size,
-        )()(q, k, v, q_scale, k_scale, v_scale)[0]
+            self.has_sinks,
+        )()(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)[0]

@@ -67,6 +67,7 @@ class GQADenseFwdOp(Op):
     | Attention without the causal mask | ``is_causal=False`` |
     | Sliding-window visibility | ``window_size_left``, ``window_size_right`` |
     | A custom score scale | ``sm_scale`` |
+    | A zero-value attention sink per query head | ``sinks`` on the call |
     | A logit softcap | ``softcap`` |
     | Rectangular attention, $S_q \ne S_{kv}$ | Nothing to set; read from the tensor shapes |
     | RoPE fused into $Q$ and $K$ | ``pos_encoding_mode="rope"``, plus ``rope_cos`` and ``rope_sin`` on the call |
@@ -138,15 +139,21 @@ class GQADenseFwdOp(Op):
         \end{cases}
     $$
 
+    With ``sinks``, append its per-query-head logit to the masked scores
+    before softmax and discard that column afterward. It contributes only
+    to the denominator, is always visible, and is neither scaled nor capped.
+
     **7. Output.** Normalizing over the KV axis and reducing the values gives
 
     $$
     \begin{aligned}
     P_{h,i,j} &=
-        \operatorname{softmax}_{j}(L_{h,i,j}), \\
+        \frac{\exp(L_{h,i,j})}{\sigma_h + \sum_k \exp(L_{h,i,k})}, \\
     O_{i,h} &= \sum_j P_{h,i,j}\,V'_{j,r(h)}.
     \end{aligned}
     $$
+
+    Here $\sigma_h=\exp(\mathrm{sinks}_h)$ when provided, and $0$ otherwise.
     """
 
     compile_boundary = True
@@ -229,7 +236,7 @@ class GQADenseFwdOp(Op):
 
     def dense_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """State what one contiguous call is, for selection to filter against."""
-        q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin = inputs
+        q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
@@ -251,6 +258,7 @@ class GQADenseFwdOp(Op):
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
             is_fp8=is_fp8,
+            has_sinks=sinks is not None,
             fuse_rope=rope_on,
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim) if rope_on else 0,
@@ -268,6 +276,7 @@ class GQADenseFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         r"""Run dense GQA attention over one set of $Q$/$K$/$V$ tensors.
 
@@ -297,6 +306,8 @@ class GQADenseFwdOp(Op):
                 invalid otherwise.
             rope_sin: RoPE sine table, same layout, shape, and dtype as
                 ``rope_cos``.
+            sinks: Optional ``float32`` logits, shape ``[H]``, shared across
+                batches and query positions. Each contributes no value.
 
         Returns:
             Attention output, $[B \times S_q \times H \times D]$, laid out
@@ -308,7 +319,7 @@ class GQADenseFwdOp(Op):
                 combinations violate the contract above, or no in-tree kernel
                 serves the call; the message names the limit each kernel refused.
         """
-        return self._call_boundary(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+        return self._call_boundary(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin, sinks)
 
     def _eager_forward(
         self,
@@ -320,6 +331,7 @@ class GQADenseFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator.
 
@@ -327,6 +339,6 @@ class GQADenseFwdOp(Op):
         """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
-            for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
+            for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin, sinks)
         )
         return self.kernel_for("gqa_dense", self.dense_call(inputs))(*inputs)

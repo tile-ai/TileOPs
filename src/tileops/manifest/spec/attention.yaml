@@ -34,6 +34,8 @@ GQADenseFwdOp:
       # RoPE tables indexed by KV position and rotated pair.
       rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      # One zero-value logit per query head, added after masking and softcap.
+      sinks: {dtype: float32, shape: "[H]", optional: true}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[B, S_q, H, D]"}
     let:
@@ -70,6 +72,12 @@ GQADenseFwdOp:
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
   - {B: 1, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-prefill}
   - {B: 8, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-b8}
+  - {B: 1, S_q: 2048, S_kv: 2048, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-2k}
+  - {B: 1, S_q: 4096, S_kv: 4096, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-4k}
+  - {B: 1, S_q: 8192, S_kv: 8192, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-120b-sinks-full}
+  - {B: 1, S_q: 8192, S_kv: 8192, H: 64, H_kv: 8, D: 64, window_size_left: 127, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sinks-window-128}
+  - {B: 64, S_q: 1, S_kv: 8192, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-decode}
+  - {B: 1, S_q: 255, S_kv: 1793, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled-sinks}
   roofline:
     # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
     func: "tileops.perf.formulas.gqa_dense_fwd_roofline"

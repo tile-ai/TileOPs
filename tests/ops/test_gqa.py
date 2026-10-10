@@ -278,7 +278,9 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             1,
             (8, 2),
             torch.float16,
-            (271,),
+            # The split path must rotate a tail tile without putting a
+            # consumer-group barrier inside the valid-row predicate.
+            (271, 1025),
             "neox",
             64,
             GQADecodeBs1Kernel,
