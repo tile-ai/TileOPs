@@ -131,7 +131,7 @@ run as usual:
 from tileops.trace import trace
 
 trace.enable()  # (1)!
-c = op.forward(a, b)  # (2)!
+c = op(a, b)  # (2)!
 ```
 
 1. [`trace.enable(output="debug")`](../api/trace.md#tileops.trace.api._Trace.enable) — turn

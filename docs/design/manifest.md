@@ -298,7 +298,7 @@ The checks:
 1. `let` dependencies are acyclic.
 1. Every expression is in the language and every primitive is built in.
 1. Every generator result, on every workload row, unifies with its declaration; every `requires` meets its contract on every discriminant point.
-1. Every expression of a class declaring a compile boundary, which is its claim of `fullgraph=True` support, is evaluable on SymInt. The class's declaration is the source, never the test registry.
+1. An entry with a call-time tensor input and no composition gives its class a compile boundary, and such an op must pass a cold `fullgraph=True` compile. An implemented class names compile-boundary operators in `compile_op_names` exactly when its entry calls for a boundary. The entry is the source, never the test registry.
 1. Every workload row instantiates.
 1. For every effect branch, the operator schema, aliases and roofline read/write counts agree.
 
@@ -372,11 +372,10 @@ The checks:
 
 **<a id="t-policy"></a>Table 7** Execution-policy parameters (owned by code)
 
-| No. | Class                                | Parameters                     |
-| --- | ------------------------------------ | ------------------------------ |
-| 1   | every op                             | `kernel_map`, `tune`, `target` |
-| 2   | injected implementation objects      | named by the op's code         |
-| 3   | configuration passed only to kernels | reserved name `config`         |
+| No. | Class                           | Parameters                                      |
+| --- | ------------------------------- | ----------------------------------------------- |
+| 1   | every op                        | `target`                                        |
+| 2   | injected implementation objects | named by the op's code in `injected_parameters` |
 
 **<a id="t-roles"></a>Table 8** Roles
 

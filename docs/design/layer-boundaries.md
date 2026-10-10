@@ -14,7 +14,7 @@ it state what one layer owns and what it must not reach into.
 | Generated checks, fake, operator schemas, `eval_roofline()` | the signature; `roofline` for `eval_roofline()`                                                                            |
 | Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
 | Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
-| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `compute_roof()`)          |
+| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
 | Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 

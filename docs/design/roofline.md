@@ -21,7 +21,7 @@ Inputs:
 
 - `bytes_moved`, `total_flops` — manifest `roofline` (§2).
 - `hbm_bandwidth` — GPU profile (§5.1), `hbm` section, effective value.
-- `peak_flops` — GPU profile section named by `op.compute_roof()` (§1.4), effective value.
+- `peak_flops` — GPU profile section named by `op.roof_key()` (§1.4), effective value.
 - `actual_time` — benchmark output (§5.2): device-busy time plus any device copies excluded from it.
 
 Bound type is whichever term dominates `sol_time`; a tie is memory-bound. It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
@@ -62,7 +62,7 @@ Beyond the elementwise rule, `total_flops` is the least arithmetic of the algori
 
 ### 1.4 Compute Roof
 
-`Op.compute_roof()` returns the GPU-profile key (§5.1) of the unit that prices the op's FLOPs — `"cuda_core.fp32"`, `"tensor_core.bf16"`, `"tensor_core.fp8"`, ….
+`Op.roof_key()` returns the GPU-profile key (§5.1) of the unit that prices the op's FLOPs — `"cuda_core.fp32"`, `"tensor_core.bf16"`, `"tensor_core.fp8"`, ….
 
 - The key states the unit an **optimal** implementation would use, declared by the op author in code. It is never inferred from the running kernel — that would price a kernel on the wrong unit against the wrong ceiling and hide exactly the gap the metric exists to expose. Nor from the input dtype alone — an fp8-backend attention takes fp16/bf16 tensors.
 - The base default covers every op whose arithmetic runs on CUDA cores in fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are matmul contractions overrides it; one whose unit depends on instance state (a backend switch, a quantized path) branches on that state.
@@ -84,11 +84,11 @@ An entry uses one of two modes:
 | Inline | `flops`, optional `bytes` | The formula is an expression.   |
 | Func   | `func: "module.path"`     | The formula needs Python logic. |
 
-**Inline.** `flops` and `bytes` are expressions in the manifest expression language ([manifest.md](manifest.md#t-lang)) over `ix` — the signature's indices, construction parameters and `let`, with `present(t)` for presence; `forall` value lists are not in `ix` — plus `bytes(t)`, the byte size of tensor `t`, and the built-in primitives. A cost that varies with presence reads `present(...)`.
+**Inline.** `flops` and `bytes` are expressions in the manifest expression language ([manifest.md](manifest.md#t-lang)) over `indices` — the signature's indices, construction parameters and `let`, with `present(t)` for presence; `forall` value lists are not in `indices` — plus `bytes(t)`, the byte size of tensor `t`, and the built-in primitives. A cost that varies with presence reads `present(...)`.
 
 **Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.ix` — the same `ix` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
+**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.indices` — the same `indices` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
 
 ```yaml
 roofline:
@@ -140,13 +140,13 @@ Contract:
 - Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`; there is nowhere else to get them (§4.4.5).
 - Each workload row is instantiated as [manifest.md § Workloads](manifest.md#workloads) defines: its `signature.params` values construct the Op, its indices, `some` and `dtype_cases` build the call's tensors, and `label` names the case.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
-- Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.compute_roof()` (§1.4), so M5 reads the numbers without re-instantiating ops.
+- Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.roof_key()` (§1.4), so M5 reads the numbers without re-instantiating ops.
 
 ### 4.3 Roofline Tool (M5)
 
 Inputs:
 
-- Benchmark output produced by M4, carrying per-workload timing, the `(flops, bytes)` from `op.eval_roofline()`, and the roof key from `op.compute_roof()`.
+- Benchmark output produced by M4, carrying per-workload timing, the `(flops, bytes)` from `op.eval_roofline()`, and the roof key from `op.roof_key()`.
 - GPU profile (§5.1), selected by matching the profile's `gpu` field against the measured device name; no match leaves every SOL reading blank.
 
 Per-workload outputs: SOL efficiency, bound type, latency-bound labels, anomaly reports.
@@ -248,7 +248,7 @@ A few ops move an amount their inputs' values decide: a routed MoE reads the exp
 - A deciding value may reach the formula through a sub-op's checked call, in `stages`.
 - A data-dependent cost that no checked call carries is priced at its data-independent lower bound, the least the signature admits for every value. It can understate efficiency, never overstate it, so it remains the algorithm's minimum traffic (§1.2).
 - Its workload row builds those inputs from a generator of its own, not the global stream: a draw added anywhere upstream would otherwise move the traffic and the efficiency the row reports.
-- It states what decided the number in `Op.roofline_inputs()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
+- It states what decided the number in `Op.roofline_data_terms()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
 
 Where the row states the deciding values — a packed batch's lengths — the recount restates them and stays at level one. Where the values are drawn per call, the recount runs the workload that draws them, and the op sits at level two.
 
