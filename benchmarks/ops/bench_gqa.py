@@ -10,10 +10,12 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    VLLM_TAG,
     backward_of,
     compiled_reference,
     flashinfer_op,
     private_inputs,
+    vllm_op,
 )
 from tileops.ops import (
     GQABwdOp,
@@ -722,6 +724,36 @@ def _flashinfer_gqa_paged(workload, inputs):
     )
 
 
+def _vllm_gqa_paged_sinks(workload):
+    """FA3 reads the existing page table, but accepts only BF16 sink logits."""
+    if workload.pos_encoding_mode == "rope":
+        return None
+    fa3 = vllm_op("flash_attn_varlen_func", module="vllm_flash_attn.flash_attn_interface")
+
+    def run(q, k_pages, v_pages, table, lengths, cu_q, _qs, _ks, _vs, _cos, _sin, sinks):
+        return fa3(
+            q,
+            k_pages,
+            v_pages,
+            cu_seqlens_q=cu_q,
+            max_seqlen_q=max(workload.q_lens),
+            max_seqlen_k=max(workload.cache_lens),
+            seqused_k=lengths,
+            block_table=table,
+            causal=workload.is_causal,
+            softmax_scale=workload.sm_scale,
+            window_size=(workload.window_size_left, workload.window_size_right),
+            softcap=float(workload.softcap or 0),
+            s_aux=sinks.to(torch.bfloat16),
+            fa_version=3,
+        )
+
+    return bench.Implementation(
+        run=run,
+        noncomparable_reason="vLLM FA3 requires BF16 s_aux, rounding the FP32 sink logits",
+    )
+
+
 def _flashinfer_gqa_paged_sinks(workload, inputs):
     """The sink wrapper consumes the same physical KV pages and logical page mapping."""
     if workload.pos_encoding_mode == "rope" or workload.window_size_right >= 0 or workload.softcap:
@@ -771,6 +803,9 @@ def test_gqa_paged_fwd_bench(case) -> None:
     op = GQAPagedFwdOp(**case.arguments)
     implementations = {"torch-ref": case.reference}
     if workload.has_sinks:
+        vllm_fn = _vllm_gqa_paged_sinks(workload)
+        if vllm_fn is not None:
+            implementations[VLLM_TAG] = vllm_fn
         flashinfer_fn = _flashinfer_gqa_paged_sinks(workload, inputs)
         if flashinfer_fn is not None:
             implementations[FLASHINFER_TAG] = flashinfer_fn
