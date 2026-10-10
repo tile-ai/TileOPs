@@ -294,6 +294,35 @@ def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("cache_lens", "page_size", "q_len"),
+    [
+        # Pages of 64 hold copied key tiles of 64 rows, and pages of 256 tiles of 128. Five
+        # query tokens a request leave the device short of row tiles, so the key range is
+        # split; 160 fill it, so it is not.
+        pytest.param([63, 130], 64, 5, id="tile-64-split"),
+        pytest.param([2047, 1501], 256, 5, id="tile-128-split"),
+        pytest.param([700, 450], 64, 160, id="tile-64"),
+        pytest.param([700, 450], 256, 160, id="tile-128"),
+    ],
+)
+def test_gqa_paged_drops_stale_rows_past_the_cache(
+    cache_lens: list[int], page_size: int, q_len: int
+) -> None:
+    """A page keeps stale rows past a request's cache; a NaN among them must not reach the
+    output through the key tile the cache end cuts."""
+    workload = _decode(2, 32, 8, cache_lens, 128, page_size, q_len=q_len)
+    inputs = workload.gen_inputs()
+    k_pages, v_pages, page_table = inputs[1], inputs[2], inputs[3]
+    for request, length in enumerate(cache_lens):
+        slots = torch.arange(length, page_table.shape[1] * page_size, device=v_pages.device)
+        stale = (page_table[request, slots // page_size], slots % page_size)
+        k_pages[stale] = float("nan")
+        v_pages[stale] = float("nan")
+    _check(GQAPagedFwdOp(), workload, inputs)
+
+
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
