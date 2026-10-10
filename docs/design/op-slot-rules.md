@@ -40,8 +40,8 @@ design, calling conventions — live in
 
 ### Slot S4: <a id="slot-s4"></a> Import — `Op` base class
 
-- **Rule.** `from tileops.ops.op_base import Op`. Every import is absolute, per
-  [`code-style.md`](../../.claude/rules/code-style.md).
+- **Rule.** `from tileops.ops.op_base import Op`. Every import is absolute; ruff `TID252`
+  enforces it.
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
 
