@@ -11,7 +11,7 @@ from tileops.quantization import INT4QuantPerGroupFwdOp
 def test_int4_quant_per_group_bench(case) -> None:
     workload = case.workload
     op = INT4QuantPerGroupFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     quantize = deepspeed_op("quantize")
     asymmetric = deepspeed_op("Asymmetric")
 

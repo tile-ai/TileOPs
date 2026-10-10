@@ -325,9 +325,9 @@ class Runner:
             self._roofline = (float(flops), float(mem_bytes))
         return self._roofline
 
-    def _roofline_inputs(self) -> dict:
+    def _roofline_data_terms(self) -> dict:
         """The op's diagnostic mapping, or an empty one when it declares none or fails."""
-        reader = getattr(self.op, "roofline_inputs", None)
+        reader = getattr(self.op, "roofline_data_terms", None)
         if reader is None:
             return {}
         try:
@@ -374,11 +374,13 @@ class Runner:
         result["tflops"] = flops / busy * 1e-9
         result["bytes"] = memory
         result["bandwidth_tbs"] = memory / busy * 1e-9
-        roof = self.op.compute_roof()
+        roof = self.op.roof_key()
         if roof is not None:
+            # The nightly report reads this field as `tileops_compute_roof`, and its stored
+            # history keeps the name, so the field name stays fixed.
             result["compute_roof"] = roof
         # What decided this call's bytes where the input values did; a diagnostic only.
-        decided_by = self._roofline_inputs()
+        decided_by = self._roofline_data_terms()
         if decided_by:
-            result["roofline_inputs"] = decided_by
+            result["roofline_data_terms"] = decided_by
         return result

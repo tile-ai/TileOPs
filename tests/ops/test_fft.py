@@ -149,7 +149,7 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
     # The shortest decomposed length: two kernels.
     x = torch.randn(2, 1 << 14, device=run_device(), dtype=torch.complex128)
     op = FFTC2CFwdOp()
-    op.autotune()
+    op.request_tune()
     got = op(x)
 
     workload = FFTWorkload(x.shape[-1], x.dtype)

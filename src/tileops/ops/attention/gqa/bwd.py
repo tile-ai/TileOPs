@@ -97,6 +97,6 @@ class GQABwdOp(Op):
         inputs = (q, k, v, do, lse, delta, dq_accum)
         return backward(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

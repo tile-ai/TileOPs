@@ -396,13 +396,13 @@ class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
-        q_lens = _segments(call.values("cu_seqlens_q"))
+        ix, params = call.indices, call.params
+        q_lens = _segments(call.metadata_values("cu_seqlens_q"))
         GQAVarlenFwdWorkload.__init__(
             self,
             len(q_lens),
             q_lens,
-            _segments(call.values("cu_seqlens_kv")),
+            _segments(call.metadata_values("cu_seqlens_kv")),
             ix["H"],
             ix["H_kv"],
             ix["D"],
@@ -429,15 +429,15 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
-        q_lens = _segments(call.values("cu_seqlens_q"))
+        ix, params = call.indices, call.params
+        q_lens = _segments(call.metadata_values("cu_seqlens_q"))
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
         GQAVarlenScaledWorkload.__init__(
             self,
             len(q_lens),
             q_lens,
-            _segments(call.values("cu_seqlens_kv")),
+            _segments(call.metadata_values("cu_seqlens_kv")),
             ix["H"],
             ix["H_kv"],
             ix["D"],

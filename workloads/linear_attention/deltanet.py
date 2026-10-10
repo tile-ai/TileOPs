@@ -371,15 +371,15 @@ class DeltaNetFwdCall(CallWorkload):
             initial_state,
             cu_seqlens,
             cu_seqlens_cpu,
-            scale=self.call.ix["scale"],
-            l2norm=self.call.ix["use_qk_l2norm_in_kernel"],
+            scale=self.call.indices["scale"],
+            l2norm=self.call.indices["use_qk_l2norm_in_kernel"],
         )
 
     def verification(self, *inputs):
         return inference_verification(
             inputs[0].dtype,
             decode=inputs[0].shape[1] == 1,
-            l2norm=self.call.ix["use_qk_l2norm_in_kernel"],
+            l2norm=self.call.indices["use_qk_l2norm_in_kernel"],
         )
 
 

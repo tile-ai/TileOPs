@@ -162,9 +162,9 @@ class Conv1dFwdOp(Op):
         kernel = self.kernel_for("conv1d", call)
         return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class Conv2dFwdOp(Op):
@@ -255,9 +255,9 @@ class Conv2dFwdOp(Op):
         kernel = self.kernel_for("conv2d", call)
         return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class Conv3dFwdOp(Op):
@@ -356,6 +356,6 @@ class Conv3dFwdOp(Op):
         kernel = self.kernel_for("conv3d", call)
         return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

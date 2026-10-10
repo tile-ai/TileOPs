@@ -19,7 +19,7 @@ _TUNE = True
 def test_mhc_pre_bench(case) -> None:
     op = MHCPreFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,
@@ -32,7 +32,7 @@ def test_mhc_pre_bench(case) -> None:
 def test_mhc_post_bench(case) -> None:
     op = MHCPostFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,

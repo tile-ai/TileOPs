@@ -10,7 +10,7 @@ dispatch, and end-to-end correctness against the PyTorch reference.
 import pytest
 import torch
 
-from tileops.backend import BUILTIN, register_implementation, registry
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
@@ -88,14 +88,14 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
 
     state = registry.snapshot()
     try:
-        register_implementation(op_name, f"{key}_marker", MarkerKernel)
+        register_kernel_type(op_name, f"{key}_marker", MarkerKernel)
         inst = cls(**kw, target=BUILTIN)
     finally:
         registry.restore(state)
     x = torch.randn(2, 4, device="cuda", dtype=torch.float16)
     bound = torch.zeros_like(x)
     inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
-    ((built,),) = [tuple(inst.built_kernels(ELEMENTWISE).values())]
+    ((built,),) = [tuple(inst.built_entries(ELEMENTWISE).values())]
     assert isinstance(built, MarkerKernel), (
         f"{op_name}: the registered class was not used to build the "
         f"kernel (kernel type: {type(built).__name__})"

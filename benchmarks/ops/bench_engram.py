@@ -24,7 +24,7 @@ _TUNE = True
 def test_engram_gate_conv_fwd_bench(case):
     op = EngramGateConvFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,
@@ -37,7 +37,7 @@ def test_engram_gate_conv_fwd_bench(case):
 def test_engram_gate_conv_bwd_bench(case):
     op = EngramGateConvBwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     reference = case.reference
 
     @torch.enable_grad()
@@ -51,7 +51,7 @@ def test_engram_gate_conv_bwd_bench(case):
 def test_engram_decode_bench(case):
     op = EngramDecodeFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,

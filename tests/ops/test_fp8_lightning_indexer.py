@@ -44,7 +44,7 @@ def test_indexer(
     )
     op = FP8LightningIndexerFwdOp(clean_logits=clean_logits)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

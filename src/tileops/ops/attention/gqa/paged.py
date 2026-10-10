@@ -43,14 +43,14 @@ class GQAPagedFwdOp(Op):
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows it reads,
         which its flops and cache reads follow."""
         from tileops.perf.formulas import gqa_paged_cache_rows
 
         call = self.last_call
         return {
-            "cached_tokens": sum(call.values("cache_seqlens")),
+            "cached_tokens": sum(call.metadata_values("cache_seqlens")),
             "cache_rows": gqa_paged_cache_rows(call),
         }
 
@@ -93,7 +93,7 @@ class GQAPagedFwdOp(Op):
         self.rope_layout = rope_layout
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 

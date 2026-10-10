@@ -499,7 +499,7 @@ class NSACompressedFwdCall(CallWorkload, NSACompressedFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         NSACompressedFwdWorkload.__init__(
             self,
             ix["N"],
@@ -522,7 +522,7 @@ class NSATopKCall(CallWorkload, NSATopKWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         NSATopKWorkload.__init__(
             self,
             ix["N"],
@@ -545,7 +545,7 @@ class NSAFwdCall(CallWorkload, NSAFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         NSAFwdWorkload.__init__(
             self,
             ix["N"],

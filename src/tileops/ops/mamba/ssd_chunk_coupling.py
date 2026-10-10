@@ -74,6 +74,6 @@ class SSDChunkCouplingFwdOp(Op):
         kernel = self.kernel_for("ssd_chunk_coupling", call)
         return kernel(C_mat, B_mat)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["C_mat"][1])

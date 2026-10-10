@@ -113,7 +113,7 @@ def test_grouped_gemm(
     test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

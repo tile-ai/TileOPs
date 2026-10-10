@@ -78,7 +78,7 @@ class MLADecodeWithKVCacheFwdOp(Op):
         )
         return self.kernel_for("mla_decode_kernel", call)(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -159,6 +159,6 @@ class MLAVarlenFwdOp(Op):
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
         return self.kernel_for("mla_varlen_fwd", self.varlen_call(inputs))(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

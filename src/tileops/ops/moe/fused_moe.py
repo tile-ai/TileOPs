@@ -39,7 +39,7 @@ class FusedMoE(Op):
         "route_select": FusedTopKFwdOp,
         "routed_experts": FusedMoEExpertsFwdOp,
     }
-    execution_parameters: ClassVar[tuple[str, ...]] = ("prepare_finalize", "experts")
+    injected_parameters: ClassVar[tuple[str, ...]] = ("prepare_finalize", "experts")
 
     def _settle_activation(self, experts: Optional[FusedMoEExpertsModular]) -> None:
         """Take ``activation`` from injected ``experts``, before ``Op.__init__`` checks it.
@@ -90,15 +90,15 @@ class FusedMoE(Op):
             activation=self.activation,
         )
 
-    def roofline_inputs(self) -> dict[str, int]:
+    def roofline_data_terms(self) -> dict[str, int]:
         """The experts this call read, which its weight reads follow."""
         from tileops.perf.formulas import fused_moe_active_experts
 
         return {"active_experts": fused_moe_active_experts(self.last_call)}
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def _routed(
         self,

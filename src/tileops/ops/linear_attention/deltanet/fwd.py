@@ -63,7 +63,7 @@ class DeltaNetFwdOp(Op):
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """The state contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 

@@ -245,7 +245,7 @@ class GQADenseDecodeCall(CallWorkload, GQADenseDecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.ix
+        ix = call.indices
         GQADenseDecodeWorkload.__init__(
             self,
             ix["B"],
@@ -270,7 +270,7 @@ class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
         GQADensePrefillWorkload.__init__(

@@ -36,7 +36,7 @@ def test_engram_gate_conv_fwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
     op = EngramGateConvFwdOp(M, seq_len, d)
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -65,7 +65,7 @@ def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
     op = EngramGateConvBwdOp(M, seq_len, d)
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     run1 = [o.clone() for o in op(*inputs)]
@@ -103,7 +103,7 @@ def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
     op = EngramDecodeFwdOp(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation)
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 

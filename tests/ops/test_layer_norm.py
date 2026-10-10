@@ -67,7 +67,7 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
     op = LayerNormFwdOp(normalized_shape=(n,))
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -292,7 +292,7 @@ def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool)
     test = FusedAddLayerNormTest(m, n, dtype)
     op = FusedAddLayerNormFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

@@ -229,7 +229,7 @@ def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> No
         dtype
     )
     op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
-    op.autotune()
+    op.request_tune()
     actual = op(x, weight)
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
@@ -312,7 +312,7 @@ def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -
     test = FusedAddRMSNormTest(m, n, dtype)
     op = FusedAddRMSNormFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

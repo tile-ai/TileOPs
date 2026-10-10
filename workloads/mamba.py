@@ -736,7 +736,7 @@ class SSDChunkCumsumFwdCall(CallWorkload, SSDChunkCumsumFwdWorkload):
         return dt, -A.abs(), None if dt_bias is None else dt_bias * 0.5
 
     def ref_program(self, dt, A, dt_bias):
-        ix = self.call.ix
+        ix = self.call.indices
         return ssd_chunk_cumsum_fwd_ref(
             dt,
             A,
@@ -757,7 +757,7 @@ class SSDChunkCouplingFwdCall(CallWorkload):
         return tuple(t * 0.1 for t in super().gen_inputs())
 
     def ref_program(self, C_mat, B_mat):
-        ix = self.call.ix
+        ix = self.call.indices
         return ssd_chunk_coupling_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
 
     def verification(self, *inputs):
@@ -775,7 +775,9 @@ class SSDChunkStateFwdCall(CallWorkload, SSDChunkStateFwdWorkload):
         return x * 0.1, Bmat * 0.1, _step_sizes(dt), _decay_cumsum(dA_cumsum), seq_idx
 
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
-        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.call.ix["G"], seq_idx=seq_idx)
+        return ssd_chunk_state_fwd_ref(
+            x, Bmat, dt, dA_cumsum, self.call.indices["G"], seq_idx=seq_idx
+        )
 
 
 class SSDStatePassingFwdCall(CallWorkload, SSDStatePassingFwdWorkload):
@@ -808,7 +810,7 @@ class SSDChunkScanFwdCall(CallWorkload, SSDChunkScanFwdWorkload):
         )
 
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
-        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.call.ix["G"])
+        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.call.indices["G"])
 
 
 class SSDDecodeFwdCall(CallWorkload, SSDDecodeWorkload):
@@ -946,7 +948,7 @@ class Mamba2FwdCall(CallWorkload):
         )
 
     def ref_program(self, x, dt, A, B, C, dt_bias, initial_states):
-        ix = self.call.ix
+        ix = self.call.indices
         return mamba2_fwd_ref(
             x, dt, A, B, C, dt_bias, ix["chunk_size"], ix["dt_softplus"], initial_states
         )

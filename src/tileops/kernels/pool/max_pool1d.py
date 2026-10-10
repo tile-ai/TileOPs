@@ -43,7 +43,7 @@ class _Shape(NamedTuple):
         return dtype_itemsize(self.dtype)
 
 
-class _Plan(NamedTuple):
+class _SignaturePlan(NamedTuple):
     """Which body reads a shape, and the extents that body needs."""
 
     body: str
@@ -57,7 +57,7 @@ class _Plan(NamedTuple):
     window_vectors: int
 
 
-def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _Plan:
+def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _SignaturePlan:
     """The body that reads this shape, chosen from the window geometry alone.
 
     ``rowreduce`` takes a row yielding one output, and emits no position, so it is not
@@ -81,7 +81,7 @@ def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _Plan:
         and kernel_w & (kernel_w - 1) == 0
         and kernel_w <= _MAX_FRAGMENT_TAPS
     ):
-        return _Plan(
+        return _SignaturePlan(
             "rowreduce", out_l, always_in_bounds, 0, 0, window_bytes // VECTOR_ACCESS_BYTES
         )
 
@@ -90,9 +90,9 @@ def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _Plan:
         # second block of a row whose origin the access width would have to divide.
         _, head, span = window_span(out_l, 0, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype)
         if span * shape.itemsize <= STATIC_SHARED_BYTES:
-            return _Plan("staged", out_l, always_in_bounds, head, span, 0)
+            return _SignaturePlan("staged", out_l, always_in_bounds, head, span, 0)
 
-    return _Plan("windowed", out_l, always_in_bounds, 0, 0, 0)
+    return _SignaturePlan("windowed", out_l, always_in_bounds, 0, 0, 0)
 
 
 def _stage_rows(rows: int, out_l: int, span: int, itemsize: int, threads: int) -> Tuple[int, int]:
@@ -131,7 +131,7 @@ def _block_rows(rows: int, kernel_w: int, window_vectors: int, threads: int) -> 
     return count
 
 
-def _windowed_builder(shape: _Shape, plan: _Plan):
+def _windowed_builder(shape: _Shape, plan: _SignaturePlan):
     """One output per lane, each tap read where it lies."""
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
@@ -224,7 +224,7 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
     return _build
 
 
-def _windowed_indices_builder(shape: _Shape, plan: _Plan):
+def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
     """The windowed body, also emitting each maximum's position."""
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
@@ -334,7 +334,7 @@ def _stage_macro(head: int, staged: int, tail: int, stage_rows: int, dtype: str)
     return _stage
 
 
-def _staged_builder(shape: _Shape, plan: _Plan):
+def _staged_builder(shape: _Shape, plan: _SignaturePlan):
     """A block's rows staged in shared memory once, every tap read off them."""
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     itemsize = shape.itemsize
@@ -386,7 +386,7 @@ def _staged_builder(shape: _Shape, plan: _Plan):
     return _build
 
 
-def _staged_indices_builder(shape: _Shape, plan: _Plan):
+def _staged_indices_builder(shape: _Shape, plan: _SignaturePlan):
     """The staged body, also emitting each maximum's position."""
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     itemsize = shape.itemsize
@@ -448,7 +448,7 @@ def _staged_indices_builder(shape: _Shape, plan: _Plan):
     return _build
 
 
-def _rowreduce_builder(shape: _Shape, plan: _Plan):
+def _rowreduce_builder(shape: _Shape, plan: _SignaturePlan):
     """One output per row, taken off fragments holding the taps of several rows."""
     rows, l_in, kernel_w, dtype = shape.rows, shape.l_in, shape.kernel_w, shape.dtype
     window_vectors = plan.window_vectors
@@ -641,7 +641,7 @@ class _MaxPool1dKernelBase(Kernel):
         )
 
     @property
-    def _plan(self) -> _Plan:
+    def _plan(self) -> _SignaturePlan:
         return _plan(self._shape, self.ceil_mode, type(self)._with_indices)
 
     def _blocks(self, candidate: dict) -> int:

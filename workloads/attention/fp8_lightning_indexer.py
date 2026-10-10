@@ -250,7 +250,7 @@ class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.ix
+        ix = call.indices
         FP8LightningIndexerWorkload.__init__(
             self, ix["B"], ix["S"], ix["H"], ix["D"], ix["S_kv"], ix["G"], ix["clean_logits"]
         )

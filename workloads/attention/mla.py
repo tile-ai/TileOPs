@@ -124,7 +124,7 @@ class MLADecodeCall(CallWorkload, MLADecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.ix
+        ix = call.indices
         MLADecodeWorkload.__init__(
             self,
             ix["B"],

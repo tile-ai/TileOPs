@@ -83,7 +83,7 @@ def _bind_static_weight(fn: Callable, case: bench.Case) -> bench.Implementation:
 def test_conv1d_bench(case) -> None:
     op = Conv1dFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     _run_conv(op, case, rank=1, static_weight=True)
 
 
@@ -91,7 +91,7 @@ def test_conv1d_bench(case) -> None:
 def test_conv2d_bench(case) -> None:
     op = Conv2dFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     _run_conv(op, case, rank=2)
 
 
@@ -99,5 +99,5 @@ def test_conv2d_bench(case) -> None:
 def test_conv3d_bench(case) -> None:
     op = Conv3dFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     _run_conv(op, case, rank=3)

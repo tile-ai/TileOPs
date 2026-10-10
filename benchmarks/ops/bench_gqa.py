@@ -94,7 +94,7 @@ def test_gqa_bwd_bench(case) -> None:
     inputs = case.inputs
 
     op = GQABwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     implementations = {}
 
     fa3_fn = _fa3_gqa_bwd(workload, inputs)

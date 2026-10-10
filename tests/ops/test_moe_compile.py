@@ -256,8 +256,8 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     experts(*args)
     owned_by_leaves = {
         operator_overload(name)
-        for leaf in experts.kernel_delegates()
-        for op in (leaf, *leaf.kernel_delegates())
+        for leaf in experts.held_delegates()
+        for op in (leaf, *leaf.held_delegates())
         for name in type(op).compile_op_names
     }
 

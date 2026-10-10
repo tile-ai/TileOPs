@@ -263,7 +263,7 @@ def test_conv1d(
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv1dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -386,7 +386,7 @@ def test_conv1d_unit_stride_under_tuning(tune: bool) -> None:
     test = Conv1dTest(1, 130, 260, 67, 4, 1, 3, 2, 1, torch.float16)
     op = Conv1dFwdOp(padding=3, dilation=2)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -664,7 +664,7 @@ def test_conv2d(
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv2dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -975,7 +975,7 @@ def test_conv3d(
     )
     op = Conv3dFwdOp(stride=stride, padding=padding, dilation=dilation, groups=groups)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -1107,7 +1107,7 @@ def test_conv_past_the_grid_z_limit_is_refused_before_building(
     with pytest.raises(ValueError, match="blocks along grid z"):
         op(x, weight)
     (interface,) = op_type.interfaces
-    assert not op.built_kernels(interface)
+    assert not op.built_entries(interface)
 
 
 @pytest.mark.smoke

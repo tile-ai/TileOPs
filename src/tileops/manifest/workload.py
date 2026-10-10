@@ -74,24 +74,24 @@ class RowError(ValueError):
 class CallView:
     """The checked-call view a roofline `func` formula reads (docs/design/roofline.md).
 
-    `ix` holds the parameters, the resolved indices and dtype indices, and the reached `let`s;
-    `tensors` maps each present tensor to its `(shape, dtype name)`.
+    `indices` holds the parameters, the resolved indices and dtype indices, and the reached
+    `let`s; `tensors` maps each present tensor to its `(shape, dtype name)`.
     """
 
-    ix: dict
+    indices: dict
     tensors: dict
-    out: bool = False
+    has_out: bool = False
 
     def present(self, name: str) -> bool:
         """Whether the call passes, holds or returns tensor `name`, or passes `out`."""
-        return self.out if name == "out" else name in self.tensors
+        return self.has_out if name == "out" else name in self.tensors
 
     def bytes(self, name: str) -> int:
         """The bytes tensor `name` occupies."""
         shape, dtype = self.tensors[name]
         return (math.prod(shape) * DTYPE_BITS[dtype] + 7) // 8
 
-    def values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list:
         """The contents of metadata tensor `name`, as nested lists."""
         raise NotImplementedError
 
@@ -110,14 +110,14 @@ class Call(CallView):
     # Parameter values as expressions read them: a dtype by name, an ADT by its fields.
     params: dict
     specs: dict[str, TensorSpec | None]
-    ix: dict = dataclasses.field(default_factory=dict)
+    indices: dict = dataclasses.field(default_factory=dict)
     signature: Signature | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def tensors(self) -> dict:
         return {n: (s.shape, s.dtype) for n, s in self.specs.items() if s is not None}
 
-    def values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list:
         return self.specs[name].values
 
     def arguments(self, tensors: dict) -> dict:
@@ -488,12 +488,12 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
         [label, *(dtype_case[i] for i in sig.forall if i in dtype_case), *dtype_params]
     )
     values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
-    ix = {
+    indices = {
         n: v
         for n, v in scope.items()
         if n in sig.params or (n in sig.forall and n not in values) or n in b.lets
     }
-    return Call(case_id, {p: scope[p] for p in sig.params}, specs, ix, sig)
+    return Call(case_id, {p: scope[p] for p in sig.params}, specs, indices, sig)
 
 
 def _generate(sig: Signature, t: str, b: PlanBranch, scope: dict) -> tuple[list, tuple]:

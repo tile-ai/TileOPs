@@ -97,7 +97,7 @@ class GQAVarlenFwdOp(Op):
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Varlen attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 

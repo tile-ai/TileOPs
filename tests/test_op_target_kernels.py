@@ -213,14 +213,14 @@ def test_a_targets_kernels_are_the_ops_entries():
         _run_instance_norm(op, n=n)
 
     assert len(target.built) == 2, "the same signature is built once"
-    assert list(op.built_kernels("instance_norm").values()) == target.built
-    assert list(op.iter_kernels()) == [], "nothing here for autotune"
-    assert op.run_config() is None
-    assert op.settled_target == "acme"
+    assert list(op.built_entries("instance_norm").values()) == target.built
+    assert list(op.iter_kernels()) == [], "nothing here for request_tune"
+    assert op.kernel_config() is None
+    assert op.serving_target == "acme"
 
 
 def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
-    """The unsettled instance must not keep showing what the failed call built."""
+    """An instance whose binding was reset must not keep showing what the failed call built."""
 
     class Failing(_InstanceNormTarget.Kernel):
         def __call__(self, *args):
@@ -233,8 +233,8 @@ def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
     with pytest.raises(RuntimeError, match="device fault"):
         _run_instance_norm(op)
 
-    assert op.settled_target is None
-    assert not op.built_kernels("instance_norm") and not list(op.iter_kernels())
+    assert op.serving_target is None
+    assert not op.built_entries("instance_norm") and not list(op.iter_kernels())
 
 
 def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
@@ -247,23 +247,23 @@ def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
     _run_instance_norm(op, n=2)
     _run_instance_norm(op, n=3)
 
-    assert list(op.built_kernels("instance_norm").values()) == [shared, shared]
+    assert list(op.built_entries("instance_norm").values()) == [shared, shared]
 
 
-@pytest.mark.parametrize("ask", ["autotune_first", "autotune_after"])
+@pytest.mark.parametrize("ask", ["request_tune_first", "request_tune_after"])
 def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
     """``tune`` does not cross ``build_kernel``, so asking before or after the build says so."""
     _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
-    if ask == "autotune_first":
-        op.autotune()  # nothing is settled yet; the first build is where it is dropped
+    if ask == "request_tune_first":
+        op.request_tune()  # nothing is settled yet; the first build is where it is dropped
 
     with pytest.warns(UserWarning, match="not passed tune") as caught:
         _run_instance_norm(op)
         _run_instance_norm(op, n=3)
-        if ask == "autotune_after":
-            op.autotune()
-            op.autotune()
+        if ask == "request_tune_after":
+            op.request_tune()
+            op.request_tune()
 
     assert len(caught) == 1
 
@@ -271,11 +271,11 @@ def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
 def test_an_in_tree_settling_reads_builtin_however_it_was_chosen():
     """A detected target and a pinned one both settle on the in-tree implementation."""
     detected, pinned = _stub_op(), _stub_op(target=BUILTIN)
-    assert detected.settled_target is None and pinned.settled_target is None
+    assert detected.serving_target is None and pinned.serving_target is None
 
     for op in (detected, pinned):
         op(*_inputs())
-        assert op.settled_target is BUILTIN
+        assert op.serving_target is BUILTIN
 
 
 def test_the_target_is_settled_once_and_kept():
@@ -285,7 +285,7 @@ def test_the_target_is_settled_once_and_kept():
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
     op(*_inputs())
 
-    assert op._settled_target == "acme"
+    assert op._serving_target == "acme"
     registry.default_target = BUILTIN  # would mean "in-tree" for a fresh instance
     op(*_inputs())
     assert len(recorder.calls) == 1, "an instance that has built kernels is not re-aimed"
@@ -312,7 +312,7 @@ def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device(
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
 
-    assert op._builder is None or op._builder is not recorder.build_kernel
+    assert op._target_builder is None or op._target_builder is not recorder.build_kernel
     with pytest.raises(OpNotAvailableError, match="in-tree kernels do not run on cpu"):
         op(*_inputs())
     assert recorder.calls == [], "BUILTIN went to the in-tree implementation"
@@ -334,7 +334,7 @@ def test_a_replacement_kernel_runs_on_the_devices_it_declares():
             return torch.full_like(x, 7)
 
     x, weight = _inputs()
-    registry.register_implementation("RMSNormFwdOp", "cpu_rms_norm", CpuRMSNorm)
+    registry.register_kernel_type("RMSNormFwdOp", "cpu_rms_norm", CpuRMSNorm)
     op = RMSNormFwdOp(NORMALIZED_SHAPE, target=BUILTIN)
     assert torch.equal(op(x, weight), torch.full_like(x, 7))
 
@@ -353,11 +353,11 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    op._resolve_builder((), {})
-    assert op._builder is not None and op._settled_target is None
+    op._bind_target((), {})
+    assert op._target_builder is not None and op._serving_target is None
 
     op(*_inputs())
-    assert op._settled_target == "acme", "the first call with a tensor decides"
+    assert op._serving_target == "acme", "the first call with a tensor decides"
 
 
 def test_a_build_that_fails_pins_nothing():
@@ -376,11 +376,11 @@ def test_a_build_that_fails_pins_nothing():
 
     with pytest.raises(RuntimeError, match="vendor compiler unhappy"):
         op(*_inputs())
-    assert op._settled_target is None, "a failed build settles no target"
+    assert op._serving_target is None, "a failed build settles no target"
 
     out = op(*_inputs())
     assert torch.equal(out, torch.full_like(out, 3)), "asking again tries again"
-    assert op._settled_target == "acme"
+    assert op._serving_target == "acme"
 
 
 def test_a_builder_must_return_something_callable():
@@ -420,9 +420,9 @@ def test_a_call_that_fails_validation_pins_nothing():
             torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
         )
 
-    assert op._settled_target is None and not op.built_kernels("rms_norm")
+    assert op._serving_target is None and not op.built_entries("rms_norm")
     op(*_inputs())
-    assert op._settled_target == "cpu_target", "the first call that worked decides"
+    assert op._serving_target == "cpu_target", "the first call that worked decides"
     assert len(recorder.calls) == 1
 
 

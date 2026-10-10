@@ -1,7 +1,8 @@
 """Tests for tileops.ops.op_base.
 
-Covers composite kernel-map overrides, the ``kernel_for`` path, and the explicit kernel
-enumeration ``Op.autotune`` runs over.
+Covers construction, the ``kernel_for`` path, the kernel enumeration ``Op.request_tune``
+runs over, tuned mode, sub-ops held through ``delegate_for`` and their stages, and instance
+keys.
 """
 
 import dataclasses
@@ -133,9 +134,9 @@ class TestConstruction:
     def test_construction_builds_the_caches_and_sub_op_tables_empty(self):
         op = _make_op_subclass()(target="acme")
         assert op.target == "acme"
-        assert op._registered == {} and op._interface_keys == {}
+        assert op._installed_kernel_types == {} and op._keys_by_interface == {}
         for field in (
-            "_dispatched",
+            "_entries_by_call",
             "_built_entries",
             "_target_kernels",
             "_delegates",
@@ -144,15 +145,15 @@ class TestConstruction:
         ):
             assert vars(op)[field] == {}, field
 
-    def test_a_failed_settling_call_resets_the_binding_group_to_what_construction_built(self):
+    def test_a_failed_binding_call_resets_the_binding_group_to_what_construction_built(self):
         op = _SlottedOp([])
-        op._builder = None
+        op._target_builder = None
         op.build("fwd", torch.float16, "fp16")
         op._target_kernels[("cpu",)] = object()
         held = op._delegates
-        op._unsettle()
-        assert op.settled_target is None
-        assert op._dispatched == op._built_entries == op._target_kernels == {}
+        op._reset_binding()
+        assert op.serving_target is None
+        assert op._entries_by_call == op._built_entries == op._target_kernels == {}
         assert op._delegates is held
 
 
@@ -196,7 +197,7 @@ class TestGetOrBuildKernel:
         fp16 = op.build("fwd", torch.float16, "fp16")
         bf16 = op.build("fwd", torch.bfloat16, "bf16")
         assert fp16 is not bf16
-        assert {key for _, key in op.built_kernels("fwd")} == {torch.float16, torch.bfloat16}
+        assert {key for _, key in op.built_entries("fwd")} == {torch.float16, torch.bfloat16}
 
     def test_same_key_in_distinct_roles_does_not_collide(self):
         """An auxiliary kernel keyed by the same dtype is a second role."""
@@ -204,20 +205,20 @@ class TestGetOrBuildKernel:
         main = op.build("fwd", torch.float16, "main")
         aux = op.build("aux", torch.float16, "aux")
         assert main is not aux
-        assert [key for _, key in op.built_kernels("aux")] == [torch.float16]
+        assert [key for _, key in op.built_entries("aux")] == [torch.float16]
 
-    def test_built_kernels_is_empty_before_the_first_build(self):
-        assert dict(_SlottedOp([]).built_kernels("fwd")) == {}
+    def test_built_entries_is_empty_before_the_first_build(self):
+        assert dict(_SlottedOp([]).built_entries("fwd")) == {}
 
-    def test_built_kernels_view_rejects_mutation(self):
+    def test_built_entries_view_rejects_mutation(self):
         op = _SlottedOp([])
         op.build("fwd", torch.float16, "fp16")
         with pytest.raises(TypeError):
-            op.built_kernels("fwd")[torch.bfloat16] = object()
+            op.built_entries("fwd")[torch.bfloat16] = object()
 
 
 class TestIterKernels:
-    """``Op.iter_kernels`` is the explicit enumeration ``autotune`` runs over."""
+    """``Op.iter_kernels`` is the explicit enumeration ``request_tune`` runs over."""
 
     def test_yields_role_entries_including_bundles(self):
         tuned: list[str] = []
@@ -228,7 +229,7 @@ class TestIterKernels:
             compute_dtype: torch.dtype
 
         op = _SlottedOp(tuned)
-        fwd, aux = op._registered["fwd"], op._registered["aux"]
+        fwd, aux = op._installed_kernel_types["fwd"], op._installed_kernel_types["aux"]
         fwd.entry_for = classmethod(lambda cls, call: (call.key, lambda: (cls("pre"), cls("bwd"))))
         aux.entry_for = classmethod(
             lambda cls, call: (call.key, lambda: Entry(cls("record"), torch.float32))
@@ -241,7 +242,7 @@ class TestIterKernels:
         """Enumeration is explicit: an unregistered attribute is not searched."""
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.some_other_attribute = op._registered["fwd"]("hidden")
+        op.some_other_attribute = op._installed_kernel_types["fwd"]("hidden")
         assert list(op.iter_kernels()) == []
 
     def test_ignores_a_kernel_dict_the_op_owns(self):
@@ -253,9 +254,9 @@ class TestIterKernels:
         """
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.private_cache = {torch.float16: op._registered["fwd"]("private")}
+        op.private_cache = {torch.float16: op._installed_kernel_types["fwd"]("private")}
         assert list(op.iter_kernels()) == []
-        op.autotune()
+        op.request_tune()
         assert tuned == []
 
     def test_descends_into_delegates(self):
@@ -281,7 +282,7 @@ class TestIterKernels:
             delegate_types = {"stage": _SlottedOp}
 
         composite = CompositeOp(tuned)
-        composite._registered["fwd"].entry_for = classmethod(
+        composite._installed_kernel_types["fwd"].entry_for = classmethod(
             lambda cls, call: (call.key, lambda: shared)
         )
         composite.delegate_for("stage", None, delegate)
@@ -290,20 +291,20 @@ class TestIterKernels:
 
 
 class TestAutotune:
-    """``Op.autotune`` tunes exactly what ``iter_kernels`` yields."""
+    """``Op.request_tune`` tunes exactly what ``iter_kernels`` yields."""
 
-    def test_autotune_tunes_every_role_entry(self):
+    def test_request_tune_tunes_every_role_entry(self):
         tuned: list[str] = []
         op = _SlottedOp(tuned)
         op.build("fwd", torch.float16, "fp16")
         op.build("fwd", torch.bfloat16, "bf16")
         op.build("aux", torch.float16, "aux")
 
-        op.autotune()
+        op.request_tune()
         assert sorted(tuned) == ["aux", "bf16", "fp16"]
 
-    def test_autotune_reaches_a_delegates_kernels(self):
-        """A composite tunes through ``kernel_delegates``, not an override."""
+    def test_request_tune_reaches_a_delegates_kernels(self):
+        """A composite tunes through ``held_delegates``, not an override."""
         tuned: list[str] = []
         delegate = _SlottedOp(tuned)
         delegate.build("fwd", torch.float16, "delegate")
@@ -313,24 +314,24 @@ class TestAutotune:
 
         composite = CompositeOp(tuned)
         composite.delegate_for("stage", None, delegate)
-        composite.autotune()
+        composite.request_tune()
         assert tuned == ["delegate"]
 
 
 class _TunableOp(_SlottedOp):
-    """Op whose builds the dispatcher puts in tuned mode once ``autotune()`` is asked."""
+    """Op whose builds the dispatcher puts in tuned mode once ``request_tune()`` is asked."""
 
     def build(self, dtype):
         return super().build("fwd", dtype, str(dtype))
 
 
 class TestTunedMode:
-    """``autotune()`` is a lifecycle decision, so it governs later builds too."""
+    """``request_tune()`` is a lifecycle decision, so it governs later builds too."""
 
-    def test_a_kernel_built_after_autotune_is_tuned(self):
+    def test_a_kernel_built_after_request_tune_is_tuned(self):
         tuned: list[str] = []
         op = _TunableOp(tuned)
-        op.autotune()  # nothing built yet
+        op.request_tune()  # nothing built yet
         assert tuned == []
         op.build(torch.float16)
         assert tuned == ["torch.float16"]
@@ -339,7 +340,7 @@ class TestTunedMode:
         """The decision persists: a second dtype arriving later is tuned too."""
         tuned: list[str] = []
         op = _TunableOp(tuned)
-        op.autotune()
+        op.request_tune()
         op.build(torch.float16)
         op.build(torch.bfloat16)
         assert sorted(tuned) == ["torch.bfloat16", "torch.float16"]
@@ -350,13 +351,13 @@ class TestTunedMode:
         op.build(torch.float16)
         assert tuned == []
 
-    def test_a_kernel_built_after_autotune_is_tuned_once_without_its_factory_reading_tune(self):
+    def test_a_kernel_built_after_request_tune_is_tuned_once_without_its_factory_reading_tune(self):
         """The build path tunes what a factory returns, and a second request changes nothing."""
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.autotune()
+        op.request_tune()
         op.build("fwd", torch.float16, "fp16")
-        op.autotune()
+        op.request_tune()
         assert tuned == ["fp16"]
 
     def test_a_kernel_whose_program_is_built_at_launch_tunes_at_that_launch_once(self):
@@ -379,7 +380,7 @@ class TestTunedMode:
         kernel()
         assert tuned == ["program"]
 
-    def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
+    def test_a_delegate_built_after_request_tune_inherits_tuned_mode(self):
         """``delegate_for`` hands the composite's flag on, so the decision carries."""
         tuned: list[str] = []
 
@@ -391,11 +392,11 @@ class TestTunedMode:
             delegate_types = {"stage": DelegateOp}
 
         op = CompositeOp(tuned)
-        op.autotune()
+        op.request_tune()
         op.delegate_for("stage", None, rec=tuned).build(torch.float16)
         assert tuned == ["torch.float16"]
 
-    def test_a_delegate_given_after_autotune_inherits_tuned_mode(self):
+    def test_a_delegate_given_after_request_tune_inherits_tuned_mode(self):
         """A sub-op the caller injects joins tuned mode the first time it is held."""
         tuned: list[str] = []
 
@@ -403,7 +404,7 @@ class TestTunedMode:
             delegate_types = {"stage": _TunableOp}
 
         op = CompositeOp(tuned)
-        op.autotune()
+        op.request_tune()
         op.delegate_for("stage", None, _TunableOp(tuned)).build(torch.float16)
         assert tuned == ["torch.float16"]
 
@@ -429,7 +430,7 @@ class TestDelegateFor:
         assert type(first) is DelegateOp and second is not first
         assert seen == [{"width": 1, "target": "acme"}, {"width": 2, "target": "acme"}]
         assert not first._tune_requested
-        op.autotune()
+        op.request_tune()
         assert op.delegate_for("stage", 3, width=3)._tune_requested
 
     def test_enumerates_held_sub_ops_in_stage_order(self):
@@ -440,19 +441,19 @@ class TestDelegateFor:
         late, early = _SlottedOp([]), _SlottedOp([])
         op.delegate_for("second", None, late)
         op.delegate_for("first", None, early)
-        assert op.kernel_delegates() == (early, late)
+        assert op.held_delegates() == (early, late)
         assert list(op._walk_ops()) == [op, early, late]
 
-    def test_a_failed_settling_call_unsettles_the_sub_ops(self):
+    def test_a_call_that_fails_after_binding_resets_the_sub_ops(self):
         class CompositeOp(_SlottedOp):
             delegate_types = {"stage": _SlottedOp}
 
         op = CompositeOp([])
         delegate = op.delegate_for("stage", None, _SlottedOp([]))
-        delegate._builder = None
+        delegate._target_builder = None
         delegate.build("fwd", torch.float16, "fp16")
-        op._unsettle()
-        assert delegate.settled_target is None and dict(delegate.built_kernels("fwd")) == {}
+        op._reset_binding()
+        assert delegate.serving_target is None and dict(delegate.built_entries("fwd")) == {}
 
     def test_a_call_that_fails_before_selecting_a_target_leaves_the_sub_ops_bound(self):
         class CompositeOp(_SlottedOp):
@@ -460,7 +461,7 @@ class TestDelegateFor:
 
         op = CompositeOp([])
         delegate = op.delegate_for("stage", None, _SlottedOp([]))
-        delegate._builder = None
+        delegate._target_builder = None
         entry = delegate.build("fwd", torch.float16, "fp16")
 
         def refuse(tensors):
@@ -470,9 +471,9 @@ class TestDelegateFor:
         op._named_tensors = lambda inputs, writes: {}
         op._check_signature = refuse
         with pytest.raises(ValueError, match="outside the signature"):
-            op._serve((), op.forward)
-        assert delegate._builder is None
-        assert list(delegate.built_kernels("fwd").values()) == [entry]
+            op._run_call((), op.forward)
+        assert delegate._target_builder is None
+        assert list(delegate.built_entries("fwd").values()) == [entry]
 
 
 class TestStages:

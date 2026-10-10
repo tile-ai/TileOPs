@@ -103,8 +103,8 @@ class GemmFwdOp(Op):
         )
         return self.kernel_for("gemm", call)(a, b)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class GemmFP8FwdOp(Op):
@@ -188,8 +188,8 @@ class GemmFP8FwdOp(Op):
         kernel = self.kernel_for("gemm_fp8", call)
         return kernel(a, b, scale_a, scale_b, bias)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class GemmW4A16FwdOp(Op):
@@ -230,7 +230,7 @@ class GemmW4A16FwdOp(Op):
         self.group_size = group_size
         super().__init__(target=target)
 
-    def autotune(self) -> None:
+    def request_tune(self) -> None:
         """Warn and stay out of tuned mode: W4A16 uses its calibrated selector, because
         generic autotuning cannot time the composite path."""
         warnings.warn(
@@ -313,5 +313,5 @@ class GemmW4A16FwdOp(Op):
         kernel = self.kernel_for("gemm_w4a16", call)
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])

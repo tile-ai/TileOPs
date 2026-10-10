@@ -55,7 +55,7 @@ def test_topk_select_bench(case) -> None:
 
     op = TopKSelectFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
 
     implementations = {
         "torch": case.reference,

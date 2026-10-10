@@ -233,7 +233,7 @@ class GLADecodeCall(CallWorkload):
         return _small(q), _small(k), _small(v), _log_gates(gk), _small(state)
 
     def ref_program(self, q, k, v, gk, state):
-        o, new_state = gla_decode_torch(q, k, v, gk, state, self.call.ix["scale"])
+        o, new_state = gla_decode_torch(q, k, v, gk, state, self.call.indices["scale"])
         return o.to(q.dtype), new_state.to(q.dtype)
 
     def verification(self, *inputs):
@@ -286,7 +286,7 @@ class GLAFwdCall(CallWorkload):
 
     def ref_program(self, q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
         return gla_inference_ref(
-            q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu, scale=self.call.ix["scale"]
+            q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu, scale=self.call.indices["scale"]
         )
 
     def verification(self, *inputs):

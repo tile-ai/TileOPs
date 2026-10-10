@@ -92,7 +92,7 @@ class DeltaNetChunkFwdOp(Op):
             device=q.device,
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -175,6 +175,6 @@ class DeltaNetChunkBwdOp(Op):
             device=q.device,
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

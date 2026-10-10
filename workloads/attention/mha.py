@@ -114,7 +114,7 @@ class MHADecodePagedCall(CallWorkload, MHADecodePagedWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         MHADecodePagedWorkload.__init__(
             self,
             ix["B"],

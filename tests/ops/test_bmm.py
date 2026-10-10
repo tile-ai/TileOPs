@@ -144,7 +144,7 @@ def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool)
     test = BmmTest(batch, m, n, k, dtype)
     op = BmmFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -362,5 +362,5 @@ def test_bmm_fp8_under_tuning(tune: bool) -> None:
     test = BmmFP8Test(2, 128, 144, 96, torch.float8_e4m3fn)
     op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())

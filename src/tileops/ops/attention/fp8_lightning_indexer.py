@@ -31,7 +31,7 @@ class FP8LightningIndexerFwdOp(Op):
         "fp8_lightning_indexer": FP8LightningIndexerFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The keys this call's windows make each batch row score, which its flops follow."""
         from tileops.perf.formulas import lightning_indexer_scored_keys
 
@@ -102,6 +102,6 @@ class FP8LightningIndexerFwdOp(Op):
         kernel = self.kernel_for("fp8_lightning_indexer", call)
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Index scores contract at fp8 regardless of the input form."""
         return "tensor_core.fp8"
