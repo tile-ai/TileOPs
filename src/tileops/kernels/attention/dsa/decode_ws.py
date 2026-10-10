@@ -161,8 +161,8 @@ def _dsa_decode_ws_kernel(
             load_part(
                 K1L, K1T, False, 0, src_rows, live_rows, 1, KV, b, g, group, lane, k_ready, part_1l
             )
-            # Every reader of the last pair's mask has released K1L by now. One index per
-            # thread: the producer's threads number the pair's 2 * block_k slots.
+            # Bias is rewritten after the K1L free wait, which follows every read of the
+            # previous pair's mask. Thread p masks slot p; the producer has 2 * block_k threads.
             idx = Indices[b, s, g, 2 * pair * block_k + p]
             live = idx >= 0 and idx < seq_len_kv and idx * kv_stride <= limit
             Bias[p // block_k, p % block_k] = (T.Cast(accum, live) - 1.0) * masked
