@@ -11,7 +11,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import GemmW4A16Call, GemmW4A16FwdInterface
 from tileops.kernels.gemm.dense import splitk_reduce_kernel
@@ -19,8 +19,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_count
 
 GROUP_SIZE = 128
-
-_DECODE_HELPER_PATH = csrc_path("w4a16_decode_helper.h")
 
 
 # What identifies a tile shape, as opposed to how its K loop is sliced.
@@ -313,7 +311,7 @@ def _gemm_w4a16_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _DECODE_HELPER_PATH],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("w4a16_decode_helper.h")],
     )
     def build(
         block_m: int = 256,

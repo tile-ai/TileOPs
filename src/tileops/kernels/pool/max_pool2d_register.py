@@ -14,7 +14,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import (
@@ -63,7 +63,7 @@ def _max_pool2d_register_kernel(
 
     @tilelang.jit(
         out_idx=[1, 2] if with_indices else [1],
-        compile_flags=["-include", csrc_path("streaming_load.h")],
+        compile_flags=csrc_include("streaming_load.h"),
     )
     def build():
         def column(start, i):

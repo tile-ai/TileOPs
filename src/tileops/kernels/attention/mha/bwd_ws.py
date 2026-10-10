@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
     AttentionCall,
@@ -54,7 +54,7 @@ def _mha_bwd_ws_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", csrc_path("tile_claim.h")],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("tile_claim.h")],
     )
     def _mha_bwd_ws_func() -> Callable:
         def _dq_slot(i, j):

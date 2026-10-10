@@ -21,7 +21,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     LOG2E,
     STATIC_SHARED_BYTES,
@@ -1045,9 +1045,6 @@ def down_rows_split(
 # The row fold: one block per row, folded into registers as it is read
 
 
-_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
-
-
 @functools.lru_cache(maxsize=32)
 def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int):
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
@@ -1069,7 +1066,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, u
     slot_dtype = "int32" if op_kind == "inf" else "float32"
     identity = identity_for(op_kind)
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads: int):
         step = threads * vec
         steps = n // step

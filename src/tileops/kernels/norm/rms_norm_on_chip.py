@@ -13,7 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
@@ -42,7 +42,7 @@ def _rms_norm_on_chip_kernel(
     own = warps
     clustered = cluster > 1
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-include", csrc_path("cluster_partials.h")])
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("cluster_partials.h"))
     def build():
         def normalize(value, rrms, scale):
             """*value* scaled by the row's reciprocal RMS and, where there is one, the weight."""

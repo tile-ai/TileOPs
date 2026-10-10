@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
@@ -49,7 +49,7 @@ def _chain_speculative_sampling_kernel(
     draw_rounds = -(-(num_draft + 1) // threads)
     part_span = -(-parts // WARP_LANES)
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _chain_speculative_sampling_func():
         @T.macro
         def stage(held, other, target_probs, draft_probs, slot, at_t, at_d, inside, drafted):

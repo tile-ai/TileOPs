@@ -18,7 +18,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
     TensorCoreIntrinEmitter as WgmmaEmitter,
 )
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
@@ -32,8 +32,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
 __all__ = ["GemmFP81D2DFwdKernel", "GemmFP81D2DWaveFwdKernel"]
-
-_FP8_1D2D_HELPER_PATH = csrc_path("fp8_1d2d_helper.h")
 
 # K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
 # of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
@@ -142,8 +140,7 @@ def _gemm_fp8_1d2d_kernel(
             "-O3",
             "--use_fast_math",
             "-DENABLE_BF16",
-            "-include",
-            _FP8_1D2D_HELPER_PATH,
+            *csrc_include("fp8_1d2d_helper.h"),
         ],
     )
     def kernel_func(
@@ -567,7 +564,7 @@ def _gemm_fp8_1d2d_wave_kernel(m: int, n: int, k: int, *, sm_count: int) -> Call
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _FP8_1D2D_HELPER_PATH],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("fp8_1d2d_helper.h")],
     )
     def _gemm_fp8_1d2d_wave_func(
         block_n: int = 128,

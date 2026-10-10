@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -50,7 +50,7 @@ def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: 
     grid = batch * parts
     warps = threads // WARP_LANES
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _min_p_mask_func(reg_tiles: int, smem_tiles: int, pace: int):
         # Tiles of one item held in registers, then in shared memory, then read again.
         kept = min(chunk, reg_tiles)

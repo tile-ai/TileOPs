@@ -120,9 +120,16 @@ repos:
 
       - id: native-sources-in-csrc
         name: C++/CUDA sources belong in src/tileops/csrc
-        entry: C++/CUDA sources belong in src/tileops/csrc/; reference them through tileops._csrc.csrc_path.
+        entry: C++/CUDA sources belong in src/tileops/csrc/; reference them through tileops._csrc.csrc_path or csrc_include.
         language: fail
         files: ^src/tileops/(?!csrc/).*\.(c|cc|cpp|cxx|cu|cuh|h|hpp|inl)$
+
+      - id: csrc-include-with-content-hash
+        name: Pre-include csrc headers through tileops._csrc.csrc_include so TileLang's caches see header edits
+        entry: "[\"'](-include|--pre-include)\\b"
+        language: pygrep
+        files: \.py$
+        exclude: ^src/tileops/_csrc\.py$
 
       - id: native-source-strings-in-csrc
         name: C++/CUDA source strings belong in src/tileops/csrc

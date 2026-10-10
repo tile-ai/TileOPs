@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import (
@@ -141,9 +141,7 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
     # register MaxPool2d kernel's, where the hint slowed a 411 MB input.
     evict_first = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
-    @tilelang.jit(
-        out_idx=[1], compile_flags=[*_JIT_FLAGS, "-include", csrc_path("streaming_load.h")]
-    )
+    @tilelang.jit(out_idx=[1], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
     def _build(block_ol: int, threads: int):
         def _windowed_scan(
             l_in: int,

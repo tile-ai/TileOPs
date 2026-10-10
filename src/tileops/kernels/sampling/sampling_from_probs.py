@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -50,7 +50,7 @@ def _sampling_from_probs_kernel(
     rounds = -(-chunk // pace)
     part_span = -(-parts // WARP_LANES)
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _sampling_from_probs_func():
         @T.macro
         def take(dst, slot, src, spot, inside):

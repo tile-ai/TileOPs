@@ -17,7 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
@@ -66,8 +66,6 @@ _WORD_BYTES = 4
 _BYTE_ONES = 0x01010101
 _BYTE_LOW = 0x7F7F7F7F
 _BYTE_HIGH = 0x80808080
-
-_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
 
 
 def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int = 0) -> int:
@@ -131,7 +129,7 @@ def _logical_fold_kernel(
     # no zero for all.
     pad = (_BYTE_ONES if pack > 1 else 1) if op_kind == "all" else 0
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
         def _fold_term(op_kind: str, held, e, components: int, pack: int):
             """What element (or word) *e* of a lane's vector adds to its accumulator."""

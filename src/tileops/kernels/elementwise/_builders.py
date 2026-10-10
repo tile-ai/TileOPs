@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 from tvm import DataType
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.elementwise._broadcast import (
     broadcast_plan_for,
     compute_broadcast_offsets,
@@ -29,7 +29,7 @@ _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 # Every builder compiles with the device helpers an op body may call
 # (``tl::approx_reciprocal``). They are forceinline, so a kernel that calls none of
 # them compiles to the same SASS as one built without the header.
-_COMPILE_FLAGS = ["-include", csrc_path("approx_math.h")]
+_COMPILE_FLAGS = csrc_include("approx_math.h")
 
 
 def _fast_of(op_func):

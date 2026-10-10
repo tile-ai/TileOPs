@@ -6,7 +6,7 @@ that file states why each one is wrong. A module-level constant's spelling is ch
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
 
-- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`; pre-include a header with `tileops._csrc.csrc_include("<file>", ...)`.
 
 - Import absolutely (`from tileops.x import y`); never use a relative import.
 
