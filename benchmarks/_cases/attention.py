@@ -18,6 +18,7 @@ from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
 from workloads.attention.mha import MHADecodePagedCall
 from workloads.attention.mla import MLADecodeCall
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
+from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall, paged_cache_gather_result
 from workloads.attention.topk_select import TopKSelectCall
 
 
@@ -44,7 +45,15 @@ def _gqa_paged_append_binder(op: Any, case: Any) -> Implementation:
     return private_inputs(lambda *args: paged_prefill_result(op, *args), case.inputs, 3, 4)
 
 
+def _paged_cache_gather_binder(op, case):
+    """Time the write-only gather on its private destination."""
+    return private_inputs(lambda *args: paged_cache_gather_result(op, *args), case.inputs, 0)
+
+
 ENTRIES = {
+    "PagedKVCacheGatherFwdOp": Entry(
+        PagedKVCacheGatherCall, binder=_paged_cache_gather_binder, count_copies=True
+    ),
     "GQABwdOp": Entry(GQABwdCall),
     "GQADenseFwdOp": Entry(_gqa_dense_workload, count_copies=True),
     "GQAVarlenFwdOp": Entry(_gqa_varlen_workload),

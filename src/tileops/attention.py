@@ -13,6 +13,7 @@ from tileops.ops.attention import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
+    PagedKVCacheGatherFwdOp,
     TopKSelectFwdOp,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "NSACompressedVarlenFwdOp",
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
+    "PagedKVCacheGatherFwdOp",
     "TopKSelectFwdOp",
 ]
