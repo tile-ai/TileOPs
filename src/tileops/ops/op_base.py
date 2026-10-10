@@ -598,25 +598,31 @@ class Op(ABC):
         """The op's declared outputs, in order."""
         return tuple(cls._signature.sig.outputs)
 
-    def _bind_forward(self, args: tuple, kwargs: dict) -> "tuple[tuple, dict[str, torch.Tensor]]":
-        """Split a ``forward`` call into its manifest inputs and its written buffers.
+    def _bind_forward(
+        self, args: tuple, kwargs: dict
+    ) -> "tuple[tuple, dict[str, torch.Tensor], dict[str, object]]":
+        """Split a ``forward`` call into its manifest inputs, written buffers and execution
+        arguments.
 
         The inputs come back in manifest order, an absent optional one as ``None``. A
         tensor ``forward`` takes beyond them is a caller-supplied output buffer, such as
-        ``out``.
+        ``out``; every other argument is an execution argument, by name.
         """
         bound = self._forward_parameters().bind(self, *args, **kwargs)
         bound.apply_defaults()
         names, _ = self._forward_io()
-        inputs = tuple(bound.arguments.get(name) for name in names)
-        # The check reports a non-tensor `out` by name.
-        writes = {
-            name: value
-            for name, value in bound.arguments.items()
-            if name not in names
-            and (isinstance(value, torch.Tensor) or (name == "out" and value is not None))
-        }
-        return inputs, writes
+        arguments = bound.arguments
+        inputs = tuple(arguments.get(name) for name in names)
+        writes, execution = {}, {}
+        for name, value in arguments.items():
+            if name == "self" or name in names:
+                continue
+            # The check reports a non-tensor `out` by name.
+            if isinstance(value, torch.Tensor) or (name == "out" and value is not None):
+                writes[name] = value
+            elif name != "out":
+                execution[name] = value
+        return inputs, writes, execution
 
     def _named_tensors(
         self, inputs: "tuple[torch.Tensor | None, ...]", writes: "dict[str, torch.Tensor]"
@@ -694,55 +700,60 @@ class Op(ABC):
         if calls:
             calls[-1][1].append((self, call))
 
-    def _execution_arguments(self, args: tuple, kwargs: dict) -> "dict[str, object]":
-        """What ``forward`` takes after the signature's inputs and ``out``, bound by name."""
-        bound = self._forward_parameters().bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        prefix = {"self", "out", *self._forward_io()[0]}
-        return {n: v for n, v in bound.arguments.items() if n not in prefix}
-
     def _served_by_target(self) -> bool:
         """Whether a target's builder, rather than the in-tree kernels, serves this instance."""
         return self._builder is not None and self._builder is not _UNRESOLVED
 
     def _serve(
         self,
-        *inputs: "torch.Tensor | None",
-        _written: "frozenset[str] | None" = None,
-        _execution: "dict[str, object] | None" = None,
-        **writes: torch.Tensor,
+        inputs: "tuple[torch.Tensor | None, ...]",
+        body: Callable[..., object],
+        writes: "dict[str, torch.Tensor] | None" = None,
+        written: "frozenset[str] | None" = None,
+        execution: "dict[str, object] | None" = None,
     ) -> object:
-        """Run one call on whichever set of kernels serves this instance.
+        """Run one eager call on whichever set of kernels serves this instance.
 
-        The body of every compile-boundary operator, which is handed exactly the manifest
-        inputs. The in-tree kernels run ``_eager_forward``; a target runs the whole op.
-        *_written* names the inputs this operator's kernel writes, when that is not every
-        input the manifest marks ``mutated``: an op that registers an inplace companion
-        writes nothing through its default operator.
+        Every eager call that runs an implementation passes here, so the check, the record
+        and the failure handling exist once: the compile-boundary operator's body calls it,
+        and so does ``__call__`` for an op without a compile boundary. *body* is the op's
+        computation, called with *inputs* in manifest order, then *writes* and *execution*
+        by name. The in-tree kernels run *body*; a target runs the whole op. *written* names
+        the inputs this operator's kernel writes, when that is not every input the call
+        writes: an op that registers an inplace companion writes nothing through its
+        default operator.
 
         Raises:
             OpNotAvailableError: What :meth:`_resolve_builder` raises.
         """
-        settled_here = self._builder is _UNRESOLVED
+        writes = writes or {}
+        # Whether this call selects the target. Only that call undoes the selection when it
+        # fails; a call that fails before selecting leaves an earlier binding, and the sub-ops'
+        # bindings, as they are.
+        settled_here = False
         try:
             tensors = self._named_tensors(inputs, writes)
             call = self._check_signature(tensors)
             # An empty call runs no implementation, so none has to be available for it.
             empty = self._writes_nothing(call)
-            if settled_here and not empty:
+            if self._builder is _UNRESOLVED and not empty:
+                # Set before selecting, so a selection that fails halfway is undone too.
+                settled_here = True
                 self._resolve_builder(inputs, writes, call.device)
             if empty:
                 result = self._empty_result(call, inputs, writes)
             elif self._served_by_target():
-                result = self._call_target(inputs, writes, _written, _execution)
+                result = self._call_target(
+                    inputs, writes, call.written if written is None else written, execution
+                )
             else:
-                result = self._eager_forward(*inputs, **writes, **(_execution or {}))
+                result = body(*inputs, **writes, **(execution or {}))
             self._complete_signature(call, result, tensors)
             return result
         except Exception:
             self._drop_call()
-            # Whoever settled it unsettles it. ``__call__``'s handler does not run when
-            # the failure comes out of a compiled graph, so this one has to.
+            # Whoever settled it unsettles it. A failure out of a compiled graph reaches no
+            # handler of ``__call__``, so this one is the only one.
             if settled_here:
                 self._unsettle()
             raise
@@ -1040,42 +1051,21 @@ class Op(ABC):
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         """Make the op callable.
 
-        Settles which set of kernels serves this instance, once. The in-tree kernels
-        run ``forward``; a target runs the whole op. An op on the compile boundary
-        branches inside its operator instead (:meth:`_serve`), so ``forward`` only picks
-        which operator to call.
-
-        A call that fails settles nothing, so one invalid call cannot aim the instance
-        for good.
+        An op with a compile boundary calls its operator, whose eager body is
+        :meth:`_serve`. An op without one binds the call to ``forward``'s signature and
+        calls :meth:`_serve` itself, with ``forward`` as the body. Traced, an op without a
+        compile boundary runs no check: an instance a target serves calls the target's
+        kernel, and any other runs ``forward``.
         """
-        settled_here = self._builder is _UNRESOLVED and not self.compile_op_names
-        try:
-            call, bound, tensors = None, None, None
-            # An op without a compile boundary claims no traced contract.
-            if not self.compile_op_names and not torch.compiler.is_compiling():
-                bound = self._bind_forward(args, kwargs)
-                tensors = self._named_tensors(*bound)
-                call = self._check_signature(tensors)
-                if settled_here and not self._writes_nothing(call):
-                    # The generated checks decide the call device, `device: cpu` tensors aside.
-                    self._resolve_builder(args, kwargs, call.device)
-            if call is not None and self._writes_nothing(call):
-                result = self._empty_result(call, *bound)
-            elif self._served_by_target() and not self.compile_op_names:
-                bound = bound or self._bind_forward(args, kwargs)
-                written = call.written if call is not None else None
-                execution = self._execution_arguments(args, kwargs) if call is not None else None
-                result = self._call_target(*bound, written, execution)
-            else:
-                result = self.forward(*args, **kwargs)
-            if call is not None:
-                self._complete_signature(call, result, tensors)
-        except Exception:
-            self._drop_call()
-            if settled_here:
-                self._unsettle()
-            raise
-        return result
+        if self.compile_op_names:
+            return self.forward(*args, **kwargs)
+        if torch.compiler.is_compiling():
+            if self._served_by_target():
+                inputs, writes, _ = self._bind_forward(args, kwargs)
+                return self._call_target(inputs, writes)
+            return self.forward(*args, **kwargs)
+        inputs, writes, execution = self._bind_forward(args, kwargs)
+        return self._serve(inputs, self.forward, writes, None, execution)
 
     @staticmethod
     def _writes_nothing(call: object) -> bool:
