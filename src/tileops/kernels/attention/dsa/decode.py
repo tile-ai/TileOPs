@@ -612,6 +612,8 @@ def _dsa_decode_basic_kernel(
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
         h_per_block = DSADecodeBasicKernel.heads_per_block(head_kv, block_h)
+        # Width of the tail buffers; with no tail they are allocated but never read.
+        tail_cols = d_tail if d_tail > 0 else 16
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -635,9 +637,9 @@ def _dsa_decode_basic_kernel(
                 # consume kv_shared directly: V is the first `dim` columns of
                 # the fused KV cache (v = kv[..., :dim]).
                 q_shared = T.alloc_shared([h_per_block, d], dtype)
-                q_tail_shared = T.alloc_shared([h_per_block, d_tail or 16], dtype)
+                q_tail_shared = T.alloc_shared([h_per_block, tail_cols], dtype)
                 kv_shared = T.alloc_shared([i_block, d], dtype)
-                kv_tail_shared = T.alloc_shared([i_block, d_tail or 16], dtype)
+                kv_tail_shared = T.alloc_shared([i_block, tail_cols], dtype)
                 s_shared = T.alloc_shared([h_per_block, i_block], dtype)
                 # Q is dead once the last QK^T gemm has been issued, so the
                 # output staging reuses its shared buffer.

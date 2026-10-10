@@ -55,6 +55,11 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
             "from tilelang.language import reinterpret\ny = reinterpret('int32', x)\n",
             "value first",
         ),
+        (
+            "@T.prim_func\ndef k():\n    s = T.alloc_shared([64, tail or 16], 'float16')\n",
+            "TIR logical op",
+        ),
+        ("@T.macro\ndef m(x):\n    y = x and 0\n", "TIR logical op"),
     ],
 )
 def test_rejected(tmp_path, source, expected):
@@ -84,6 +89,10 @@ def test_rejected(tmp_path, source, expected):
         f'DOC = """\n{FILE_NOQA}\n"""\n',
         # Trailing a statement it waives that line, not the file.
         f"x = 1  {FILE_NOQA}\n",
+        # A logical condition in a kernel body is what TileLang builds.
+        "@T.prim_func\ndef k():\n    live = idx >= 0 and idx < n\n",
+        # Outside the kernel body, Python picks the operand.
+        "def build(tail):\n    cols = tail or 16\n",
     ],
 )
 def test_accepted(tmp_path, source):
