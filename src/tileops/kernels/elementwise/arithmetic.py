@@ -134,11 +134,6 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return T.Cast(a.dtype, num / den)
 
 
-def _ieee_fdiv(num, den):
-    """A float32 divide rounded to nearest, which fast math leaves alone."""
-    return T.call_extern("float32", "__fdiv_rn", num, den)
-
-
 class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise truncated division: y = trunc(a / b), as torch computes it.
 
@@ -159,7 +154,7 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     @staticmethod
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)
-        divide = _ieee_fdiv if str(a.dtype) == "float32" else _full_range_fdiv
+        divide = T.ieee_fdiv if str(a.dtype) == "float32" else _full_range_fdiv
         quotient = T.Cast(a.dtype, divide(num, den))
         return T.Cast(a.dtype, T.trunc(T.Cast("float32", quotient)))
 
@@ -181,11 +176,11 @@ def _floored_quotient(num, den, limit, fast_body):
     zero = T.cast(0.0, "float32")
     one = T.cast(1.0, "float32")
     magnitude = T.abs(den)
-    quotient = _ieee_fdiv(num, den)
+    quotient = T.ieee_fdiv(num, den)
 
     def value(q):
         def pick(t):
-            over = T.call_extern("float32", "__fmaf_rn", -t, magnitude, T.copysign(num, q)) < zero
+            over = T.ieee_fmaf(-t, magnitude, T.copysign(num, q)) < zero
             return fast_body(tirx.Select(over, t - one, t), q)
 
         return pick(T.floor(q))
@@ -202,16 +197,6 @@ _NUDGED_QUOTIENT = {"float16": float(1 << 8), "bfloat16": float(1 << 11)}
 _NUDGE = 2.0**-21
 
 
-def _approx_reciprocal(x):
-    """``1 / x`` to two ulp for a normal *x* whose reciprocal is normal, else a zero.
-
-    A subnormal *x* reads as a zero of its sign and returns an infinity; a reciprocal
-    that would be subnormal returns a zero. A caller takes those two answers as a
-    refusal and computes the value another way.
-    """
-    return T.call_extern("float32", "tileops::approx_reciprocal", x)
-
-
 def _nudged_floor(num, den, dtype, fast_body):
     """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
 
@@ -223,16 +208,17 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
     on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
     or NaN operand, every quotient that underflows and every divisor
-    ``_approx_reciprocal`` does not cover.
+    ``T.fast_rcp`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
-    # One reciprocal serves every element that shares b. ``_approx_reciprocal`` answers a
-    # zero or an infinity for the divisors it does not cover, and ``holds`` refuses both,
-    # so the operand pairs it declines reach the exact body below instead.
-    quotient = num * _approx_reciprocal(den)
+    # One reciprocal serves every element that shares b. ``T.fast_rcp`` is one MUFU.RCP,
+    # two ulp for a normal b whose reciprocal is normal; it reads a subnormal b as a zero
+    # and returns an infinity, and returns a zero for a reciprocal that would be
+    # subnormal. ``holds`` refuses both, so those operand pairs reach the exact body.
+    quotient = num * T.fast_rcp(den)
 
     def value(q):
-        nudged = T.call_extern("float32", "__fmaf_rn", T.abs(q), T.cast(_NUDGE, "float32"), q)
+        nudged = T.ieee_fmaf(T.abs(q), T.cast(_NUDGE, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
     holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
@@ -281,7 +267,7 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         zero = T.cast(0.0, "float32")
 
         def from_quotient(k, q):
-            r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
+            r = T.ieee_fmaf(-k, den, num)
             # A zero remainder is fmod's, which keeps the dividend's sign.
             return tirx.Select(r == zero, T.copysign(zero, num), r)
 
@@ -397,11 +383,11 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         def slow():
             def from_mod(mod):
                 flip = T.And(mod != zero, (den < zero) != (mod < zero))
-                div = _ieee_fdiv(num - mod, den)
+                div = T.ieee_fdiv(num - mod, den)
                 return bound(tirx.Select(flip, div - one, div), rounded)
 
             general = bound(T.fmod(num, den), from_mod)
-            return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
+            return T.if_then_else(den == zero, T.ieee_fdiv(num, den), general)
 
         def whole(k, q):
             # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.

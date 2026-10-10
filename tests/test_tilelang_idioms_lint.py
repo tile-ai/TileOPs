@@ -60,6 +60,37 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
             "TIR logical op",
         ),
         ("@T.macro\ndef m(x):\n    y = x and 0\n", "TIR logical op"),
+        # T.ieee_fdiv emits __fdiv_rn; the extern call is the second spelling of it.
+        ("y = T.call_extern('float32', '__fdiv_rn', a, b)\n", "call the T.* intrinsic"),
+        ("T.call_pure_extern('handle', 'tl::tma_store_wait<0, true>')\n", "T.* intrinsic"),
+        # A target bound to a name, or one branch of a conditional, is read through.
+        ("name = '__clz'\ny = T.call_extern('int32', name, x)\n", "T.* intrinsic"),
+        ("y = T.call_extern('int32', '__umulhi' if c else '__clz', x)\n", "T.* intrinsic"),
+        ("y = T.call_extern('handle', make_name(), x)\n", "does not resolve"),
+        # Any call named call_extern is checked, whatever it is reached through.
+        ("y = tvm.tirx.call_extern('float32', '__fdiv_rn', a, b)\n", "T.* intrinsic"),
+        ("from tilelang.language import *\ny = call_extern('int32', '__clz', x)\n", "intrinsic"),
+        # The function used any other way would carry a target past the check.
+        ("extern = T.call_extern\ny = extern('float32', '__fdiv_rn', a, b)\n", "called where"),
+        ("y = T.call_extern.__call__('int32', '__clz', x)\n", "called where"),
+        ("y = T.__dict__['call_extern']('int32', '__clz', x)\n", "as a string"),
+        ("from tvm.tirx import call_extern as ce\ny = ce('int32', '__clz', x)\n", "imported as"),
+        # A name some binding leaves unknown — a parameter here — is not read through.
+        (
+            "name = '__umulhi'\ndef f(name):\n    return T.call_extern('int32', name, x)\n",
+            "does not resolve",
+        ),
+        (
+            "name = '__umulhi'\nfor name in names:\n    T.call_extern('int32', name, x)\n",
+            "does not resolve",
+        ),
+        ("name = '__umulhi'\ndef name(): pass\nT.call_extern('int32', name, x)\n", "resolve"),
+        # An imported string joins the name's other bindings rather than replacing them.
+        (
+            "name = '__clz'\nT.call_extern('int32', name, x)\n"
+            "def f():\n    from tileops.trace.state import MARKER as name\n",
+            "T.* intrinsic",
+        ),
     ],
 )
 def test_rejected(tmp_path, source, expected):
@@ -93,6 +124,13 @@ def test_rejected(tmp_path, source, expected):
         "@T.prim_func\ndef k():\n    live = idx >= 0 and idx < n\n",
         # Outside the kernel body, Python picks the operand.
         "def build(tail):\n    cols = tail or 16\n",
+        # No T.* intrinsic emits __fdividef, and a tileops:: helper is ours.
+        "y = T.call_extern('float32', '__fdividef', a, b)\n",
+        "T.call_extern('handle', f'tileops::fp8_wave_wgmma_64x{n}', x)\n",
+        "helper = 'tileops::load16'\nT.call_extern('handle', helper, x)\n",
+        "T.call_extern('handle', 'tileops::' + 'load16', x)\n",
+        # The name in a comment or another module's call is not an extern call.
+        "x = 1  # T.ieee_fdiv emits '__fdiv_rn'\n",
     ],
 )
 def test_accepted(tmp_path, source):

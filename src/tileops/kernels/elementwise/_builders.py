@@ -6,7 +6,6 @@ import tilelang
 import tilelang.language as T
 from tvm import DataType
 
-from tileops._csrc import csrc_include
 from tileops.kernels.elementwise._broadcast import (
     broadcast_plan_for,
     compute_broadcast_offsets,
@@ -26,10 +25,6 @@ _TAIL_PACK_RATIO = 4
 # than 32 registers, which leaves fewer threads resident; asking for blocks enough
 # to fill this many threads holds it at 32.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
-# Every builder compiles with the device helpers an op body may call
-# (``tileops::approx_reciprocal``). They are forceinline, so a kernel that calls none of
-# them compiles to the same SASS as one built without the header.
-_COMPILE_FLAGS = csrc_include("approx_math.h")
 
 
 def _fast_of(op_func):
@@ -70,7 +65,7 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
@@ -91,7 +86,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_pe
     """Strategy 3: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
@@ -454,7 +449,7 @@ def make_binary_register_copy(
     """Binary register_copy: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
         def _vector_lanes(dtype, count):
             """Elements of *dtype* in one 16-byte vector, at most *count*."""
@@ -543,7 +538,7 @@ def make_binary_direct(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+        @tilelang.jit(out_idx=[2])
         def kernel(threads):
             op_func = op_func_for(op_name)
 
@@ -564,7 +559,7 @@ def make_binary_direct(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+        @tilelang.jit(out_idx=[2])
         def kernel(threads):
             return _row_broadcast_prim(
                 N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, 1
@@ -572,7 +567,7 @@ def make_binary_direct(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[2])
     def kernel(threads):
         op_func = op_func_for(op_name)
         ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -619,7 +614,7 @@ def make_binary_explicit(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+        @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
             return _row_broadcast_prim(
                 N_total,
@@ -638,7 +633,7 @@ def make_binary_explicit(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+        @tilelang.jit(out_idx=[2])
         def kernel(threads, num_per_thread):
             op_func = op_func_for(op_name)
             block_size = threads * num_per_thread
@@ -658,7 +653,7 @@ def make_binary_explicit(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
         op_func = op_func_for(op_name)
         ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -691,7 +686,7 @@ def make_binary_explicit(
 def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread."""
 
-    @tilelang.jit(out_idx=[1], compile_flags=_COMPILE_FLAGS)
+    @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg

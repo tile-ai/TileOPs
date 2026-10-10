@@ -98,8 +98,8 @@ def _mha_bwd_ws_kernel(
                                 T.access_ptr(dq[bh, n, w, 0, 0], "w"),
                                 dq_rows * _DQ_ROW * 4,
                             )
-                            T.call_extern("handle", "tl::tma_store_arrive")
-                            T.call_extern("handle", "tl::tma_store_wait<0, true>")
+                            T.tma_store_arrive()
+                            T.tma_store_wait(0)
                             T.barrier_arrive(dq_empty[w * 2 + slot])
                         g = g + 1
                     ti = ti + 1
