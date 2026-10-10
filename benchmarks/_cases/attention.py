@@ -22,8 +22,15 @@ from workloads.attention.topk_select import TopKSelectCall
 
 
 def _gqa_dense_workload(call: Any) -> Any:
-    """A call passing FP8 scales or RoPE tables is a prefill; any other is a decode step."""
-    if call.present("q_scale") or call.present("rope_cos"):
+    """Use the full dense reference for prefill, windows, or optional inputs."""
+    if (
+        call.ix["S_q"] != 1
+        or call.present("q_scale")
+        or call.present("rope_cos")
+        or call.present("sinks")
+        or call.params["window_size_left"] >= 0
+        or call.params["window_size_right"] >= 0
+    ):
         return GQADensePrefillCall(call)
     return GQADenseDecodeCall(call)
 

@@ -61,6 +61,7 @@ class AttentionCall(CallSpec):
     softcap: float = 0.0
     window_size_left: int = -1
     window_size_right: int = -1
+    has_sinks: bool = False
     is_fp8: bool = False
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
@@ -223,6 +224,7 @@ class GQADenseFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each query row to the keys the call's mask and window admit.
 
@@ -239,6 +241,7 @@ class GQADenseFwdInterface(KernelInterface):
             rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
                 when ``call.fuse_rope``.
             rope_sin: The same layout, passed exactly when ``rope_cos`` is.
+            sinks: Optional ``float32`` ``(heads,)`` zero-value logits.
 
         Returns:
             A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``.
