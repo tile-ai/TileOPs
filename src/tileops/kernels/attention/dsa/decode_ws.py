@@ -1,18 +1,64 @@
 """SM90 warp-specialized DSA decode: a gathering producer and two seesaw consumers."""
 
 import functools
+import re
 from typing import ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
+import tvm_ffi
 from tilelang.layout import make_swizzled_layout
 
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import DSADecodeCall
 from tileops.kernels.attention.dsa.decode import DSADecodeKernelBase
 from tileops.kernels.constants import LOG2E
 
 __all__ = ["DSADecodeWSKernel"]
+
+# The kernel issues this call once as a bare statement; _uniform_role_branches finds the
+# kernel by that statement and turns it into the role index, so the two must agree.
+_ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
+
+
+def _uniform_role_branches(code: str) -> str:
+    """Make the seesaw kernel's role branches test the warpgroup index from lane 0.
+
+    TileLang emits each role branch as a test of threadIdx.x, which ptxas cannot prove
+    uniform across a warp, so inside it the WGMMA descriptors stay in ordinary registers
+    and every issue pays an R2UR. TileLang reads each role's thread range from that form,
+    so the generated CUDA is rewritten instead. Code without the marker statement is
+    returned unchanged; so is code whose branches TileLang emitted differently, which
+    stays correct without uniform branches.
+    """
+    marker = re.compile(rf"^([ \t]*){re.escape(_ROLE_INDEX_CALL)}\(\);$", re.MULTILINE)
+    role_tests = (
+        ("if (256 <= ((int)threadIdx.x)) {", 2),
+        ("if (((int)threadIdx.x) < 128) {", 0),
+        ("if ((128 <= ((int)threadIdx.x)) && (((int)threadIdx.x) < 256)) {", 1),
+    )
+    if len(marker.findall(code)) != 1 or any(code.count(test) != 1 for test, _ in role_tests):
+        return code
+    code = marker.sub(rf"\1const int warpgroup_role = {_ROLE_INDEX_CALL}();", code)
+    for test, role in role_tests:
+        code = code.replace(test, f"if (warpgroup_role == {role}) {{")
+    return code
+
+
+def _register_uniform_role_branches() -> None:
+    """Chain the rewrite after whatever holds TileLang's one CUDA post-processing slot."""
+    previous = tvm_ffi.get_global_func("tilelang_callback_cuda_postproc", allow_missing=True)
+
+    def postproc(code, target):
+        if previous is not None:
+            code = previous(code, target)
+        return _uniform_role_branches(code)
+
+    tilelang.register_cuda_postproc(postproc)
+
+
+_register_uniform_role_branches()
 
 
 @functools.lru_cache(maxsize=32)
@@ -31,6 +77,7 @@ __all__ = ["DSADecodeWSKernel"]
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-DNDEBUG",
+        *csrc_include("warp_uniform.h"),
     ],
 )
 def _dsa_decode_ws_kernel(
@@ -57,9 +104,9 @@ def _dsa_decode_ws_kernel(
     consumer_threads = 2 * warpgroup  # tx < 256; the producer warpgroup follows
     producer_threads = warpgroup
     rows_per_pass = producer_threads // lanes
-    # 2 x 128 x 216 + 128 x 72 = 64512 of the 65536 registers a CTA may hold.
-    consumer_regs = 216
-    producer_regs = 72
+    # 2 x 128 x 232 + 128 x 40 = 64512 of the 65536 registers a CTA may hold.
+    consumer_regs = 232
+    producer_regs = 40
     max_init = -1.0e30  # a finite start, so a fully masked block weighs 0 instead of NaN
     masked = 1.0e38  # a dead slot's bias is -masked: scaled, it falls far below max_init
 
@@ -238,13 +285,16 @@ def _dsa_decode_ws_kernel(
         T.fill(rL, 0)
         T.fill(rM, max_init)
         T.mbarrier_wait_parity(q_full[0], 0)
-        T.mbarrier_wait_parity(k_ready[part_0l], 0)
-        score_left(QL, K0L, rP, True)
-        T.mbarrier_wait_parity(k_ready[part_0r], 0)
-        score_right(QR, QT, K0R, K0T, rP, False)
-        T.wait_wgmma(0)
         for pair in T.serial(pairs):
             phase = pair % 2
+            # The first pair's scores are issued inside the loop: one call site keeps the
+            # WGMMA descriptors out of local memory.
+            if pair == 0:
+                T.mbarrier_wait_parity(k_ready[part_0l], 0)
+                score_left(QL, K0L, rP, True)
+                T.mbarrier_wait_parity(k_ready[part_0r], 0)
+                score_right(QR, QT, K0R, K0T, rP, False)
+                T.wait_wgmma(0)
             T.mbarrier_wait_parity(bias_ready[0], phase)
             softmax(rP, rS, rO, rM, rL, rM, cur, keep, Bias, 0, sM)
             T.named_barrier_arrive(even_max_ready, consumer_threads)
@@ -366,6 +416,8 @@ def _dsa_decode_ws_kernel(
             k_free = T.alloc_barrier([warpgroup] * 4)
             bias_ready = T.alloc_barrier([producer_threads])
             tx = T.get_thread_binding()
+            # Marks this kernel for _uniform_role_branches, which defines the role index here.
+            T.evaluate(T.call_extern("int32", _ROLE_INDEX_CALL))
             if tx >= consumer_threads:
                 T.set_max_nreg(producer_regs, 0)
                 producer(
