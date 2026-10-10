@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.attention.call_spec import MLADecodeCall, MLADecodeFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_shared_memory_optin
+from tileops.utils import get_shared_memory_optin, get_sm_version
 
 __all__ = ["MLADecodeMMAKernel", "MLADecodeWSKernel"]
 
@@ -961,13 +961,31 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
 
     @property
     def default_config(self) -> dict:
-        return self._default_config_for(
+        config = self._default_config_for(
             get_shared_memory_optin(self.device_index),
             self.dim,
             self.pe_dim,
             self.dtype.itemsize,
             self.seqlen_kv,
         )
+        return {**config, "num_split": self._split_count(config["block_H"])}
+
+    def _split_count(self, block_h: int) -> int:
+        minimum_cache = 256
+        latent_dim, rope_dim = 512, 64
+        target_blocks, maximum_splits = 128, 16
+        if (
+            self.seqlen_kv < minimum_cache
+            or self.dim != latent_dim
+            or self.pe_dim != rope_dim
+            or get_sm_version(self.device_index) != 89
+        ):
+            return self._NUM_SPLIT
+        # Avoid extra partial outputs once the batch already supplies enough CTAs.
+        head_blocks = self.batch * tilelang.cdiv(self.heads, block_h)
+        available = max(target_blocks // head_blocks, self._NUM_SPLIT)
+        splits = 1 << (available.bit_length() - 1)
+        return min(splits, maximum_splits)
 
     @classmethod
     def _default_config_for(
