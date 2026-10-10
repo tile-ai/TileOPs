@@ -11,6 +11,7 @@ from workloads.moe import (
     IndexedExpertMLPWorkload,
     MoEExpertMLPWorkload,
     MoEExpertsWorkload,
+    MoEGroupedGemmFP8Workload,
     MoEGroupedGemmWorkload,
     MoEPermuteAlignWorkload,
     MoEPostPermuteWorkload,
@@ -42,6 +43,7 @@ ENTRIES = {
     "MoEPrePermuteFwdOp": Entry(MoEPrePermuteWorkload),
     "MoEPostPermuteFwdOp": Entry(MoEPostPermuteWorkload),
     "MoEGroupedGemmFwdOp": Entry(MoEGroupedGemmWorkload),
+    "MoEGroupedGemmFP8FwdOp": Entry(MoEGroupedGemmFP8Workload),
     "MoEExpertMLPFwdOp": Entry(MoEExpertMLPWorkload),
     "FusedMoEExpertsFwdOp": Entry(MoEExpertsWorkload, count_copies=True, binder=_private_output),
     "IndexedExpertMLPFwdOp": Entry(

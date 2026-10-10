@@ -141,6 +141,13 @@ class MoEGroupedGemmFwdOp(Op):
 
         return {"valid_rows": moe_layout_rows(self.last_call)}
 
+    def eval_roofline_read_bytes(self) -> int:
+        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
+        only, where the base class would take the whole output off."""
+        from tileops.perf.formulas import moe_slab_bytes
+
+        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
+
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
@@ -246,6 +253,13 @@ class MoEExpertMLPFwdOp(Op):
         from tileops.perf.formulas import moe_layout_rows
 
         return {"valid_rows": moe_layout_rows(self.last_call)}
+
+    def eval_roofline_read_bytes(self) -> int:
+        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
+        only, where the base class would take the whole output off."""
+        from tileops.perf.formulas import moe_slab_bytes
+
+        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
     def __init__(
         self,

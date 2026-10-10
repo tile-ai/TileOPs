@@ -244,6 +244,57 @@ class MoEGroupedGemmWorkload(CallWorkload):
         return Custom(validate, "defined rows of grouped expert layout")
 
 
+class MoEGroupedGemmFP8Workload(CallWorkload):
+    """FP8 masked slabs and weights, their block scales, and the layout's generated counts."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        a, a_scale, b, b_scale, metadata = super().gen_inputs()
+        # Values well inside e4m3's range, and positive scales of order one, as a
+        # quantizer would produce them.
+        return (
+            (a.float() * 0.25).to(a.dtype),
+            torch.rand_like(a_scale).add_(0.5),
+            (b.float() * 0.25).to(b.dtype),
+            torch.rand_like(b_scale).add_(0.5),
+            metadata,
+        )
+
+    def ref_program(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+    ) -> torch.Tensor:
+        """Each operand dequantized in fp32 under its block scales, then the masked GEMM."""
+        a_f = a.float() * a_scale.repeat_interleave(128, dim=-1)
+        b_f = b.float() * b_scale.repeat_interleave(128, dim=1).repeat_interleave(128, dim=2)
+        return ref_moe_grouped_gemm(
+            a_f, b_f, layout_metadata, self.call.params["layout"], torch.bfloat16
+        )
+
+    def verification(self, *inputs):
+        from workloads.gemm import fp8_matmul_verification
+        from workloads.numerics import Custom
+
+        a, metadata = inputs[0], inputs[-1]
+        tolerance = fp8_matmul_verification(a.shape[-1])
+        mask = valid_rows(
+            self.call.params["layout"], metadata, a.numel() // a.shape[-1], inputs[2].shape[0]
+        )
+
+        def validate(got, expected):
+            torch.testing.assert_close(
+                got.reshape(-1, got.shape[-1])[mask].float(),
+                expected.reshape(-1, expected.shape[-1])[mask].float(),
+                rtol=tolerance.rtol,
+                atol=tolerance.atol,
+            )
+
+        return Custom(validate, "valid rows of each masked expert slab, fp8 matmul bound")
+
+
 class MoEExpertMLPWorkload(CallWorkload):
     """Expert-materialized input, stacked gate/up and down weights, generated metadata."""
 

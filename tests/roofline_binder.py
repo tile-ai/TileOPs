@@ -5,7 +5,8 @@ An implemented entry's op is its class; a spec-only entry's is a class carrying 
 signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds, one write per output, both for a written input -- and the caller requires the two to
-be equal. Empty experts read no weights. The `roofline` block is never read.
+be equal. Empty experts read no weights, and a masked slab moves only its valid rows. The
+`roofline` block is never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
 signature the call is checked against.
@@ -52,12 +53,21 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
     return cls
 
 
+# The per-expert weights, and the tensors with one row per slab row, of the grouped MoE ops.
+_EXPERT_WEIGHTS = {
+    "MoEGroupedGemmFwdOp": ("b",),
+    "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
+    "MoEExpertMLPFwdOp": ("w_gate_up", "w_down"),
+}
+_SLAB_ROWS = {
+    "MoEGroupedGemmFwdOp": ("a", "output"),
+    "MoEGroupedGemmFP8FwdOp": ("a", "a_scale", "output"),
+    "MoEExpertMLPFwdOp": ("expert_input", "output"),
+}
+
+
 def _unused_expert_weights(op_name: str, call) -> int:
-    weights = {
-        "MoEGroupedGemmFwdOp": ("b",),
-        "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
-        "MoEExpertMLPFwdOp": ("w_gate_up", "w_down"),
-    }.get(op_name)
+    weights = _EXPERT_WEIGHTS.get(op_name)
     if weights is None:
         return 0
     layout, experts = call.ix["layout"], call.ix["E"]
@@ -73,6 +83,19 @@ def _unused_expert_weights(op_name: str, call) -> int:
             unused += end == start
             start = end + (-end % layout.alignment)
     return sum(call.bytes(name) // experts * unused for name in weights)
+
+
+def _unused_slab_rows(op_name: str, call) -> dict[str, int]:
+    """Bytes of each row-shaped tensor in a masked slab's rows past its expert's count."""
+    if op_name not in _SLAB_ROWS:
+        return {}
+    layout = call.ix["layout"]
+    if layout.kind != "masked":
+        return {}
+    metadata = call.values("layout_metadata")
+    padding = sum(layout.max_m - count for count in metadata)
+    slab_rows = len(metadata) * layout.max_m
+    return {name: call.bytes(name) // slab_rows * padding for name in _SLAB_ROWS[op_name]}
 
 
 def manifest_cases(op_name: str):
@@ -94,7 +117,8 @@ def manifest_cases(op_name: str):
             metadata = {n: torch.tensor(call.values(n)) for n in checked.metadata}
             # The formula prices the op's last completed call; this one is that call.
             op._signature_call = dataclasses.replace(checked, metadata=metadata)
-            reads = sum(call.bytes(t) * r for t, r, _ in checked.traffic)
+            unused = _unused_slab_rows(op_name, call)
+            reads = sum((call.bytes(t) - unused.get(t, 0)) * r for t, r, _ in checked.traffic)
             reads -= _unused_expert_weights(op_name, call)
-            writes = sum(call.bytes(t) * w for t, _, w in checked.traffic)
+            writes = sum((call.bytes(t) - unused.get(t, 0)) * w for t, _, w in checked.traffic)
             yield row["label"], "-".join(case.values()), op, reads + writes, reads

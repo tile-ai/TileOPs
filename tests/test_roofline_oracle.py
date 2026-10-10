@@ -207,6 +207,51 @@ class TestBytesOracle:
         )
         assert self._priced(op, tensors)[1] == routed + shared
 
+    def test_masked_grouped_gemm_moves_only_valid_rows_and_active_weights(self):
+        """A sparse masked slab, as a decode shard holds: of 4 x 64 slab rows, 3 are valid and
+        two experts are empty, so the rows of ``a``, ``a_scale`` and ``output`` past each
+        count and the empty experts' weights move nothing."""
+        from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+
+        experts, max_m, n, k, counts = 4, 64, 256, 512, [2, 0, 1, 0]
+        valid, active = sum(counts), 2
+        fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
+        metadata = torch.tensor(counts, dtype=torch.int32)
+        layout = MaskedLayoutSpec(max_m=max_m)
+        fp8_tensors = {
+            "a": torch.empty(experts, max_m, k, dtype=fp8),
+            "a_scale": torch.empty(experts, max_m, k // 128),
+            "b": torch.empty(experts, n, k, dtype=fp8),
+            "b_scale": torch.empty(experts, n // 128, k // 128),
+            "layout_metadata": metadata,
+            "out": None,
+        }
+        oracle = _ledger(
+            "MoEGroupedGemmFP8FwdOp",
+            a=((valid, k), fp8),  # valid rows only
+            a_scale=((valid, k // 128), torch.float32),  # valid rows only
+            b=((active, n, k), fp8),  # active experts only
+            b_scale=((active, n // 128, k // 128), torch.float32),  # active experts only
+            layout_metadata=((experts,), torch.int32),
+            output=((valid, n), bf16),  # valid rows only
+        )
+        assert self._priced(MoEGroupedGemmFP8FwdOp(layout), fp8_tensors)[1] == oracle
+
+        bf16_tensors = {
+            "a": torch.empty(experts, max_m, k, dtype=bf16),
+            "b": torch.empty(experts, n, k, dtype=bf16),
+            "layout_metadata": metadata,
+            "out": None,
+        }
+        oracle = _ledger(
+            "MoEGroupedGemmFwdOp",
+            a=((valid, k), bf16),  # valid rows only
+            b=((active, n, k), bf16),  # active experts only
+            layout_metadata=((experts,), torch.int32),
+            output=((valid, n), bf16),  # valid rows only
+        )
+        assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors)[1] == oracle
+
     def test_nsa_forward_reads_the_rows_its_selection_kept(self):
         """How much this call reads follows `block_counts`, so the case reads the
         selection the manifest row generates rather than inventing one of its own."""

@@ -498,55 +498,70 @@ FusedMoESharedExpertFwdOp:
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
 MoEGroupedGemmFP8FwdOp:
   family: moe
-  status: spec-only
-  ref_api: deep_gemm.m_grouped_fp8_gemm_nt_contiguous
+  status: implemented
+  ref_api: deep_gemm.m_grouped_fp8_gemm_nt_masked
   signature:
     types:
       Rows:
-        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        params: {layout: MGroupedLayout, E: Dim, C: Dim}
         match: layout
         cases:
           - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
-          - {when: {contiguous: "_"}, is: "[P, C]"}
       LayoutMetadata:
-        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        params: {layout: MGroupedLayout, E: Dim}
         match: layout
         cases:
           - {when: {masked: "_"}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
     forall:
-      P: Dim
       K: Dim
       N: Dim
       E: Dim
+      # Routed rows this shard receives, spread over its E experts; read only by `values`.
+      T: Dim
     params:
       layout: {type: MGroupedLayout}
     inputs:
-      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, P, K]", contiguous: true}
-      a_scale: {dtype: float32, shape: "Rows[layout, E, P, ceil_div(K, 128)]"}
+      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, K]", contiguous: true}
+      a_scale: {dtype: float32, shape: "Rows[layout, E, ceil_div(K, 128)]"}
       b: {dtype: float8_e4m3fn, shape: "[E, N, K]", contiguous: true}
       b_scale: {dtype: float32, shape: "[E, ceil_div(N, 128), ceil_div(K, 128)]"}
       layout_metadata:
         dtype: int32
-        shape: "LayoutMetadata[layout, E, P]"
+        shape: "LayoutMetadata[layout, E]"
         contiguous: true
-        values: "moe.layout_metadata(layout, R, E)"
+        values: "moe.masked_routed_metadata(layout, E, T)"
         requires: ["moe.layout_valid(layout, R, E)"]
     let:
-      R: "E * layout.max_m if layout.kind == 'masked' else P"
+      # Kinds are checked on every layout, the rejected contiguous one included, so the read of
+      # max_m needs its guard; the else arm is never taken on an accepted call.
+      R: "E * layout.max_m if layout.kind == 'masked' else 0"
     shape_rules:
+      # Contiguous layouts are outside this op; it serves masked [E, max_m, ...] slabs only.
+      - "layout.kind == 'masked'"
       - "E > 0"
       # The scales tile the operands in exact 128-element blocks; a ragged final block has
       # no representation on either side.
       - "K % 128 == 0"
       - "N % 128 == 0"
     outputs:
-      output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]"}
+      output: {dtype: bfloat16, shape: "Rows[layout, E, N]", buffer: out, contiguous: true}
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_fp8_roofline
   workloads:
-    - {P: 1024, N: 4096, K: 7168, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-up}
-    - {P: 1024, N: 7168, K: 2048, E: 8, layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-prefill-down}
-    - {N: 4096, K: 7168, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-up-masked}
-    - {N: 7168, K: 2048, E: 8, layout: {masked: {max_m: 128}}, label: ds-v3-decode-down-masked}
+    - {N: 4096, K: 7168, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-up-masked}
+    - {N: 7168, K: 2048, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-down-masked}
+    # Decode, one token per request, top-8 routing under EP8: a shard receives T = batch rows over
+    # its E = experts / 8 local experts, and max_m = batch is the slab one expert taking every
+    # token needs.
+    - {N: 4096, K: 7168, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-up}
+    - {N: 7168, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-down}
+    - {N: 4096, K: 7168, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-up}
+    - {N: 7168, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-down}
+    - {N: 3072, K: 4096, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-up}
+    - {N: 4096, K: 1536, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-down}
+    - {N: 3072, K: 4096, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-up}
+    - {N: 4096, K: 1536, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-down}
+    - {N: 4096, K: 7168, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-up}
+    - {N: 7168, K: 2048, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-down}
+    - {N: 4096, K: 7168, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-up}
+    - {N: 7168, K: 2048, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-down}

@@ -12,6 +12,7 @@ from tileops.ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, Ro
 from tileops.ops.moe.fused_moe import FusedMoE, FusedMoEFwdOp
 from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKFwdOp
+from tileops.ops.moe.moe_grouped_gemm_fp8 import MoEGroupedGemmFP8FwdOp
 from tileops.ops.moe.permute_align import MoEPermuteAlignFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
@@ -36,6 +37,7 @@ __all__ = [
     "IndexedExpertMLPFwdOp",
     "MaskedLayoutSpec",
     "MoEExpertMLPFwdOp",
+    "MoEGroupedGemmFP8FwdOp",
     "MoEGroupedGemmFwdOp",
     "MoEPermuteAlignFwdOp",
     "MoEPostPermuteFwdOp",
