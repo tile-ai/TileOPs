@@ -69,7 +69,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     # Hopper FP8 tensor-core accumulation loses low bits over long reductions.
     # Reuse the consumed score registers for one PV tile, then promote with
     # FP32 additions. This avoids another 64 accumulator registers per thread.
-    promote_pv = (seq_len_kv + 223) // 224 >= 32
+    promote_pv = (seq_len_kv + 223) // 224 >= 16
     causal_offset = seq_len_kv - seq_len_q
 
     @tilelang.jit(

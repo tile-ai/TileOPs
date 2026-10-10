@@ -93,12 +93,19 @@ from workloads.numerics import compare_outputs
             marks=pytest.mark.smoke,
         ),
         # Long FP8 PV accumulation needs FP32 promotion for biased values.
-        # Exercise both softmax schedules and the first 32-tile extent.
+        # Exercise both softmax schedules and the first promoted extent.
         pytest.param(
-            (1, 129, 6945, 8, 1, 128),
+            (1, 129, 3361, 8, 1, 128),
             torch.float8_e4m3fn,
             {},
             id="fp8-causal-long",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 6944, 6944, 4, 1, 128),
+            torch.float8_e4m3fn,
+            {"is_causal": False},
+            id="fp8-noncausal-promotion",
             marks=pytest.mark.full,
         ),
         pytest.param(
@@ -129,6 +136,13 @@ def test_gqa_dense_sinks(shape, dtype, options):
         out_dtype=workload.out_dtype if dtype == torch.float8_e4m3fn else None,
     )
     inputs = workload.gen_inputs()
+    if dtype == torch.float8_e4m3fn and shape[2] >= 3361:
+        # Constant values expose accumulation loss without cancellation. The
+        # value scale prevents the absolute tolerance from hiding that loss.
+        inputs[0].zero_()
+        inputs[1].zero_()
+        inputs[2].fill_(1.5)
+        inputs[5].fill_(1.25)
     # Large finite sinks must suppress output without overflow; -inf disables
     # only that head's sink. Other heads keep distinct, finite logits.
     inputs[-1][0] = -float("inf")
