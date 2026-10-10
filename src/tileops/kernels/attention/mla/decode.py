@@ -1030,5 +1030,5 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
         # head rows differently and the row statistics have no common layout.
         return [
             {"block_H": h, "block_N": n, "num_split": s, "num_stages": st, "threads": 128}
-            for h, n, s, st in itertools.product([16, 32], [32, 64], [1, 2, 4], [1, 2])
+            for h, n, s, st in itertools.product([16, 32], [32, 64], [1, 2, 4, 8, 16], [1, 2])
         ]
