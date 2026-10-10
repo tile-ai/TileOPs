@@ -22,6 +22,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.elementwise.call_spec import (
     AlphaScaledBinaryFwdInterface,
     AlphaScaledCall,
+    DivCall,
     ElementwiseCall,
     LerpCall,
     LerpFwdInterface,
@@ -30,8 +31,6 @@ from tileops.kernels.elementwise.call_spec import (
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE, BinaryOp
 from tileops.ops.op_base import Op
-
-_DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
@@ -111,8 +110,7 @@ class DivFwdOp(BinaryOp):
     Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division); each
-    value selects a dedicated kernel. It is fixed for the instance, which is
-    why it is not part of the memory key.
+    value selects a dedicated kernel through the call spec.
     """
 
     kernel_types = {
@@ -140,10 +138,14 @@ class DivFwdOp(BinaryOp):
         self.rounding_mode = rounding_mode
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        key = _DIV_KEY_BY_ROUNDING_MODE[self.rounding_mode]
-        return {key: self.kernel_types[key]}
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> DivCall:
+        return DivCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+            rounding_mode=self.rounding_mode,
+        )
 
 
 class RemainderFwdOp(BinaryOp):
@@ -188,6 +190,16 @@ class FloorDivideFwdOp(BinaryOp):
     """Element-wise floor division with broadcast: y = a // b, as ``torch.floor_divide``."""
 
     kernel_types = {"floor_divide": FloorDivideFwdKernel}
+
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> DivCall:
+        # The floor_divide implementation is shared with DivFwdOp and reads rounding_mode.
+        return DivCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+            rounding_mode="floor",
+        )
 
 
 class LerpScalarFwdOp(BinaryOp):
@@ -266,7 +278,6 @@ class LerpTensorFwdOp(Op):
     overload is handled separately by ``LerpScalarFwdOp``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"lerp_tensor": LerpTensorFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: LerpTensorFwdInterface

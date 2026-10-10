@@ -37,7 +37,6 @@ class IndexedExpertMLPFwdOp(Op):
     shapes where it does.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "route_stats": IndexedRouteStatsKernel,
         "expert_gate_up": IndexedExpertGateUpKernel,

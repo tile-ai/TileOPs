@@ -24,7 +24,6 @@ class SSDChunkCumsumFwdOp(Op):
     is computed from the fp32 dt values before casting, ensuring numerical precision.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_cumsum_fwd": SSDChunkCumsumFwdKernel
     }

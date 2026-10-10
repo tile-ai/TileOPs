@@ -30,8 +30,6 @@ class INT8QuantPerChannelFwdOp(Op):
     ``8.8e-44``, reachable only in float32) that its ``scale`` rounds to zero.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_quant_per_channel_fwd": INT8QuantPerChannelFwdKernel
     }

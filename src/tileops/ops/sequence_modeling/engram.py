@@ -28,7 +28,6 @@ class EngramGateConvFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_fwd": EngramGateConvFwdKernel
     }
@@ -134,7 +133,6 @@ class EngramGateConvBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_bwd": EngramGateConvBwdKernel
     }

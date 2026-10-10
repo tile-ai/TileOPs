@@ -149,7 +149,6 @@ class GQADenseFwdOp(Op):
     $$
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_dense": GQADenseWSKernel,
         "gqa_dense_decode": GQADecodeKernel,

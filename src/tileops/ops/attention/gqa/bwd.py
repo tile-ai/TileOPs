@@ -24,7 +24,6 @@ __all__ = ["GQABwdOp"]
 class GQABwdOp(Op):
     """Grouped-Query Attention (GQA) backward. Layout: BSHD."""
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_bwd_preprocess_kernel": GQABwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWGMMAPipelinedKernel,

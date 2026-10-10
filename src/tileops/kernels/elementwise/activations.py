@@ -21,6 +21,7 @@ from tileops.kernels.elementwise.call_spec import (
     BoundsCall,
     EluCall,
     EluFwdInterface,
+    GeluCall,
     LeakyReluCall,
     LeakyReluFwdInterface,
     SoftplusCall,
@@ -63,6 +64,12 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
 
+    @classmethod
+    def refusal(cls, call: GeluCall) -> "str | None":
+        if call.approximate != "none":
+            return f"evaluates the erf form, not approximate={call.approximate!r}"
+        return super().refusal(call)
+
     @staticmethod
     def op_func(x):
         inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
@@ -78,6 +85,12 @@ class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
     matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
     """
+
+    @classmethod
+    def refusal(cls, call: GeluCall) -> "str | None":
+        if call.approximate != "tanh":
+            return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
+        return super().refusal(call)
 
     @staticmethod
     def op_func(x):

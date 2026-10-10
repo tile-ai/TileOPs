@@ -24,7 +24,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
     and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 
-    compile_boundary = True
     # The WGMMA warp-specialized kernels serve SM90 -- the seesaw kernel value dim 512,
     # the older one the other widths it covers; the architecture-agnostic basic kernel
     # serves everywhere else. Selection reads the device when a call arrives.

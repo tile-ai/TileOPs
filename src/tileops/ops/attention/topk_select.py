@@ -27,7 +27,6 @@ class TopKSelectFwdOp(Op):
       one past the last key, which selects nothing.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"topk_select_kernel": TopKSelectKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "topk_select": TopKSelectFwdInterface

@@ -332,7 +332,8 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     call-time inputs in order, positional, the optional ones defaulting to `None` and the
     others to nothing, then `out` when an output is a buffer. The `op` stages of `composition`
     are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
-    stages, each in order.
+    stages, each in order. The class names compile-boundary operators in `compile_op_names`
+    exactly when the entry has a call-time tensor input and no composition.
     """
     where = f"[signature] {op_name}"
     if not isinstance(entry.get("family"), str):
@@ -389,6 +390,16 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
         elif got.default is not (None if optional else empty):
             want = "default to None" if optional else "have no default"
             errors.append(f"{where}: forward {name!r} must {want}")
+    bounded = bool(inputs) and not entry.get("composition")
+    if bool(getattr(cls, "compile_op_names", ())) != bounded:
+        errors.append(
+            f"{where}: compile_op_names must be "
+            + (
+                "non-empty: the entry has a call-time tensor input and no composition"
+                if bounded
+                else "empty: the entry has no call-time tensor input or has a composition"
+            )
+        )
     stages = [
         st for st in (entry.get("composition") or {}).get("stages") or [] if isinstance(st, dict)
     ]

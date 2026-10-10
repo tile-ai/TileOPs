@@ -75,8 +75,6 @@ class _ReduceOpBase(Op):
     - ``_scalar_forward(x)``: the result on a 0-d input.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     _op_kind: str = ""
     # The manifest's empty-``dim`` mode of ``reduced``: ``'full'`` or ``'noop'``.
     _empty: str = "full"

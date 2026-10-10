@@ -71,7 +71,6 @@ class BatchNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fwd_train_whole": BatchNormFwdTrainWholeKernel,
         "fwd_train_wide": BatchNormFwdTrainWideKernel,
@@ -213,7 +212,6 @@ class BatchNormBwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bwd_wide": BatchNormBwdWideKernel,
         "bwd_split": BatchNormBwdSplitKernel,

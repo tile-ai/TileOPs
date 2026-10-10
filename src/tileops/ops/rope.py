@@ -14,8 +14,8 @@ Input layouts:
 - ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
 - ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
 
-torch.compile support: every op declares ``compile_boundary``, from which one operator
-is generated from its manifest entry.
+torch.compile support: each op's compile-boundary operator is generated from its
+manifest entry.
 """
 
 import math
@@ -109,7 +109,6 @@ class _RoPEOpBase(Op):
     the input tensor, avoiding device-mismatch issues in multi-GPU settings.
     """
 
-    compile_boundary = True
     # The rotation convention keys the interface; the scheme variants serve NeoX only.
     rope_layout: str = "neox"
 
@@ -254,7 +253,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
     ``rotary_dim`` is None) and the rest are copied.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "rope_neox_position_ids": RoPENeoxPositionIdsKernel
     }

@@ -28,7 +28,6 @@ __all__ = [
 class MLADecodeWithKVCacheFwdOp(Op):
     """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mla_decode_kernel": MLADecodeWSKernel,
         "mla_decode_mma_kernel": MLADecodeMMAKernel,
@@ -109,7 +108,6 @@ class MLAVarlenFwdOp(Op):
     returned in float32 so a caller merging chunked-context partials can combine them.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mla_varlen_fwd": MLAVarlenPrefillFwdKernel,
         "mla_varlen_fwd_ws": MLAVarlenPrefillWSFwdKernel,

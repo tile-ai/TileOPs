@@ -29,6 +29,7 @@ from tileops.kernels.elementwise.call_spec import (
     BoundsCall,
     EluCall,
     EluFwdInterface,
+    GeluCall,
     LeakyReluCall,
     LeakyReluFwdInterface,
     SoftplusCall,
@@ -80,10 +81,13 @@ class GeluFwdOp(UnaryOp):
         self.approximate = approximate
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        key = "gelu_tanh" if self.approximate == "tanh" else "gelu"
-        return {key: self.kernel_types[key]}
+    def _call_spec(self, input: torch.Tensor) -> GeluCall:
+        return GeluCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            approximate=self.approximate,
+        )
 
 
 class SiluFwdOp(_ParamFreeActivationOp):

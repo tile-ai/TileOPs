@@ -26,7 +26,6 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
     outputs zeros.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mha_decode_paged_kernel": GQADecodePagedKernel,
         "mha_decode_paged_ws_kernel": MHADecodePagedWSKernel,

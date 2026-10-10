@@ -25,7 +25,6 @@ class EngramDecodeFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "engram_decode": EngramDecodeFwdInterface

@@ -35,7 +35,6 @@ class DropoutFwdOp(Op):
     by default) for per-thread random number generation.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"dropout": DropoutKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dropout": DropoutFwdInterface}
 

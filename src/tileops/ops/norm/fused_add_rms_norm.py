@@ -37,7 +37,6 @@ class FusedAddRMSNormFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fused_add_rms_norm": FusedAddRMSNormKernel
     }

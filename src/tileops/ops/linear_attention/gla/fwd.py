@@ -37,8 +37,6 @@ class GLAFwdOp(Op):
     in-tree kernels serve equal-length prefill, packed-varlen prefill and decode.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gla_dense_decode": GLADenseDecodeFwdKernel,
         "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,

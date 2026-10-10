@@ -31,8 +31,6 @@ class SamplingFromProbsFwdOp(Op):
     samples whatever the batch and whatever grid the call takes.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "sampling_from_probs": SamplingFromProbsFwdKernel
     }

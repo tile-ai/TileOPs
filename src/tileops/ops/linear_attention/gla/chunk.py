@@ -26,7 +26,6 @@ class GLAChunkFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_fwd": GLAChunkFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_chunk_fwd": GLAChunkFwdInterface
@@ -128,7 +127,6 @@ class GLAChunkBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_bwd": GLAChunkBwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_chunk_bwd": GLAChunkBwdInterface

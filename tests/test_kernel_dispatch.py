@@ -402,6 +402,6 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
         and not cls.__name__.startswith("_")
         and not inspect.isabstract(cls)
         and not cls.interfaces
-        and (cls.kernel_types or cls.default_kernel_map is not Op.default_kernel_map)
+        and cls.kernel_types
     }
     assert sorted(legacy) == [], "declare interfaces instead"

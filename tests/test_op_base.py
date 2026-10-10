@@ -97,7 +97,6 @@ def _recording_kernels(tuned: list, builds: list):
 def _make_op_subclass():
     """Build a minimal concrete Op subclass for testing."""
     attrs = {
-        "default_kernel_map": property(lambda self: {}),
         "forward": lambda self, *a, **kw: None,
         # The three manifest-driven methods are abstract on Op; these doubles
         # exercise the get-or-build plumbing, so a minimal body is the contract.
@@ -130,7 +129,7 @@ def _gated_op(name: str, forward, delegate_types=None) -> type:
 
 
 class TestCompositeKernelMapOverride:
-    """Composite ops (empty ``default_kernel_map``) accept a non-empty override and store it verbatim."""
+    """Composite ops (empty ``kernel_types``) accept a non-empty override and store it verbatim."""
 
     def test_empty_default_with_empty_override_yields_empty_map(self):
         Cls = _make_op_subclass()
@@ -166,10 +165,6 @@ class _SlottedOp(Op):
         fwd, aux = _recording_kernels(tuned, self.builds)
         self.kernel_types = {"fwd": fwd, "aux": aux}
         self._install_kernel_map(None)
-
-    @property
-    def default_kernel_map(self):
-        return dict(self.kernel_types)
 
     def _infer_output_shapes(self, *shapes):
         return {}
@@ -633,7 +628,7 @@ def test_a_key_another_op_declares_passes_through() -> None:
 
 
 def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
-    """``default_kernel_map`` is ``kernel_types``, and an override may name only a key some
+    """An override may name only a key some
     created op class declares."""
     from tileops.kernels.gemm import GemmTMAKernel
     from tileops.kernels.gemm.call_spec import GemmFwdInterface

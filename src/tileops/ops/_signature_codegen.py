@@ -1,10 +1,10 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics).
 
 `install` gives an op class, from its manifest entry, `_check_construction`, the call checks,
-`_infer_output_shapes`, `eval_roofline` and, when the class declares a
-compile boundary, one operator per effect branch. Each check is emitted as Python source when
-the class is created, one per discriminant point, so a call parses no expression string and a
-traced call only looks its check up. What construction can decide is checked there, once; the
+`_infer_output_shapes` and `eval_roofline`; `install_compile_boundary` registers, when the entry
+has a call-time tensor input and no composition, one compile-boundary operator per effect
+branch. Each check is emitted as Python source when the class is created, one per discriminant
+point, so a call parses no expression string and a traced call only looks its check up. What construction can decide is checked there, once; the
 call check continues from what construction solved. Under SymInt the emitted code lowers
 `and`, `or`, `not`, conditionals and sequence equality to their symbolic forms, and a
 refinement becomes `torch._check`. A failure names the declaration it came from.
@@ -48,7 +48,14 @@ from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
 
-__all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
+__all__ = [
+    "CheckError",
+    "SignatureCall",
+    "has_compile_boundary",
+    "install",
+    "install_compile_boundary",
+    "maybe_install_signature",
+]
 
 
 _SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
@@ -1421,26 +1428,34 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     )
     if entry_plan_.roofline is not None:
         cls.eval_roofline = lambda self: plan.roofline(_last_call(self))
-    _install_boundary(cls, plan, entry)
     abc.update_abstractmethods(cls)
     return True
 
 
-def _install_boundary(cls: type, plan: _Plan, entry: dict) -> None:
-    """Register the compile-boundary operators of a class declaring `compile_boundary = True`,
-    which is its claim that it supports `fullgraph=True`."""
-    if not getattr(cls, "compile_boundary", False):
+def has_compile_boundary(entry: dict) -> bool:
+    """Whether an op class with *entry* gets a compile boundary: the entry has a call-time
+    tensor input and no composition. Such an op must compile cold with `fullgraph=True`."""
+    return bool((entry.get("signature") or {}).get("inputs")) and not entry.get("composition")
+
+
+def install_compile_boundary(cls: type, entry: dict) -> None:
+    """Register the compile-boundary operators of `cls`, which :func:`install` gave its
+    entry's methods, when the entry calls for them (:func:`has_compile_boundary`).
+
+    A class without them names no operator, whatever a base class it inherits names.
+    """
+    if not has_compile_boundary(entry):
+        cls.compile_op_names = ()
         return
-    if not plan.sig.inputs:
-        raise TypeError(f"{cls.__name__}: compile_boundary needs a call-time tensor input")
-    boundary = _Boundary(cls, plan, entry["family"])
+    boundary = _Boundary(cls, cls._signature, entry["family"])
     cls._call_boundary = boundary.binder(cls)
 
 
 def maybe_install_signature(cls: type) -> bool:
-    """Install from the class's manifest entry, True when one was installed; the manifest is
-    read leniently."""
+    """Install from the class's manifest entry, its compile boundary included, True when one
+    was installed; the manifest is read leniently."""
     entry = try_load_entry(cls.__name__)
-    if not isinstance(entry, dict):
+    if not isinstance(entry, dict) or not install(cls, entry):
         return False
-    return install(cls, entry)
+    install_compile_boundary(cls, entry)
+    return True

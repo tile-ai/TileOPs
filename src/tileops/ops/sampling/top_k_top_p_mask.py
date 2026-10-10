@@ -31,8 +31,6 @@ class TopKTopPMaskFwdOp(Op):
     probability sits within a few rounding steps of ``p``.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "top_k_top_p_mask_fwd": TopKTopPMaskFwdKernel
     }

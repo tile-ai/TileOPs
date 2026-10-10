@@ -29,7 +29,6 @@ class MHCPreFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_pre": MHCPreKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_pre": MHCPreFwdInterface}
 
@@ -133,7 +132,6 @@ class MHCPostFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_post": MHCPostKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_post": MHCPostFwdInterface}
 

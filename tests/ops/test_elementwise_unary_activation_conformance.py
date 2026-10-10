@@ -80,7 +80,7 @@ def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
 
     cls = getattr(mod, op_name)
     kw = _clamp_construct_kwargs(op_name)
-    ((key, default_kernel_cls),) = cls(**kw).default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls(**kw).kernel_types.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""

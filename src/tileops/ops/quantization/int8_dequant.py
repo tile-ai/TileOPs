@@ -33,8 +33,6 @@ class INT8DequantPerTensorFwdOp(Op):
     bit-identical to that expression.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_tensor": INT8DequantPerTensorFwdKernel,
         "int8_dequant_per_tensor_small": INT8DequantPerTensorSmallFwdKernel,
@@ -97,8 +95,6 @@ class INT8DequantPerChannelFwdOp(Op):
     bit-identical to ``(q.float() * scale[:, None]).to(out_dtype)``.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_channel": INT8DequantPerChannelFwdKernel
     }
@@ -160,8 +156,6 @@ class INT8DequantPerBlockFwdOp(Op):
     The multiply is in float32 and its result is cast once to ``out_dtype``, so ``x`` is
     bit-identical to ``(q.float() * scale.repeat_interleave(128, dim=1)[:, :K]).to(out_dtype)``.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_block": INT8DequantPerBlockFwdKernel,

@@ -43,7 +43,6 @@ class GroupNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "group_norm": GroupNormKernel,
         "group_norm_no_affine": GroupNormNoAffineKernel,

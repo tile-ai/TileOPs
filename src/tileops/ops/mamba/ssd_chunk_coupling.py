@@ -23,7 +23,6 @@ class SSDChunkCouplingFwdOp(Op):
     with causal masking (cb[l,s] = 0 if s > l).
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_coupling": SSDChunkCouplingKernel
     }

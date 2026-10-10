@@ -42,7 +42,6 @@ class _MaxPoolFwdOpBase(Op):
     """
 
     ndim: ClassVar[int]
-    compile_boundary = True
 
     def __init__(
         self,

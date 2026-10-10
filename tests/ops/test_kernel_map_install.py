@@ -10,7 +10,6 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.utils import forget_device_properties, get_sm_version
 from workloads.device import run_device_available
@@ -109,16 +108,12 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     incompatible_archs = _make_incompatible_arch_list()
 
     class AutoDiscoveredIncompatibleOp(GemmFwdOp):
-        @property
-        def default_kernel_map(self) -> dict[str, Kernel]:
-            return {
-                key: type(
-                    f"Incompatible{cls.__name__}",
-                    (cls,),
-                    {} | {"supported_archs": incompatible_archs},
-                )
-                for key, cls in super().default_kernel_map.items()
-            }
+        kernel_types = {
+            key: type(
+                f"Incompatible{cls.__name__}", (cls,), {"supported_archs": incompatible_archs}
+            )
+            for key, cls in GemmFwdOp.kernel_types.items()
+        }
 
     op = AutoDiscoveredIncompatibleOp()
 
@@ -137,7 +132,7 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
     """
     import tileops.ops.elementwise as mod
 
-    ((key, default_kernel_cls),) = mod.ReluFwdOp().default_kernel_map.items()
+    ((key, default_kernel_cls),) = mod.ReluFwdOp().kernel_types.items()
 
     class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = _make_incompatible_arch_list()
@@ -165,7 +160,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     dtype = torch.float16
 
     baseline = cls(target=BUILTIN)
-    ((key, default_kernel_cls),) = baseline.default_kernel_map.items()
+    ((key, default_kernel_cls),) = baseline.kernel_types.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
@@ -197,7 +192,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    ((key, default_kernel_cls),) = cls().default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls().kernel_types.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None

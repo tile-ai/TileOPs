@@ -29,11 +29,13 @@ __all__ = [
     "BroadcastCall",
     "ClampTensorCall",
     "ClampTensorFwdInterface",
+    "DivCall",
     "ElementwiseCall",
     "EluCall",
     "EluFwdInterface",
     "FusedGatedCall",
     "FusedGatedFwdInterface",
+    "GeluCall",
     "LeakyReluCall",
     "LeakyReluFwdInterface",
     "LerpCall",
@@ -86,6 +88,14 @@ class BroadcastCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
+class DivCall(BroadcastCall):
+    """A division call; ``rounding_mode`` is the op's construction parameter, as in
+    ``torch.div``: ``None``, ``"trunc"`` or ``"floor"``."""
+
+    rounding_mode: Optional[str] = None
+
+
+@dataclasses.dataclass(frozen=True)
 class AlphaScaledCall(BroadcastCall):
     """A binary call whose second operand is scaled by ``alpha`` before combining."""
 
@@ -106,6 +116,14 @@ class FusedGatedCall(CallSpec):
     m: int = 0
     n: int = 0
     dtype: torch.dtype = torch.float16
+
+
+@dataclasses.dataclass(frozen=True)
+class GeluCall(ElementwiseCall):
+    """A GELU call; ``approximate`` is the op's construction parameter, ``"none"`` or
+    ``"tanh"``."""
+
+    approximate: str = "none"
 
 
 @dataclasses.dataclass(frozen=True)

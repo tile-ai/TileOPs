@@ -27,8 +27,6 @@ class _AdaptivePool2dFwdOpBase(Op):
     the batch axis.
     """
 
-    compile_boundary = True
-
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],

@@ -55,8 +55,6 @@ class KDAFwdOp(Op):
     require an external target implementation.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "kda_chunk_prefill": KDAChunkPrefillFwdKernel,
         "kda_fused_prefill": KDAFusedPrefillFwdKernel,

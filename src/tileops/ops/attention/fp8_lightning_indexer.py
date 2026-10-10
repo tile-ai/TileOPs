@@ -24,7 +24,6 @@ class FP8LightningIndexerFwdOp(Op):
     op; an FP8 call passes the per-key scales in ``index_k_scale``.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fp8_lightning_indexer_kernel": FP8LightningIndexerKernel
     }

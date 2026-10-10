@@ -26,7 +26,6 @@ class SSDChunkScanFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_scan_fwd": SSDChunkScanFwdKernel
     }

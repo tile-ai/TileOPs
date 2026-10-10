@@ -54,7 +54,6 @@ class UnaryOp(Op):
     with the tensor, so nothing about shape is a construction parameter.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: UnaryElementwiseFwdInterface
     }
@@ -100,7 +99,6 @@ class BinaryOp(Op):
     is the kernel's, so this class only hands the two shapes down.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: BinaryElementwiseFwdInterface
     }
@@ -155,7 +153,6 @@ class FusedGatedOp(Op):
     the tensor.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: FusedGatedFwdInterface
     }

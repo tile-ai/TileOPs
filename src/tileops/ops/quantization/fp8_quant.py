@@ -26,8 +26,6 @@ class FP8QuantFwdOp(Op):
     the clamp carry the non-finite value depends on the kernel serving the call.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fp8_quant": FP8QuantFwdInterface}
 

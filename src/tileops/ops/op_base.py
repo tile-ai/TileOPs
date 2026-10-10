@@ -154,12 +154,6 @@ class Op(ABC):
     delegate_types: ClassVar[Mapping[str, type["Op"]]] = MappingProxyType({})
 
     @property
-    def default_kernel_map(self) -> dict[str, Kernel]:
-        """This instance's dispatch table: every entry of ``kernel_types``, unless a
-        construction parameter selects some of them."""
-        return dict(self.kernel_types)
-
-    @property
     def last_call(self) -> object:
         """The ``SignatureCall`` of this op's last completed call: its ``ix``, tensors and effects.
 
@@ -171,15 +165,14 @@ class Op(ABC):
             raise RuntimeError(f"{type(self).__name__}: no call has completed yet")
         return call
 
-    # Operators this op registers on the torch.compile boundary. Naming them is what lets
-    # a test assert the traced graph holds nothing else, which is what keeps the graph the
-    # same when another target serves the op. A tuple because a conditional in-place write
-    # registers two. Registration happens once per class, so this is class state.
+    # Operators this op registers on the torch.compile boundary; non-empty exactly when the
+    # op has one. The signature generates them for a class whose entry has a call-time tensor
+    # input and no composition, and such an op must compile cold with ``fullgraph=True``.
+    # Naming them is what lets a test assert the traced graph holds nothing else, which is
+    # what keeps the graph the same when another target serves the op. A tuple because a
+    # conditional in-place write registers two. Registration happens once per class, so this
+    # is class state.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
-
-    # Whether this op declares a compile boundary, which is its claim that it supports
-    # ``fullgraph=True``; the signature generates its operators.
-    compile_boundary: ClassVar[bool] = False
 
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
@@ -275,7 +268,7 @@ class Op(ABC):
     def _install_kernel_map(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``, read-only.
 
-        Each key's registered implementation, from ``default_kernel_map`` or a backend, is
+        Each key's registered implementation, from ``kernel_types`` or a backend, is
         replaced by *kernel_map*'s under the same name; only what runs changes, not what
         selects the key. A name no op in the library declares is refused; a name this op does
         not have but another does is kept out of the resolved map and ignored, because that
@@ -291,7 +284,7 @@ class Op(ABC):
         """
         for built in ("_built_entries", "_selected_entries", "_dispatched"):
             self.__dict__.pop(built, None)
-        default_map = self.default_kernel_map
+        default_map = self.kernel_types
         override = dict(kernel_map) if kernel_map else {}
         self._given_kernel_map = override or None
         if default_map is None or len(default_map) == 0:
@@ -1161,7 +1154,7 @@ class Op(ABC):
             self._builder = None
             return
         builder = registered_kernel_builder(type(self).__name__, target)
-        if builder is None and not self.default_kernel_map:
+        if builder is None and not self.kernel_types:
             self._settled_target = target
             self._builder = None
             return

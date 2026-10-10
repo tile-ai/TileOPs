@@ -26,8 +26,6 @@ class MinPMaskFwdOp(Op):
     ``torch.amax`` and ``<`` leave it.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"min_p_mask_fwd": MinPMaskFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "min_p_mask_fwd": MinPMaskFwdInterface

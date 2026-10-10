@@ -34,7 +34,6 @@ class DeltaNetChunkFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_chunk_fwd": DeltaNetChunkFwdKernel
     }
@@ -124,7 +123,6 @@ class DeltaNetChunkBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_chunk_bwd": DeltaNetChunkBwdKernel
     }
