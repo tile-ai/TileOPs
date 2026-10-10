@@ -110,6 +110,7 @@ class GQAPagedFwdOp(Op):
         k_pages: torch.Tensor,
         page_table: torch.Tensor,
         rope_cos: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> AttentionCall:
         """State what one paged call is, for selection to filter against.
 
@@ -121,6 +122,7 @@ class GQAPagedFwdOp(Op):
         batch, max_pages_per_req = page_table.shape
         return AttentionCall(
             dtype=q.dtype,
+            has_sinks=sinks is not None,
             batch=batch,
             heads=heads,
             heads_kv=heads_kv,
@@ -157,6 +159,7 @@ class GQAPagedFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run read-only paged GQA over packed Q and rank-4 KV pages.
 
@@ -172,6 +175,7 @@ class GQAPagedFwdOp(Op):
             v_scale: Dequantization scale of an FP8 value cache.
             rope_cos: Rotary cosine table when ``pos_encoding_mode='rope'``.
             rope_sin: Rotary sine table when ``pos_encoding_mode='rope'``.
+            sinks: Optional FP32 [heads] logits contributing only to the denominator.
 
         Returns:
             The attention output [total_q, heads, dim].
@@ -188,6 +192,7 @@ class GQAPagedFwdOp(Op):
             v_scale,
             rope_cos,
             rope_sin,
+            sinks,
         )
 
     def _eager_forward(
@@ -203,6 +208,7 @@ class GQAPagedFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator.
 
@@ -212,7 +218,7 @@ class GQAPagedFwdOp(Op):
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
-        call = self.paged_call(q, k_pages, page_table, rope_cos)
+        call = self.paged_call(q, k_pages, page_table, rope_cos, sinks)
         inputs = (
             q,
             k_pages.flatten(0, 1),
@@ -222,5 +228,6 @@ class GQAPagedFwdOp(Op):
             cu_seqlens_q,
             rope_cos.contiguous() if rope_cos is not None else None,
             rope_sin.contiguous() if rope_sin is not None else None,
+            sinks.contiguous() if sinks is not None else None,
         )
         return self.kernel_for("gqa_paged", call)(*inputs)

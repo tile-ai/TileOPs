@@ -17,6 +17,7 @@ __all__ = [
     "make_online_softmax",
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
+    "make_paged_sink_scale",
     "make_rescale",
 ]
 
@@ -190,3 +191,20 @@ def make_rescale(block_rows, head_dim):
             acc_o[i, j] *= scores_scale[i]
 
     return rescale
+
+
+def make_paged_sink_scale(scale, block_rows, group):
+    """Attenuate completed softmax rows by one zero-value, per-query-head sink."""
+
+    @T.macro
+    def sink_scale(logsum, scores_max, sinks, factors, head_base, row0, valid_rows):
+        for i in T.Parallel(block_rows):
+            factors[i] = 1.0
+            if i < valid_rows and logsum[i] > 0:
+                lse = T.log2(logsum[i]) + scores_max[i] * scale
+                sink = sinks[head_base + (row0 + i) % group] * LOG2E
+                maximum = T.max(lse, sink)
+                mass = T.exp2(lse - maximum)
+                factors[i] = mass / (mass + T.exp2(sink - maximum))
+
+    return sink_scale
