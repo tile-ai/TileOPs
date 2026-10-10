@@ -9,6 +9,7 @@ import torch
 from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import ATTENTION_DTYPES
+from tileops.kernels.attention.online_softmax import make_varlen_sink_scale
 from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
 from tileops.kernels.constants import LOG2E
@@ -40,6 +41,7 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 def _gqa_prefill_varlen_ws_kernel(
     batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas,
     fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
+    has_sinks=False,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
     score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
@@ -48,6 +50,7 @@ def _gqa_prefill_varlen_ws_kernel(
     groups = heads // heads_kv
     accum = "float"
     half = 64  # rows per consumer warpgroup: one m64 WGMMA
+    sink_scale = make_varlen_sink_scale(scale, half)
     block_m = 2 * half
     consumers = 256  # threads of the two consumer warpgroups
     policy = T.GemmWarpPolicy.FullRow
@@ -249,7 +252,7 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def consumer(
-        wg: int, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
+        wg: int, Qs, Ks, Vs, Os, O, sinks, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
         rope_cos=None, rope_sin=None,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
@@ -353,6 +356,10 @@ def _gqa_prefill_varlen_ws_kernel(
             T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
+            if has_sinks:
+                sink_scale(logsum, sm, sinks, alpha, head)
+                for i, j in T.Parallel(half, dim):
+                    acc_o[i, j] *= alpha[i]
             # Every row sees a key: causal needs kv_len >= q_len, non-causal kv_len > 0.
             if row + half <= q_len and kv_len >= (q_len if is_causal else 1):
                 for i in T.Parallel(half):
@@ -379,7 +386,7 @@ def _gqa_prefill_varlen_ws_kernel(
             work = item_slot[served % 2, 7]
 
     @T.macro
-    def launch(Q, K, V, CuQ, CuKV, O, Sched, rope_cos=None, rope_sin=None):
+    def launch(Q, K, V, CuQ, CuKV, sinks, O, Sched, rope_cos=None, rope_sin=None):
         """One persistent CTA: the TMA producer warp, then the two consumer warpgroups."""
         Qs = T.alloc_shared([2, 2, half, dim], dtype)
         Ks = T.alloc_shared([stages, block_n, dim], dtype)
@@ -418,7 +425,22 @@ def _gqa_prefill_varlen_ws_kernel(
                 vready, vfree, tile_cum[batch] * heads, tile_cum, lo, hi, request, q_row, meta,
                 tx - consumers,
             )  # fmt: skip
-        args = (Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta)
+        args = (
+            Qs,
+            Ks,
+            Vs,
+            Os,
+            O,
+            sinks,
+            item_slot,
+            q_bar,
+            qfree,
+            kready,
+            kfree,
+            vready,
+            vfree,
+            meta,
+        )
         if rope_cos is not None:
             args = (*args, rope_cos, rope_sin)
         with T.ws(0):
@@ -437,11 +459,14 @@ def _gqa_prefill_varlen_ws_kernel(
             CuKV: T.Tensor([batch + 1], "int32"),
             RopeCos: T.Tensor([max_position, rope_half], table_dtype),
             RopeSin: T.Tensor([max_position, rope_half], table_dtype),
+            Sinks: T.Tensor(
+                [heads] if has_sinks else [total_q, heads, dim], "float32" if has_sinks else dtype
+            ),
             O: T.Tensor([total_q, heads, dim], dtype),
             Sched: T.Tensor([2], "int32"),
         ):
             with T.Kernel(num_ctas, threads=384):
-                launch(Q, K, V, CuQ, CuKV, O, Sched, RopeCos, RopeSin)
+                launch(Q, K, V, CuQ, CuKV, Sinks, O, Sched, RopeCos, RopeSin)
 
         return main
 
@@ -452,11 +477,14 @@ def _gqa_prefill_varlen_ws_kernel(
         V: T.Tensor([total_kv, heads_kv, dim], dtype),
         CuQ: T.Tensor([batch + 1], "int32"),
         CuKV: T.Tensor([batch + 1], "int32"),
+        Sinks: T.Tensor(
+            [heads] if has_sinks else [total_q, heads, dim], "float32" if has_sinks else dtype
+        ),
         O: T.Tensor([total_q, heads, dim], dtype),
         Sched: T.Tensor([2], "int32"),
     ):
         with T.Kernel(num_ctas, threads=384):
-            launch(Q, K, V, CuQ, CuKV, O, Sched)
+            launch(Q, K, V, CuQ, CuKV, Sinks, O, Sched)
 
     return main
 
@@ -507,6 +535,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self.rotary_dim,
             self.rope_layout,
             self.rope_table_dtype_str,
+            self.has_sinks,
         )
 
     @property
@@ -530,6 +559,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_cuda(q=q, k=k, v=v)
         if torch.cuda.is_current_stream_capturing():
@@ -541,10 +571,13 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             if counter is None:
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
+        sink_input = sinks if sinks is not None else q
         out = torch.empty_like(q)
         if self.key_rope is None:
-            self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, out, counter)
+            self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, sink_input, out, counter)
             return out
         k_rot = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
-        self.kernel(q, k_rot, v, cu_seqlens_q, cu_seqlens_kv, rope_cos, rope_sin, out, counter)
+        self.kernel(
+            q, k_rot, v, cu_seqlens_q, cu_seqlens_kv, rope_cos, rope_sin, sink_input, out, counter
+        )
         return out

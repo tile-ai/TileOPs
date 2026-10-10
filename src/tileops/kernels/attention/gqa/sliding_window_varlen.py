@@ -22,6 +22,7 @@ from tileops.kernels.attention.online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
+    make_varlen_sink_scale,
 )
 from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.grouped_tiling import GroupTiling
@@ -55,6 +56,7 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
             self.window_size_right,
             self.dtype_str,
             self.dtype_to_str(self.accum_dtype),
+            self.has_sinks,
         )
 
 
@@ -72,6 +74,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     window_size_right: int,
     dtype: str = "float16",
     accum_dtype: str = "float",
+    has_sinks: bool = False,
 ) -> Callable:
     scale = make_log2e_scale(dim)
     if heads % heads_kv != 0:
@@ -80,7 +83,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     has_window = window_size_left >= 0 or window_size_right >= 0
 
     @tilelang.jit(
-        out_idx=[5],
+        out_idx=[6],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -197,6 +200,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
         )
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim)
+        sink_scale = make_varlen_sink_scale(scale, block_m)
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
@@ -244,6 +248,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
             v: T.Tensor(kv_shape, dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], T.int32),  # type: ignore
+            sinks: T.Tensor([heads] if has_sinks else q_shape, "float32" if has_sinks else dtype),
             output: T.Tensor(q_shape, dtype),  # type: ignore
         ) -> None:
             with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
@@ -331,6 +336,9 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                         rescale(acc_o, scores_scale)
                         mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, kv_start)
 
+                    if has_sinks:
+                        sink_scale(logsum, scores_max, sinks, scores_scale, by)
+                        rescale(acc_o, scores_scale)
                     for i, j in T.Parallel(block_m, dim):
                         acc_o[i, j] = T.if_then_else(logsum[i] > 0, acc_o[i, j] / logsum[i], 0.0)
                     T.sync_threads(3, threads)
@@ -378,11 +386,12 @@ class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output = self.kernel(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-        )(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+        )(q, k, v, cu_seqlens_q, cu_seqlens_kv, sinks if sinks is not None else q)
         return output

@@ -10,10 +10,12 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    VLLM_TAG,
     backward_of,
     compiled_reference,
     flashinfer_op,
     private_inputs,
+    vllm_op,
 )
 from tileops.ops import (
     GQABwdOp,
@@ -420,6 +422,92 @@ def _flashinfer_gqa_varlen(
     return _run
 
 
+def _gqa_varlen_sink_baselines(workload, inputs):
+    """Sink-capable external kernels on the same packed requests."""
+    # These adapters do not fuse the public rotation tables.
+    if inputs[8] is not None:
+        return {}
+    fa3 = vllm_op("flash_attn_varlen_func", module="vllm_flash_attn.flash_attn_interface")
+    q, k = inputs[:2]
+    q_rows = torch.repeat_interleave(
+        torch.arange(workload.batch, device=q.device),
+        torch.tensor(workload.seqlens_q, device=q.device),
+    )
+    k_rows = torch.repeat_interleave(
+        torch.arange(workload.batch, device=q.device),
+        torch.tensor(workload.seqlens_k, device=q.device),
+    )
+    scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+
+    def fa3_run(q, k, v, cu_q, cu_kv, qs, ks, vs, _cos, _sin, sinks):
+        if qs is not None:
+            groups = workload.heads // workload.heads_kv
+            q = (q.float() * qs.repeat_interleave(groups, dim=1)[q_rows, :, None]).to(
+                workload.out_dtype
+            )
+            k = (k.float() * ks[k_rows, :, None]).to(workload.out_dtype)
+            v = (v.float() * vs[k_rows, :, None]).to(workload.out_dtype)
+        return fa3(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_q,
+            cu_seqlens_k=cu_kv,
+            max_seqlen_q=workload.max_seqlen_q,
+            max_seqlen_k=workload.max_seqlen_kv,
+            causal=workload.is_causal,
+            softmax_scale=scale,
+            window_size=(workload.wl, workload.wr),
+            softcap=float(workload.softcap or 0),
+            s_aux=sinks.to(torch.bfloat16),
+            fa_version=3,
+        )
+
+    implementations = {
+        VLLM_TAG: bench.Implementation(
+            run=fa3_run,
+            noncomparable_reason="vLLM FA3 requires BF16 s_aux, rounding the FP32 sink logits",
+        )
+    }
+    if workload.dtype == torch.float8_e4m3fn or workload.wr >= 0 or workload.softcap:
+        return implementations
+    # Page views preserve the ragged packing: use 256-token pages when every
+    # request is divisible, otherwise one-token pages. No KV copy is timed away.
+    page = 256 if all(n % 256 == 0 for n in workload.seqlens_k) else 1
+    workspace = torch.empty(128 * 1024 * 1024, device=q.device, dtype=torch.uint8)
+    wrapper = flashinfer_op("BatchAttentionWithAttentionSinkWrapper")(
+        workspace,
+        kv_layout="NHD",
+        backend="fa3",
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+        head_dim_qk=workload.dim,
+        head_dim_vo=workload.dim,
+        window_left=workload.wl,
+    )
+    wrapper.plan(
+        inputs[3],
+        inputs[4] // page,
+        torch.arange(k.shape[0] // page, device=q.device, dtype=torch.int32),
+        torch.full((workload.batch,), page, device=q.device, dtype=torch.int32),
+        workload.heads,
+        workload.heads_kv,
+        workload.dim,
+        page,
+        causal=workload.is_causal,
+        window_left=workload.wl,
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+    )
+
+    def flashinfer_run(q, k, v, _cu_q, _cu_kv, _qs, _ks, _vs, _cos, _sin, sinks):
+        shape = (-1, page, workload.heads_kv, workload.dim)
+        return wrapper.run(q, (k.view(shape), v.view(shape)), sinks, scale)
+
+    implementations[FLASHINFER_TAG] = flashinfer_run
+    return implementations
+
+
 @pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
 def test_gqa_varlen_fwd_bench(case) -> None:
     """Packed varlen GQA, including FP8 Q/K/V dequantized by one scale per request and KV head.
@@ -436,7 +524,9 @@ def test_gqa_varlen_fwd_bench(case) -> None:
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = case.inputs
     implementations = {"torch-ref": case.reference}
-    if scaled:
+    if workload.has_sinks:
+        implementations.update(_gqa_varlen_sink_baselines(workload, inputs))
+    elif scaled:
         fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
         if fa3_fn is not None:
             implementations["fa3"] = bench.Implementation(run=fa3_fn, args=inputs[:8])

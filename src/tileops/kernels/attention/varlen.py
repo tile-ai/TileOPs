@@ -33,6 +33,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
             max_position=call.max_position if call.max_position is not None else 1,
             rotary_dim=call.rotary_dim if call.rotary_dim else call.dim,
             rope_layout=call.rope_layout,
+            has_sinks=call.has_sinks,
             device_index=call.device.index if call.device is not None else None,
         )
         return tuple(args.values()), lambda: cls(**args)
@@ -57,11 +58,13 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         config: Optional[dict] = None,
         tune: bool = False,
         *,
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -132,13 +135,13 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         total = batch * tokens_per_request
         rope_rows = self.max_position
         rope_half = self.rotary_dim // 2
-        expected = 7 if self.fuse_rope else 5
+        expected = 8 if self.fuse_rope else 6
 
         def supply_prog(params):
             if len(params) != expected:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, k, v, two "
-                    f"cumulative-length inputs and the RoPE tables it was built with, "
+                    f"cumulative-length inputs, optional RoPE tables and a sink slot, "
                     f"got {len(params)} parameters"
                 )
             device = get_current_device()
@@ -156,9 +159,14 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
                 cu_seqlens,
                 cu_seqlens.clone(),
             ]
-            if expected == 7:
+            if self.fuse_rope:
                 angles = torch.randn(rope_rows, rope_half, device=device)
                 supplied += [angles.cos().to(dtype), angles.sin().to(dtype)]
+            supplied.append(
+                torch.zeros(heads, dtype=torch.float32, device=device)
+                if self.has_sinks
+                else supplied[0]
+            )
             return supplied
 
         return supply_prog

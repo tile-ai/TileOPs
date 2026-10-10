@@ -327,7 +327,8 @@ template <typename FP8T>
 __device__ __forceinline__ void
 fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
                                                     FP8T* v_tc_smem,
-                                                    float* acc_o) {
+                                                    float* acc_o,
+                                                    bool clear_accum = false) {
   using namespace cute;
   using Element = cutlass::float_e4m3_t;
   using ElementAccum = float;
@@ -356,9 +357,16 @@ fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
     tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
                  tl::DataType::kFloat32, 64, 128, 32, false, false>(
         p_regs + ki * 4, uint64_t(desc_b), reinterpret_cast<uint32_t*>(acc_o),
-        true);
+        !clear_accum || ki > 0);
   }
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+__device__ __forceinline__ void fp8_fa3_raw_acc_promote_64x128(
+    float* acc_o, const float* tile) {
+#pragma unroll
+  for (int i = 0; i < 64; ++i) {
+    acc_o[i] += tile[i];
+  }
 }
 __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
     float* acc_o, float* ss) {
