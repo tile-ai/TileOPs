@@ -7,6 +7,7 @@ from tileops.kernels.attention import (
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQAPagedFwdKernel,
+    GQAPagedMixedKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -39,6 +40,7 @@ class GQAPagedFwdOp(Op):
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
         "gqa_paged_varlen_kernel": GQAPagedFwdKernel,
+        "gqa_paged_mixed_kernel": GQAPagedMixedKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
