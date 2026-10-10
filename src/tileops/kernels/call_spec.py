@@ -46,7 +46,7 @@ class CallSpec:
     The device facts (``arch``, ``calibration``, ``sm_count``, ``smem_budget``) are derived from ``device``
     and take no part in equality: one left unstated is read from ``device`` when selection
     or a builder first reads it, which the dispatcher does only on a miss. A caller may state
-    them to ask ``select_implementation`` about a device it is not on; ``kernel_for`` refuses
+    them to ask ``key_for`` about a device it is not on; ``kernel_for`` refuses
     such a call spec, since it keys what it builds by ``device``.
     """
 

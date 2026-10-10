@@ -102,7 +102,6 @@ def _make_op_subclass():
         # The three manifest-driven methods are abstract on Op; these doubles
         # exercise the get-or-build plumbing, so a minimal body is the contract.
         "_infer_output_shapes": lambda self, *shapes: {},
-        "_validate_dtypes": lambda self, *args: None,
         "eval_roofline": lambda self: (0, 0),
     }
     return type("TestOp", (Op,), attrs)
@@ -174,9 +173,6 @@ class _SlottedOp(Op):
 
     def _infer_output_shapes(self, *shapes):
         return {}
-
-    def _validate_dtypes(self, *args):
-        return None
 
     def eval_roofline(self):
         return (0, 0)
@@ -554,7 +550,7 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
     """An abstract Op cannot be constructed, so nothing in the tree may try.
 
     A class is abstract when it does not answer the manifest-driven contract:
-    ``_infer_output_shapes``, ``_validate_dtypes``, ``eval_roofline``. Those are
+    ``_infer_output_shapes``, ``eval_roofline``. Those are
     the family bases and the modular interfaces; a call site naming one is a call
     site that wanted a concrete op.
     """
@@ -647,7 +643,6 @@ def test_kernel_types_declare_the_keys_an_override_may_name() -> None:
         "interfaces": {"gemm": GemmFwdInterface},
         "forward": lambda self, *a, **kw: None,
         "_infer_output_shapes": lambda self, *shapes: {},
-        "_validate_dtypes": lambda self, *args: None,
         "eval_roofline": lambda self: (0, 0),
     }
     keyed = type("KeyedOp", (Op,), attrs)

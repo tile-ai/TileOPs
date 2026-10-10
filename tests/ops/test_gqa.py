@@ -662,7 +662,7 @@ def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
         is_uniform=False,
     )
     with pytest.raises(ValueError, match="requires head dimension 128"):
-        GQAVarlenFwdOp().select_implementation("gqa_varlen", call)
+        GQAVarlenFwdOp().key_for("gqa_varlen", call)
 
 
 @pytest.mark.parametrize(

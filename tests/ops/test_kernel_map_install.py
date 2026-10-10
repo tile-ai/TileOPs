@@ -84,7 +84,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
 
     incompatible_archs = _make_incompatible_arch_list()
     stock = GemmFwdOp()
-    key = stock.select_implementation("gemm", _gemm_call())
+    key = stock.key_for("gemm", _gemm_call())
 
     class IncompatibleGemm(stock.kernel_map[key]):  # type: ignore[misc, valid-type]
         supported_archs = incompatible_archs

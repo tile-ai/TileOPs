@@ -228,9 +228,6 @@ class TestFusedMoEActivationInjection:
             def _infer_output_shapes(self, *args, **kwargs):
                 raise NotImplementedError
 
-            def _validate_dtypes(self, *args, **kwargs):
-                raise NotImplementedError
-
             def eval_roofline(self):
                 raise NotImplementedError
 
