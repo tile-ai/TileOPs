@@ -1,7 +1,7 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics).
 
 `install` gives an op class, from its manifest entry, `_check_construction`, the call checks,
-`_validate_dtypes`, `_infer_output_shapes`, `eval_roofline` and, when the class declares a
+`_infer_output_shapes`, `eval_roofline` and, when the class declares a
 compile boundary, one operator per effect branch. Each check is emitted as Python source when
 the class is created, one per discriminant point, so a call parses no expression string and a
 traced call only looks its check up. What construction can decide is checked there, once; the
@@ -1413,9 +1413,6 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)
-    cls._validate_dtypes = _input_binder(
-        sig, "_validate_dtypes", lambda self, ts: plan.check(self, ts)
-    )
     cls._infer_output_shapes = _input_binder(
         sig,
         "_infer_output_shapes",

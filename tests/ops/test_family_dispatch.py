@@ -52,7 +52,7 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     call = GemmCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
 
     with pytest.raises(ValueError, match="k must span at least one"):
-        op.select_implementation("gemm", call)
+        op.key_for("gemm", call)
 
 
 @pytest.mark.cuda_only
@@ -66,7 +66,7 @@ def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
     )
 
     with pytest.raises(ValueError, match="shared float64 entries"):
-        ChainSpeculativeSamplingFwdOp().select_implementation("chain_speculative_sampling", call)
+        ChainSpeculativeSamplingFwdOp().key_for("chain_speculative_sampling", call)
 
 
 @pytest.mark.cuda_only
@@ -78,7 +78,7 @@ def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
     )
 
     with pytest.raises(ValueError, match="multiple of 16"):
-        DeltaNetRecurrentFwdOp().select_implementation("deltanet_decode", call)
+        DeltaNetRecurrentFwdOp().key_for("deltanet_decode", call)
 
 
 def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64) -> GLAChunkCall:
@@ -125,7 +125,7 @@ def test_gla_chunked_refuses_what_no_kernel_serves(
     ops = {"gla_chunk_fwd": GLAChunkFwdOp, "gla_chunk_bwd": GLAChunkBwdOp}
     for interface in interfaces:
         with pytest.raises(ValueError, match=reason):
-            ops[interface](chunk_size=call.chunk_size).select_implementation(interface, call)
+            ops[interface](chunk_size=call.chunk_size).key_for(interface, call)
 
 
 @pytest.mark.sm90
@@ -143,7 +143,7 @@ def test_gla_bwd_refuses_what_this_device_cannot_place(dim_k: int, dim_v: int, r
         batch=1, seq_len=128, heads=2, dim_k=dim_k, dim_v=dim_v, chunk_size=64, dtype=torch.float32
     )
     with pytest.raises(ValueError, match=reason):
-        GLAChunkBwdOp(chunk_size=64).select_implementation("gla_chunk_bwd", call)
+        GLAChunkBwdOp(chunk_size=64).key_for("gla_chunk_bwd", call)
 
 
 def _gla_call(
@@ -196,7 +196,7 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCa
 )
 def test_gdn_refuses_what_no_kernel_serves(call: GDNCall, reason: str) -> None:
     with pytest.raises(ValueError, match=reason):
-        GDNFwdOp().select_implementation("gdn", call)
+        GDNFwdOp().key_for("gdn", call)
 
 
 def _deltanet_call(**facts: object) -> DeltaNetCall:
@@ -226,7 +226,7 @@ def test_deltanet_fwd_refuses_what_the_kernel_does_not_serve(
     call: DeltaNetCall, reason: str
 ) -> None:
     with pytest.raises(ValueError, match=reason):
-        DeltaNetFwdOp().select_implementation("deltanet", call)
+        DeltaNetFwdOp().key_for("deltanet", call)
 
 
 def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
@@ -308,7 +308,7 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
 def test_linear_attention_refuses_an_odd_head_count() -> None:
     for op, interface, call in _head_axis_cases(3):
         with pytest.raises(ValueError, match="even head count or a single head"):
-            op.select_implementation(interface, call)
+            op.key_for(interface, call)
 
 
 @pytest.mark.cuda_only
@@ -319,7 +319,7 @@ def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
     call = _gated_call(seq_len, seq_len == 1, heads=1, value_heads=3)
 
     with pytest.raises(ValueError, match="even head count or a single head"):
-        GDNFwdOp().select_implementation("gdn", call)
+        GDNFwdOp().key_for("gdn", call)
 
 
 _GQA_DENSE_GAPS = [
@@ -389,4 +389,4 @@ def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> Non
     )
 
     with pytest.raises(ValueError, match=reason):
-        op.select_implementation("gqa_dense", call)
+        op.key_for("gqa_dense", call)

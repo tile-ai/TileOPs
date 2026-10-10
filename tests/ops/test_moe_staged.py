@@ -559,4 +559,4 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
     )
     op = MoEGroupedGemmFwdOp(spec, **({"activation": activation} if activation else {}))
     with pytest.raises(ValueError, match=reason):
-        op.select_implementation("grouped_gemm", _grouped_call(**facts))
+        op.key_for("grouped_gemm", _grouped_call(**facts))

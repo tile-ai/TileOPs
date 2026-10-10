@@ -504,9 +504,9 @@ def test_generated_methods_bind_inputs_by_name():
     }
     op = _probe("ProbeNamedFwdOp", signature, lambda self, x, w=None: x + 1)()
     x = torch.zeros(2, dtype=torch.float16)
-    op._validate_dtypes(x, w=x)
+    op(x, w=x)
     with pytest.raises(ValueError, match="'x' is not a tensor"):
-        op._validate_dtypes(3)
+        type(op)._signature.check(op, {"x": 3, "w": None})
     assert op._infer_output_shapes(x=(2,)) == {"y": (2,)}
     with pytest.raises(TypeError):
         op._infer_output_shapes((2,), (9,), (1,))

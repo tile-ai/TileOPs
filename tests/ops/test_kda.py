@@ -165,4 +165,4 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
         }
     )
     with pytest.raises(ValueError, match=reason):
-        KDAFwdOp().select_implementation("kda", call)
+        KDAFwdOp().key_for("kda", call)

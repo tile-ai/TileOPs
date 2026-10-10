@@ -94,9 +94,6 @@ class _ScaleOp(Op):
     def _infer_output_shapes(self, *shapes, dtypes=None):
         return {}
 
-    def _validate_dtypes(self, *args):
-        return None
-
     def eval_roofline(self):
         return (0, 0)
 
@@ -112,7 +109,7 @@ def _selected(op: Op, *ns: int) -> dict:
     selected = {}
     for n in ns:
         try:
-            selected[n] = op.select_implementation("scale", _Call(device=torch.device("cpu"), n=n))
+            selected[n] = op.key_for("scale", _Call(device=torch.device("cpu"), n=n))
         except ValueError as exc:
             selected[n] = str(exc).split(":")[0]
     return selected

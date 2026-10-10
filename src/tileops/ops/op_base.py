@@ -195,15 +195,6 @@ class Op(ABC):
         raise NotImplementedError("generated from the op's manifest entry")
 
     @abstractmethod
-    def _validate_dtypes(self, *args: torch.Tensor) -> None:
-        """Validate the ``forward`` inputs against the signature.
-
-        Generated from the op's manifest entry; abstract so that a class without one
-        cannot be instantiated.
-        """
-        raise NotImplementedError("generated from the op's manifest entry")
-
-    @abstractmethod
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for the last completed call.
 
@@ -393,14 +384,14 @@ class Op(ABC):
             raise ValueError(f"{name} keys implement none of its kernel interfaces: {unassigned}")
         return MappingProxyType(interface_keys)
 
-    def select_kernel_key(self, keys: "tuple[str, ...]", call: object) -> str:
-        """Return the one key among *keys* whose implementation serves *call*.
+    def key_for(self, interface: str, call: CallSpec) -> str:
+        """Return the key of the one implementation of *interface* that serves *call*.
 
         A key is available where its registered implementation or the one ``kernel_map=``
         put there can run, and it applies where the registered one's ``refusal`` accepts the
         call. Among the available keys that apply, the answer is the unique one no other is
         preferred over: ``preferred_over`` orders them, transitively, and the general one is
-        below every other. Neither the order of *keys* nor any numeric priority decides it.
+        below every other. Neither the order of the keys nor any numeric priority decides it.
 
         A key selected with a ``kernel_map=`` replacement is served by the replacement, and
         a replacement that cannot run or does not serve the call is an error rather than
@@ -411,6 +402,7 @@ class Op(ABC):
             ValueError: When no implementation serves the call, when the replacement
                 behind the selected key cannot, or when several are preferred over none.
         """
+        keys = self._interface_keys[interface]
         device = getattr(call, "device", None)
         on_device = device is None
         rules: dict[str, type[Kernel]] = {}
@@ -465,15 +457,6 @@ class Op(ABC):
             f"through ``preferred_over``, and an interface has at most one general one. "
             f"Call: {call}"
         )
-
-    def select_implementation(self, interface: str, call: CallSpec) -> str:
-        """Return the key of the implementation of *interface* that serves *call*.
-
-        Raises:
-            OpNotAvailableError: What :meth:`select_kernel_key` raises.
-            ValueError: What :meth:`select_kernel_key` raises.
-        """
-        return self.select_kernel_key(self._interface_keys[interface], call)
 
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
@@ -539,8 +522,8 @@ class Op(ABC):
         Raises:
             TypeError: *call* is not the interface's ``request`` type, holds a field that
                 cannot key the cache, or states a device fact.
-            ValueError: What :meth:`select_implementation` raises.
-            OpNotAvailableError: What :meth:`select_implementation` raises.
+            ValueError: What :meth:`key_for` raises.
+            OpNotAvailableError: What :meth:`key_for` raises.
         """
         request = self.interfaces[interface].request
         if not isinstance(call, request):
@@ -554,7 +537,7 @@ class Op(ABC):
                 f"{type(self).__name__}.{interface} reads the device facts from the call's "
                 f"device; this call spec states {sorted(call.stated_device_facts)}"
             )
-        cls = self.kernel_map[self.select_implementation(interface, call)]
+        cls = self.kernel_map[self.key_for(interface, call)]
         identity, build = cls.entry_for(call)
         roles = getattr(self, "_built_entries", None)
         if roles is None:
