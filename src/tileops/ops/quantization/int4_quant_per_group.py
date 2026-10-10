@@ -71,10 +71,6 @@ class INT4QuantPerGroupFwdOp(Op):
             ``packed_weight`` $[N \\times K / 2]$ in ``int8`` and ``params``
                 $[(N K / group\\_size) \\times 2]$ in ``float32``.
         """
-        return self._call_boundary(w)
-
-    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,

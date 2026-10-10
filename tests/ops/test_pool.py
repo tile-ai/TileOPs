@@ -1567,7 +1567,7 @@ def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
     # A width no 16-byte load divides, so no implementation preferred over the key serves it.
     op(torch.randn(1, 2, 8, 10, device="cuda", dtype=torch.float16))
 
-    assert isinstance(op.kernel, _PassthroughGenericKernel)
+    assert [type(k) for k in op.iter_kernels()] == [_PassthroughGenericKernel]
 
 
 class AdaptiveAvgPool2dFixture(FixtureBase):

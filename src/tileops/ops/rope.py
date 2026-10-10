@@ -138,7 +138,6 @@ class _RoPEOpBase(Op):
         self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def _get_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -166,10 +165,6 @@ class _RoPEOpBase(Op):
         Returns:
             Rotated output tensor with same shape as x.
         """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         if self.input_layout == "1d":
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
@@ -185,8 +180,8 @@ class _RoPEOpBase(Op):
         )
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         x = x.contiguous()
-        self.kernel = self.kernel_for(self.rope_layout, call)
-        return self.kernel(x, cos, sin)
+        kernel = self.kernel_for(self.rope_layout, call)
+        return kernel(x, cos, sin)
 
 
 # Concrete Op classes (4 frequency schemes)
@@ -288,7 +283,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
         self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def _get_cos_sin(
         self, rotary_dim: int, dtype: torch.dtype, device: torch.device
@@ -311,10 +305,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
         Returns:
             ``output``, shaped as ``x``.
         """
-        return self._call_boundary(x, position_ids)
-
-    def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
         call = RoPENeoxPositionIdsCall(
@@ -328,13 +318,13 @@ class RoPENeoxPositionIdsFwdOp(Op):
         )
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
         x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
-        self.kernel = self.kernel_for("rope_neox_position_ids", call)
-        output = self.kernel(x, cos, sin, position_ids)
+        kernel = self.kernel_for("rope_neox_position_ids", call)
+        output = kernel(x, cos, sin, position_ids)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in
         # front of every call cost more device time than the rotation they guard.
         # It clamps its own table index, so this call read nothing out of bounds.
-        if self.kernel.take_out_of_range():
+        if kernel.take_out_of_range():
             raise ValueError("position_ids must be in [0, max_position)")
         return output
 

@@ -76,20 +76,6 @@ class SSDChunkStateFwdOp(Op):
         Returns:
             states: (batch, num_chunks, n_heads, d_head, d_state) float32
         """
-        return self._call_boundary(x, Bmat, dt, dA_cumsum, seq_idx)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        Bmat: torch.Tensor,
-        dt: torch.Tensor,
-        dA_cumsum: torch.Tensor,
-        seq_idx: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, seq_len, n_heads, d_head = x.shape
         num_chunks, chunk_len = dt.shape[2], dt.shape[3]
         n_groups, d_state = Bmat.shape[2], Bmat.shape[3]

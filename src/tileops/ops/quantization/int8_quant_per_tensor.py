@@ -62,10 +62,6 @@ class INT8QuantPerTensorFwdOp(Op):
         Returns:
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[1]$ in ``float32``.
         """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         call = QuantizeCall(
             device=x.device,

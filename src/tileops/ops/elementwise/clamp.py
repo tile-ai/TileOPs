@@ -55,12 +55,13 @@ class ClampTensorFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(
+    def forward(
         self,
         input: torch.Tensor,
         min: Optional[torch.Tensor] = None,
         max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Run the op on ``input`` and whichever bounds the call passes."""
         shapes = [t.shape for t in (input, min, max) if t is not None]
         n_total = torch.broadcast_shapes(*shapes).numel()
         input = input.contiguous()
@@ -74,15 +75,6 @@ class ClampTensorFwdOp(Op):
             has_max=max is not None,
         )
         return self.kernel_for(ELEMENTWISE, call)(input, min, max)
-
-    def forward(
-        self,
-        input: torch.Tensor,
-        min: Optional[torch.Tensor] = None,
-        max: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Run the op on ``input`` and whichever bounds the call passes."""
-        return self._call_boundary(input, min, max)
 
 
 class ClampScalarFwdOp(UnaryOp):

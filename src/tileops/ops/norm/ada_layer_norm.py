@@ -76,16 +76,6 @@ class AdaLayerNormFwdOp(Op):
         Raises:
             ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        return self._call_boundary(x, scale, shift)
-
-    def _eager_forward(
-        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
-        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()

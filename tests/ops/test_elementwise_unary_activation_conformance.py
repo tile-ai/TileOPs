@@ -195,4 +195,4 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 
 # Frozen ``__init__`` signatures for every unary activation Op. Tests, benches
 # and codegen read them, so pulling shared ``__init__`` / ``forward`` /
-# ``_eager_forward`` logic into a base or mixin must keep them byte-identical.
+# ``forward`` logic into a base or mixin must keep them byte-identical.

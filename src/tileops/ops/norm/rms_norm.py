@@ -77,15 +77,6 @@ class RMSNormFwdOp(Op):
         Returns:
             Normalized tensor of the same shape as *x*.
         """
-        return self._call_boundary(x, weight)
-
-    def _eager_forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
         call = LayerNormCall(

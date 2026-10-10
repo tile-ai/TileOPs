@@ -98,23 +98,6 @@ class EngramDecodeFwdOp(Op):
                 y_t:            (B, d) — output to add as residual.
                 new_conv_state: (B, max_conv_len, d) — updated state for next step.
         """
-        return self._call_boundary(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
-
-    def _eager_forward(
-        self,
-        e_t: torch.Tensor,
-        h_t: torch.Tensor,
-        conv_state: torch.Tensor,
-        W_K: torch.Tensor,
-        W_V: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(
             t.contiguous() for t in (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         )

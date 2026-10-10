@@ -131,19 +131,6 @@ class Conv1dFwdOp(Op):
         Returns:
             The convolution result, $[N \\times C_{out} \\times L_{out}]$.
         """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
-        """
         n, c_in, l_in = input.shape
         c_out, c_in_g, kernel_l = weight.shape
         (stride,) = _axes(self.stride, 1)
@@ -178,8 +165,8 @@ class Conv1dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv1d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv1d", call)
+        return kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -248,19 +235,6 @@ class Conv2dFwdOp(Op):
         Returns:
             The convolution result, $[N \\times C_{out} \\times H_{out} \\times W_{out}]$.
         """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
-        """
         n, c_in, h, w = input.shape
         c_out, c_in_g, kernel_h, kernel_w = weight.shape
         stride = _axes(self.stride, 2)
@@ -290,8 +264,8 @@ class Conv2dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv2d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv2d", call)
+        return kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -360,19 +334,6 @@ class Conv3dFwdOp(Op):
             The convolution result, $[N \\times C_{out} \\times D_{out} \\times H_{out}
             \\times W_{out}]$.
         """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
-        """
         n, c_in, d, h, w = input.shape
         c_out, c_in_g, kernel_d, kernel_h, kernel_w = weight.shape
         kernel = (kernel_d, kernel_h, kernel_w)
@@ -410,8 +371,8 @@ class Conv3dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv3d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv3d", call)
+        return kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

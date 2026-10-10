@@ -102,20 +102,6 @@ class NSATopKVarlenFwdOp(Op):
         Returns:
             Selected block ids [c_seq_len, head_kv, selected_block_num].
         """
-        return self._call_boundary(q, k_cmp, offsets, chunk_offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        offsets: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         tensors = (q, k_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = q.shape
         call = NSACall(
@@ -218,22 +204,6 @@ class NSAVarlenFwdOp(Op):
         Returns:
             Attention output [c_seq_len, heads, dim].
         """
-        return self._call_boundary(q, k, v, block_indices, block_counts, offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        block_indices: torch.Tensor,
-        block_counts: torch.Tensor,
-        offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
         c_seq_len, heads, dim = q.shape
         call = NSACall(
@@ -326,21 +296,6 @@ class NSACompressedVarlenFwdOp(Op):
 
         Returns:
             Tuple of (o, lse).
-        """
-        return self._call_boundary(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        v_cmp: torch.Tensor,
-        offsets: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = q.shape

@@ -1,6 +1,5 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics)."""
 
-import functools
 from pathlib import Path
 
 import pytest
@@ -115,16 +114,6 @@ def test_construction_checks_what_construction_decides():
         )
 
 
-def _boundary_forward(eager):
-    """A `forward` with *eager*'s parameters whose body is one call to the boundary."""
-
-    @functools.wraps(eager)
-    def forward(self, *args, **kwargs):
-        return self._call_boundary(*args, **kwargs)
-
-    return forward
-
-
 def _probe(name, signature, forward, *, boundary=False, roofline=None, status="implemented"):
     """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*.
 
@@ -146,11 +135,7 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
         vars(self).update(params)
         self.dispatch_kernel(None)
 
-    body = {
-        "__init__": construct,
-        "forward": _boundary_forward(forward) if boundary else forward,
-        "_eager_forward": forward,
-    }
+    body = {"__init__": construct, "forward": forward}
     cls = type(name, (Op,), body)
     install(cls, entry)
     install_compile_boundary(cls, entry)

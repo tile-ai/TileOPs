@@ -44,7 +44,8 @@ class PreluFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input`` and ``weight``."""
         input = input.contiguous()
         weight = weight.contiguous()
         # Elements per channel per row: PyTorch puts the channel at dim 1.
@@ -57,7 +58,3 @@ class PreluFwdOp(Op):
             inner_size=inner_size,
         )
         return self.kernel_for(ELEMENTWISE, call)(input, weight)
-
-    def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``weight``."""
-        return self._call_boundary(input, weight)

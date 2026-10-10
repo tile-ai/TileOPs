@@ -45,7 +45,7 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
         self.dispatch_kernel(None)
 
     body = {"__init__": construct}
-    body["forward"] = body["_eager_forward"] = lambda self, *args: None
+    body["forward"] = lambda self, *args: None
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")

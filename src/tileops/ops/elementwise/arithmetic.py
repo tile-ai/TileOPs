@@ -183,7 +183,7 @@ class PowFwdOp(BinaryOp):
 
     def forward(self, input: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``exponent``."""
-        return self._call_boundary(input, exponent)
+        return super().forward(input, exponent)
 
 
 class FloorDivideFwdOp(BinaryOp):
@@ -246,7 +246,7 @@ class LerpScalarFwdOp(BinaryOp):
 
     def forward(self, input: torch.Tensor, end: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``end``."""
-        return self._call_boundary(input, end)
+        return super().forward(input, end)
 
 
 class MaximumFwdOp(BinaryOp):
@@ -301,20 +301,6 @@ class LerpTensorFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        end: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> torch.Tensor:
-        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
-        input = input.contiguous()
-        end = end.contiguous()
-        weight = weight.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, call)
-        return kernel(input, end, weight)
-
     def forward(
         self,
         input: torch.Tensor,
@@ -322,4 +308,10 @@ class LerpTensorFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``input``, ``end`` and ``weight``."""
-        return self._call_boundary(input, end, weight)
+        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
+        input = input.contiguous()
+        end = end.contiguous()
+        weight = weight.contiguous()
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        kernel = self.kernel_for(ELEMENTWISE, call)
+        return kernel(input, end, weight)

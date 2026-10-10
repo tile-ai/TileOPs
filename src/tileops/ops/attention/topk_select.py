@@ -61,7 +61,6 @@ class TopKSelectFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
@@ -76,15 +75,6 @@ class TopKSelectFwdOp(Op):
         Returns:
             Selected key positions [batch, seq_len, kv_group, topk], ``int32``.
         """
-        return self._call_boundary(index_score, starts, ends)
-
-    def _eager_forward(
-        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
         index_score = index_score.contiguous()
         starts, ends = starts.contiguous(), ends.contiguous()
@@ -98,5 +88,5 @@ class TopKSelectFwdOp(Op):
             out_dtype=self.out_dtype,
             device=index_score.device,
         )
-        self.kernel = self.kernel_for("topk_select", call)
-        return self.kernel(index_score, starts, ends)
+        kernel = self.kernel_for("topk_select", call)
+        return kernel(index_score, starts, ends)

@@ -81,7 +81,8 @@ class DeltaNetChunkFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au, w, u).
         """
-        return self._call_boundary(q, k, v, beta)
+        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
+        return kernel(q, k, v, beta)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's chunk length."""
@@ -96,20 +97,6 @@ class DeltaNetChunkFwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
-        return kernel(q, k, v, beta)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -182,7 +169,9 @@ class DeltaNetChunkBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        return self._call_boundary(do, q, k, v, beta, S, Aw, Au, w, u)
+        inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
+        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
+        return kernel(*inputs)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's chunk length."""
@@ -197,27 +186,6 @@ class DeltaNetChunkBwdOp(Op):
             dtype=q.dtype,
             device=q.device,
         )
-
-    def _eager_forward(
-        self,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        S: torch.Tensor,
-        Aw: torch.Tensor,
-        Au: torch.Tensor,
-        w: torch.Tensor,
-        u: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
-        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

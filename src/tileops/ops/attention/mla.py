@@ -69,15 +69,6 @@ class MLADecodeWithKVCacheFwdOp(Op):
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
         """
-        return self._call_boundary(q, q_pe, k, k_pe)
-
-    def _eager_forward(
-        self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, heads, dim = q.shape
         _, seqlen_kv, heads_kv, _ = k.shape
         inputs = (q, q_pe, k, k_pe)
@@ -176,20 +167,6 @@ class MLAVarlenFwdOp(Op):
         Returns:
             ``o`` and ``lse``, as the manifest declares. Shape rules:
             ``o.shape == (T_q, H, DV)`` and ``lse.shape == (T_q, H)``.
-        """
-        return self._call_boundary(q, k_nope, k_pe, v, cu_seqlens)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_nope: torch.Tensor,
-        k_pe: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
         return self.kernel_for("mla_varlen_fwd", self.varlen_call(inputs))(*inputs)

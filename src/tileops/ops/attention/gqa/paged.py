@@ -175,39 +175,8 @@ class GQAPagedFwdOp(Op):
         Returns:
             The attention output [total_q, heads, dim].
         """
-        return self._call_boundary(
-            q,
-            k_pages,
-            v_pages,
-            page_table,
-            cache_seqlens,
-            cu_seqlens_q,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        page_table: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder. The kernels read
-        the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of the pages.
-        """
+        # The kernels read the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of
+        # the pages.
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )

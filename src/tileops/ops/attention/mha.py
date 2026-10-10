@@ -114,20 +114,6 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
         """
-        return self._call_boundary(q, k, v, real_seqlen_kv, block_table)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = (q, k, v, real_seqlen_kv, block_table)
         kernel = self.kernel_for("mha_decode_paged", self._attention_call(q, k, block_table))
         return kernel(*inputs)

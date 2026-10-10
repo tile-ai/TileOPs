@@ -65,7 +65,6 @@ class MHCPreFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -78,19 +77,6 @@ class MHCPreFwdOp(Op):
         Returns:
             ``x_res``, ``x_layer``, ``h_post``, as the manifest declares.
         """
-        return self._call_boundary(phi, x, b)
-
-    def _eager_forward(
-        self,
-        phi: torch.Tensor,
-        x: torch.Tensor,
-        b: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        # The call check has solved n * n + 2 * n == phi.shape[1] and n | x.shape[1].
         n_expand = math.isqrt(phi.shape[1] + 1) - 1
         batch, c_x = x.shape[0], x.shape[1] // n_expand
         phi, x, b = phi.contiguous(), x.contiguous(), b.contiguous()
@@ -106,8 +92,8 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps=self.sinkhorn_eps,
             device=x.device,
         )
-        self.kernel = self.kernel_for("mhc_pre", call)
-        return self.kernel(
+        kernel = self.kernel_for("mhc_pre", call)
+        return kernel(
             phi,
             x,
             b,
@@ -153,7 +139,6 @@ class MHCPostFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
@@ -168,15 +153,6 @@ class MHCPostFwdOp(Op):
         Returns:
             ``x_out``, as the manifest declares.
         """
-        return self._call_boundary(x_layer_out, h_post, x_res)
-
-    def _eager_forward(
-        self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         (batch, c_x), n_expand = x_layer_out.shape, h_post.shape[1]
         call = MHCPostCall(
             batch=batch,
@@ -186,5 +162,5 @@ class MHCPostFwdOp(Op):
             device=x_layer_out.device,
         )
         inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
-        self.kernel = self.kernel_for("mhc_post", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("mhc_post", call)
+        return kernel(*inputs)

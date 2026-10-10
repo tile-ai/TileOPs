@@ -83,18 +83,6 @@ class SSDChunkCumsumFwdOp(Op):
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
                 of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
         """
-        return self._call_boundary(dt, A, dt_bias)
-
-    def _eager_forward(
-        self,
-        dt: torch.Tensor,
-        A: torch.Tensor,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, seq_len, n_heads = dt.shape
         dt = dt.contiguous()
         A = A.contiguous()

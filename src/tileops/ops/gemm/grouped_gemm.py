@@ -100,19 +100,6 @@ class GroupedGemmFwdOp(Op):
             d = op(a, b, batch_sizes, batch_offsets)
             ```
         """
-        return self._call_boundary(a, b, batch_sizes, batch_offsets)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(t.contiguous() for t in (a, b, batch_sizes, batch_offsets))
         batch_sum, width = a.shape
         if self.transpose_a:

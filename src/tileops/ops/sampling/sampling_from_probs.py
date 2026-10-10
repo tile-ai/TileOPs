@@ -70,12 +70,6 @@ class SamplingFromProbsFwdOp(Op):
         Returns:
             ``[B]`` int32 drawn indices.
         """
-        return self._call_boundary(probs, seed, offset)
-
-    def _eager_forward(
-        self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         probs = probs.contiguous()
         seed = seed.contiguous()
         offset = offset.contiguous()

@@ -182,24 +182,6 @@ class GQAVarlenFwdOp(Op):
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
-        return self._call_boundary(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale, rope_cos, rope_sin
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the implementation and launch it."""
         if self.validate_inputs:
             self._check_offsets(q, k, cu_seqlens_q, cu_seqlens_kv)
         inputs = self._canonicalize_inputs(

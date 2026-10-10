@@ -83,9 +83,6 @@ class _MaxPoolFwdOpBase(Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor):
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
         call = MaxPoolCall(
@@ -100,8 +97,8 @@ class _MaxPoolFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("max_pool", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("max_pool", call)
+        return kernel(input)
 
 
 class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
@@ -202,7 +199,7 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
         Returns:
             ``output``, ``indices``, as the manifest declares.
         """
-        return self._call_boundary(input)
+        return super().forward(input)
 
 
 class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
@@ -307,7 +304,7 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
         Returns:
             ``output``, ``indices``, as the manifest declares.
         """
-        return self._call_boundary(input)
+        return super().forward(input)
 
 
 class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
@@ -408,4 +405,4 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         Returns:
             ``output``, ``indices``, as the manifest declares.
         """
-        return self._call_boundary(input)
+        return super().forward(input)

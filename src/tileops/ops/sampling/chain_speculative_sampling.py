@@ -86,17 +86,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
             ``output_token_ids``, ``[B, N + 1]`` int32: the accepted drafts, the drawn token,
             then ``-1``; and ``num_accepted``, ``[B]`` int32.
         """
-        return self._call_boundary(draft_probs, draft_token_ids, target_probs, seed, offset)
-
-    def _eager_forward(
-        self,
-        draft_probs: torch.Tensor,
-        draft_token_ids: torch.Tensor,
-        target_probs: torch.Tensor,
-        seed: torch.Tensor,
-        offset: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         draft_probs = draft_probs.contiguous()
         draft_token_ids = draft_token_ids.contiguous()
         target_probs = target_probs.contiguous()

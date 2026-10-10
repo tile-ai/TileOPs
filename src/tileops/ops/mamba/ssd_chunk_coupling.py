@@ -65,17 +65,6 @@ class SSDChunkCouplingFwdOp(Op):
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
-        return self._call_boundary(C_mat, B_mat)
-
-    def _eager_forward(
-        self,
-        C_mat: torch.Tensor,
-        B_mat: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         batch, seq_len, n_groups, d_state = C_mat.shape

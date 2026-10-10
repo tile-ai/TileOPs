@@ -67,12 +67,6 @@ class SharedExpertMLPFwdOp(Op):
         Returns:
             $[T \\times H]$ in the dtype of ``hidden_states``.
         """
-        return self._call_boundary(hidden_states, w_gate_up, w_down)
-
-    def _eager_forward(
-        self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         tokens, hidden = hidden_states.shape
         tensors = (hidden_states, w_gate_up, w_down)
         call = SharedExpertMLPCall(

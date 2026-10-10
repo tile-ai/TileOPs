@@ -118,16 +118,6 @@ class MeanPoolingFwdOp(Op):
             ValueError: With ``validate_inputs=True``, ``indices`` disagrees with
                 ``offsets`` or ``offsets`` does not partition the sequence axis.
         """
-        return self._call_boundary(x, offsets, indices)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
-        # Heads and dim are read as one width.
         x = x.contiguous()
         batch_size, seq_len, heads, dim = x.shape
         ragged = offsets is not None

@@ -86,19 +86,6 @@ class GLAFwdOp(Op):
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run GLA prefill or decode and return output plus final FP32 state."""
-        return self._call_boundary(q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu)

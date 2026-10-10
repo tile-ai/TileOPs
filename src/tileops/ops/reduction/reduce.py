@@ -1,7 +1,7 @@
 """Reduce ops: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
 
 Each op reduces the axes ``dim`` names of an arbitrary-rank input. The generated signature
-checks have run before ``_eager_forward``: dtype, ``dim`` range and uniqueness, and every
+checks have run before ``forward``: dtype, ``dim`` range and uniqueness, and every
 refinement. The op normalizes contiguity and hands the input over as the manifest declares
 it; moving the reduced axes to the end, flattening to ``(M, N)`` and shaping the result back
 belong to the kernel. Kernels are cached by shape, axes, dtype and device.
@@ -114,7 +114,16 @@ class _ReduceOpBase(Op):
         Returns:
             The reduction, shaped by ``dim`` and ``keepdim``.
         """
-        return self._call_boundary(x)
+        if x.ndim == 0:
+            return self._scalar_forward(self._cast(x))
+        axes = reduce_axes(self.dim, x.ndim, self._empty)
+        if not axes:
+            return self._noop_forward(self._cast(x))
+        if x.numel() == 0:
+            return self._empty_forward(self._cast(x))
+        x = self._cast(x, for_kernel=True).contiguous()
+        n = math.prod(x.shape[a] for a in axes)
+        return self._launch(x, axes, n)
 
     def _cast(self, x: torch.Tensor, *, for_kernel: bool = False) -> torch.Tensor:
         """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed.
@@ -136,19 +145,6 @@ class _ReduceOpBase(Op):
     def _scalar_forward(self, x: torch.Tensor):
         """A 0-d input reduces one element: the element itself."""
         return x.clone()
-
-    def _eager_forward(self, x: torch.Tensor):
-        """Resolve the kernel and launch, inside the operator; closed forms need no kernel."""
-        if x.ndim == 0:
-            return self._scalar_forward(self._cast(x))
-        axes = reduce_axes(self.dim, x.ndim, self._empty)
-        if not axes:
-            return self._noop_forward(self._cast(x))
-        if x.numel() == 0:
-            return self._empty_forward(self._cast(x))
-        x = self._cast(x, for_kernel=True).contiguous()
-        n = math.prod(x.shape[a] for a in axes)
-        return self._launch(x, axes, n)
 
     def _noop_forward(self, x: torch.Tensor):
         """An empty ``dim`` under the ``'noop'`` mode keeps every element."""

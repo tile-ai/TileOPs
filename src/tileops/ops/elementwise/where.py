@@ -44,20 +44,6 @@ class WhereFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(
-        self,
-        condition: torch.Tensor,
-        input: torch.Tensor,
-        other: torch.Tensor,
-    ) -> torch.Tensor:
-        n_total = torch.broadcast_shapes(condition.shape, input.shape, other.shape).numel()
-        condition = condition.contiguous()
-        input = input.contiguous()
-        other = other.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, call)
-        return kernel(condition, input, other)
-
     def forward(
         self,
         condition: torch.Tensor,
@@ -65,4 +51,10 @@ class WhereFwdOp(Op):
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``condition``, ``input`` and ``other``."""
-        return self._call_boundary(condition, input, other)
+        n_total = torch.broadcast_shapes(condition.shape, input.shape, other.shape).numel()
+        condition = condition.contiguous()
+        input = input.contiguous()
+        other = other.contiguous()
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        kernel = self.kernel_for(ELEMENTWISE, call)
+        return kernel(condition, input, other)

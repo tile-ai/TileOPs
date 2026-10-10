@@ -60,13 +60,6 @@ class CumulativeOp(Op):
 
         One call to the operator this op registers: this is as far as dynamo traces.
         """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         x = x.contiguous()  # handed over as the manifest declares it
         call = CumulativeCall(
             device=x.device,

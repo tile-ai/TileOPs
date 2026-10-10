@@ -59,10 +59,6 @@ class TopKMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
-        return self._call_boundary(logits, k)
-
-    def _eager_forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         k = k.contiguous()
         batch, vocab = logits.shape

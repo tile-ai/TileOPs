@@ -61,7 +61,7 @@ def _stub_op(**kwargs):
     """An op that builds no kernel, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
-        def _eager_forward(self, x, weight=None):
+        def forward(self, x, weight=None):
             return torch.zeros_like(x)
 
     StubOp.__name__ = "StubOp"
@@ -234,7 +234,7 @@ def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
         _run_instance_norm(op)
 
     assert op.settled_target is None
-    assert not op.built_kernels("instance_norm") and op.kernel is None
+    assert not op.built_kernels("instance_norm") and not list(op.iter_kernels())
 
 
 def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():

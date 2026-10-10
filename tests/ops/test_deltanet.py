@@ -136,7 +136,7 @@ def test_deltanet_bwd(
     from tileops.ops import DeltaNetChunkFwdOp
 
     fwd_op = DeltaNetChunkFwdOp(chunk_size=BC)
-    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
+    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op(q, k, v, beta)
     do = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
 
     # Reference via autograd
@@ -145,7 +145,7 @@ def test_deltanet_bwd(
 
     # Kernel
     op = DeltaNetChunkBwdOp(chunk_size=BC, tune=tune)
-    op_outputs = op.forward(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
+    op_outputs = op(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
 
     compare_outputs(
         op_outputs,

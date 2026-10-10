@@ -96,13 +96,6 @@ class GemmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b)
-
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b = a.contiguous(), b.contiguous()
         m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
         call = GemmCall(
@@ -190,20 +183,6 @@ class GemmFP8FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b, scale_a, scale_b, bias)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
@@ -218,8 +197,8 @@ class GemmFP8FwdOp(Op):
             has_bias=bias is not None,
             device=a.device,
         )
-        self.kernel = self.kernel_for("gemm_fp8", call)
-        return self.kernel(a, b, scale_a, scale_b, bias)
+        kernel = self.kernel_for("gemm_fp8", call)
+        return kernel(a, b, scale_a, scale_b, bias)
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.last_call.ix["T"])
@@ -345,19 +324,6 @@ class GemmW4A16FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(activation, packed_weight, weight_scale, weight_zero)
-
-    def _eager_forward(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        weight_zero: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(
             t.contiguous() for t in (activation, packed_weight, weight_scale, weight_zero)
         )
@@ -370,8 +336,8 @@ class GemmW4A16FwdOp(Op):
             group_size=self.group_size,
             device=activation.device,
         )
-        self.kernel = self.kernel_for("gemm_w4a16", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("gemm_w4a16", call)
+        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.last_call.ix["T"])

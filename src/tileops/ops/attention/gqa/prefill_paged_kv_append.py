@@ -244,36 +244,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             ValueError: An FP8 pool's scales are not finite and positive, a fused-RoPE
                 call reaches past ``max_position``, or no in-tree kernel serves the call.
         """
-        return self._call_boundary(
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            k_scale,
-            v_scale,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        k_scale: torch.Tensor,
-        v_scale: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         if self.validate_inputs:
             self._check_call_values(k_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens)
         q, k_new, v_new, k_scale, v_scale, cu_seqlens_q, cache_seqlens, block_table = (

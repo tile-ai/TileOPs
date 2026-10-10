@@ -92,17 +92,6 @@ class IndexedExpertMLPFwdOp(Op):
         topk_ids: Tensor,
     ) -> None:
         """Write the weighted and reduced expert result into ``output``."""
-        return self._call_boundary(output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
-
-    def _eager_forward(
-        self,
-        output: Tensor,
-        hidden_states: Tensor,
-        w_gate_up: Tensor,
-        w_down: Tensor,
-        topk_weights: Tensor,
-        topk_ids: Tensor,
-    ) -> None:
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
         call = IndexedExpertCall(
