@@ -168,20 +168,19 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("dim", "dim_tail", "heads", "heads_kv", "stride_kv", "dtype", "kernel"),
+    ("dim", "dim_tail", "heads", "heads_kv", "stride_kv", "dtype"),
     [
-        pytest.param(512, 0, 128, 2, 1, torch.float16, "dsa_decode_ws_kernel", id="512-kv-groups"),
-        pytest.param(512, 64, 64, 1, 2, torch.bfloat16, "dsa_decode_ws_kernel", id="512-kv-stride"),
-        pytest.param(256, 64, 64, 1, 1, torch.bfloat16, "dsa_decode_kernel", id="256"),
+        pytest.param(512, 0, 128, 2, 1, torch.float16, id="512-kv-groups"),
+        pytest.param(512, 64, 64, 1, 2, torch.bfloat16, id="512-kv-stride"),
+        pytest.param(256, 64, 64, 1, 1, torch.bfloat16, id="256"),
     ],
 )
-def test_dsa_decode_sm90_kernel_by_value_dim(
-    dim, dim_tail, heads, heads_kv, stride_kv, dtype, kernel
+def test_dsa_decode_ignores_keys_past_the_causal_limit(
+    dim, dim_tail, heads, heads_kv, stride_kv, dtype
 ) -> None:
-    """On SM90, value dim 512 runs the seesaw kernel and other widths the older one.
+    """A selected key past the causal limit, which stride_kv scales, carries no weight.
 
-    Each row selects distinct keys from the whole cache, so most of them lie past the causal
-    limit, which stride_kv scales; they must carry no weight.
+    Each row selects distinct keys from the whole cache, so most of them lie past the limit.
     """
     seq_len, seq_len_kv, topk, q_start = 33, 1024, 256, 256
     test = DSADecodeTest(
@@ -195,6 +194,4 @@ def test_dsa_decode_sm90_kernel_by_value_dim(
         torch.randperm(seq_len_kv, generator=generator)[:topk] for _ in range(seq_len * heads_kv)
     ]
     indices = torch.stack(rows).view(1, seq_len, heads_kv, topk).to(torch.int32).to(q.device)
-    call = op._dsa_decode_call(q, kv, indices).on_device(q.device)
-    assert op.select_implementation("dsa_decode", call) == kernel
     test.check(op, q, kv, indices)

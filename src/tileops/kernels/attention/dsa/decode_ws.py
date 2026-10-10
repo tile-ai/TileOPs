@@ -45,10 +45,7 @@ def _dsa_decode_ws_kernel(
     consumer 1 continues from consumer 0's max, and consumer 0 rescales its weights to the
     pair's final max before handing them over.
     """
-    reason = DSADecodeWSKernel.tile_refusal(heads, kv_group, topk, dim, tail_dim)
-    if reason is not None:
-        raise ValueError(reason)
-    # The tiles below are fixed; tile_refusal states the shapes they cover.
+    # The tiles below are fixed; DSADecodeWSKernel.refusal states the shapes they cover.
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
     block_k = 64  # selected keys per block; blocks are taken in pairs
     half = dim // 2  # value dims each consumer accumulates
@@ -400,30 +397,21 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     def applies(cls, call: DSADecodeCall) -> bool:
         return cls.refusal(call) is None
 
-    @staticmethod
-    def tile_refusal(
-        heads: int, kv_group: int, topk: int, dim: int, tail_dim: int
-    ) -> Optional[str]:
-        """Why the builder's fixed tiles cannot cover this shape, or ``None``; it asks too.
-
-        The tiles are 64-head blocks, pairs of 64-key blocks, two 256-wide value halves and
-        a key tail of at most one 64-column swizzle atom.
-        """
-        if (heads // kv_group) % 64 != 0:
-            return "requires a multiple of 64 heads per KV group"
-        if topk % 128 != 0:
-            return "requires topk a multiple of 128"
-        if dim != 512 or tail_dim not in (0, 64):
-            return "requires dim 512 and tail_dim 0 or 64"
-        return None
-
     @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         if not call.is_causal:
             return "requires the causal mask"
         if call.dtype not in (torch.float16, torch.bfloat16):
             return "requires float16 or bfloat16"
-        return cls.tile_refusal(call.heads, call.kv_group, call.topk, call.dim, call.tail_dim)
+        # The builder's tiles: 64-head blocks, pairs of 64-key blocks, two 256-wide value
+        # halves and a key tail of at most one 64-column swizzle atom.
+        if (call.heads // call.kv_group) % 64 != 0:
+            return "requires a multiple of 64 heads per KV group"
+        if call.topk % 128 != 0:
+            return "requires topk a multiple of 128"
+        if call.dim != 512 or call.tail_dim not in (0, 64):
+            return "requires dim 512 and tail_dim 0 or 64"
+        return None
 
     def __init__(
         self,

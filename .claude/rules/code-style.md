@@ -4,6 +4,8 @@ one holds.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
 
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
+
 - Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.
 
 - A value only one kernel reads — a tile size, a thread count, a register budget, a barrier id, a mask value — is a local of the function that reads it, with its reason beside it. A module-level constant is reserved for a value several functions in the module must agree on, and its comment states that reason.
@@ -22,7 +24,9 @@ one holds.
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-- Abbreviation spellings have one source of truth, `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`; filenames, manifest entry names and classes all follow it.
+- Abbreviation spellings have one source of truth, `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`; manifest entry names and classes follow it.
+
+- Filenames are lowercase with underscores and spell an abbreviation out as a word (`rms_norm.py`, not `rmsnorm.py`).
 
 - Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Never mix Sphinx or NumPy headers in one file.
 
