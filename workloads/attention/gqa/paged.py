@@ -43,6 +43,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         pos_encoding_mode: str = "none",
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
     ) -> None:
         self.heads = heads
         self.heads_kv = heads_kv
@@ -62,6 +63,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.has_sinks = has_sinks
 
     @property
     def batch(self) -> int:
@@ -74,6 +76,9 @@ class GQAPagedFwdWorkload(WorkloadBase):
         q = torch.randn(sum(self.q_lens), self.heads, self.dim, dtype=self.dtype, device=device)
         k_pages = torch.randn(pages_shape, dtype=self.dtype, device=device)
         v_pages = torch.randn(pages_shape, dtype=self.dtype, device=device)
+        if self.has_sinks:
+            v_pages.add_(1.0)
+        sinks = torch.linspace(-2, 8, self.heads, device=device) if self.has_sinks else None
         page_table = make_fragmented_block_table(self.batch, self.max_pages_per_req, self.num_pages)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
         cos, sin = None, None
@@ -94,6 +99,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
             None,
             cos,
             sin,
+            sinks,
         )
 
     def ref_program(
@@ -109,6 +115,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         v_scale: torch.Tensor | None = None,
         rope_cos: torch.Tensor | None = None,
         rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Materialize each request's cached keys, then attend in FP32.
 
@@ -153,7 +160,11 @@ class GQAPagedFwdWorkload(WorkloadBase):
             if self.window_size_right >= 0:
                 visible &= k_pos[None, :] <= q_pos[:, None] + self.window_size_right
             scores = scores.masked_fill(~visible, float("-inf"))
+            if sinks is not None:
+                scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
             probs = torch.softmax(scores, dim=-1).nan_to_num(0.0)
+            if sinks is not None:
+                probs = probs[..., :-1]
             outputs.append(torch.matmul(probs, v_b).transpose(0, 1))
         return torch.cat(outputs).to(self.out_dtype or q.dtype).contiguous()
 
@@ -195,6 +206,7 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
             pos_encoding_mode=params["pos_encoding_mode"],
             rotary_dim=params["rotary_dim"],
             rope_layout=params["rope_layout"],
+            has_sinks=call.present("sinks"),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
@@ -210,4 +222,7 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
                 table.shape, device=table.device, generator=self.rng("rope", device=table.device)
             ) * (2 * torch.pi)
             inputs[9], inputs[10] = angles.cos().to(table.dtype), angles.sin().to(table.dtype)
+        if self.has_sinks:
+            inputs[2].add_(1.0)
+            inputs[-1] = torch.linspace(-2, 8, self.heads, device=inputs[0].device)
         return tuple(inputs)

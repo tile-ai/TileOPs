@@ -23,6 +23,7 @@ from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax,
     make_online_softmax_with_mask_guard,
+    make_paged_sink_scale,
     make_rescale,
 )
 from tileops.kernels.constants import LOG2E
@@ -192,6 +193,7 @@ def gqa_decode_no_split_paged_kernel(
     sm_scale,
     softcap,
     dtype,
+    has_sinks=False,
 ):
     accum_dtype = "float"
     group = heads // heads_kv
@@ -206,6 +208,9 @@ def gqa_decode_no_split_paged_kernel(
     )
     def _func(block_M, block_N, num_stages, threads):
         shape_q = [batch, seqlen_q, heads, dim]
+        sink_scale = make_paged_sink_scale(
+            _softmax_scale(dim, sm_scale, softcap)[1], block_M, group
+        )
         shape_kv = [seqlen_kv, heads_kv, dim]
         tail_n = _tail_block_n(block_N)
         load_q, full_tile, tail_tile, visible_end = _make_tile_steps(
@@ -219,6 +224,7 @@ def gqa_decode_no_split_paged_kernel(
             V: T.Tensor(shape_kv, dtype),
             real_seqlen_kv: T.Tensor([batch], T.int32),
             block_table: T.Tensor([batch, max_pages_per_req], T.int32),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(T.ceildiv(rows, block_M), heads_kv, batch, threads=threads) as (
@@ -299,6 +305,12 @@ def gqa_decode_no_split_paged_kernel(
                         k,
                         kv_len,
                     )
+                if has_sinks:
+                    sink_scale(
+                        logsum, scores_max, Sinks, scores_scale, by * group, row0, rows - row0
+                    )
+                    for i, d in T.Parallel(block_M, dim):
+                        acc_o[i, d] *= scores_scale[i]
                 for i, d in T.Parallel(block_M, dim):
                     if row0 + i < rows:
                         Output[bz, (row0 + i) // group, by * group + (row0 + i) % group, d] = (
@@ -324,6 +336,7 @@ def _gqa_decode_split_paged_kernel(
     sm_scale,
     softcap,
     dtype,
+    has_sinks=False,
 ):
     accum_dtype = "float"
     group = heads // heads_kv
@@ -467,12 +480,13 @@ def _gqa_decode_split_paged_kernel(
         def combine(
             glse: T.Tensor(shape_lse, accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(rows, heads_kv, batch, threads=128) as (r, kv_head, bid):
                 lse = T.alloc_fragment([num_split], accum_dtype)
                 lse_max = T.alloc_fragment([1], accum_dtype)
-                lse_logsum = T.alloc_local([1], accum_dtype)
+                lse_logsum = T.alloc_fragment([1], accum_dtype)
                 o_accum = T.alloc_fragment([dim], accum_dtype)
                 for k in T.Parallel(num_split):
                     lse[k] = glse[bid, kv_head, k, r]
@@ -480,6 +494,10 @@ def _gqa_decode_split_paged_kernel(
                 T.reduce_max(lse, lse_max, dim=0, clear=False)
                 # Weights relative to the max keep the normalization term from rounding away.
                 lse_logsum[0] = 0
+                if has_sinks:
+                    sink = Sinks[kv_head * group + r % group] * LOG2E
+                    lse_max[0] = T.max(lse_max[0], sink)
+                    lse_logsum[0] = T.exp2(sink - lse_max[0])
                 for k in T.serial(num_split):
                     lse_logsum[0] += T.exp2(glse[bid, kv_head, k, r] - lse_max[0])
                 lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
@@ -504,12 +522,13 @@ def _gqa_decode_split_paged_kernel(
             glse: T.Tensor(shape_lse, accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             split_length: T.Tensor([batch, num_split], "int32"),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             _gqa_decode_split(
                 Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, split_length
             )
-            combine(glse, Output_partial, Output)
+            combine(glse, Output_partial, Sinks, Output)
 
         return gqa_decode_split
 
@@ -557,7 +576,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
             call.is_causal and call.max_seqlen_q > 1,
             call.dtype,
         )
-        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
+        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap, has_sinks=call.has_sinks)
         identity = (*args, *extra.values(), index)
         return identity, lambda: cls(*args, **extra, device_index=index)
 
@@ -575,6 +594,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         dtype="float16",
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
+        has_sinks: bool = False,
         config: Optional[dict] = None,
         tune=False,
         device_index: Optional[int] = None,
@@ -600,6 +620,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.has_sinks = has_sinks
         self.rows = seqlen_q * (heads // heads_kv)
         self._supported_block_ns = gqa_decode_paged_block_ns(page_size)
         if config is not None:
@@ -620,6 +641,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            has_sinks,
         )
         # autotune targets the split kernel
         self.kernel = _gqa_decode_split_paged_kernel(*self._builder_args)
@@ -716,6 +738,7 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ):
         """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache.
 
@@ -732,7 +755,9 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 c["block_M"], c["block_N"], c["num_stages"], c["threads"]
             )
             q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
-            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
+            return kernel(
+                q, K, V, real_seqlen_kv, block_table, sinks if self.has_sinks else q
+            ).view(Q.shape)
 
         chunk_size = capacity // (num_split * c["block_N"]) * c["block_N"]
         split_length = torch.full(
@@ -752,5 +777,15 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
             c["block_M"], c["block_N"], num_split, c["num_stages"], c["threads"]
         )
         q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
-        out = kernel(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+        out = kernel(
+            q,
+            K,
+            V,
+            real_seqlen_kv,
+            block_table,
+            glse,
+            Output_partial,
+            acc_split_length,
+            sinks if self.has_sinks else q,
+        )
         return out.view(Q.shape)

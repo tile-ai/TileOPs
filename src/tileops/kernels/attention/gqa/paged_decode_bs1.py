@@ -48,6 +48,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     sm_scale,
     softcap,
     dtype,
+    has_sinks=False,
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = score_scale * LOG2E
@@ -108,6 +109,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             dim,
             dtype,
             accum_dtype,
+            has_sinks,
         )
 
         @T.prim_func
@@ -119,10 +121,11 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             block_table: T.Tensor([batch, max_pages_per_req], T.int32),
             glse: T.Tensor(lse_shape, accum_dtype),
             Output_partial: T.Tensor(part_shape, accum_dtype),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
             split(Q, K, V, block_table, real_seqlen_kv, glse, Output_partial)
-            combine(glse, Output_partial, Output)
+            combine(glse, Output_partial, Output, Sinks)
 
         return gqa_decode_paged_bs1_ctx
 
@@ -149,7 +152,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             and call.paged_decode_refusal is None
             and call.decode_bs1_region
             # The warp-specialized softmax reduces raw QK before applying the scale.
-            and (call.sm_scale is None or call.sm_scale >= 0.0)
+            # Zero must clear scores before masking, which the packed path does.
+            and (call.sm_scale is None or call.sm_scale > 0.0)
             and cls.block_n_for_page_size(call.page_size) is not None
         )
 
@@ -178,7 +182,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             call.max_pages_per_req,
             call.dtype,
         )
-        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
+        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap, has_sinks=call.has_sinks)
         identity = (*args, *extra.values(), index)
         return identity, lambda: cls(*args, **extra, device_index=index)
 
@@ -194,6 +198,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         dtype="float16",
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
+        has_sinks: bool = False,
         config: Optional[dict] = None,
         tune=False,
         device_index: Optional[int] = None,
@@ -209,6 +214,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.has_sinks = has_sinks
         if self.groups <= 0:
             raise ValueError("groups must be positive")
         if self.heads % self.groups != 0:
@@ -238,6 +244,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         c = self.config
@@ -256,9 +263,12 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
                 self.sm_scale,
                 self.softcap,
                 self.dtype_str,
+                self.has_sinks,
             )(64, c["block_N"], 2, 128)
             q = Q.view(self.batch, 1, self.heads, self.dim)
-            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
+            return kernel(
+                q, K, V, real_seqlen_kv, block_table, sinks if self.has_sinks else q
+            ).view(Q.shape)
 
         ctx_splits = self._ctx_splits_for(capacity)
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
@@ -273,6 +283,14 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            self.has_sinks,
         )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(
-            Q, K, V, real_seqlen_kv, block_table, glse, Output_partial
+            Q,
+            K,
+            V,
+            real_seqlen_kv,
+            block_table,
+            glse,
+            Output_partial,
+            sinks if self.has_sinks else Q,
         )

@@ -4,6 +4,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
+
 RING_DEPTH = 2
 _CONSUMER_THREADS = 128
 # TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
@@ -281,11 +283,12 @@ def make_gqa_decode_bs1_combine(
     dim: int,
     dtype: str,
     accum_dtype: str,
+    has_sinks: bool = False,
 ):
     """Create the paging-independent split-output combine macro."""
 
     @T.macro
-    def combine(glse, Output_partial, Output):
+    def combine(glse, Output_partial, Output, sinks=None):
         with T.Kernel(heads, batch, threads=128) as (hq, bid):
             lse_vec = T.alloc_fragment([ctx_splits], accum_dtype)
             lse_max = T.alloc_fragment([1], accum_dtype)
@@ -298,6 +301,9 @@ def make_gqa_decode_bs1_combine(
             T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
             lse_max[0] = T.if_then_else(lse_max[0] == -T.infinity(accum_dtype), 0.0, lse_max[0])
             lse_logsum[0] = 0
+            if has_sinks:
+                lse_max[0] = T.max(lse_max[0], sinks[hq] * LOG2E)
+                lse_logsum[0] = T.exp2(sinks[hq] * LOG2E - lse_max[0])
             for s in T.serial(ctx_splits):
                 lse_logsum[0] += T.exp2(glse[bid, hq, s] - lse_max[0])
             lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]

@@ -26,6 +26,7 @@ from tileops.kernels.attention.call_spec import (
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
+    make_paged_sink_scale,
     make_rescale,
 )
 from tileops.kernels.attention.varlen_rope import rope_channel_pair
@@ -279,6 +280,7 @@ def _gqa_paged_varlen_kernel(
     rotary_dim: int,
     rope_layout: str,
     sm90: bool,
+    has_sinks: bool,
     producer_warpgroup: bool,
 ):
     """Build the paged packed-query attention program for one fixed set of call facts."""
@@ -305,6 +307,7 @@ def _gqa_paged_varlen_kernel(
         pool_rows = T.dynamic("pool_rows")
         shape_q = (total_q, heads, dim)
         shape_kv = (pool_rows, heads_kv, dim)
+        sink_scale = make_paged_sink_scale(softmax_scale, block_M, group)
         rope_shape = (max_position, rotary_dim // 2) if fuse_rope else (1, 1)
         tiling = GroupTiling(batch, block_M, rows_per_offset=group)
         parts = _make_tile_parts(
@@ -339,6 +342,7 @@ def _gqa_paged_varlen_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
             rope_cos: T.Tensor(rope_shape, dtype),
             rope_sin: T.Tensor(rope_shape, dtype),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(tiling.tile_upper_bound(total_q * group), heads_kv, threads=threads) as (
@@ -472,9 +476,15 @@ def _gqa_paged_varlen_kernel(
                                 kv_len,
                             )
 
+                    if has_sinks:
+                        sink_scale(
+                            logsum, scores_max, Sinks, scores_scale, by * group, row0, rows - row0
+                        )
                     # One reciprocal a row: a per-element divide by a row scalar is not.
                     for i in T.Parallel(block_M):
                         row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
+                        if has_sinks:
+                            row_scale[i] *= scores_scale[i]
                     for i, d in T.Parallel(block_M, dim):
                         if row0 + i < rows:
                             r = row0 + i
@@ -506,6 +516,7 @@ def _gqa_paged_varlen_split_kernel(
     rotary_dim: int,
     rope_layout: str,
     sm90: bool,
+    has_sinks: bool,
 ):
     """The same scan with the key range cut into ``num_split`` chunks, combined afterwards.
 
@@ -720,13 +731,14 @@ def _gqa_paged_varlen_split_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(tiles, heads_kv, threads=128) as (bx, by):
                 tile_cum = T.alloc_shared([batch + 1], "int32")
                 lse = T.alloc_fragment([num_split], accum_dtype)
                 lse_max = T.alloc_fragment([1], accum_dtype)
-                total = T.alloc_local([1], accum_dtype)
+                total = T.alloc_fragment([1], accum_dtype)
                 o_accum = T.alloc_fragment([dim], accum_dtype)
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
@@ -749,6 +761,10 @@ def _gqa_paged_varlen_split_kernel(
                             # Weights relative to the max keep the normalization term from
                             # rounding away.
                             total[0] = 0
+                            if has_sinks:
+                                sink = Sinks[by * group + (row0 + i) % group] * LOG2E
+                                lse_max[0] = T.max(lse_max[0], sink)
+                                total[0] = T.exp2(sink - lse_max[0])
                             for k in T.serial(num_split):
                                 total[0] += T.exp2(lse[k] - lse_max[0])
                             total[0] = T.log2(total[0]) + lse_max[0]
@@ -777,12 +793,13 @@ def _gqa_paged_varlen_split_kernel(
             rope_sin: T.Tensor(rope_shape, dtype),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
+            Sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
             scan(
                 Q, K, V, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin, glse, partial
             )
-            combine(cu_seqlens_q, glse, partial, Output)
+            combine(cu_seqlens_q, glse, partial, Sinks, Output)
 
         return gqa_paged_varlen_split
 
@@ -837,6 +854,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             # RoPE gathers and rotates K per query tile; amortise that work when the
             # packing has at least 128 query/head rows per request on average.
             rows_fill_tile=(
@@ -864,6 +882,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
+        has_sinks: bool = False,
         rows_fill_tile: bool = False,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -892,6 +911,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.has_sinks = has_sinks
         self.rows_fill_tile = rows_fill_tile
         self.fuse_rope = fuse_rope
         self.max_position = max_position
@@ -922,6 +942,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             # A producer warpgroup specializes the scan on SM90 only, which decides how the
             # key tile the cache end cuts drops its stale rows.
             get_sm_version(device_index) >= 90,
+            has_sinks,
         )
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
@@ -1059,17 +1080,18 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         tokens_per_request = min(tokens_per_request, cache_len)
 
         def supply_prog(params):
-            if len(params) != 8:
+            if len(params) != 9:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, the two pools, the cache "
-                    f"lengths, the page table, query offsets and rotary tables, got {len(params)} "
+                    f"lengths, the page table, query offsets, rotary tables and sinks, got {len(params)} "
                     f"parameters"
                 )
             device = torch.cuda.current_device()
             total_q = batch * tokens_per_request
             pool = torch.randn(cache_len, heads_kv, dim, dtype=dtype, device=device)
+            q = torch.randn(total_q, heads, dim, dtype=dtype, device=device)
             return [
-                torch.randn(total_q, heads, dim, dtype=dtype, device=device),
+                q,
                 pool,
                 pool.clone(),
                 torch.full((batch,), cache_len, dtype=torch.int32, device=device),
@@ -1090,6 +1112,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 torch.zeros((self.max_position, self.rotary_dim // 2), dtype=dtype, device=device)
                 if self.fuse_rope
                 else self._unused_rope,
+                torch.zeros(heads, dtype=torch.float32, device=device) if self.has_sinks else q,
             ]
 
         return supply_prog
@@ -1145,7 +1168,9 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        sinks = sinks if self.has_sinks else q
         rope_cos = rope_cos if self.fuse_rope else self._unused_rope
         rope_sin = rope_sin if self.fuse_rope else self._unused_rope
         c = self.config
@@ -1156,7 +1181,15 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         if splits == 1:
             program = self.kernel(c["block_M"], c["block_N"], c["num_stages"], c["threads"])
             return program(
-                q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin
+                q,
+                k_pool,
+                v_pool,
+                cache_seqlens,
+                page_table,
+                cu_seqlens_q,
+                rope_cos,
+                rope_sin,
+                sinks,
             )
         program = _gqa_paged_varlen_split_kernel(*self._builder_args)(
             c["block_M"], c["block_N"], splits, c["num_stages"], c["threads"]
@@ -1180,4 +1213,5 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             rope_sin,
             glse,
             partial,
+            sinks,
         )

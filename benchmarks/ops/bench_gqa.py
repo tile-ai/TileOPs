@@ -602,7 +602,7 @@ def _fa3_gqa_paged_rope(workload, inputs):
     scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=q.dtype)
     scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=q.dtype)
 
-    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin):
+    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin, _sinks=None):
         k = k_pages[key_pages, key_offsets]
         v = v_pages[key_pages, key_offsets]
         rotary_cache = torch.cat((cos, sin), -1).float()
@@ -722,12 +722,60 @@ def _flashinfer_gqa_paged(workload, inputs):
     )
 
 
+def _flashinfer_gqa_paged_sinks(workload, inputs):
+    """The sink wrapper consumes the same physical KV pages and logical page mapping."""
+    if workload.pos_encoding_mode == "rope" or workload.window_size_right >= 0 or workload.softcap:
+        return None
+    q, k_pages, _v_pages, page_table, cache_seqlens, cu_q = inputs[:6]
+    page = workload.page_size
+    counts = ((cache_seqlens + page - 1) // page).tolist()
+    indptr = torch.tensor([0, *accumulate(counts)], dtype=torch.int32, device=q.device)
+    indices = torch.cat([page_table[b, :n] for b, n in enumerate(counts)])
+    workspace = torch.empty(128 * 1024 * 1024, device=q.device, dtype=torch.uint8)
+    wrapper = flashinfer_op("BatchAttentionWithAttentionSinkWrapper")(
+        workspace,
+        kv_layout="NHD",
+        backend="fa3",
+        q_data_type=q.dtype,
+        kv_data_type=k_pages.dtype,
+        head_dim_qk=workload.dim,
+        head_dim_vo=workload.dim,
+        window_left=workload.window_size_left,
+    )
+    wrapper.plan(
+        cu_q,
+        indptr,
+        indices,
+        (cache_seqlens - 1) % page + 1,
+        workload.heads,
+        workload.heads_kv,
+        workload.dim,
+        page,
+        causal=workload.is_causal,
+        window_left=workload.window_size_left,
+        q_data_type=q.dtype,
+        kv_data_type=k_pages.dtype,
+    )
+    scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+
+    def run(q, k_pages, v_pages, _table, _lengths, _cu_q, _qs, _ks, _vs, _cos, _sin, sinks):
+        return wrapper.run(q, (k_pages, v_pages), sinks, scale)
+
+    return run
+
+
 @pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp), ids=lambda case: case.id)
 def test_gqa_paged_fwd_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
     op = GQAPagedFwdOp(**case.arguments)
     implementations = {"torch-ref": case.reference}
+    if workload.has_sinks:
+        flashinfer_fn = _flashinfer_gqa_paged_sinks(workload, inputs)
+        if flashinfer_fn is not None:
+            implementations[FLASHINFER_TAG] = flashinfer_fn
+        bench.Runner(op, case).compare(implementations)
+        return
     if workload.pos_encoding_mode == "rope":
         implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
         bench.Runner(op, case).compare(implementations)
