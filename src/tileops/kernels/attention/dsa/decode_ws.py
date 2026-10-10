@@ -48,7 +48,7 @@ def _dsa_decode_ws_kernel(
     # The tiles below are fixed; DSADecodeWSKernel.refusal states the shapes they cover.
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
     block_k = 64  # selected keys per block; blocks are taken in pairs
-    half = dim // 2  # value dims each consumer accumulates
+    half = 256  # value dims each consumer accumulates
     atom = 64  # columns one 128-byte swizzle atom holds
     vec = 8  # elements one 16-byte cp.async moves
     lanes = atom // vec  # producer lanes per tile row
