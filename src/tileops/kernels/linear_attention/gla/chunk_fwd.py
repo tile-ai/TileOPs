@@ -453,7 +453,8 @@ class GLAChunkedFwdKernel(Kernel):
         )
         return {
             "num_stages": stages,
-            "threads": threads,
+            "threads_par": threads,
+            "threads_seq": threads,
             "num_v_partitions": num_v_partitions,
             "num_k_partitions": num_k_partitions,
         }
@@ -533,7 +534,7 @@ class GLAChunkedFwdKernel(Kernel):
         best_lat = float("inf")
         best_cfg = None
 
-        for cfg in self.autotune_configs:
+        for cfg in self.tuning_candidates(self.autotune_configs):
             try:
                 self._build_kernels(cfg)
 

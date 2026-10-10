@@ -1022,7 +1022,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         refused: list[str] = []
         args: tuple = ()
         try:
-            for candidate in self.autotune_configs:
+            for candidate in self.tuning_candidates(self.autotune_configs):
                 splits, threads = candidate["splits"], candidate["threads"]
                 args = (x, stat(), stat(), weight, bias, stat(), stat(), splits, threads)
                 try:

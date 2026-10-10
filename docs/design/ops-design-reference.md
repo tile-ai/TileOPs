@@ -49,7 +49,7 @@ Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles 
 | ------------------------------------ | ----------------------- | ------------------------------------------------------------------- |
 | `dtype`                              | `Optional[torch.dtype]` | Element type this kernel is specialized for                         |
 | `config`                             | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.)                      |
-| `autotune_configs`                   | `Optional[list[dict]]`  | Search space for autotuning                                         |
+| `autotune_configs`                   | `Optional[list[dict]]`  | Search space for autotuning; the untuned config is timed with it    |
 | `supported_archs`                    | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)                          |
 | `kernel`                             | `Callable`              | Compiled TileLang kernel function                                   |
 | `autotune_accepts_random_int_inputs` | `bool`                  | Whether autotuning may generate the integer tensor inputs at random |
@@ -57,7 +57,7 @@ Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles 
 | `general`                            | `bool`                  | Below every other implementation of its interface; at most one      |
 | `preferred_over`                     | `frozenset[str]`        | Keys of the implementations it wins over, transitively              |
 
-Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`. Selection classmethods, each with a default ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)): `applies(call)` and `refusal(call)` state the calls the implementation serves, `unavailable(call)` reads `devices` and `supported_archs`, and `entry_for(call)` returns the build identity and the factory.
+Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`, and `tuning_candidates(configs, untuned)`, which every tuning loop times, so tuning never keeps a config it measured slower than the one the kernel runs untuned. Selection classmethods, each with a default ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)): `applies(call)` and `refusal(call)` state the calls the implementation serves, `unavailable(call)` reads `devices` and `supported_archs`, and `entry_for(call)` returns the build identity and the factory.
 
 ## Optional Hooks (Appendix)
 
