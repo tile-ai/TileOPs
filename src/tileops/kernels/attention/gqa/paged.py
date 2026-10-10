@@ -795,10 +795,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside.
 
@@ -870,7 +866,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -924,7 +919,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             get_sm_version(device_index) >= 90,
         )
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def kernel(self):

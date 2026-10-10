@@ -9,12 +9,11 @@ from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
-from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
     build_entry,
-    serves_dense,
+    dense_refusal,
 )
 from tileops.kernels.linear_attention.gla.chunk_fwd import (
     GLAChunkedFwdKernel,
@@ -396,19 +395,19 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        return head_count_refusal(call.heads) or super().refusal(call)
-
-    @classmethod
-    def applies(cls, call: GLACall) -> bool:
         fit = _PARTITION_FITS.get(call.calibration)
-        return (
-            fit is not None
-            and serves_dense(call)
-            and call.dim_k == fit.dim
-            and call.seq_len >= fit.min_seq_len
-            and call.seq_len % 1024 == 0
-            and call.batch * call.heads * (call.seq_len // 1024) >= fit.min_ctas
-        )
+        if fit is None:
+            return "has no partition fit for this board"
+        reason = dense_refusal(call)
+        if reason is not None:
+            return reason
+        if call.dim_k != fit.dim:
+            return f"is fitted for head dim {fit.dim}, got {call.dim_k}"
+        if call.seq_len < fit.min_seq_len or call.seq_len % 1024 != 0:
+            return f"requires a multiple of 1024 tokens from {fit.min_seq_len}, got {call.seq_len}"
+        if call.batch * call.heads * (call.seq_len // 1024) < fit.min_ctas:
+            return f"partitions into fewer than {fit.min_ctas} blocks"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GLACall) -> Entry:

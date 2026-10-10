@@ -592,12 +592,13 @@ def test_logical_reduce_long_sequence(op_kind: str, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 def test_logical_reduce_autotune() -> None:
-    """``tune=True`` must build and time every candidate width."""
+    """``request_tune()`` must build and time every candidate width."""
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     m, n, dtype = 4, 40000, torch.bool
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dim=-1, tune=True)
+    op = AnyFwdOp(dim=-1)
+    op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -701,7 +702,9 @@ def test_logical_reduce_edge_axes_fused_dispatch(
         pytest.skip("fused edge logical reduce is selected only on a calibrated board")
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
-    op = op_map[op_kind](dim=[0, 2], tune=tune, target=BUILTIN)
+    op = op_map[op_kind](dim=[0, 2], target=BUILTIN)
+    if tune:
+        op.request_tune()
     if dtype == torch.bool:
         x = torch.rand(4, 128, 4096, device="cuda") > 0.999
         if op_kind == "all":

@@ -57,8 +57,9 @@ b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 d = gemm(a, b)  # equals a @ b.T
 ```
 
-Operators autotune when built with `tune=True`, are CUDA-Graph compatible, and each declares
-whether it supports `torch.compile(fullgraph=True)`.
+Operators autotune after `op.request_tune()`, are CUDA-Graph compatible, and every op whose
+manifest entry has a call-time tensor input and no composition supports
+`torch.compile(fullgraph=True)`.
 
 ## How it works
 

@@ -1574,7 +1574,6 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         n: Transform length; (n, dtype) must have a one-factor plan.
         dtype: complex64 or complex128.
         config: Optional ``{"row", "grp"}`` shared-memory padding override.
-        tune: Whether to autotune.
         device_index: The device the kernel runs on.
     """
 
@@ -1582,10 +1581,12 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
     general = False
 
     @classmethod
-    def applies(cls, call: FFTC2CCall) -> bool:
-        """True where the call's plan is one a single CTA runs in one launch."""
+    def refusal(cls, call: FFTC2CCall) -> "str | None":
+        """Refuse a call whose plan is not one a single CTA runs in one launch."""
         dtype = cls.dtype_to_str(call.dtype)
-        return _plan_for(call.n, dtype, call.arch, decomposed=False) is not None
+        if _plan_for(call.n, dtype, call.arch, decomposed=False) is None:
+            return f"no single-CTA plan covers n={call.n} in {dtype} on sm{call.arch}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:
@@ -1599,7 +1600,6 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         n: int,
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1610,7 +1610,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
             self._check_config(config)
         (self.kernel,) = _fft_builders(self.plan)
         self._tables: dict = {}
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _check_config(self, config: Dict[str, Any]) -> None:
         """Refuse strides below the record's floor or past the shared-memory limit.
@@ -1701,7 +1701,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         n: Transform length; (n, dtype) must have a decomposed plan.
         dtype: complex64 or complex128.
         config: Optional ``{"tile", "pad"}`` override, one entry per kernel.
-        tune: Whether to autotune. Each kernel of the plan is swept separately.
         device_index: The device the kernel runs on.
     """
 
@@ -1709,10 +1708,12 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
     general = False
 
     @classmethod
-    def applies(cls, call: FFTC2CCall) -> bool:
-        """True where the call's plan names more than one factor."""
+    def refusal(cls, call: FFTC2CCall) -> "str | None":
+        """Refuse a call whose plan does not name more than one factor."""
         dtype = cls.dtype_to_str(call.dtype)
-        return _plan_for(call.n, dtype, call.arch, decomposed=True) is not None
+        if _plan_for(call.n, dtype, call.arch, decomposed=True) is None:
+            return f"no decomposed plan covers n={call.n} in {dtype} on sm{call.arch}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:
@@ -1726,7 +1727,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         n: int,
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1737,7 +1737,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
             self._check_config(config)
         self.kernel = _fft_builders(self.plan)
         self._tables: dict = {}
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _fits(self, index: int, tw: int, strides: tuple) -> bool:
         """Whether kernel *index* at width *tw* and *strides* fits a block."""

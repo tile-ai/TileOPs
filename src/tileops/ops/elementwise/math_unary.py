@@ -1,6 +1,6 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -34,7 +34,7 @@ from tileops.kernels.elementwise.call_spec import (
     RoundCall,
     RoundFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 
 
@@ -139,8 +139,6 @@ class RoundFwdOp(UnaryOp):
         *,
         decimals: int = 0,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -148,11 +146,9 @@ class RoundFwdOp(UnaryOp):
             decimals: Number of decimal places to round to (manifest
                 ``params.decimals``, default 0).
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.decimals = decimals
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> RoundCall:
         return RoundCall(

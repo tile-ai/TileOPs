@@ -42,10 +42,10 @@ def signature_class(op_name: str, entry: dict) -> type:
 def _build_signature_class(op_name: str, entry: dict) -> type:
     def construct(self, **params):
         vars(self).update(params)
-        self.dispatch_kernel(None)
+        Op.__init__(self)
 
-    body = {"__init__": construct, "default_kernel_map": property(lambda self: {})}
-    body["forward"] = body["_eager_forward"] = lambda self, *args: None
+    body = {"__init__": construct}
+    body["forward"] = lambda self, *args: None
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")
@@ -60,8 +60,8 @@ def _unused_expert_weights(op_name: str, call) -> int:
     }.get(op_name)
     if weights is None:
         return 0
-    layout, experts = call.ix["layout"], call.ix["E"]
-    metadata = call.values("layout_metadata")
+    layout, experts = call.indices["layout"], call.indices["E"]
+    metadata = call.metadata_values("layout_metadata")
     if layout.kind == "masked":
         unused = sum(count == 0 for count in metadata)
     elif layout.metadata_kind == "per_row":
@@ -91,9 +91,9 @@ def manifest_cases(op_name: str):
             op = cls(**call.arguments(tensors))
             checked = type(op)._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
             # Meta tensors hold no values; the metadata a formula reads carries the row's own.
-            metadata = {n: torch.tensor(call.values(n)) for n in checked.metadata}
+            metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
             # The formula prices the op's last completed call; this one is that call.
-            op._signature_call = dataclasses.replace(checked, metadata=metadata)
+            op._last_call = dataclasses.replace(checked, metadata=metadata)
             reads = sum(call.bytes(t) * r for t, r, _ in checked.traffic)
             reads -= _unused_expert_weights(op_name, call)
             writes = sum(call.bytes(t) * w for t, _, w in checked.traffic)

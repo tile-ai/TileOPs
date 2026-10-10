@@ -7,7 +7,7 @@ in microseconds, without autotuning. The module also owns the measured
 config bands of the bandwidth-mode kernels (``gemv_config``,
 ``small_batch_config``), so the family's per-shape configuration lives in one
 place; which kernel serves a call is a separate question, answered by each
-kernel's own ``applies``. The scored path follows DeepGEMM's SM90
+kernel's own ``refusal``. The scored path follows DeepGEMM's SM90
 heuristics (enumerate -> prune -> score -> derive, see
 ``csrc/jit_kernels/heuristics/sm90.hpp``), with three extensions the
 TileOPs kernel family needs:

@@ -518,10 +518,6 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         return glse, output_partial
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The batch-1 shape, within what the general decode kernel serves."""
         if not call.decode_bs1_region:
@@ -545,7 +541,6 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -570,7 +565,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

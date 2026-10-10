@@ -31,7 +31,7 @@ def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     arguments = workload.arguments()
     fwd_op = GLAChunkFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
-    (fwd_kernel,) = fwd_op.built_kernels("gla_chunk_fwd").values()
+    (fwd_kernel,) = fwd_op.built_entries("gla_chunk_fwd").values()
     h = fwd_kernel._h_out
     dht = torch.zeros_like(_dht)
     return q, k, v, g, h, do, dht

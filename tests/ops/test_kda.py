@@ -129,7 +129,7 @@ def test_kda_prefill_refuses_offsets_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="bytes of shared memory for 2048 sequences"):
         op(*test.gen_inputs())
     for interface in KDAFwdOp.interfaces:
-        assert not op.built_kernels(interface)
+        assert not op.built_entries(interface)
 
 
 @pytest.mark.sm90
@@ -165,4 +165,4 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
         }
     )
     with pytest.raises(ValueError, match=reason):
-        KDAFwdOp().select_implementation("kda", call)
+        KDAFwdOp().key_for("kda", call)

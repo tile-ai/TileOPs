@@ -316,7 +316,6 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
         dtype: torch.dtype,
         has_seq_idx: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         dt_dtype: Optional[torch.dtype] = None,
     ) -> None:
         super().__init__()
@@ -342,7 +341,7 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
             self.dtype_str,
             self.dtype_to_str(self.dt_dtype),
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

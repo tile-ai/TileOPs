@@ -631,10 +631,6 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous prefill region: more than one query position, no window, not FP8."""
         if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
@@ -674,7 +670,6 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -707,7 +702,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             rope_layout=rope_layout,
             dtype=self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -924,10 +919,6 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous windowed region, which FP8 has its own implementation for."""
         if call.is_fp8 or not call.uses_sliding_window:
@@ -970,7 +961,6 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -1018,7 +1008,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

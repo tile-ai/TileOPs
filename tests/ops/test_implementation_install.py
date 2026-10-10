@@ -1,16 +1,15 @@
-"""Tests for the shared ``_install_kernel_map`` path.
+"""Tests for installing an op's implementations at construction.
 
-Installing the kernel map resolves classes only. It does not probe the device,
-so an op constructs wherever it is imported and a target that cannot run it is
-refused when a kernel is first selected — not at construction, where most ops
-do not yet know which device they will run on.
+Installing them resolves classes only. It does not probe the device, so an op
+constructs wherever it is imported and a target that cannot run it is refused
+when a kernel is first selected — not at construction, where most ops do not
+yet know which device they will run on.
 """
 
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
-from tileops.kernels.kernel_base import Kernel
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.utils import forget_device_properties, get_sm_version
 from workloads.device import run_device_available
@@ -21,9 +20,17 @@ pytestmark = [
     pytest.mark.in_tree_kernels,
     pytest.mark.skipif(
         not run_device_available(),
-        reason="kernel-map install tests build kernels on the current device",
+        reason="implementation install tests build kernels on the current device",
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def isolated_registry():
+    """Implementations a test registers do not outlive it."""
+    state = registry.snapshot()
+    yield
+    registry.restore(state)
 
 
 def _make_incompatible_arch_list() -> list[int]:
@@ -74,29 +81,6 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
-    """An override that cannot run here is named, not silently passed over.
-
-    The override is the reason the call was made; falling back to the stock
-    kernel would report a result the caller believes came from theirs.
-    """
-    from tileops.ops import GemmFwdOp
-
-    incompatible_archs = _make_incompatible_arch_list()
-    stock = GemmFwdOp()
-    key = stock.select_implementation("gemm", _gemm_call())
-
-    class IncompatibleGemm(stock.kernel_map[key]):  # type: ignore[misc, valid-type]
-        supported_archs = incompatible_archs
-
-    op = GemmFwdOp(kernel_map={key: IncompatibleGemm})
-
-    with pytest.raises(ValueError, match="the kernel supplied for"):
-        op.kernel_for("gemm", _gemm_call())
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way.
 
@@ -109,78 +93,17 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     incompatible_archs = _make_incompatible_arch_list()
 
     class AutoDiscoveredIncompatibleOp(GemmFwdOp):
-        @property
-        def default_kernel_map(self) -> dict[str, Kernel]:
-            return {
-                key: type(
-                    f"Incompatible{cls.__name__}",
-                    (cls,),
-                    {} | {"supported_archs": incompatible_archs},
-                )
-                for key, cls in super().default_kernel_map.items()
-            }
+        kernel_types = {
+            key: type(
+                f"Incompatible{cls.__name__}", (cls,), {"supported_archs": incompatible_archs}
+            )
+            for key, cls in GemmFwdOp.kernel_types.items()
+        }
 
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op.kernel_for("gemm", _gemm_call())
-
-
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-def test_single_implementation_slot_is_refused_at_first_build() -> None:
-    """A replacement that cannot run on the call's device is refused, not fallen back from.
-
-    The key keeps the registered implementation's applicability, so selection reaches it;
-    the refusal names the replacement and is a ``ValueError``, as a replacement that does
-    not serve the call is.
-    """
-    import tileops.ops.elementwise as mod
-
-    ((key, default_kernel_cls),) = mod.ReluFwdOp().default_kernel_map.items()
-
-    class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
-        supported_archs = _make_incompatible_arch_list()
-
-    op = mod.ReluFwdOp(kernel_map={key: IncompatibleKernel}, target=BUILTIN)
-
-    with pytest.raises(ValueError, match="built for architectures"):
-        op(torch.randn(8, device="cuda", dtype=torch.float16))
-
-
-@pytest.mark.cuda_only
-@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
-@pytest.mark.smoke
-def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
-    """A compatible user-supplied override yields bit-identical forward output.
-
-    Build an op with the default kernel and the same op with a marker
-    subclass override (same kernel logic, distinct identity). Both must
-    produce the exact same forward output on identical input.
-    """
-    import tileops.ops.elementwise as mod
-
-    cls = mod.ReluFwdOp
-    n_total = 128
-    dtype = torch.float16
-
-    baseline = cls(target=BUILTIN)
-    ((key, default_kernel_cls),) = baseline.default_kernel_map.items()
-
-    class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
-        """Subclass marker; identical behavior, distinct identity."""
-
-    overridden = cls(kernel_map={key: MarkerKernel}, target=BUILTIN)
-
-    torch.manual_seed(0)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
-    y_baseline = baseline(x.clone())
-    y_overridden = overridden(x.clone())
-    ((built,),) = [tuple(overridden.built_kernels(ELEMENTWISE).values())]
-    assert isinstance(built, MarkerKernel), "the override is what got built"
-    assert torch.equal(y_baseline, y_overridden), (
-        "compatible kernel_map override must yield bit-identical forward output"
-    )
 
 
 @pytest.mark.cuda_only
@@ -197,15 +120,20 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    ((key, default_kernel_cls),) = cls().default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls.kernel_types.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
+        preferred_over = frozenset({key})
 
-    op = cls(kernel_map={key: UnrestrictedKernel}, target=BUILTIN)
+    register_kernel_type("ReluFwdOp", "relu_unrestricted", UnrestrictedKernel)
+    op = cls(target=BUILTIN)
     x = torch.randn(8, device="cuda", dtype=torch.float16)
 
-    compare_outputs(op(x), torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
+    y = op(x)
+    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
+    assert isinstance(built, UnrestrictedKernel), "the added implementation is what got built"
+    compare_outputs(y, torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
 
 
 # A slot holds one entry per specialization; an enumeration that misses one
@@ -225,21 +153,25 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     from tileops.ops.elementwise import BitwiseAndFwdOp
 
     class NativeBoolAnd(BitwiseAndBoolStorageFwdKernel):
+        # Preferred over the bool key it stands in for, and so over the general one too.
+        preferred_over = frozenset({"bitwise_and_bool"})
+
         @classmethod
         def entry_for(cls, call):
             return call, lambda: cls(call.a_shape, call.b_shape, call.dtype)
 
-        def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
+        def __init__(self, a_shape, b_shape, dtype, config=None):
             self.ctor_dtype = dtype
 
         def forward(self, a, b):
             return a & b
 
-    op = BitwiseAndFwdOp(kernel_map={"bitwise_and_bool": NativeBoolAnd}, target=BUILTIN)
+    register_kernel_type("BitwiseAndFwdOp", "native_bool_and", NativeBoolAnd)
+    op = BitwiseAndFwdOp(target=BUILTIN)
     x = torch.tensor([True, False] * 32, device="cuda")
 
     compare_outputs(op(x, ~x), x & ~x, ElementwiseWorkload(type(op).__name__, ()).verification())
-    ((built,),) = [tuple(op.built_kernels(ELEMENTWISE).values())]
+    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
     assert isinstance(built, NativeBoolAnd)
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
 

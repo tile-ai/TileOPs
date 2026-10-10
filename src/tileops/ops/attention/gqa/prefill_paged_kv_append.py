@@ -38,7 +38,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
     call at the cost of device synchronizations and cannot run inside CUDA Graph capture.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_prefill_paged_with_kv_cache_fwd_kernel": GQAPrefillPagedWithKVCacheFwdKernel,
         "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel": GQAPrefillPagedWithFP8KVCacheFwdKernel,
@@ -58,7 +57,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         """
         return None
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The distinct cache rows this call reads, which its cache traffic follows."""
         from tileops.perf.formulas import gqa_prefill_paged_cache_rows
 
@@ -79,8 +78,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         *,
         validate_inputs: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -102,8 +99,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
                 Synchronizes the device; enable only outside CUDA Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.validate_inputs = validate_inputs
         self.max_seqlen_q = max_seqlen_q
@@ -121,9 +116,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             tuple[torch.device, torch.dtype, int], tuple[torch.Tensor, torch.Tensor]
         ] = {}
 
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _resolved_cache_dtype(self, dtype: torch.dtype) -> torch.dtype:
         """Cache element type for an attention element type of *dtype*."""
@@ -245,36 +238,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             ValueError: An FP8 pool's scales are not finite and positive, a fused-RoPE
                 call reaches past ``max_position``, or no in-tree kernel serves the call.
         """
-        return self._call_boundary(
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            k_scale,
-            v_scale,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_new: torch.Tensor,
-        v_new: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        k_scale: torch.Tensor,
-        v_scale: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         if self.validate_inputs:
             self._check_call_values(k_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens)
         q, k_new, v_new, k_scale, v_scale, cu_seqlens_q, cache_seqlens, block_table = (
@@ -312,6 +275,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             "compute per-sample from cu_seqlens and cache_seqlens at call time."
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

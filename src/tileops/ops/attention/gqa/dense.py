@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -149,7 +149,6 @@ class GQADenseFwdOp(Op):
     $$
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_dense": GQADenseWSKernel,
         "gqa_dense_decode": GQADecodeKernel,
@@ -174,8 +173,6 @@ class GQADenseFwdOp(Op):
         out_dtype: Optional[torch.dtype] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         r"""Configure the op. Tensor shapes and input dtype come from each call.
 
@@ -202,8 +199,6 @@ class GQADenseFwdOp(Op):
                 choose and accepts only ``None`` or its own input dtype.
             target: Backend target to serve this op, or ``None`` to decide
                 from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Whether to autotune, applied when a kernel is first built.
 
         Raises:
             ValueError: ``softcap`` is negative.
@@ -219,11 +214,9 @@ class GQADenseFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -307,23 +300,6 @@ class GQADenseFwdOp(Op):
             ValueError: Shapes, dtypes, devices, or optional-input
                 combinations violate the contract above, or no in-tree kernel
                 serves the call; the message names the limit each kernel refused.
-        """
-        return self._call_boundary(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None

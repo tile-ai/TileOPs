@@ -1,6 +1,6 @@
 """MoE fused top-k routing operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -27,7 +27,6 @@ class FusedTopKFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fused_topk": FusedTopKKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "fused_topk": FusedTopKFwdInterface
@@ -40,8 +39,6 @@ class FusedTopKFwdOp(Op):
         renormalize: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -54,15 +51,11 @@ class FusedTopKFwdOp(Op):
             renormalize: If True, normalize top-k weights to sum to 1.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel map override.
-            tune: Whether to autotune the kernel.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -80,14 +73,6 @@ class FusedTopKFwdOp(Op):
             topk_weights: [T, K] float32.
             topk_ids:     [T, K] int32.
         """
-        return self._call_boundary(gating_output, correction_bias)
-
-    def _eager_forward(
-        self,
-        gating_output: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Launch inside the operator, where dynamo does not follow the kernel call."""
         num_tokens, num_experts = gating_output.shape
         call = FusedTopKCall(
             num_tokens=num_tokens,

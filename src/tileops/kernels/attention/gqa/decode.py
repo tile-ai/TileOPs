@@ -516,10 +516,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous decode region and the limits the program builds within."""
         if not call.dense_decode_region:
@@ -581,7 +577,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -646,7 +641,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         # num_split to the runtime KV extent instead of gating dispatch on it
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _make_supply_prog(self):
         """Supply a representative value for the dynamic KV sequence extent."""

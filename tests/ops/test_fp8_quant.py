@@ -31,5 +31,7 @@ def test_fp8_quant_op(
     batch: int, seq_len_kv: int, kv_group: int, index_dim: int, dtype: torch.dtype, tune: bool
 ) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, dtype)
-    op = FP8QuantFwdOp(tune=tune)
+    op = FP8QuantFwdOp()
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())

@@ -1,6 +1,6 @@
 """Per-block (128x128) FP8 quantization operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -30,8 +30,6 @@ class FP8QuantPerBlockFwdOp(Op):
     or a NaN and a tile whose scale is subnormal or rounds to zero included.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fp8_quant_per_block_fwd": FP8QuantPerBlockFwdKernel,
         "fp8_quant_per_block_unaligned_fwd": FP8QuantPerBlockUnalignedFwdKernel,
@@ -44,20 +42,14 @@ class FP8QuantPerBlockFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize each 128x128 tile of ``w`` against its own absolute maximum.
@@ -69,10 +61,6 @@ class FP8QuantPerBlockFwdOp(Op):
             ``q`` $[N \\times K]$ in ``float8_e4m3fn`` and ``scale``
                 $[\\lceil N / 128 \\rceil \\times \\lceil K / 128 \\rceil]$ in ``float32``.
         """
-        return self._call_boundary(w)
-
-    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,

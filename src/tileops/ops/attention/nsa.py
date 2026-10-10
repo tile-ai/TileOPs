@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -40,7 +40,6 @@ class NSATopKVarlenFwdOp(Op):
     the call rather than from construction.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_topk_varlen_kernel": NSATopKVarlenKernel
     }
@@ -55,8 +54,6 @@ class NSATopKVarlenFwdOp(Op):
         bs: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -66,18 +63,14 @@ class NSATopKVarlenFwdOp(Op):
             bs: Compression block size.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.scale = scale
         self.selected_block_num = selected_block_num
         self.bs = bs
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
         from tileops.perf.formulas import nsa_topk_scored_pairs
 
@@ -103,20 +96,6 @@ class NSATopKVarlenFwdOp(Op):
         Returns:
             Selected block ids [c_seq_len, head_kv, selected_block_num].
         """
-        return self._call_boundary(q, k_cmp, offsets, chunk_offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        offsets: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         tensors = (q, k_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = q.shape
         call = NSACall(
@@ -134,7 +113,7 @@ class NSATopKVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_topk_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -151,7 +130,6 @@ class NSAVarlenFwdOp(Op):
     contributes nothing, and a token no block gives a key outputs zeros.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel,
         "nsa_fwd_varlen_tma_kernel": NSAFwdVarlenTMAKernel,
@@ -167,8 +145,6 @@ class NSAVarlenFwdOp(Op):
         block_size: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -178,18 +154,14 @@ class NSAVarlenFwdOp(Op):
             block_size: Tokens per selected block.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.is_causal = is_causal
         self.scale = scale
         self.block_size = block_size
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The key rows this call's selection scores and the distinct rows it reads."""
         from tileops.perf.formulas import nsa_selected_rows
 
@@ -220,22 +192,6 @@ class NSAVarlenFwdOp(Op):
         Returns:
             Attention output [c_seq_len, heads, dim].
         """
-        return self._call_boundary(q, k, v, block_indices, block_counts, offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        block_indices: torch.Tensor,
-        block_counts: torch.Tensor,
-        offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
         c_seq_len, heads, dim = q.shape
         call = NSACall(
@@ -253,7 +209,7 @@ class NSAVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_fwd_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -268,7 +224,6 @@ class NSACompressedVarlenFwdOp(Op):
     size and the chunk count come from the call rather than from construction.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdVarlenKernel
     }
@@ -282,8 +237,6 @@ class NSACompressedVarlenFwdOp(Op):
         bs: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -292,17 +245,13 @@ class NSACompressedVarlenFwdOp(Op):
             bs: Compression block size.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.scale = scale
         self.bs = bs
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
         from tileops.perf.formulas import nsa_closed_chunk_pairs
 
@@ -330,21 +279,6 @@ class NSACompressedVarlenFwdOp(Op):
         Returns:
             Tuple of (o, lse).
         """
-        return self._call_boundary(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        v_cmp: torch.Tensor,
-        offsets: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = q.shape
         chunk_num, head_kv, dim_v = v_cmp.shape
@@ -363,6 +297,6 @@ class NSACompressedVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_compressed_fwd_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

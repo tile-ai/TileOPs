@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops.backend import register_kernel_type, registry
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
@@ -269,20 +270,23 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_a_replaced_shared_expert_kernel_is_the_one_built():
-    """The shared half is reachable through kernel_map, like the routed half."""
+    """An implementation registered for the shared half's sub-op is the one built."""
     built = []
 
     class Replacement(SharedExpertMLPKernel):
+        preferred_over = frozenset({"shared_expert_mlp"})
+
         def __init__(self, **kwargs):
             built.append(kwargs)
             super().__init__(**kwargs)
 
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
-    op = FusedMoESharedExpertFwdOp(
-        top_k=K,
-        kernel_map={"shared_expert_mlp": Replacement},
-    )
-    assert op.kernel_map["shared_expert_mlp"] is Replacement
+    state = registry.snapshot()
+    try:
+        register_kernel_type("SharedExpertMLPFwdOp", "shared_expert_mlp_replacement", Replacement)
+        op = FusedMoESharedExpertFwdOp(top_k=K)
+    finally:
+        registry.restore(state)
 
     dtype, dev = torch.bfloat16, run_device()
     torch.manual_seed(7)

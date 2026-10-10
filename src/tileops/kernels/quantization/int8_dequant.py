@@ -110,7 +110,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         k: Columns of ``q``.
         out_dtype: Torch dtype of ``x``.
         config: Optional dict with "threads" and "steps".
-        tune: Whether to autotune.
         device_index: The device the kernel is built for.
     """
 
@@ -160,7 +159,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -170,7 +168,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         # Codes per thread per step: one 16-byte vector of ``x``.
         npt = VECTOR_ACCESS_BYTES // out_dtype.itemsize
         self.kernel = _int8_dequant_per_channel_kernel(m, k, self.dtype_str, npt)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -284,7 +282,6 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         n: Codes in ``q``, ``M * K``.
         out_dtype: Torch dtype of ``x``.
         config: Optional dict with "threads" and "steps".
-        tune: Whether to autotune.
         device_index: The device the kernel is built for.
     """
 
@@ -327,7 +324,6 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         n: int,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -341,7 +337,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         self.kernel = _int8_dequant_per_tensor_kernel(
             n, self.dtype_str, vec, self._STAGED, resident_threads, resident_blocks
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -378,8 +374,10 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.m * call.k < cls._SMALL_N
+    def refusal(cls, call: DequantizeCall) -> "str | None":
+        if call.m * call.k >= cls._SMALL_N:
+            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
+        return super().refusal(call)
 
 
 @functools.lru_cache(maxsize=32)
@@ -578,7 +576,6 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         k: Columns of ``q``.
         out_dtype: Torch dtype of ``x``.
         config: Optional dict with "threads" and "steps".
-        tune: Whether to autotune.
         device_index: The device the kernel is built for.
     """
 
@@ -620,7 +617,6 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -635,7 +631,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         self.kernel = _int8_dequant_per_block_kernel(
             m, k, self.dtype_str, vec, self._STAGED, resident_threads, resident_blocks
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -672,5 +668,7 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.m * call.k < cls._SMALL_N
+    def refusal(cls, call: DequantizeCall) -> "str | None":
+        if call.m * call.k >= cls._SMALL_N:
+            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
+        return super().refusal(call)

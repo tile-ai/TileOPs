@@ -1,6 +1,6 @@
 """Per-block (1x128) symmetric INT8 quantization operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -33,8 +33,6 @@ class INT8QuantPerBlockFwdOp(Op):
     about ``8.8e-44``, reachable only in float32) that its ``scale`` rounds to zero.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_quant_per_block_fwd": INT8QuantPerBlockFwdKernel,
         "int8_quant_per_block_shifted_fwd": INT8QuantPerBlockShiftedFwdKernel,
@@ -47,20 +45,14 @@ class INT8QuantPerBlockFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize each 128-element block of ``x`` against its own absolute maximum.
@@ -72,10 +64,6 @@ class INT8QuantPerBlockFwdOp(Op):
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[M \\times \\lceil K / 128 \\rceil]$ in
                 ``float32``.
         """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         call = QuantizeCall(
             device=x.device,

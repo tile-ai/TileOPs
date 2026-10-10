@@ -168,15 +168,13 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.kernel = _int4_quant_per_group_kernel(
             call.rows, call.cols, call.group_size, self._PER_CTA
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -206,7 +204,6 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
         call: The call's shape, dtype, group size and device facts.
         config: Optional dict with ``threads``, ``cpt`` (always 1), ``evict_first`` and
             ``min_blocks``.
-        tune: Whether to autotune.
     """
 
     _PER_CTA = False
@@ -220,9 +217,14 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
     _DEFAULT_LOAD_BYTES: ClassVar[int] = 176 << 20
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
+    def refusal(cls, call: QuantizeCall) -> "str | None":
         lanes = call.group_size // _CHUNK
-        return call.group_size % _CHUNK == 0 and lanes & (lanes - 1) == 0 and lanes <= WARP_LANES
+        if call.group_size % _CHUNK or lanes & (lanes - 1) or lanes > WARP_LANES:
+            return (
+                f"requires a group of a power-of-two number of {_CHUNK}-element chunks up to "
+                f"{WARP_LANES}, got {call.group_size}"
+            )
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -246,7 +248,6 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     Args:
         call: The call's shape, dtype, group size and device facts.
         config: Optional dict with ``threads``, ``cpt``, ``evict_first`` and ``min_blocks``.
-        tune: Whether to autotune.
     """
 
     _PER_CTA = True
@@ -266,11 +267,11 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     _REGISTERS: ClassVar[int] = 64
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
-        return (
-            call.group_size % 128 == 0
-            and call.group_size <= cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
-        )
+    def refusal(cls, call: QuantizeCall) -> "str | None":
+        widest = cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
+        if call.group_size % 128 or call.group_size > widest:
+            return f"requires a group a multiple of 128 up to {widest}, got {call.group_size}"
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:

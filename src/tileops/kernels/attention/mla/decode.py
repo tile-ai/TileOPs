@@ -794,10 +794,6 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
     _build = staticmethod(_mla_decode_ws_kernel)
 
     @classmethod
-    def applies(cls, call: MLADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MLADecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:
@@ -833,7 +829,6 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
         pe_dim,
         dtype,
         config: Optional[dict] = None,
-        tune=False,
         *,
         device_index: Optional[int] = None,
     ):
@@ -856,7 +851,7 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def lse_dtype(self) -> torch.dtype:

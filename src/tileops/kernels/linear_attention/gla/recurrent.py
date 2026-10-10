@@ -167,10 +167,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     general = True
 
     @classmethod
-    def applies(cls, call: GLADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GLADecodeCall) -> Optional[str]:
         return head_count_refusal(call.heads)
 
@@ -187,7 +183,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -197,10 +192,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.dtype = dtype
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the decode program the current config states."""
@@ -394,8 +387,10 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: GLADecodeCall) -> bool:
-        return call.dtype == torch.float32 and head_count_refusal(call.heads) is None
+    def refusal(cls, call: GLADecodeCall) -> "str | None":
+        if call.dtype != torch.float32:
+            return f"serves float32, got {call.dtype}"
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:
@@ -410,7 +405,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         if dtype != "float32":
@@ -421,10 +415,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         self.dim_v = dim_v
         self.scale = scale if scale > 0 else dim_k**-0.5
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the fp32 decode program the current config states."""

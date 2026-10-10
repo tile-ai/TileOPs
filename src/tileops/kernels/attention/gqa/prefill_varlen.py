@@ -331,8 +331,10 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     general: bool = True
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return not call.is_fp8
+    def refusal(cls, call) -> "str | None":
+        if call.is_fp8:
+            return "does not serve FP8"
+        return super().refusal(call)
 
     def _make_kernel(self) -> Callable:
         return _gqa_prefill_varlen_fwd_kernel(

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -26,7 +26,6 @@ class GLAChunkFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_fwd": GLAChunkFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_chunk_fwd": GLAChunkFwdInterface
@@ -38,8 +37,6 @@ class GLAChunkFwdOp(Op):
         scale: float = -1.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -48,14 +45,10 @@ class GLAChunkFwdOp(Op):
             scale: Query scale factor; a non-positive value means ``dim_k ** -0.5``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
         self.scale = scale
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -78,7 +71,9 @@ class GLAChunkFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
-        return self._call_boundary(q, k, v, g, initial_state)
+        call = self._call(q, v, initial_state is not None)
+        kernel = self.kernel_for("gla_chunk_fwd", call)
+        return kernel(q, k, v, g, initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's own params."""
@@ -96,23 +91,7 @@ class GLAChunkFwdOp(Op):
             device=q.device,
         )
 
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        call = self._call(q, v, initial_state is not None)
-        kernel = self.kernel_for("gla_chunk_fwd", call)
-        return kernel(q, k, v, g, initial_state)
-
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -128,7 +107,6 @@ class GLAChunkBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gla_chunk_bwd": GLAChunkBwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gla_chunk_bwd": GLAChunkBwdInterface
@@ -141,8 +119,6 @@ class GLAChunkBwdOp(Op):
         has_initial_state: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -153,15 +129,11 @@ class GLAChunkBwdOp(Op):
                 an initial state.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
         self.scale = scale
         self.has_initial_state = has_initial_state
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -187,7 +159,9 @@ class GLAChunkBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dg).
         """
-        return self._call_boundary(q, k, v, g, h, do, dht)
+        inputs = (q, k, v, g, h, do, dht)
+        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
+        return kernel(*inputs, self.has_initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's own params."""
@@ -205,24 +179,6 @@ class GLAChunkBwdOp(Op):
             device=q.device,
         )
 
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        h: torch.Tensor,
-        do: torch.Tensor,
-        dht: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (q, k, v, g, h, do, dht)
-        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
-        return kernel(*inputs, self.has_initial_state)
-
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

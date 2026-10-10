@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -36,7 +36,6 @@ class AdaLayerNormZeroFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormZeroKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ada_layer_norm": AdaLayerNormZeroFwdInterface
@@ -47,8 +46,6 @@ class AdaLayerNormZeroFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -56,13 +53,9 @@ class AdaLayerNormZeroFwdOp(Op):
             eps: Epsilon for numerical stability (manifest ``params.eps``).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
@@ -81,16 +74,6 @@ class AdaLayerNormZeroFwdOp(Op):
         Raises:
             ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        return self._call_boundary(x, scale, shift, gate)
-
-    def _eager_forward(
-        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
-        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()

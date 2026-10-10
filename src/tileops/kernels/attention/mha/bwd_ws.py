@@ -445,20 +445,24 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
     _HEAD_DIM = 128
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
+    def refusal(cls, call: AttentionCall) -> "str | None":
         """One query head per KV head, 16-bit inputs with the default softmax scale, and a
         sequence of whole ``_BLOCK_M``-row key blocks."""
-        return (
-            call.heads == call.heads_kv
-            and call.dim == cls._HEAD_DIM
-            and call.max_seqlen_q > 0
-            and call.max_seqlen_q % _BLOCK_M == 0
-            and call.dtype in ATTENTION_DTYPES
-            and not call.is_fp8
-            and call.softcap == 0.0
-            and call.sm_scale is None
-            and not call.uses_sliding_window
-        )
+        if call.heads != call.heads_kv:
+            return "requires one query head per KV head"
+        if call.dim != cls._HEAD_DIM:
+            return f"requires head dim {cls._HEAD_DIM}, got {call.dim}"
+        if call.max_seqlen_q <= 0 or call.max_seqlen_q % _BLOCK_M != 0:
+            return f"requires a positive multiple of {_BLOCK_M} rows, got {call.max_seqlen_q}"
+        if call.dtype not in ATTENTION_DTYPES or call.is_fp8:
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        if call.sm_scale is not None:
+            return "requires the default softmax scale"
+        if call.uses_sliding_window:
+            return "does not serve a sliding window"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -475,7 +479,6 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
         is_causal: bool,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -502,7 +505,7 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
             if device_index is not None
             else torch.device("cuda"),
         )
-        self.init_config(config, tune)
+        self.init_config(config)
         self.main_kernel = self.kernel()
         self.post_kernel = _mha_bwd_ws_post_kernel(batch, heads, seq_len, dim, self.dtype_str)()
 

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -34,7 +34,6 @@ class DeltaNetChunkFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_chunk_fwd": DeltaNetChunkFwdKernel
     }
@@ -47,8 +46,6 @@ class DeltaNetChunkFwdOp(Op):
         chunk_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -56,13 +53,9 @@ class DeltaNetChunkFwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -82,7 +75,8 @@ class DeltaNetChunkFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au, w, u).
         """
-        return self._call_boundary(q, k, v, beta)
+        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
+        return kernel(q, k, v, beta)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's chunk length."""
@@ -98,21 +92,7 @@ class DeltaNetChunkFwdOp(Op):
             device=q.device,
         )
 
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
-        return kernel(q, k, v, beta)
-
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -124,7 +104,6 @@ class DeltaNetChunkBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_chunk_bwd": DeltaNetChunkBwdKernel
     }
@@ -137,8 +116,6 @@ class DeltaNetChunkBwdOp(Op):
         chunk_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -146,13 +123,9 @@ class DeltaNetChunkBwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
         """
         self.chunk_size = chunk_size
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -184,7 +157,9 @@ class DeltaNetChunkBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        return self._call_boundary(do, q, k, v, beta, S, Aw, Au, w, u)
+        inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
+        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
+        return kernel(*inputs)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's chunk length."""
@@ -200,27 +175,6 @@ class DeltaNetChunkBwdOp(Op):
             device=q.device,
         )
 
-    def _eager_forward(
-        self,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        S: torch.Tensor,
-        Aw: torch.Tensor,
-        Au: torch.Tensor,
-        w: torch.Tensor,
-        u: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
-        return kernel(*inputs)
-
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

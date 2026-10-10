@@ -1,6 +1,6 @@
 """A kernel tuned after its first launch runs the program of its tuned config.
 
-``Op.autotune`` reaches the kernels an op has already built. A kernel that compiled its
+``Op.request_tune`` reaches the kernels an op has already built. A kernel that compiled its
 program from the config it held at that point compiles again from the config tuning
 assigns. Each case calls an op once, has tuning assign a known config to every built
 kernel, calls the op again, and checks the result and the program that ran.
@@ -58,7 +58,7 @@ def _another_candidate(kernel: Kernel) -> dict:
 
 
 def _retune_built_kernels(op: Op, monkeypatch: pytest.MonkeyPatch) -> list[_LaunchRecord]:
-    """Run ``op.autotune()`` with each built kernel's sweep answering another candidate.
+    """Run ``op.request_tune()`` with each built kernel's sweep answering another candidate.
 
     The candidate replaces the measured sweep, so the tuned config is known and differs
     from the one the kernel launched with. Each kernel's program builder is wrapped so
@@ -92,7 +92,7 @@ def _retune_built_kernels(op: Op, monkeypatch: pytest.MonkeyPatch) -> list[_Laun
         monkeypatch.setattr(kernel, "tune_jit_kernel", sweep)
         records.append(record)
     assert records, f"{type(op).__name__} built no tunable kernel"
-    op.autotune()
+    op.request_tune()
     return records
 
 

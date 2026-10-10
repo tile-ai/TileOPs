@@ -1,6 +1,6 @@
 """Activation elementwise ops (ReLU + parametric/param-free families)."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -29,12 +29,13 @@ from tileops.kernels.elementwise.call_spec import (
     BoundsCall,
     EluCall,
     EluFwdInterface,
+    GeluCall,
     LeakyReluCall,
     LeakyReluFwdInterface,
     SoftplusCall,
     SoftplusFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import (
     ELEMENTWISE,
     FusedGatedOp,
@@ -65,8 +66,6 @@ class GeluFwdOp(UnaryOp):
         *,
         approximate: str = "none",
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -74,16 +73,17 @@ class GeluFwdOp(UnaryOp):
             approximate: ``'none'`` (default) evaluates the erf form; ``'tanh'`` the
                 tanh approximation ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``.
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.approximate = approximate
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        key = "gelu_tanh" if self.approximate == "tanh" else "gelu"
-        return {key: self.kernel_types[key]}
+    def _call_spec(self, input: torch.Tensor) -> GeluCall:
+        return GeluCall(
+            device=input.device,
+            n_total=input.numel(),
+            dtype=input.dtype,
+            approximate=self.approximate,
+        )
 
 
 class SiluFwdOp(_ParamFreeActivationOp):
@@ -140,8 +140,6 @@ class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
         negative_slope: float = 0.01,
         inplace: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -149,12 +147,10 @@ class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
             negative_slope: Slope for negative inputs (default 0.01).
             inplace: When True, write the result into ``input`` and return ``input``.
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.negative_slope = negative_slope
         self.inplace = inplace
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> LeakyReluCall:
         return LeakyReluCall(
@@ -177,8 +173,6 @@ class EluFwdOp(_UnaryActivationMixin, UnaryOp):
         alpha: float = 1.0,
         inplace: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -186,12 +180,10 @@ class EluFwdOp(_UnaryActivationMixin, UnaryOp):
             alpha: Scale for the negative part (default 1.0).
             inplace: When True, write the result into ``input`` and return ``input``.
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.alpha = alpha
         self.inplace = inplace
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> EluCall:
         return EluCall(
@@ -214,8 +206,6 @@ class HardtanhFwdOp(_UnaryActivationMixin, UnaryOp):
         max_val: float = 1.0,
         inplace: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -224,13 +214,11 @@ class HardtanhFwdOp(_UnaryActivationMixin, UnaryOp):
             max_val: Upper bound (default 1.0).
             inplace: When True, write the result into ``input`` and return ``input``.
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.min_val = min_val
         self.max_val = max_val
         self.inplace = inplace
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> BoundsCall:
         return BoundsCall(
@@ -254,8 +242,6 @@ class SoftplusFwdOp(UnaryOp):
         beta: float = 1.0,
         threshold: float = 20.0,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -263,12 +249,10 @@ class SoftplusFwdOp(UnaryOp):
             beta: Scaling factor (default 1.0).
             threshold: Linear regime threshold (default 20.0).
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
         """
         self.beta = beta
         self.threshold = threshold
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> SoftplusCall:
         return SoftplusCall(

@@ -120,7 +120,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         p: Drop probability in [0, 1].
         seed: Integer seed for TileLang RNG.
         config: Optional dict with "threads" and "num_per_thread".
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -130,7 +129,7 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
     def entry_for(cls, call: DropoutCall) -> Entry:
         return call, lambda: cls(call.count, call.dtype, p=call.p, seed=call.seed)
 
-    def __init__(self, N_total, dtype, p=0.5, seed=0, config=None, tune=False):
+    def __init__(self, N_total, dtype, p=0.5, seed=0, config=None):
         super().__init__()
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
@@ -141,7 +140,7 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         # Resolve config BEFORE building the kernel so that codegen block_size
         # (threads * num_per_thread baked into grid dim) matches the runtime
         # launch parameters passed in forward().
-        self.init_config(config, tune)
+        self.init_config(config)
         self.kernel = self._build_kernel()
 
     def _build_kernel(self):

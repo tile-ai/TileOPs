@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -24,7 +24,6 @@ class FP8LightningIndexerFwdOp(Op):
     op; an FP8 call passes the per-key scales in ``index_k_scale``.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fp8_lightning_indexer_kernel": FP8LightningIndexerKernel
     }
@@ -32,7 +31,7 @@ class FP8LightningIndexerFwdOp(Op):
         "fp8_lightning_indexer": FP8LightningIndexerFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The keys this call's windows make each batch row score, which its flops follow."""
         from tileops.perf.formulas import lightning_indexer_scored_keys
 
@@ -43,8 +42,6 @@ class FP8LightningIndexerFwdOp(Op):
         clean_logits: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -52,15 +49,10 @@ class FP8LightningIndexerFwdOp(Op):
             clean_logits: Manifest ``params.clean_logits``, ``bool``, default ``True``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.clean_logits = clean_logits
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -83,23 +75,6 @@ class FP8LightningIndexerFwdOp(Op):
 
         Returns:
             ``logits``, as the manifest declares.
-        """
-        return self._call_boundary(
-            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale
-        )
-
-    def _eager_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-        index_k_scale: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         if index_k_scale is None:
             # A bf16 call is quantized here; the kernel indexes FP8 keys and their scales.
@@ -124,9 +99,9 @@ class FP8LightningIndexerFwdOp(Op):
             t.contiguous()
             for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
         )
-        self.kernel = self.kernel_for("fp8_lightning_indexer", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("fp8_lightning_indexer", call)
+        return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Index scores contract at fp8 regardless of the input form."""
         return "tensor_core.fp8"

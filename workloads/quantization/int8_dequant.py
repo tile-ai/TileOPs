@@ -45,7 +45,7 @@ class _INT8DequantWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "_INT8DequantWorkload":
         """The workload of one manifest call of the op this class is named for."""
-        return cls(call.ix["M"], call.ix["K"], getattr(torch, call.params["out_dtype"]))
+        return cls(call.indices["M"], call.indices["K"], getattr(torch, call.params["out_dtype"]))
 
     def scale_shape(self) -> tuple[int, ...]:
         raise NotImplementedError

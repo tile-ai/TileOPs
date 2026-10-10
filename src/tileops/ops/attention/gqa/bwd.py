@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -24,7 +24,6 @@ __all__ = ["GQABwdOp"]
 class GQABwdOp(Op):
     """Grouped-Query Attention (GQA) backward. Layout: BSHD."""
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_bwd_preprocess_kernel": GQABwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWGMMAPipelinedKernel,
@@ -41,8 +40,6 @@ class GQABwdOp(Op):
         is_causal: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -50,14 +47,10 @@ class GQABwdOp(Op):
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.is_causal = is_causal
 
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
         """State what one backward call is, for selection to filter against."""
@@ -96,21 +89,6 @@ class GQABwdOp(Op):
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H_kv, D)``; ``dv.shape == (B, S, H_kv, D)``.
         """
-        return self._call_boundary(q, k, v, o, do, lse)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        do: torch.Tensor,
-        lse: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         do = do.contiguous()
         call = self._attention_call(q, k)
         # Reject unsupported backward calls before compiling or launching preprocess.
@@ -119,6 +97,6 @@ class GQABwdOp(Op):
         inputs = (q, k, v, do, lse, delta, dq_accum)
         return backward(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

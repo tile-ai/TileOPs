@@ -225,7 +225,8 @@ def pool_baseline(op_name: str, workload) -> tuple:
 
 
 def _bench(op_cls: type, case: bench.Case) -> None:
-    op = op_cls(**case.arguments, tune=True)
+    op = op_cls(**case.arguments)
+    op.request_tune()
 
     _tag, _baseline_fn = pool_baseline(op_cls.__name__, case.workload)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
@@ -325,7 +326,9 @@ def _torch_view_mean(workload: MeanPoolingWorkload):
 @pytest.mark.parametrize("case", bench.cases(MeanPoolingFwdOp), ids=lambda case: case.id)
 def test_mean_pooling_bench(case) -> None:
     workload = case.workload
-    op = MeanPoolingFwdOp(**case.arguments, tune=_TUNE)
+    op = MeanPoolingFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
 
     inputs = case.inputs
 

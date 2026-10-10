@@ -401,8 +401,8 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
         dim_k=64,
         dim_v=64,
         dtype="bfloat16",
-        tune=True,
     )
+    kernel.autotune()
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)

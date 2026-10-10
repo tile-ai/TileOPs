@@ -17,7 +17,9 @@ _TUNE = True
 
 @pytest.mark.parametrize("case", bench.cases(MHCPreFwdOp), ids=lambda case: case.id)
 def test_mhc_pre_bench(case) -> None:
-    op = MHCPreFwdOp(**case.arguments, tune=_TUNE)
+    op = MHCPreFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,
@@ -28,7 +30,9 @@ def test_mhc_pre_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(MHCPostFwdOp), ids=lambda case: case.id)
 def test_mhc_post_bench(case) -> None:
-    op = MHCPostFwdOp(**case.arguments, tune=_TUNE)
+    op = MHCPostFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,

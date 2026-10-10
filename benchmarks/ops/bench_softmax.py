@@ -26,7 +26,8 @@ from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, Softm
 def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
     baseline_fn = case.reference
     inputs = case.inputs
-    op = op_cls(**case.arguments, tune=True)
+    op = op_cls(**case.arguments)
+    op.request_tune()
     implementations = {}
     if flaggems_name is not None and (not case.params.get("dtype")):
         fn = flaggems_op(flaggems_name)

@@ -98,29 +98,33 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     preferred_over = frozenset({"avg_pool1d_kernel"})
 
     @classmethod
-    def applies(cls, call: AvgPoolCall) -> bool:
+    def refusal(cls, call: AvgPoolCall) -> "str | None":
         if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            return False
+            return f"requires float16, bfloat16 or float32, got {call.dtype}"
         if len(call.size) != 1:
-            return False
+            return "serves a 1-d window"
         (l_in,), (kernel_l,), (stride_l,), (pad_l,) = call.size, call.window, call.stride, call.pad
         run = VECTOR_ACCESS_BYTES // call.dtype.itemsize
-        if call.ceil_mode or call.divisor_override is not None or run % stride_l:
-            return False
+        if call.ceil_mode or call.divisor_override is not None:
+            return "does not serve ceil_mode or divisor_override"
+        if run % stride_l:
+            return f"requires a stride dividing the {run}-element load, got {stride_l}"
         if pad_l and not call.count_include_pad:
-            return False
+            return "requires count_include_pad where it pads"
         out_l = (l_in + 2 * pad_l - kernel_l) // stride_l + 1
         # Each element past the load is a load of its own; at two, AvgPool1dKernel's
         # shared-memory stage is faster.
         max_reach = 1
-        return (
-            pad_l <= max_reach
-            and kernel_l - stride_l - pad_l <= max_reach
-            and out_l > 0
+        if pad_l > max_reach or kernel_l - stride_l - pad_l > max_reach:
+            return f"reads at most {max_reach} element past a load"
+        if not (
+            out_l > 0
             and out_l % (run // stride_l) == 0
             and out_l * stride_l <= l_in
             and l_in % run == 0
-        )
+        ):
+            return f"requires whole {run}-element loads along the row"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:

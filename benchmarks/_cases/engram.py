@@ -24,7 +24,7 @@ def _gate_conv_bwd(call) -> EngramGateConvBwdWorkload:
 
 def _decode(call) -> EngramDecodeWorkload:
     return EngramDecodeWorkload(
-        **call.arguments({}), dtype=_dtype(call, "e_t"), conv_len=call.ix["L"]
+        **call.arguments({}), dtype=_dtype(call, "e_t"), conv_len=call.indices["L"]
     )
 
 

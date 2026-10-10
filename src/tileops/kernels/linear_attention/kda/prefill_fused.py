@@ -29,10 +29,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     preferred_over = frozenset({"kda_chunk_prefill"})
 
     @classmethod
-    def applies(cls, call: KDACall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: KDACall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal

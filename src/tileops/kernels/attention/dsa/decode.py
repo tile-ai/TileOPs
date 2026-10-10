@@ -775,10 +775,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
     general = True
 
     @classmethod
-    def applies(cls, call: DSADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         """The shared shape region, where the default config fits the block's shared memory."""
         reason = cls.shape_refusal(
@@ -878,7 +874,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         is_causal: bool = True,
         cp0: bool = True,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -914,7 +909,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1074,10 +1069,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         return None
 
     @classmethod
-    def applies(cls, call: DSADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         """The shared shape region, narrowed to what the warp-specialized gather covers."""
         reason = cls.shape_refusal(
@@ -1107,7 +1098,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         is_causal: bool = True,
         cp0: bool = True,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1143,7 +1133,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
             self.dtype_str,
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

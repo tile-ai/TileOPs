@@ -841,7 +841,7 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
 # register_copy broadcast downgrade regression test
 
 
-# tune=True reaches the autotuner
+# request_tune() reaches the autotuner
 
 
 @pytest.mark.parametrize(
@@ -856,8 +856,11 @@ def test_binary_ops_under_tuning(tune: bool) -> None:
     ):
         a = torch.randn(4096, device=run_device(), dtype=torch.float16)
         b = torch.randn(4096, device=run_device(), dtype=torch.float16)
+        op = op_cls()
+        if tune:
+            op.request_tune()
         compare_outputs(
-            op_cls(tune=tune)(a, b),
+            op(a, b),
             ref_fn(a, b),
             ElementwiseWorkload(op_cls.__name__, (a, b)).verification(a, b),
         )

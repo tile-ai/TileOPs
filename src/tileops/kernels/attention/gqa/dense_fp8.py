@@ -867,10 +867,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         if not call.is_fp8:
             return "does not serve this call"
@@ -945,7 +941,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -983,7 +978,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             dtype="float8_e4m3fn",
             rope_dtype=self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _validate_spec(self) -> None:
         if self.heads % self.heads_kv != 0:

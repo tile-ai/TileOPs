@@ -14,8 +14,8 @@ Input layouts:
 - ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
 - ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
 
-torch.compile support: every op declares ``compile_boundary``, from which one operator
-is generated from its manifest entry.
+torch.compile support: each op's compile-boundary operator is generated from its
+manifest entry.
 """
 
 import math
@@ -109,7 +109,6 @@ class _RoPEOpBase(Op):
     the input tensor, avoiding device-mismatch issues in multi-GPU settings.
     """
 
-    compile_boundary = True
     # The rotation convention keys the interface; the scheme variants serve NeoX only.
     rope_layout: str = "neox"
 
@@ -119,8 +118,6 @@ class _RoPEOpBase(Op):
         base: float = 10000.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -130,16 +127,11 @@ class _RoPEOpBase(Op):
             base: Frequency base (default 10000).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.input_layout = input_layout
         self.base = base
-        self.target = target
-        self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def _get_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -167,10 +159,6 @@ class _RoPEOpBase(Op):
         Returns:
             Rotated output tensor with same shape as x.
         """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         if self.input_layout == "1d":
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
@@ -186,8 +174,8 @@ class _RoPEOpBase(Op):
         )
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         x = x.contiguous()
-        self.kernel = self.kernel_for(self.rope_layout, call)
-        return self.kernel(x, cos, sin)
+        kernel = self.kernel_for(self.rope_layout, call)
+        return kernel(x, cos, sin)
 
 
 # Concrete Op classes (4 frequency schemes)
@@ -220,8 +208,6 @@ class RoPEFwdOp(_RoPEOpBase):
         base: float = 10000.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -233,13 +219,11 @@ class RoPEFwdOp(_RoPEOpBase):
             base: Frequency base (default 10000).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         if rope_layout not in ("neox", "interleaved"):
             raise ValueError(f"rope_layout must be 'neox' or 'interleaved', got '{rope_layout}'")
         self.rope_layout = rope_layout
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -254,7 +238,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
     ``rotary_dim`` is None) and the rest are copied.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "rope_neox_position_ids": RoPENeoxPositionIdsKernel
     }
@@ -269,8 +252,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
         rotary_dim: Optional[int] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -280,17 +261,12 @@ class RoPENeoxPositionIdsFwdOp(Op):
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.max_position = max_position
         self.base = base
         self.rotary_dim = rotary_dim
-        self.target = target
-        self.tune = tune
         self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def _get_cos_sin(
         self, rotary_dim: int, dtype: torch.dtype, device: torch.device
@@ -313,10 +289,6 @@ class RoPENeoxPositionIdsFwdOp(Op):
         Returns:
             ``output``, shaped as ``x``.
         """
-        return self._call_boundary(x, position_ids)
-
-    def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
         call = RoPENeoxPositionIdsCall(
@@ -330,13 +302,13 @@ class RoPENeoxPositionIdsFwdOp(Op):
         )
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
         x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
-        self.kernel = self.kernel_for("rope_neox_position_ids", call)
-        output = self.kernel(x, cos, sin, position_ids)
+        kernel = self.kernel_for("rope_neox_position_ids", call)
+        output = kernel(x, cos, sin, position_ids)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in
         # front of every call cost more device time than the rotation they guard.
         # It clamps its own table index, so this call read nothing out of bounds.
-        if self.kernel.take_out_of_range():
+        if kernel.take_out_of_range():
             raise ValueError("position_ids must be in [0, max_position)")
         return output
 
@@ -416,8 +388,6 @@ class RoPELlama31FwdOp(_RoPEOpBase):
         original_max_position: int = 8192,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -430,14 +400,12 @@ class RoPELlama31FwdOp(_RoPEOpBase):
             original_max_position: Original max position (default 8192).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.scale_factor = scale_factor
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.original_max_position = original_max_position
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -557,8 +525,6 @@ class YaRNFwdOp(_RoPEOpBase):
         attn_factor: float = 1.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -572,15 +538,13 @@ class YaRNFwdOp(_RoPEOpBase):
             attn_factor: Attention scaling factor (default 1.0).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.scale = scale
         self.original_max_position = original_max_position
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
         self.attn_factor = attn_factor
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -689,8 +653,6 @@ class LongRoPEFwdOp(_RoPEOpBase):
         original_max_position_embeddings: int = 4096,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -704,8 +666,6 @@ class LongRoPEFwdOp(_RoPEOpBase):
                 (default 4096).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
 
         Raises:
             ValueError: A rescale factor is zero or NaN; the frequency divides by it.
@@ -718,7 +678,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings
-        super().__init__(input_layout, base, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device

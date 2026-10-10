@@ -108,7 +108,7 @@ def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
     """Return every merged config the sweep can select at this value dimension.
 
     The three sub-kernels are tuned independently, so the reachable set is their
-    product. Declaring it is what makes ``init_config(tune=True)`` reach
+    product. Declaring it is what makes ``request_tune()`` reach
     ``autotune`` at all. Chunk length does not enter: it steers the untuned
     default, not what the sweep may build.
 

@@ -55,7 +55,6 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         rope_layout: str = "neox",
         accum_dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -95,7 +94,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         )
         self.kernel = self._make_kernel()
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def rotated_dtype_str(self) -> str:

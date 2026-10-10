@@ -15,7 +15,8 @@ from tileops.quantization import SmoothQuantFwdOp
 @pytest.mark.parametrize("case", bench.cases(SmoothQuantFwdOp), ids=lambda case: case.id)
 def test_smooth_quant_bench(case) -> None:
     # Autotuning is a bench-run policy, not a workload property.
-    op = SmoothQuantFwdOp(**case.arguments, tune=True)
+    op = SmoothQuantFwdOp(**case.arguments)
+    op.request_tune()
 
     # The unfused path: torch's float32 divide, then vllm's CUDA dynamic per-token quantize.
     scaled = vllm_op("scaled_int8_quant")

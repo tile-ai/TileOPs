@@ -228,7 +228,9 @@ def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> No
     expected = F.rms_norm(x.float(), (n,), None if weight is None else weight.float(), eps=1e-6).to(
         dtype
     )
-    actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, tune=True)(x, weight)
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
+    op.request_tune()
+    actual = op(x, weight)
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
@@ -308,7 +310,9 @@ class FusedAddRMSNormFixture(FixtureBase):
 @FusedAddRMSNormFixture
 def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormTest(m, n, dtype)
-    op = FusedAddRMSNormFwdOp(tune=tune)
+    op = FusedAddRMSNormFwdOp()
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

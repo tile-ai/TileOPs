@@ -955,8 +955,6 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: Operand dtype; ``torch.float8_e4m3fn``.
         out_dtype: Output dtype; ``torch.bfloat16``.
         config: Kernel config override; unset keys take their default.
-        tune: Accepted for the common kernel interface; no ``autotune_configs``
-            are declared, so the schedule comes from ``default_config``.
         device_index: The device the kernel is built for.
         shared_epilogue: Whether to stage the tile through shared memory and store
             it with TMA. ``None`` takes the calibrated choice for this shape.
@@ -1014,20 +1012,23 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return (
-            cls.block_scale_grid(call) == "1d2d"
-            and call.dtype == torch.float8_e4m3fn
-            and call.out_dtype == torch.bfloat16
-            and not call.has_bias
-            and cls._shape_refusal(
-                call.m,
-                call.n,
-                call.k,
-                shared_epilogue=cls._calibrated_epilogue(call.m, call.n, call.k, call.calibration),
-            )
-            is None
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) != "1d2d":
+            return "requires 1d2d block scales"
+        if call.dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {call.dtype}"
+        if call.out_dtype != torch.bfloat16:
+            return f"writes bfloat16, not {call.out_dtype}"
+        if call.has_bias:
+            return "does not serve a bias"
+
+        reason = cls._shape_refusal(
+            call.m,
+            call.n,
+            call.k,
+            shared_epilogue=cls._calibrated_epilogue(call.m, call.n, call.k, call.calibration),
         )
+        return reason or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmFP8Call) -> Entry:
@@ -1050,7 +1051,6 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
         shared_epilogue: Optional[bool] = None,
     ) -> None:
@@ -1089,7 +1089,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
             sm_count=self.sm_count,
             shared_epilogue=self.shared_epilogue,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def out_dtype_str(self) -> str:
@@ -1142,8 +1142,6 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: Operand dtype; ``torch.float8_e4m3fn``.
         out_dtype: Output dtype; ``torch.bfloat16``.
         config: Kernel config override; unset keys take their default.
-        tune: Accepted for the common kernel interface; no ``autotune_configs``
-            are declared, so the schedule comes from ``default_config``.
         device_index: The device the kernel is built for.
     """
 
@@ -1151,14 +1149,19 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
     preferred_over = frozenset({"gemm_fp8_1d2d"})
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return (
-            cls.block_scale_grid(call) == "1d2d"
-            and call.dtype == torch.float8_e4m3fn
-            and call.out_dtype == torch.bfloat16
-            and not call.has_bias
-            and (call.m, call.n, call.k) in _FP8_1D2D_WAVE_CONFIGS.get(call.calibration, {})
-        )
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) != "1d2d":
+            return "requires 1d2d block scales"
+        if call.dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {call.dtype}"
+        if call.out_dtype != torch.bfloat16:
+            return f"writes bfloat16, not {call.out_dtype}"
+        if call.has_bias:
+            return "does not serve a bias"
+
+        if (call.m, call.n, call.k) not in _FP8_1D2D_WAVE_CONFIGS.get(call.calibration, {}):
+            return f"has no wave config for {(call.m, call.n, call.k)} on this board"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmFP8Call) -> Entry:
@@ -1181,7 +1184,6 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1203,7 +1205,7 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
             )
         self.sm_count = int(self._calibrated["sm_count"])
         self.kernel = _gemm_fp8_1d2d_wave_kernel(m, n, k, sm_count=self.sm_count)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

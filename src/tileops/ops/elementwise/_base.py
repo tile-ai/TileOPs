@@ -14,7 +14,7 @@ type is not a construction parameter: an instance serves whichever dtype its cal
 passes, one specialization per element type, built on first use.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -27,7 +27,7 @@ from tileops.kernels.elementwise.call_spec import (
     FusedGatedFwdInterface,
     UnaryElementwiseFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.op_base import Op
 
 # The one name every elementwise op calls its kernel through.
@@ -54,7 +54,6 @@ class UnaryOp(Op):
     with the tensor, so nothing about shape is a construction parameter.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: UnaryElementwiseFwdInterface
     }
@@ -63,33 +62,23 @@ class UnaryOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> ElementwiseCall:
         """The call record for *input*; a subclass with parameters widens it."""
         return ElementwiseCall(device=input.device, n_total=input.numel(), dtype=input.dtype)
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
-        input = input.contiguous()
-        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
+        input = input.contiguous()
+        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
 
 
 class BinaryOp(Op):
@@ -100,7 +89,6 @@ class BinaryOp(Op):
     is the kernel's, so this class only hands the two shapes down.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: BinaryElementwiseFwdInterface
     }
@@ -109,20 +97,14 @@ class BinaryOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> BroadcastCall:
         """The call record for the two operands; a subclass with parameters widens it."""
@@ -133,16 +115,12 @@ class BinaryOp(Op):
             dtype=input.dtype,
         )
 
-    def _eager_forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
+    def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input`` and ``other``."""
         input = input.contiguous()
         other = other.contiguous()
         call = self._call_spec(input, other)
         return self.kernel_for(ELEMENTWISE, call)(input, other)
-
-    def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``other``."""
-        return self._call_boundary(input, other)
 
 
 class FusedGatedOp(Op):
@@ -155,7 +133,6 @@ class FusedGatedOp(Op):
     the tensor.
     """
 
-    compile_boundary: ClassVar[bool] = True
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: FusedGatedFwdInterface
     }
@@ -164,30 +141,20 @@ class FusedGatedOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
-        x = x.contiguous()
-        call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
-        return self.kernel_for(ELEMENTWISE, call)(x)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""
-        return self._call_boundary(x)
+        x = x.contiguous()
+        call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
+        return self.kernel_for(ELEMENTWISE, call)(x)
 
 
 # Intermediate (private) base classes shared by leaf op modules
@@ -202,8 +169,9 @@ class _UnaryActivationMixin:
     carries the write in a traced graph.
     """
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        result = super()._eager_forward(input)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the activation on ``input``, into ``input`` itself when ``inplace`` is set."""
+        result = super().forward(input)
         if not self.inplace:
             return result
         input.copy_(result)
@@ -222,16 +190,12 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         *,
         inplace: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             inplace: When True, write the result into ``input`` and return ``input``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.inplace = inplace
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)

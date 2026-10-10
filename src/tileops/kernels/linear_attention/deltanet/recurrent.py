@@ -271,10 +271,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     general = True
 
     @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
 
@@ -290,7 +286,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -299,10 +294,8 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dim_v = dim_v
         self.dtype = dtype
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the decode program the current config states."""
@@ -396,10 +389,6 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         return head_count_refusal(call.heads) or cls.shape_refusal(
             Kernel.dtype_to_str(call.dtype), call.dim_k, call.dim_v
@@ -430,7 +419,6 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "bfloat16",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -438,10 +426,8 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the program the current config states."""
@@ -637,10 +623,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         if call.dtype != torch.float32:
             return "requires float32"
@@ -658,7 +640,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         if dtype != "float32":
@@ -668,10 +649,8 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
 
-        self.init_config(config, tune=False)
+        self.init_config(config)
         self._build_program()
-        if tune:
-            self.autotune()
 
     def _build_program(self) -> None:
         """Compile the fp32 decode program the current config states."""

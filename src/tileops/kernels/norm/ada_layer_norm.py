@@ -228,7 +228,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         dtype: Data type (float32, float16, or bfloat16).
         has_gate: If True, uses the AdaLN-Zero variant with gating.
         config: Optional kernel config override.
-        tune: If True, autotune the kernel.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -245,7 +244,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         dtype: torch.dtype,
         has_gate: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a hidden size, dtype and variant.
 
@@ -260,8 +258,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         self.N_padded = align_up(N, ALIGNMENT)
         # Shape policy is benchmarked independently from block/thread tuning.
         self.use_cp_async = _should_use_cp_async(N, dtype, has_gate)
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -252,7 +252,6 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
         divisor_override: Optional[int],
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.n = n
@@ -272,7 +271,7 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
         self._wide = _wide_run(self.window, self.dtype_str) is not None
         build = _avg_pool3d_wide_kernel if self._wide else _avg_pool3d_kernel
         self.kernel = build(self.window, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

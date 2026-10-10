@@ -1,6 +1,6 @@
 """Binary arithmetic elementwise ops with broadcasting."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -22,16 +22,15 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.elementwise.call_spec import (
     AlphaScaledBinaryFwdInterface,
     AlphaScaledCall,
+    DivCall,
     ElementwiseCall,
     LerpCall,
     LerpFwdInterface,
     LerpTensorFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE, BinaryOp
 from tileops.ops.op_base import Op
-
-_DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
@@ -53,19 +52,15 @@ class _AlphaScaledBinaryOp(BinaryOp):
         *,
         alpha: int | float = 1,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             alpha: Multiplier on ``other`` (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.alpha = alpha
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> AlphaScaledCall:
         return AlphaScaledCall(
@@ -111,8 +106,7 @@ class DivFwdOp(BinaryOp):
     Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division); each
-    value selects a dedicated kernel. It is fixed for the instance, which is
-    why it is not part of the memory key.
+    value selects a dedicated kernel through the call spec.
     """
 
     kernel_types = {
@@ -126,24 +120,24 @@ class DivFwdOp(BinaryOp):
         *,
         rounding_mode: Optional[str] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             rounding_mode: ``None``, ``"trunc"`` or ``"floor"``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.rounding_mode = rounding_mode
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        key = _DIV_KEY_BY_ROUNDING_MODE[self.rounding_mode]
-        return {key: self.kernel_types[key]}
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> DivCall:
+        return DivCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+            rounding_mode=self.rounding_mode,
+        )
 
 
 class RemainderFwdOp(BinaryOp):
@@ -181,13 +175,23 @@ class PowFwdOp(BinaryOp):
 
     def forward(self, input: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``exponent``."""
-        return self._call_boundary(input, exponent)
+        return super().forward(input, exponent)
 
 
 class FloorDivideFwdOp(BinaryOp):
     """Element-wise floor division with broadcast: y = a // b, as ``torch.floor_divide``."""
 
     kernel_types = {"floor_divide": FloorDivideFwdKernel}
+
+    def _call_spec(self, input: torch.Tensor, other: torch.Tensor) -> DivCall:
+        # The floor_divide implementation is shared with DivFwdOp and reads rounding_mode.
+        return DivCall(
+            device=input.device,
+            a_shape=tuple(input.shape),
+            b_shape=tuple(other.shape),
+            dtype=input.dtype,
+            rounding_mode="floor",
+        )
 
 
 class LerpScalarFwdOp(BinaryOp):
@@ -208,8 +212,6 @@ class LerpScalarFwdOp(BinaryOp):
         *,
         weight: float = 0.5,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -217,11 +219,9 @@ class LerpScalarFwdOp(BinaryOp):
             weight: Scalar interpolation weight, fixed at construction (manifest
                 ``params.weight``, default 0.5).
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.weight = weight
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor, end: torch.Tensor) -> LerpCall:
         return LerpCall(
@@ -234,7 +234,7 @@ class LerpScalarFwdOp(BinaryOp):
 
     def forward(self, input: torch.Tensor, end: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``end``."""
-        return self._call_boundary(input, end)
+        return super().forward(input, end)
 
 
 class MaximumFwdOp(BinaryOp):
@@ -266,7 +266,6 @@ class LerpTensorFwdOp(Op):
     overload is handled separately by ``LerpScalarFwdOp``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"lerp_tensor": LerpTensorFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: LerpTensorFwdInterface
@@ -276,33 +275,13 @@ class LerpTensorFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        end: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> torch.Tensor:
-        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
-        input = input.contiguous()
-        end = end.contiguous()
-        weight = weight.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, call)
-        return kernel(input, end, weight)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -311,4 +290,10 @@ class LerpTensorFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``input``, ``end`` and ``weight``."""
-        return self._call_boundary(input, end, weight)
+        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
+        input = input.contiguous()
+        end = end.contiguous()
+        weight = weight.contiguous()
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        kernel = self.kernel_for(ELEMENTWISE, call)
+        return kernel(input, end, weight)

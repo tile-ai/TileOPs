@@ -1,6 +1,6 @@
 """MoE permute-align op: routes tokens to experts and pads to tile boundary."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -30,7 +30,6 @@ class MoEPermuteAlignFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"permute_align": MoEPermuteAlignKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "permute_align": PermuteAlignFwdInterface
@@ -42,8 +41,6 @@ class MoEPermuteAlignFwdOp(Op):
         block_size: int = 64,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. The routed extents are taken from each call.
 
@@ -52,14 +49,10 @@ class MoEPermuteAlignFwdOp(Op):
             block_size: GEMM tile size (M dimension); default 64.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.num_experts = num_experts
         self.block_size = block_size
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.
@@ -72,12 +65,6 @@ class MoEPermuteAlignFwdOp(Op):
             expert_ids:       [ceil_div(that, block_size)] int32
             num_tokens_post_pad: [1] int32
         """
-        return self._call_boundary(topk_ids)
-
-    def _eager_forward(
-        self, topk_ids: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Launch inside the operator, where dynamo does not follow the kernel call."""
         call = PermuteAlignCall(
             num_routes=topk_ids.numel(),
             num_experts=self.num_experts,

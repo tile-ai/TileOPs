@@ -68,7 +68,6 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
         num_heads: Number of attention heads.
         dtype: Torch dtype.
         config: Optional config dict.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -83,15 +82,11 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
         return f"serves dtypes [{supported}], not {call.dtype}"
 
     @classmethod
-    def applies(cls, call: AlibiCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def entry_for(cls, call: AlibiCall) -> Entry:
         index = None if call.device is None else call.device.index
         return call, lambda: cls(call.seq_len, call.num_heads, call.dtype, device_index=index)
 
-    def __init__(self, seq_len, num_heads, dtype, config=None, tune=False, device_index=None):
+    def __init__(self, seq_len, num_heads, dtype, config=None, device_index=None):
         super().__init__(device_index=device_index)
         self.seq_len = seq_len
         self.num_heads = num_heads
@@ -105,15 +100,15 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
             cfg["threads"],
             cfg["num_per_thread"],
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self):
         return {"threads": 256, "num_per_thread": 4 if self.dtype == torch.float32 else 8}
 
-    def init_config(self, config=None, tune=False):
+    def init_config(self, config=None):
         """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
+        super().init_config(config)
         cfg = self.config
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 

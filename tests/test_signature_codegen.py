@@ -1,6 +1,5 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics)."""
 
-import functools
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,12 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.expr import SignatureError
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import _Plan, install, operator_name
+from tileops.ops._signature_codegen import (
+    _SignaturePlan,
+    install,
+    install_compile_boundary,
+    operator_name,
+)
 
 pytestmark = pytest.mark.smoke
 
@@ -24,7 +28,7 @@ def _op(name, params):
     install(cls, _ENTRIES[name], _CASES["adts"])
     op = cls()
     vars(op).update(params)
-    op._check_construction()
+    op._construction_indices = op._check_construction()
     return op
 
 
@@ -50,7 +54,7 @@ def _gemm(**roofline):
     cls = type("GemmFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
     install(cls, {**_ENTRIES["GemmFwdOp"], "roofline": roofline}, _CASES["adts"])
     op = cls(trans_a=False, trans_b=True)
-    op._check_construction()
+    op._construction_indices = op._check_construction()
     return op
 
 
@@ -86,21 +90,21 @@ def test_check_traces_on_symints(name):
 
 def test_eval_roofline_prices_the_last_call(monkeypatch):
     derived = _gemm(flops="2 * M * N * K")
-    derived._signature_call = type(derived)._signature.check(derived, {"a": _A, "b": _B})
+    derived._last_call = type(derived)._signature.check(derived, {"a": _A, "b": _B})
     assert derived.eval_roofline() == (2 * 4 * 16 * 8, (4 * 8 + 16 * 8 + 4 * 16) * 2)
     written = _gemm(flops="M", bytes="bytes(d) if present(a) else 0")
-    written._signature_call = derived._signature_call
+    written._last_call = derived._last_call
     assert written.eval_roofline() == (4, 4 * 16 * 2)
     import tileops.perf.formulas
 
     monkeypatch.setattr(
         tileops.perf.formulas,
         "probe_gemm",
-        lambda call: (call.ix["M"], call.bytes("a")),
+        lambda call: (call.indices["M"], call.bytes("a")),
         raising=False,
     )
     func = _gemm(func="tileops.perf.formulas.probe_gemm")
-    func._signature_call = derived._signature_call
+    func._last_call = derived._last_call
     assert func.eval_roofline() == (4, 4 * 8 * 2)
     with pytest.raises(RuntimeError, match="needs a completed call"):
         _gemm(flops="1").eval_roofline()
@@ -115,18 +119,12 @@ def test_construction_checks_what_construction_decides():
         )
 
 
-def _boundary_forward(eager):
-    """A `forward` with *eager*'s parameters whose body is one call to the boundary."""
-
-    @functools.wraps(eager)
-    def forward(self, *args, **kwargs):
-        return self._call_boundary(*args, **kwargs)
-
-    return forward
-
-
 def _probe(name, signature, forward, *, boundary=False, roofline=None, status="implemented"):
-    """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*."""
+    """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*.
+
+    Without *boundary* the entry carries a composition, which is what leaves an op with a
+    call-time tensor input without a compile boundary.
+    """
     from tileops.ops.op_base import Op
 
     entry = {
@@ -135,21 +133,17 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
         "signature": signature,
         "roofline": roofline or {"flops": "1"},
     }
+    if not boundary:
+        entry["composition"] = {"kind": "composite", "stages": []}
 
     def construct(self, **params):
         vars(self).update(params)
-        self.dispatch_kernel(None)
+        Op.__init__(self)
 
-    body = {
-        "__init__": construct,
-        "default_kernel_map": property(lambda self: {}),
-        "forward": _boundary_forward(forward) if boundary else forward,
-        "_eager_forward": forward,
-    }
-    if boundary:
-        body["compile_boundary"] = True
+    body = {"__init__": construct, "forward": forward}
     cls = type(name, (Op,), body)
     install(cls, entry)
+    install_compile_boundary(cls, entry)
     return cls
 
 
@@ -374,7 +368,7 @@ def test_every_manifest_construction_point_emits():
     adts = load_adts()
     for name, entry in load_manifest().items():
         try:
-            plan = _Plan(entry_plan(name, entry, adts))
+            plan = _SignaturePlan(entry_plan(name, entry, adts))
         except SignatureError:
             continue
         for key in list(plan._pending):
@@ -504,9 +498,9 @@ def test_generated_methods_bind_inputs_by_name():
     }
     op = _probe("ProbeNamedFwdOp", signature, lambda self, x, w=None: x + 1)()
     x = torch.zeros(2, dtype=torch.float16)
-    op._validate_dtypes(x, w=x)
+    op(x, w=x)
     with pytest.raises(ValueError, match="'x' is not a tensor"):
-        op._validate_dtypes(3)
+        type(op)._signature.check(op, {"x": 3, "w": None})
     assert op._infer_output_shapes(x=(2,)) == {"y": (2,)}
     with pytest.raises(TypeError):
         op._infer_output_shapes((2,), (9,), (1,))
@@ -615,7 +609,7 @@ def test_the_checked_call_holds_generated_construction_time_tensors():
     table = torch.tensor([3, 1], dtype=torch.int32)
     op = _probe("ProbeTableValuesFwdOp", signature, lambda self, x: x + 1)(table=table)
     op(torch.zeros(2, dtype=torch.float16))
-    assert op.last_call.values("table") == [3, 1]
+    assert op.last_call.metadata_values("table") == [3, 1]
 
 
 def test_shape_inference_binds_dtype_indices_from_the_dtypes_passed():
@@ -631,14 +625,19 @@ def test_shape_inference_binds_dtype_indices_from_the_dtypes_passed():
         op._infer_output_shapes((4,))
 
 
-def test_a_compile_boundary_needs_a_call_time_tensor_input():
-    signature = {
+def test_an_entry_with_a_call_time_input_and_no_composition_has_a_compile_boundary():
+    source = {
         "forall": {"T": "DType[float16]"},
         "params": {"n": {"type": "int"}},
         "outputs": {"y": {"dtype": "T", "shape": "[n]"}},
     }
-    with pytest.raises(TypeError, match="compile_boundary needs a call-time tensor input"):
-        _probe("ProbeSourceFwdOp", signature, lambda self: None, boundary=True)
+    # `boundary=True` leaves the composition out, so only the missing input decides here.
+    assert (
+        _probe("ProbeSourceFwdOp", source, lambda self: None, boundary=True).compile_op_names == ()
+    )
+    assert _probe("ProbeComposedFwdOp", _SILU, lambda self, x: None).compile_op_names == ()
+    leaf = _probe("ProbeLeafFwdOp", _SILU, lambda self, x: None, boundary=True)
+    assert leaf.compile_op_names == ("tileops::probe_leaf_fwd",)
 
 
 def test_a_target_served_call_leaves_constructor_attributes_alone():
@@ -659,7 +658,7 @@ def test_a_target_served_call_leaves_constructor_attributes_alone():
         op = _probe("ProbeTargetDtypeFwdOp", _SILU, lambda self, x: None)
         op = op(dtype=torch.float32)
         op(torch.zeros(3, 8, dtype=torch.float16))
-        assert op.settled_target == "acme"
+        assert op.serving_target == "acme"
         assert op.dtype == torch.float32
     finally:
         registry.restore(state)
@@ -710,8 +709,11 @@ def test_a_meta_call_holds_no_metadata_values():
     ids = torch.empty(2, 2, dtype=torch.int32, device="meta")
     call = SignatureCall({}, {"ids": ((2, 2), "int32")}, (), metadata={"ids": ids})
     with pytest.raises(OpNotAvailableError, match="holds no values"):
-        call.values("ids")
-    assert SignatureCall({}, {}, (), metadata={"ids": torch.ones(2)}).values("ids") == [1.0, 1.0]
+        call.metadata_values("ids")
+    assert SignatureCall({}, {}, (), metadata={"ids": torch.ones(2)}).metadata_values("ids") == [
+        1.0,
+        1.0,
+    ]
 
 
 def _staged_parent(name: str, forward, *, boundary=False):
@@ -728,7 +730,7 @@ def test_a_composite_call_carries_only_the_stage_calls_it_ran():
     )
     parent(torch.ones(3, 8, dtype=torch.float16))
     (leaf_call,) = parent.last_call.stages["leaf"]
-    assert leaf_call is parent.kernel_delegates()[0].last_call
+    assert leaf_call is parent.held_delegates()[0].last_call
     parent(torch.ones(2, 8, dtype=torch.float16, device="meta"))
     assert parent.last_call.stages == {"leaf": ()}
 
@@ -741,7 +743,7 @@ def test_a_composite_call_carries_every_call_of_a_stage():
 
     parent = _staged_parent("ProbeTwice", forward)
     parent(torch.ones(3, 8, dtype=torch.float16))
-    assert [c.ix["M"] for c in parent.last_call.stages["leaf"]] == [1, 3]
+    assert [c.indices["M"] for c in parent.last_call.stages["leaf"]] == [1, 3]
 
 
 def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():

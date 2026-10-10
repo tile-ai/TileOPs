@@ -1,6 +1,6 @@
 """Clamp ops: Tensor-bound bounds, and the scalar-bound form."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -12,7 +12,7 @@ from tileops.kernels.elementwise.call_spec import (
     ClampTensorCall,
     ClampTensorFwdInterface,
 )
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import ELEMENTWISE, UnaryOp
 from tileops.ops.op_base import Op
 
@@ -31,7 +31,6 @@ class ClampTensorFwdOp(Op):
     ``clamp_max``, one specialization each.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"clamp_tensor": ClampTensorFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: ClampTensorFwdInterface
@@ -41,27 +40,22 @@ class ClampTensorFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def _eager_forward(
+    def forward(
         self,
         input: torch.Tensor,
         min: Optional[torch.Tensor] = None,
         max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Run the op on ``input`` and whichever bounds the call passes."""
         shapes = [t.shape for t in (input, min, max) if t is not None]
         n_total = torch.broadcast_shapes(*shapes).numel()
         input = input.contiguous()
@@ -75,15 +69,6 @@ class ClampTensorFwdOp(Op):
             has_max=max is not None,
         )
         return self.kernel_for(ELEMENTWISE, call)(input, min, max)
-
-    def forward(
-        self,
-        input: torch.Tensor,
-        min: Optional[torch.Tensor] = None,
-        max: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Run the op on ``input`` and whichever bounds the call passes."""
-        return self._call_boundary(input, min, max)
 
 
 class ClampScalarFwdOp(UnaryOp):
@@ -100,8 +85,6 @@ class ClampScalarFwdOp(UnaryOp):
         min: Optional[float] = None,
         max: Optional[float] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -110,14 +93,10 @@ class ClampScalarFwdOp(UnaryOp):
             max: Upper bound (Number or None); at least one bound is given.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.min = min
         self.max = max
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _call_spec(self, input: torch.Tensor) -> BoundsCall:
         return BoundsCall(

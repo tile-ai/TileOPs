@@ -352,14 +352,12 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
             return f"indexes elements with int32, and M * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(
-        self, call: QuantizeCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
         self.kernel = self._builder(call.rows, call.cols, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -391,7 +389,6 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads``, ``lanes`` and ``pack``.
-        tune: Whether to autotune.
     """
 
     _builder = staticmethod(_int8_quant_per_block_kernel)
@@ -407,8 +404,10 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
     _WIDE_WAVES: ClassVar[int] = 2
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
-        return call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES == 0
+    def refusal(cls, call: QuantizeCall) -> "str | None":
+        if call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES:
+            return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -433,7 +432,6 @@ class INT8QuantPerBlockShiftedFwdKernel(_INT8QuantPerBlockFwdKernel):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``threads`` and ``lanes``.
-        tune: Whether to autotune.
     """
 
     _builder = staticmethod(_int8_quant_per_block_shifted_kernel)

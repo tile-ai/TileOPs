@@ -508,7 +508,7 @@ class ElementwiseCall(CallWorkload, ElementwiseWorkload):
         CallWorkload.__init__(self, call, device)
         self.name = call.signature.name
         self.shape = call.tensors["output"][0]
-        self.dtype = getattr(torch, call.ix.get("T") or call.tensors["output"][1])
+        self.dtype = getattr(torch, call.indices.get("T") or call.tensors["output"][1])
 
     def gen_inputs(self) -> tuple:
         draw = _DOMAINS.get(self.call.signature.name, _draw_normal)

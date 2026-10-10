@@ -1017,10 +1017,6 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why this class does not serve *call*, or ``None`` when it does."""
         if not call.is_fp8:
@@ -1045,7 +1041,6 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         window_size_right: int = -1,
         accum_dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -1069,7 +1064,6 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             window_size_right=window_size_right,
             accum_dtype=accum_dtype,
             config=config,
-            tune=tune,
             fuse_rope=fuse_rope,
             max_position=max_position,
             rotary_dim=rotary_dim,

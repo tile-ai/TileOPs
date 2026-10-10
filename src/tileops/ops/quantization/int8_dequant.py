@@ -1,6 +1,6 @@
 """Symmetric INT8 dequantize operators."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -33,8 +33,6 @@ class INT8DequantPerTensorFwdOp(Op):
     bit-identical to that expression.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_tensor": INT8DequantPerTensorFwdKernel,
         "int8_dequant_per_tensor_small": INT8DequantPerTensorSmallFwdKernel,
@@ -48,8 +46,6 @@ class INT8DequantPerTensorFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -58,13 +54,9 @@ class INT8DequantPerTensorFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q``.
@@ -76,10 +68,6 @@ class INT8DequantPerTensorFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
@@ -97,8 +85,6 @@ class INT8DequantPerChannelFwdOp(Op):
     bit-identical to ``(q.float() * scale[:, None]).to(out_dtype)``.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_channel": INT8DequantPerChannelFwdKernel
     }
@@ -111,8 +97,6 @@ class INT8DequantPerChannelFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -121,13 +105,9 @@ class INT8DequantPerChannelFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q`` row by row.
@@ -139,10 +119,6 @@ class INT8DequantPerChannelFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
@@ -161,8 +137,6 @@ class INT8DequantPerBlockFwdOp(Op):
     bit-identical to ``(q.float() * scale.repeat_interleave(128, dim=1)[:, :K]).to(out_dtype)``.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_block": INT8DequantPerBlockFwdKernel,
         "int8_dequant_per_block_small": INT8DequantPerBlockSmallFwdKernel,
@@ -176,8 +150,6 @@ class INT8DequantPerBlockFwdOp(Op):
         out_dtype: torch.dtype,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -186,13 +158,9 @@ class INT8DequantPerBlockFwdOp(Op):
                 ``torch.float32``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """Dequantize ``q`` block by block.
@@ -204,10 +172,6 @@ class INT8DequantPerBlockFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],

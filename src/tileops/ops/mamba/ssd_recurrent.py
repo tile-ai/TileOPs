@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -27,7 +27,6 @@ class SSDRecurrentFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ssd_decode": SSDDecodeKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ssd_decode": SSDDecodeFwdInterface
@@ -37,20 +36,14 @@ class SSDRecurrentFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune the tile config when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -73,21 +66,6 @@ class SSDRecurrentFwdOp(Op):
 
         Returns:
             y_out: (batch, n_heads, d_head) float32
-        """
-        return self._call_boundary(A, dt, x, B_in, C_in, state)
-
-    def _eager_forward(
-        self,
-        A: torch.Tensor,
-        dt: torch.Tensor,
-        x: torch.Tensor,
-        B_in: torch.Tensor,
-        C_in: torch.Tensor,
-        state: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, n_heads, d_head = x.shape
         d_state = state.shape[3]

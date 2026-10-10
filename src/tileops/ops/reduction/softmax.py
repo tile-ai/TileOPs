@@ -2,7 +2,7 @@
 
 import math
 import warnings
-from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar, List, Mapping, Optional, Tuple, Union
 
 import torch
 
@@ -37,11 +37,10 @@ __all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp", "_SoftmaxBaseOp"
 class _SoftmaxBaseOp(Op):
     """Softmax and log-softmax: normalize along one axis, keeping the shape.
 
-    The generated signature checks have run before ``_eager_forward``. The input is cast
+    The generated signature checks have run before ``forward``. The input is cast
     to ``dtype`` first when one is passed, as torch does.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "softmax_split": SoftmaxSplitKernel,
         "softmax_streaming": SoftmaxStreamingKernel,
@@ -58,8 +57,6 @@ class _SoftmaxBaseOp(Op):
         *,
         dtype: Optional[torch.dtype] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -70,14 +67,10 @@ class _SoftmaxBaseOp(Op):
                 the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default False).
         """
         self.dim = dim
         self.dtype = dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize *x* along the configured axis.
@@ -88,25 +81,8 @@ class _SoftmaxBaseOp(Op):
         Returns:
             A tensor of *x*'s shape, in ``dtype`` when one was passed.
         """
-        return self._call_boundary(x)
-
-    def _axis(self, rank: int) -> int:
-        if self.dim is not None:
-            return normalize_axis(self.dim, rank)
-        warnings.warn(
-            f"Implicit dimension choice for {self._op_kind} has been deprecated. "
-            "Change the call to include dim=X as an argument.",
-            UserWarning,
-            stacklevel=3,
-        )
-        return 0 if rank in (0, 1, 3) else 1
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator; closed forms need no kernel.
-
-        A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
-        input as stored. Any other cast runs first, as in torch.
-        """
+        # A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
+        # input as stored. Any other cast runs first, as in torch.
         out_dtype = x.dtype if self.dtype is None else self.dtype
         if x.ndim == 0 or out_dtype != torch.float32:
             x = x.to(out_dtype)
@@ -125,6 +101,17 @@ class _SoftmaxBaseOp(Op):
             out_dtype=out_dtype,
         )
         return self.kernel_for("softmax", call)(x)
+
+    def _axis(self, rank: int) -> int:
+        if self.dim is not None:
+            return normalize_axis(self.dim, rank)
+        warnings.warn(
+            f"Implicit dimension choice for {self._op_kind} has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return 0 if rank in (0, 1, 3) else 1
 
 
 class SoftmaxFwdOp(_SoftmaxBaseOp):
@@ -159,8 +146,6 @@ class LogSumExpFwdOp(_ReduceOpBase):
         keepdim: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -169,10 +154,8 @@ class LogSumExpFwdOp(_ReduceOpBase):
             keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default False).
         """
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> LogSumExpCall:
         """The input as the manifest declares it, and the device it runs on."""

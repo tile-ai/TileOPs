@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -35,7 +35,6 @@ class GQAPagedFwdOp(Op):
     cache length. FP8 calls still require an external target implementation.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
@@ -44,14 +43,14 @@ class GQAPagedFwdOp(Op):
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows it reads,
         which its flops and cache reads follow."""
         from tileops.perf.formulas import gqa_paged_cache_rows
 
         call = self.last_call
         return {
-            "cached_tokens": sum(call.values("cache_seqlens")),
+            "cached_tokens": sum(call.metadata_values("cache_seqlens")),
             "cache_rows": gqa_paged_cache_rows(call),
         }
 
@@ -68,8 +67,6 @@ class GQAPagedFwdOp(Op):
         rope_layout: str = "neox",
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Configure paged GQA semantics without owning or mutating the cache.
 
@@ -84,8 +81,6 @@ class GQAPagedFwdOp(Op):
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
             target: Backend target, or ``None`` to resolve from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
@@ -96,11 +91,9 @@ class GQAPagedFwdOp(Op):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -176,39 +169,8 @@ class GQAPagedFwdOp(Op):
         Returns:
             The attention output [total_q, heads, dim].
         """
-        return self._call_boundary(
-            q,
-            k_pages,
-            v_pages,
-            page_table,
-            cache_seqlens,
-            cu_seqlens_q,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        page_table: torch.Tensor,
-        cache_seqlens: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder. The kernels read
-        the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of the pages.
-        """
+        # The kernels read the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of
+        # the pages.
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )

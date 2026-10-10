@@ -288,7 +288,7 @@ jobs:
 
   compile-contract-gate:
     # Always-on by design: no detect-changes path condition, so manifest-only
-    # and test-only PRs both run the declaration/evidence equality test.
+    # and test-only PRs both run the compile-boundary/evidence equality test.
     needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest

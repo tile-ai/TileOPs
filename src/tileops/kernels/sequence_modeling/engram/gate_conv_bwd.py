@@ -372,7 +372,6 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.M = M
@@ -388,7 +387,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             eps,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

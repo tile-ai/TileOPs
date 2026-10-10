@@ -1,6 +1,6 @@
 """SmoothQuant activation quantization operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -31,8 +31,6 @@ class SmoothQuantFwdOp(Op):
     row's amax is so small (below about ``8.8e-44``) that its ``scale`` rounds to zero.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"smooth_quant_fwd": SmoothQuantFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "smooth_quant_fwd": SmoothQuantFwdInterface
@@ -42,20 +40,14 @@ class SmoothQuantFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Smooth ``x`` by channel, then quantize each row against its absolute maximum.
@@ -67,12 +59,6 @@ class SmoothQuantFwdOp(Op):
         Returns:
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[M]$ in ``float32``.
         """
-        return self._call_boundary(x, smooth)
-
-    def _eager_forward(
-        self, x: torch.Tensor, smooth: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         smooth = smooth.contiguous()
         call = QuantizeCall(

@@ -181,7 +181,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         d_state: State dimension (N)
         dtype: Data type (fp16/bf16)
         config: Tile configuration
-        tune: Whether to autotune
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -206,7 +205,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         d_state: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -219,7 +217,7 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         self.kernel = _ssd_chunk_coupling_kernel(
             batch, num_chunks, n_groups, chunk_len, d_state, self.dtype_str
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

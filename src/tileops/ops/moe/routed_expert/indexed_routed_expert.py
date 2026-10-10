@@ -37,7 +37,6 @@ class IndexedExpertMLPFwdOp(Op):
     shapes where it does.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "route_stats": IndexedRouteStatsKernel,
         "expert_gate_up": IndexedExpertGateUpKernel,
@@ -56,8 +55,6 @@ class IndexedExpertMLPFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         *,
         target: Target = None,
-        kernel_map: dict | None = None,
-        tune: bool = False,
     ) -> None:
         """Fix the scalar applied to the reduced output; the route extents come per call.
 
@@ -65,23 +62,18 @@ class IndexedExpertMLPFwdOp(Op):
             routed_scaling_factor: Scalar applied to the final reduced output.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional dispatch override mapping kernel keys to ``Kernel``
-                subclasses.
-            tune: Whether the kernels tune themselves when built.
         """
         self.routed_scaling_factor = routed_scaling_factor
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def roofline_inputs(self) -> dict[str, int]:
+    def roofline_data_terms(self) -> dict[str, int]:
         """The experts this call's routing selected, which its weight reads follow."""
         from tileops.perf.formulas import routed_active_experts
 
         return {"active_experts": routed_active_experts(self.last_call)}
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["D"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,
@@ -93,17 +85,6 @@ class IndexedExpertMLPFwdOp(Op):
         topk_ids: Tensor,
     ) -> None:
         """Write the weighted and reduced expert result into ``output``."""
-        return self._call_boundary(output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
-
-    def _eager_forward(
-        self,
-        output: Tensor,
-        hidden_states: Tensor,
-        w_gate_up: Tensor,
-        w_down: Tensor,
-        topk_weights: Tensor,
-        topk_ids: Tensor,
-    ) -> None:
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
         call = IndexedExpertCall(

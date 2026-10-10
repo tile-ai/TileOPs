@@ -81,7 +81,6 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
         d_model: Model dimension (must be even).
         dtype: Torch dtype.
         config: Optional config dict.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -96,30 +95,26 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
         return f"serves dtypes [{supported}], not {call.dtype}"
 
     @classmethod
-    def applies(cls, call: SinusoidalCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def entry_for(cls, call: SinusoidalCall) -> Entry:
         index = None if call.device is None else call.device.index
         return call, lambda: cls(call.seq_len, call.d_model, call.dtype, device_index=index)
 
-    def __init__(self, seq_len, d_model, dtype, config=None, tune=False, device_index=None):
+    def __init__(self, seq_len, d_model, dtype, config=None, device_index=None):
         super().__init__(device_index=device_index)
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
         self.output_dtype = dtype
         self.kernel = _make_sinusoidal_kernel(seq_len, d_model, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self):
         return {"threads": 256}
 
-    def init_config(self, config=None, tune=False):
+    def init_config(self, config=None):
         """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
+        super().init_config(config)
         self._compiled_fn = self.kernel(self.config["threads"])
 
     def forward(self):

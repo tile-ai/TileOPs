@@ -5,7 +5,7 @@ batch item is an independent GEMM, no broadcasting.
 """
 
 import warnings
-from typing import ClassVar, Dict, Mapping, Optional, Set, Tuple
+from typing import ClassVar, Mapping, Set, Tuple
 
 import torch
 
@@ -40,8 +40,6 @@ class BmmFwdOp(Op):
     The in-tree kernels need $K$ to be a multiple of 16 and refuse other calls when built.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bmm_persistent": BmmPersistentKernel,
         "bmm": BmmKernel,
@@ -52,20 +50,14 @@ class BmmFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiply the two batches, one GEMM per batch item.
@@ -84,23 +76,15 @@ class BmmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b)
-
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b = a.contiguous(), b.contiguous()
         batch, m, k = a.shape
         call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
-        # Expose the active kernel so autotune()/introspection can find it.
-        self.kernel = self.kernel_for("bmm", call)
-        return self.kernel(a, b)
+        kernel = self.kernel_for("bmm", call)
+        return kernel(a, b)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class BmmFP8FwdOp(Op):
@@ -116,8 +100,6 @@ class BmmFP8FwdOp(Op):
     either value of the flag, and is the faster call. The in-tree kernel needs $K$
     to be a multiple of 32 and refuses other calls when built.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bmm_fp8_ws": BmmFP8WSKernel,
@@ -136,8 +118,6 @@ class BmmFP8FwdOp(Op):
         trans_b: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -148,14 +128,10 @@ class BmmFP8FwdOp(Op):
                 ``b``'s strides, not by this flag.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune (applied when a kernel is first built).
         """
         self.out_dtype = out_dtype
         self.trans_b = trans_b
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         # ``b`` shapes already warned about, so one op warns once per shape.
         self._kn_warned: Set[Tuple[int, int, int]] = set()
 
@@ -185,19 +161,6 @@ class BmmFP8FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b, scale_a, scale_b)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a = a.contiguous()
         b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
@@ -211,8 +174,8 @@ class BmmFP8FwdOp(Op):
             out_dtype=self.out_dtype,
             device=a.device,
         )
-        self.kernel = self.kernel_for("bmm_fp8", call)
-        return self.kernel(a, b, scale_a, scale_b)
+        kernel = self.kernel_for("bmm_fp8", call)
+        return kernel(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
         self, b: torch.Tensor, dtype: torch.dtype, device: torch.device
@@ -252,6 +215,6 @@ class BmmFP8FwdOp(Op):
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

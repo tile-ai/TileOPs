@@ -141,17 +141,19 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
 
     @classmethod
-    def applies(cls, call) -> bool:
-        # The page-tile question is asked of this class, so a kernel_map
-        # override answers for its own tiling rather than for the shipped one.
-        return (
-            call.max_seqlen_q == 1
-            and call.paged_decode_refusal is None
-            and call.decode_bs1_region
-            # The warp-specialized softmax reduces raw QK before applying the scale.
-            and (call.sm_scale is None or call.sm_scale >= 0.0)
-            and cls.block_n_for_page_size(call.page_size) is not None
-        )
+    def refusal(cls, call) -> "str | None":
+        if call.max_seqlen_q != 1:
+            return f"serves one query position, got {call.max_seqlen_q}"
+        if call.paged_decode_refusal is not None:
+            return call.paged_decode_refusal
+        if not call.decode_bs1_region:
+            return "serves the batch-1 decode region only"
+        # The warp-specialized softmax reduces raw QK before applying the scale.
+        if call.sm_scale is not None and call.sm_scale < 0.0:
+            return f"requires a non-negative sm_scale, got {call.sm_scale}"
+        if cls.block_n_for_page_size(call.page_size) is None:
+            return f"no key tile covers page size {call.page_size}"
+        return super().refusal(call)
 
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
@@ -195,7 +197,6 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
-        tune=False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
@@ -219,7 +220,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             raise ValueError("page_size must be positive and divide seqlen_kv")
         if self.max_pages_per_req <= 0:
             raise ValueError("max_pages_per_req must be positive")
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

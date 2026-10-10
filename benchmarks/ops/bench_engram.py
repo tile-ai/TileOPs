@@ -22,7 +22,9 @@ _TUNE = True
 
 @pytest.mark.parametrize("case", bench.cases(EngramGateConvFwdOp), ids=lambda case: case.id)
 def test_engram_gate_conv_fwd_bench(case):
-    op = EngramGateConvFwdOp(**case.arguments, tune=_TUNE)
+    op = EngramGateConvFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,
@@ -33,7 +35,9 @@ def test_engram_gate_conv_fwd_bench(case):
 
 @pytest.mark.parametrize("case", bench.cases(EngramGateConvBwdOp), ids=lambda case: case.id)
 def test_engram_gate_conv_bwd_bench(case):
-    op = EngramGateConvBwdOp(**case.arguments, tune=_TUNE)
+    op = EngramGateConvBwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     reference = case.reference
 
     @torch.enable_grad()
@@ -45,7 +49,9 @@ def test_engram_gate_conv_bwd_bench(case):
 
 @pytest.mark.parametrize("case", bench.cases(EngramDecodeFwdOp), ids=lambda case: case.id)
 def test_engram_decode_bench(case):
-    op = EngramDecodeFwdOp(**case.arguments, tune=_TUNE)
+    op = EngramDecodeFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,

@@ -151,8 +151,8 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
             and ffn_size >= hidden_size
-            and GemmTMAKernel.applies(gate_up_call)
-            and GemmTMAKernel.applies(down_call)
+            and GemmTMAKernel.refusal(gate_up_call) is None
+            and GemmTMAKernel.refusal(down_call) is None
         ):
             fuse_gate_up = 512 <= num_tokens <= 2048
             template_config = {

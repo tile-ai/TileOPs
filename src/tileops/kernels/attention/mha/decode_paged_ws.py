@@ -386,21 +386,29 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     _MAX_MULTI_QUERY_MACS = 2**27
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
+    def refusal(cls, call: AttentionCall) -> "str | None":
         """A 16-bit call without softcap or window, a head dim a warp spans, a page some
         tile height divides, and several query rows only below the work bound."""
         macs = call.batch * call.heads * call.max_seqlen_q * call.seqlen_kv * call.dim
-        return (
-            call.max_seqlen_q >= 1
-            and (call.max_seqlen_q == 1 or macs <= cls._MAX_MULTI_QUERY_MACS)
-            and call.softcap == 0.0
-            and call.dtype in ATTENTION_DTYPES
-            and not call.is_fp8
-            and not call.uses_sliding_window
-            and call.dim % WARP_LANES == 0
-            and 0 < call.dim <= cls._MAX_DIM
-            and bool(cls._tile_heights(call.page_size, call.seqlen_kv))
-        )
+        if call.max_seqlen_q < 1:
+            return "requires at least one query position"
+        if call.max_seqlen_q != 1 and macs > cls._MAX_MULTI_QUERY_MACS:
+            return (
+                f"serves several query positions up to {cls._MAX_MULTI_QUERY_MACS} MACs, got {macs}"
+            )
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        if call.dtype not in ATTENTION_DTYPES or call.is_fp8:
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.uses_sliding_window:
+            return "does not serve a sliding window"
+        if call.dim % WARP_LANES != 0 or not 0 < call.dim <= cls._MAX_DIM:
+            return (
+                f"requires head dim a multiple of {WARP_LANES} up to {cls._MAX_DIM}, got {call.dim}"
+            )
+        if not cls._tile_heights(call.page_size, call.seqlen_kv):
+            return f"no tile height divides page size {call.page_size}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -431,7 +439,6 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         is_causal: bool = False,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
         max_pages_per_req: Optional[int] = None,
     ) -> None:
@@ -463,7 +470,7 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         )
         self._arrived: dict[int, torch.Tensor] = {}
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     # -- configuration ----------------------------------------------------
 

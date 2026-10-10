@@ -20,7 +20,7 @@ Input tensors accept any shape ``(N, C, *spatial)``; the kernels take its contig
 """
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -71,7 +71,6 @@ class BatchNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fwd_train_whole": BatchNormFwdTrainWholeKernel,
         "fwd_train_wide": BatchNormFwdTrainWideKernel,
@@ -91,8 +90,6 @@ class BatchNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -103,18 +100,13 @@ class BatchNormFwdOp(Op):
             eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
         self.training = training
         self.eps = eps
         self.momentum = momentum
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
-    def _eager_forward(
+    def forward(
         self,
         x: torch.Tensor,
         running_mean: Optional[torch.Tensor] = None,
@@ -122,9 +114,21 @@ class BatchNormFwdOp(Op):
         weight: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
+        """Run batch normalization forward pass.
 
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
+        The ``training`` mode is bound at ctor time. Construct a separate
+        op instance to switch between training and inference.
+
+        Args:
+            x: Input tensor of shape ``(N, C, *spatial)``.
+            running_mean: Running mean of shape $[C]$, ``torch.float32``; updated in place
+                in training, required in inference.
+            running_var: Running variance, the same; passed exactly when ``running_mean`` is.
+            weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``, or ``None``.
+            bias: Affine shift (beta) of shape $[C]$, ``torch.float32``, or ``None``.
+
+        Returns:
+            Normalized output tensor with the same shape as ``x``.
         """
         if x.numel() == 0:
             # torch leaves the running statistics as they are.
@@ -151,7 +155,6 @@ class BatchNormFwdOp(Op):
         )
         if not self.training:
             kernel = self.kernel_for("batch_norm_fwd_infer", call)
-            self.kernel = kernel
             stats = (running_mean.contiguous(), running_var.contiguous())
             return kernel(x_ncs, *stats, weight, bias).view(x.shape)
 
@@ -165,7 +168,6 @@ class BatchNormFwdOp(Op):
         weight = None if weight is None else weight.contiguous()
         bias = None if bias is None else bias.contiguous()
         kernel = self.kernel_for("batch_norm_fwd_train", call)
-        self.kernel = kernel
 
         # The training kernel also returns the batch statistics, which the manifest keeps
         # out of this op's outputs.
@@ -175,32 +177,6 @@ class BatchNormFwdOp(Op):
                 if written is not original:
                     original.copy_(written)
         return y.view(x.shape)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Run batch normalization forward pass.
-
-        The ``training`` mode is bound at ctor time. Construct a separate
-        op instance to switch between training and inference.
-
-        Args:
-            x: Input tensor of shape ``(N, C, *spatial)``.
-            running_mean: Running mean of shape $[C]$, ``torch.float32``; updated in place
-                in training, required in inference.
-            running_var: Running variance, the same; passed exactly when ``running_mean`` is.
-            weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``, or ``None``.
-            bias: Affine shift (beta) of shape $[C]$, ``torch.float32``, or ``None``.
-
-        Returns:
-            Normalized output tensor with the same shape as ``x``.
-        """
-        return self._call_boundary(x, running_mean, running_var, weight, bias)
 
 
 class BatchNormBwdOp(Op):
@@ -213,7 +189,6 @@ class BatchNormBwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bwd_wide": BatchNormBwdWideKernel,
         "bwd_split": BatchNormBwdSplitKernel,
@@ -227,51 +202,14 @@ class BatchNormBwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    def _eager_forward(
-        self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
-        channels = grad_out.shape[1]
-        if grad_out.numel() == 0:
-            # An empty channel sums to zero.
-            zeros = torch.zeros(channels, dtype=torch.float32, device=grad_out.device)
-            return torch.empty_like(x), zeros, zeros.clone()
-        batch = grad_out.shape[0]
-        spatial = math.prod(grad_out.shape[2:])
-        grad_out_ncs = grad_out.contiguous().view(batch, channels, spatial)
-        x_ncs = x.contiguous().view(batch, channels, spatial)
-        weight = weight.contiguous()
-        mean = mean.contiguous()
-        rstd = rstd.contiguous()
-        call = BatchNormCall(device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype)
-        kernel = self.kernel_for("batch_norm_bwd", call)
-        self.kernel = kernel
-        grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
-        return grad_x.view(x.shape), grad_weight, grad_bias
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -295,4 +233,19 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape $[C]$,
             and ``grad_bias`` has shape $[C]$.
         """
-        return self._call_boundary(grad_out, x, weight, mean, rstd)
+        channels = grad_out.shape[1]
+        if grad_out.numel() == 0:
+            # An empty channel sums to zero.
+            zeros = torch.zeros(channels, dtype=torch.float32, device=grad_out.device)
+            return torch.empty_like(x), zeros, zeros.clone()
+        batch = grad_out.shape[0]
+        spatial = math.prod(grad_out.shape[2:])
+        grad_out_ncs = grad_out.contiguous().view(batch, channels, spatial)
+        x_ncs = x.contiguous().view(batch, channels, spatial)
+        weight = weight.contiguous()
+        mean = mean.contiguous()
+        rstd = rstd.contiguous()
+        call = BatchNormCall(device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype)
+        kernel = self.kernel_for("batch_norm_bwd", call)
+        grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
+        return grad_x.view(x.shape), grad_weight, grad_bias

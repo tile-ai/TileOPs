@@ -23,7 +23,8 @@ from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 def test_instance_norm_bench(case) -> None:
     inputs = case.inputs
     x = inputs[0]
-    op = InstanceNormFwdOp(**case.arguments, tune=True)
+    op = InstanceNormFwdOp(**case.arguments)
+    op.request_tune()
     use_input_stats, momentum, eps = (
         case.params[k] for k in ("use_input_stats", "momentum", "eps")
     )

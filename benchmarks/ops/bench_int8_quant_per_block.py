@@ -21,7 +21,9 @@ _TUNE = True
 def test_int8_quant_per_block_bench(case) -> None:
     workload = case.workload
 
-    op = INT8QuantPerBlockFwdOp(**case.arguments, tune=_TUNE)
+    op = INT8QuantPerBlockFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: bench.Implementation(

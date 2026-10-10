@@ -1,7 +1,7 @@
 """Layer normalization operator."""
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional, Sequence
+from typing import ClassVar, Mapping, Optional, Sequence
 
 import torch
 
@@ -31,7 +31,6 @@ class LayerNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "layer_norm": LayerNormKernel,
         "layer_norm_warp_row": LayerNormWarpRowKernel,
@@ -46,8 +45,6 @@ class LayerNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -56,14 +53,10 @@ class LayerNormFwdOp(Op):
             eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune (default ``False``).
         """
         self.normalized_shape = normalized_shape
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -80,18 +73,6 @@ class LayerNormFwdOp(Op):
 
         Returns:
             Normalized tensor of the same shape as *x*.
-        """
-        return self._call_boundary(x, weight, bias)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         x = x.contiguous()
         weight = None if weight is None else weight.contiguous()

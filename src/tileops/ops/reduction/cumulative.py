@@ -1,6 +1,6 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -32,15 +32,11 @@ class CumulativeOp(Op):
 
     _op_kind: str
 
-    compile_boundary = True
-
     def __init__(
         self,
         dim: int = -1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -49,25 +45,14 @@ class CumulativeOp(Op):
                 forward time (`dim % x.ndim`).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: If True, autotune tile configs.
         """
         self.dim = dim
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the scan.
 
         One call to the operator this op registers: this is as far as dynamo traces.
-        """
-        return self._call_boundary(x)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         x = x.contiguous()  # handed over as the manifest declares it
         call = CumulativeCall(
@@ -95,8 +80,6 @@ class CumsumFwdOp(CumulativeOp):
             at forward time.
         target: Which set of kernels serves this op — a target name, ``BUILTIN``
             for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
 
     Example:
         ```python linenums="1"
@@ -128,8 +111,6 @@ class CumprodFwdOp(CumulativeOp):
             at forward time.
         target: Which set of kernels serves this op — a target name, ``BUILTIN``
             for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
 
     Example:
         ```python linenums="1"

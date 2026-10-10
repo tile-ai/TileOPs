@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -26,7 +26,6 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
     outputs zeros.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mha_decode_paged_kernel": GQADecodePagedKernel,
         "mha_decode_paged_ws_kernel": MHADecodePagedWSKernel,
@@ -35,14 +34,14 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         "mha_decode_paged": MHAPagedDecodeFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows they reach,
         which its flops and cache reads follow."""
         from tileops.perf.formulas import paged_decode_cache_rows
 
         call = self.last_call
         return {
-            "kv_tokens": sum(call.values("real_seqlen_kv")),
+            "kv_tokens": sum(call.metadata_values("real_seqlen_kv")),
             "cache_rows": paged_decode_cache_rows(call),
         }
 
@@ -52,8 +51,6 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         is_causal: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -62,14 +59,10 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``False``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.page_size = page_size
         self.is_causal = is_causal
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _attention_call(
         self, q: torch.Tensor, k: torch.Tensor, block_table: torch.Tensor
@@ -115,24 +108,10 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
         """
-        return self._call_boundary(q, k, v, real_seqlen_kv, block_table)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = (q, k, v, real_seqlen_kv, block_table)
         kernel = self.kernel_for("mha_decode_paged", self._attention_call(q, k, block_table))
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

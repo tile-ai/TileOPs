@@ -1,7 +1,7 @@
 """The vector-norm reduction operator, one ``ord`` of ``torch.linalg.vector_norm`` per call."""
 
 from math import inf
-from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar, List, Mapping, Optional, Tuple, Union
 
 import torch
 
@@ -42,8 +42,6 @@ class VectorNormFwdOp(ReduceCallOp):
         *,
         dtype: Optional[torch.dtype] = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -55,12 +53,10 @@ class VectorNormFwdOp(ReduceCallOp):
                 it may not narrow the input's. ``None`` keeps the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel map.
-            tune: Whether to autotune the kernel.
         """
         self.ord = ord
         self.dtype = dtype
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
     @property
     def _op_kind(self) -> str:

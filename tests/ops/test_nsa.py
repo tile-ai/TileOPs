@@ -158,8 +158,9 @@ def test_nsa_varlen_op(
         is_causal=is_causal,
         scale=scale,
         block_size=block_size,
-        tune=tune,
     )
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -210,7 +211,9 @@ def test_nsa_compressed_fwd_varlen_op(
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
     test = NSACompressedFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
-    op = NSACompressedVarlenFwdOp(scale=scale, bs=bs, tune=tune)
+    op = NSACompressedVarlenFwdOp(scale=scale, bs=bs)
+    if tune:
+        op.request_tune()
     test.check(op, *inputs)
 
 
@@ -280,8 +283,9 @@ def test_nsa_topk_varlen_op(
         scale=scale,
         selected_block_num=selected_block_num,
         bs=bs,
-        tune=tune,
     )
+    if tune:
+        op.request_tune()
     test.check(op, *inputs)
 
 
@@ -326,7 +330,7 @@ def test_nsa_varlen_reference_returns_the_declared_output() -> None:
         for row in load_workloads(name)
         for case in row.get("dtype_cases") or [{}]
     ]
-    call = min(calls, key=lambda c: c.ix["T_q"] * c.ix["H"] * c.ix["D"])
+    call = min(calls, key=lambda c: c.indices["T_q"] * c.indices["H"] * c.indices["D"])
     workload = NSAFwdCall(call)
     output = workload.ref_program(*workload.gen_inputs())
     spec = call.specs["o_slc"]

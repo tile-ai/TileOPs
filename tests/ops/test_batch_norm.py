@@ -13,8 +13,6 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormInferFwdInterface,
-    BatchNormTrainFwdInterface,
 )
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
@@ -265,7 +263,7 @@ def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, ab
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
@@ -295,7 +293,7 @@ def test_forward_input_off_a_vector_boundary_matches_torch(training, shape, kern
         batch_norm_fwd_ref(x, weight, bias, rm.clone(), rv.clone(), training=training),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
@@ -316,7 +314,7 @@ def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> Non
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert type(bwd.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in bwd.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
@@ -341,7 +339,7 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == "BatchNormFwdTrainSplitKernel"
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["BatchNormFwdTrainSplitKernel"]
     grad_out = torch.randn_like(x)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
@@ -349,7 +347,7 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert type(bwd.kernel).__name__ == "BatchNormBwdSplitKernel"
+    assert [type(k).__name__ for k in bwd.iter_kernels()] == ["BatchNormBwdSplitKernel"]
 
 
 # Input validation and torch.compile.
@@ -444,41 +442,6 @@ class _FakeKernel(Kernel):
         self.momentum = call.momentum
 
 
-class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormInferFwdInterface):
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> torch.Tensor:
-        x_cl = _to_cl(x)
-        y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(running_var[:, None] + self.eps)
-        y = y * weight[:, None] + bias[:, None]
-        return _from_cl(y.to(self.dtype), x.shape)
-
-
-class _FakeBatchNormFwdTrainKernel(_FakeKernel, BatchNormTrainFwdInterface):
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x_cl = _to_cl(x)
-        mean = x_cl.float().mean(dim=1)
-        var = x_cl.float().var(dim=1, unbiased=False)
-        rstd = torch.rsqrt(var + self.eps)
-        running_mean.mul_(1 - self.momentum).add_(self.momentum * mean)
-        running_var.mul_(1 - self.momentum).add_(self.momentum * var)
-        y = (x_cl.float() - mean[:, None]) * rstd[:, None]
-        y = y * weight[:, None] + bias[:, None]
-        return _from_cl(y.to(self.dtype), x.shape), mean, rstd
-
-
 class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdInterface):
     def forward(
         self,
@@ -501,17 +464,6 @@ class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdInterface):
             / self.L
         )
         return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
-
-
-# ``kernel_map=`` replaces what runs under a key, never which key is selected: every
-# training key runs the fake, so whichever one a shape selects serves it.
-_FAKE_TRAIN_MAP = {
-    "fwd_train_whole": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_wide": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_split": _FakeBatchNormFwdTrainKernel,
-    "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-    "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-}
 
 
 def _batch_norm_infer_ref(
