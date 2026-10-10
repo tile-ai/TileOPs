@@ -274,6 +274,8 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             GQADecodeKernel,
             id="batched-bf16-split-tail",
         ),
+        # The last key tile holds 15 rows; a per-row guard around the consumer's key
+        # rotation leaves the barrier inside it short of threads, and the kernel hangs.
         pytest.param(
             1,
             (8, 2),
