@@ -304,6 +304,7 @@ def test_top_k_mask_refuses_a_row_one_cta_cannot_hold():
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
 def test_top_k_top_p_mask_refuses_a_row_it_cannot_hold():
     """A row of 2**19 values is wider than the kernel holds on any architecture, so it is
     refused before anything is built."""
