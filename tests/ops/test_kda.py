@@ -111,6 +111,15 @@ def test_kda_prefill_in_99_kb_of_shared_memory() -> None:
 
 
 @pytest.mark.sm89
+def test_kda_prefill_scans_independent_value_tiles() -> None:
+    """SM89 splits a long single-sequence scan with eight value heads into 16-column
+    tiles, so every tile must read and write its own state and output columns.
+    """
+    torch.manual_seed(42)
+    _check(1, 4096, 2, 128, torch.bfloat16, value_heads=8)
+
+
+@pytest.mark.sm89
 @pytest.mark.in_tree_kernels
 def test_kda_prefill_refuses_offsets_99_kb_cannot_hold() -> None:
     """SM89 gives a block 99 KB of opt-in shared memory, and the programs hold every
