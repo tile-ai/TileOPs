@@ -193,19 +193,22 @@ GQAPagedFwdOp:
     - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b}
-  - {T_q: 32, NP: 64, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64}
-  - {T_q: 8, NP: 512, PS: 64, W: 512, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(32768, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-32k-p64}
-  - {T_q: 64, NP: 32, PS: 64, W: 32, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 64)", cache_lens: "repeat(2048, 64)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-b64-p64}
-  - {T_q: 8, NP: 64, PS: 64, W: 64, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p64}
-  - {T_q: 32, NP: 16, PS: 256, W: 16, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p256}
-  - {T_q: 8, NP: 16, PS: 256, W: 16, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p256}
-  - {T_q: 4, NP: 16, PS: 256, W: 16, H: 128, H_kv: 8, D: 128, q_lens: "repeat(1, 4)", cache_lens: "repeat(4096, 4)", dtype_cases: [{T: float16, KV: float16}], label: llama-405b-p256}
-  - {T_q: 32, NP: 64, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", softcap: 50.0, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64-softcap}
-  - {T_q: 32, NP: 256, PS: 16, W: 256, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p16}
-  - {T_q: 64, NP: 128, PS: 16, W: 128, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 64)", cache_lens: "repeat(2048, 64)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-b64-p16}
-  - {T_q: 8, NP: 256, PS: 16, W: 256, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p16}
+  - {T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64}
+  - {T_q: 8, NP: 4096, PS: 64, W: 512, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(32768, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-32k-p64}
+  - {T_q: 64, NP: 2048, PS: 64, W: 32, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 64)", cache_lens: "repeat(2048, 64)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-b64-p64}
+  - {T_q: 8, NP: 512, PS: 64, W: 64, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p64}
+  - {T_q: 32, NP: 512, PS: 256, W: 16, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p256}
+  - {T_q: 8, NP: 128, PS: 256, W: 16, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p256}
+  - {T_q: 4, NP: 64, PS: 256, W: 16, H: 128, H_kv: 8, D: 128, q_lens: "repeat(1, 4)", cache_lens: "repeat(4096, 4)", dtype_cases: [{T: float16, KV: float16}], label: llama-405b-p256}
+  - {T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", softcap: 50.0, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64-softcap}
+  - {T_q: 32, NP: 8192, PS: 16, W: 256, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p16}
+  - {T_q: 64, NP: 8192, PS: 16, W: 128, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 64)", cache_lens: "repeat(2048, 64)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-b64-p16}
+  - {T_q: 8, NP: 2048, PS: 16, W: 256, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-70b-p16}
+  # The cache end falls inside a key tile; the rows of that tile past it are stale.
+  - {T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4001, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64-cut}
+  - {T_q: 32, NP: 512, PS: 256, W: 16, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4001, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p256-cut}
   - {T_q: 1054, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1024, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-serving-step}
-  - {T_q: 32, NP: 256, PS: 64, W: 256, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(16384, 32)", window_size_left: 4096, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-sliding-window}
+  - {T_q: 32, NP: 8192, PS: 64, W: 256, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(16384, 32)", window_size_left: 4096, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-sliding-window}
   - {T_q: 263, NP: 64, PS: 64, W: 8, H: 32, H_kv: 8, D: 128, q_lens: [256, 1, 1, 1, 1, 1, 1, 1], cache_lens: "repeat(512, 8)", is_causal: false, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-noncausal}
   - {T_q: 526, NP: 512, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(2048, 16)", window_size_left: 128, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-120b-window}
   # Irregular: a page no key tile divides, a cache length no page fills, a ragged packing.
