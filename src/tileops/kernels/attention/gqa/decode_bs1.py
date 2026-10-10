@@ -1,8 +1,8 @@
 """Warp-specialized batch=1 GQA decode kernel (SM90), context-split.
 
-``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent.  Full-dimensional
-RoPE always uses the context-only warp-specialized split; plain and partial-RoPE calls
-retain the generic single-kernel path below their measured or established crossovers.
+``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent.  RoPE calls always
+use the context-only warp-specialized split; plain calls retain the generic single-kernel
+path below their measured crossover.
 The split path has a TMA producer feeding a four-warp WGMMA consumer, exp2-domain online
 softmax, and FP32 partial reduction through a combine kernel.  Full-dimensional RoPE
 expands the producer into a warpgroup so lookup-table loads and K rotation overlap the
@@ -19,7 +19,6 @@ import torch
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
-    gqa_decode_no_split_kernel,
     gqa_decode_no_split_run,
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
@@ -125,17 +124,20 @@ def _make_dense_decode_split(
         for k in T.serial(loop_range):
             T.mbarrier_wait_parity(ready[k % ring_depth], (k // ring_depth) % ring_depth)
             if fuse_rope and rotary_dim != dim:
+                # Every row is rotated: TileLang places a consumer barrier inside this
+                # loop, so a row guard would leave the tail tile's barrier short of
+                # threads. Rows past the end are masked from the scores, and TileLang
+                # reads zero for their positions past the tables.
                 for i, freq in T.Parallel(block_n, rotary_dim // 2):
-                    if i < this_len - k * block_n:
-                        d0 = freq if rope_layout == "neox" else 2 * freq
-                        d1 = freq + rotary_dim // 2 if rope_layout == "neox" else 2 * freq + 1
-                        position = base + k * block_n + i
-                        x0 = Ks[k % ring_depth, i, d0]
-                        x1 = Ks[k % ring_depth, i, d1]
-                        cos = rope_cos[position, freq]
-                        sin = rope_sin[position, freq]
-                        Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
-                        Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
+                    d0 = freq if rope_layout == "neox" else 2 * freq
+                    d1 = freq + rotary_dim // 2 if rope_layout == "neox" else 2 * freq + 1
+                    position = base + k * block_n + i
+                    x0 = Ks[k % ring_depth, i, d0]
+                    x1 = Ks[k % ring_depth, i, d1]
+                    cos = rope_cos[position, freq]
+                    sin = rope_sin[position, freq]
+                    Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
+                    Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
                 T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
             T.wgmma_gemm(
                 Qs,
@@ -465,14 +467,13 @@ def gqa_decode_bs1_ctx_kernel(
 class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     """SM90 warp-specialized batch=1 GQA decode kernel with a context-length switch.
 
-    ``forward`` always uses the context pipeline for full-dimensional RoPE.  Plain calls
-    below 640 and partial-RoPE calls below 1024 retain the generic single-kernel path.
+    ``forward`` always uses the context pipeline for RoPE calls. Plain calls below 640
+    retain the generic single-kernel path.
     """
 
     supported_archs: list[int] = [90]
     # Threads of the full-dimensional RoPE pipeline, whose producer is a warpgroup.
     _ROPE_PIPELINE_THREADS = 256
-    _MIN_CTX = 1024
     _PLAIN_CTX_MIN = 640
     _TARGET_PARTIAL_CTAS = 128
     _CTX_SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32, 64)
@@ -597,25 +598,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         real_seqlen_kv = k.shape[1]
         c = self.config
         full_rope_pipeline = self.fuse_rope and self.rotary_dim == self.dim
-        use_ctx_pipeline = full_rope_pipeline or real_seqlen_kv >= (
-            self._MIN_CTX if self.fuse_rope else self._PLAIN_CTX_MIN
-        )
-        if not use_ctx_pipeline:
-            if self.fuse_rope:
-                output = gqa_decode_no_split_kernel(
-                    self.batch,
-                    self.heads,
-                    self.groups,
-                    self.dim,
-                    self.sm_scale,
-                    self.softcap,
-                    self.dtype_str,
-                    True,
-                    self.max_position,
-                    self.rotary_dim,
-                    self.rope_layout,
-                )(64, 128, 2, 128)(Q, K, V, rope_cos, rope_sin)
-                return output.unsqueeze(1)
+        if not self.fuse_rope and real_seqlen_kv < self._PLAIN_CTX_MIN:
             output = gqa_decode_no_split_run(
                 self.batch,
                 self.heads,
