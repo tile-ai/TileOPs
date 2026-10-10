@@ -914,7 +914,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         best_lat = float("inf")
         best_cfg = None
 
-        for cfg in self.autotune_configs:
+        for cfg in self.tuning_candidates(self.autotune_configs):
             try:
                 self._build_kernels(cfg)
 

@@ -571,8 +571,11 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
 
+        default = self.default_config
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
-        parallel_configs = [{"threads": t} for t in thread_options]
+        parallel_configs = self.tuning_candidates(
+            [{"threads": t} for t in thread_options], {"threads": default["parallel_threads"]}
+        )
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
         parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
         _parallel_at = dict(configs=parallel_configs, warmup=warmup, rep=rep)
@@ -589,17 +592,20 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         parallel_best = tuned_parallel.config
         print(f"  Best: {parallel_best}")
 
-        recurrence_configs = [
-            {"num_stages": ns, "threads": t}
-            for ns in self._recurrence_stage_options(
-                get_shared_memory_optin(self.device_index),
-                self.chunk_size,
-                self.dim_k,
-                self.dim_v,
-                getattr(torch, self.dtype_str).itemsize,
-            )
-            for t in thread_options
-        ]
+        recurrence_configs = self.tuning_candidates(
+            [
+                {"num_stages": ns, "threads": t}
+                for ns in self._recurrence_stage_options(
+                    get_shared_memory_optin(self.device_index),
+                    self.chunk_size,
+                    self.dim_k,
+                    self.dim_v,
+                    getattr(torch, self.dtype_str).itemsize,
+                )
+                for t in thread_options
+            ],
+            {"num_stages": default["num_stages"], "threads": default["recurrence_threads"]},
+        )
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
         _recurrence_at = dict(configs=recurrence_configs, warmup=warmup, rep=rep)
@@ -616,7 +622,9 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         recurrence_best = tuned_recurrence.config
         print(f"  Best: {recurrence_best}")
 
-        wu_bwd_configs = [{"threads": t} for t in [128, 256]]
+        wu_bwd_configs = self.tuning_candidates(
+            [{"threads": t} for t in [128, 256]], {"threads": default["threads"]}
+        )
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
         wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
         _wu_bwd_at = dict(configs=wu_bwd_configs, warmup=warmup, rep=rep)

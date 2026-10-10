@@ -531,6 +531,8 @@ def tune_by_forward(
     """
     call = kernel.forward if forward is None else forward
     configs = kernel.autotune_configs
+    if configs:
+        configs = kernel.tuning_candidates(configs)
     if not configs:
         kernel.config = kernel.default_config
         return
@@ -699,6 +701,7 @@ class RowTiledAutotuneMixin:
         if not configs:
             self.config = default
             return
+        configs = self.tuning_candidates(configs, default)
 
         by_tile_n: dict[int, list[dict]] = {}
         for cfg in configs:
