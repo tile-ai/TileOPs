@@ -23,20 +23,17 @@ def _check(*args, **kwargs):
     test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_kda_prefill_matches_reference(dtype: torch.dtype) -> None:
     torch.manual_seed(42)
     _check(1, 256, 4, 128, dtype)
 
 
-@pytest.mark.sm90
 def test_kda_prefill_packs_ragged_sequences() -> None:
     torch.manual_seed(42)
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 70, 130))
 
 
-@pytest.mark.sm90
 def test_kda_prefill_packs_a_batch_holding_an_empty_sequence() -> None:
     """A sequence with no token owns no chunk, and the ones around it keep their own.
 
@@ -46,7 +43,6 @@ def test_kda_prefill_packs_a_batch_holding_an_empty_sequence() -> None:
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 0, 70, 130))
 
 
-@pytest.mark.sm90
 def test_kda_prefill_packs_sequences_that_fill_their_chunks() -> None:
     """The launch bound is loosest when every sequence ends on a chunk boundary.
 
@@ -57,7 +53,6 @@ def test_kda_prefill_packs_sequences_that_fill_their_chunks() -> None:
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(64,) * 4)
 
 
-@pytest.mark.sm90
 def test_kda_prefill_reads_offsets_a_freed_buffer_left_behind() -> None:
     """Boundaries come from the offsets this call was handed, not the last ones.
 
@@ -70,13 +65,11 @@ def test_kda_prefill_reads_offsets_a_freed_buffer_left_behind() -> None:
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(50, 120, 130))
 
 
-@pytest.mark.sm90
 def test_kda_prefill_serves_more_value_heads_than_query_heads() -> None:
     torch.manual_seed(42)
     _check(1, 256, 2, 128, torch.bfloat16, value_heads=4)
 
 
-@pytest.mark.sm90
 def test_kda_prefill_serves_a_64_wide_state() -> None:
     torch.manual_seed(42)
     _check(1, 256, 4, 64, torch.bfloat16)
@@ -93,7 +86,6 @@ def test_kda_decode_runs_from_a_zero_state() -> None:
     _check(4, 1, 4, 128, torch.bfloat16, has_initial_state=False)
 
 
-@pytest.mark.sm90
 def test_kda_prefill_continues_across_calls() -> None:
     """The state a prefill ends on is the one the next call starts from."""
     torch.manual_seed(42)
