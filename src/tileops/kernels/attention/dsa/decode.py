@@ -1266,7 +1266,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
         # TileLang invokes supply_prog with the candidate JIT params; DSADecodeKernel.supply_prog
         # generates inputs from instance shape attributes and takes none, so discard them.
         autotune_kwargs = dict(
-            configs=self.autotune_configs,
+            configs=self.tuning_candidates(self.autotune_configs),
             warmup=warmup,
             rep=rep,
             supply_prog=lambda *args, **kwargs: self.supply_prog(),

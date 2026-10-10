@@ -463,6 +463,12 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             "scan_threads": 128,
         }
 
+    @property
+    def autotune_configs(self) -> None:
+        # The inherited search space names the chunked kernel's launch keys, none of which
+        # this schedule builds from, so every candidate would fail to build.
+        return None
+
     def _build_kernels(self, config: dict) -> None:
         partition_chunks = config["partition_chunks"]
         gate_dtype = "float16"

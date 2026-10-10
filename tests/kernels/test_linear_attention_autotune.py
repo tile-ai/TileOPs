@@ -43,6 +43,8 @@ class _StubKernel:
         self.chunk_size, self.dim_k, self.dim_v = chunk_size, 64, dim_v
         self.dtype_str = "bfloat16"
         self.sweeps: list[tuple[str, dict, tuple[dict, ...]]] = []
+        #: ``(sub-kernel name, block_v) -> seed_config`` each sweep was handed.
+        self.seeds: dict[tuple[str, int], dict] = {}
         #: ``(sub-kernel name, block_v) -> (config, latency)`` the stub reports.
         self.results: dict[tuple[str, int], tuple[dict | None, float | None]] = {}
 
@@ -60,10 +62,10 @@ class _StubKernel:
         }
 
     def tune_jit_kernel(self, jit_kernel, configs, warmup, rep, seed_config, supply_prog):
-        assert seed_config is configs[0], "the sweep must seed from its first candidate"
         assert supply_prog is None, "a sub-kernel sweep must not inherit the kernel's supplier"
         self.sweeps.append((jit_kernel.name, jit_kernel.build_kwargs, tuple(configs)))
         key = (jit_kernel.name, jit_kernel.build_kwargs.get("block_v", 0))
+        self.seeds[key] = seed_config
         config, latency = self.results.get(key, (configs[-1], 1.0))
         return _StubTuned(config, latency)
 
@@ -105,6 +107,25 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
         "h_threads": 256,
         "h_block_v": 0,
         "o_threads": 64,
+    }
+
+
+def test_each_sweep_is_seeded_with_its_sub_kernel_untuned_launch() -> None:
+    """``tune_jit_kernel`` times its seed among the candidates.
+
+    So the seed is what keeps each sub-kernel's untuned launch in its sweep; a width
+    the untuned kernel does not build seeds from its first candidate.
+    """
+    kernel = _StubKernel(chunk_size=64, dim_v=64)
+
+    _run(kernel)
+
+    assert kernel.default_config["h_block_v"] == 32
+    assert kernel.seeds == {
+        ("fused", 0): {"num_stages": 2, "threads": 256},
+        ("h", 0): dict(la.PIPELINE_CONFIGS[0]),
+        ("h", 32): {"num_stages": 2, "threads": 256},
+        ("o", 0): {"threads": 256},
     }
 
 
@@ -406,3 +427,23 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
+
+
+def test_gla_chunked_default_names_the_keys_its_search_space_tunes() -> None:
+    """Tuning times the untuned config, which it can only do under the tuned keys."""
+    from tileops.kernels.linear_attention.gla.chunk_fwd import GLAChunkFwdKernel
+
+    kernel = object.__new__(GLAChunkFwdKernel)
+    kernel.dim_v = 128
+    default = GLAChunkFwdKernel._default_config_for(227 * 1024, 64, 128, 128, 2)
+
+    assert {tuple(sorted(config)) for config in kernel.autotune_configs} == {tuple(sorted(default))}
+
+
+def test_partitioned_gla_offers_no_search_space_it_cannot_build() -> None:
+    """Its schedule reads none of the chunked kernel's launch keys it would inherit."""
+    from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
+        GLADensePrefillPartitionedKernel,
+    )
+
+    assert object.__new__(GLADensePrefillPartitionedKernel).autotune_configs is None

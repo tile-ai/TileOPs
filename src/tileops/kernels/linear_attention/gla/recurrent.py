@@ -234,31 +234,32 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
         print(f"Start autotuning {self.__class__.__name__}...")
-        for k_tile in [16, 32, 64]:
-            if DK % k_tile != 0:
+        candidates = self.tuning_candidates(
+            [
+                {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
+                for k_tile in (16, 32, 64)
+                if DK % k_tile == 0
+                for num_stages in (1, 2, 3)
+                for threads in (128, 256)
+            ]
+        )
+        for config in candidates:
+            try:
+                fn = _gla_decode_tl(
+                    B,
+                    H,
+                    DK,
+                    DV,
+                    config["k_tile"],
+                    self.dtype_str,
+                    self.scale,
+                )(config["num_stages"], config["threads"])
+                t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
+                if t < best_time:
+                    best_time = t
+                    best_config = config
+            except Exception:
                 continue
-            for num_stages in [1, 2, 3]:
-                for threads in [128, 256]:
-                    try:
-                        fn = _gla_decode_tl(
-                            B,
-                            H,
-                            DK,
-                            DV,
-                            k_tile,
-                            self.dtype_str,
-                            self.scale,
-                        )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
-                        if t < best_time:
-                            best_time = t
-                            best_config = {
-                                "num_stages": num_stages,
-                                "threads": threads,
-                                "k_tile": k_tile,
-                            }
-                    except Exception:
-                        continue
 
         self.config = best_config
         print(f"Best config: {self.config}")
@@ -452,30 +453,31 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
 
         print(f"Start autotuning {self.__class__.__name__}...")
-        for k_tile in [16, 32, 64]:
-            if DK % k_tile != 0:
+        candidates = self.tuning_candidates(
+            [
+                {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
+                for k_tile in (16, 32, 64)
+                if DK % k_tile == 0
+                for num_stages in (1, 2, 3)
+                for threads in (128, 256)
+            ]
+        )
+        for config in candidates:
+            try:
+                fn = _gla_decode_fp32_tl(
+                    B,
+                    H,
+                    DK,
+                    DV,
+                    config["k_tile"],
+                    self.scale,
+                )(config["num_stages"], config["threads"])
+                t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
+                if t < best_time:
+                    best_time = t
+                    best_config = config
+            except Exception:
                 continue
-            for num_stages in [1, 2, 3]:
-                for threads in [128, 256]:
-                    try:
-                        fn = _gla_decode_fp32_tl(
-                            B,
-                            H,
-                            DK,
-                            DV,
-                            k_tile,
-                            self.scale,
-                        )(num_stages, threads)
-                        t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
-                        if t < best_time:
-                            best_time = t
-                            best_config = {
-                                "num_stages": num_stages,
-                                "threads": threads,
-                                "k_tile": k_tile,
-                            }
-                    except Exception:
-                        continue
 
         self.config = best_config
         print(f"Best config: {self.config}")

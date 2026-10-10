@@ -206,8 +206,13 @@ def tune_delta_rule_fwd(
         configs: Sequence[Dict[str, int]],
         warmup: int,
         rep: int,
+        untuned: Optional[Dict[str, int]] = None,
     ) -> Tuple[Optional[Dict[str, int]], Optional[float]]:
         """Sweep one sub-kernel and return its ``(winning config, latency)``.
+
+        *untuned* is the sub-kernel's launch config in the untuned kernel, which
+        the sweep times among *configs*; ``None`` where the untuned kernel does not
+        build this sub-kernel.
 
         Either element is ``None`` when the seeded parameters read as already
         tuned: the autotuner then skips the search and JIT-compiles the kernel
@@ -227,7 +232,7 @@ def tune_delta_rule_fwd(
             candidates,
             warmup=warmup,
             rep=rep,
-            seed_config=candidates[0],
+            seed_config=candidates[0] if untuned is None else untuned,
             supply_prog=None,
         )
         config = getattr(tuned, "config", None)
@@ -282,6 +287,7 @@ def tune_delta_rule_fwd(
         PIPELINE_CONFIGS,
         warmup,
         rep,
+        {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
     )
 
     h_config: Optional[Dict[str, int]] = None
@@ -292,11 +298,18 @@ def tune_delta_rule_fwd(
     compiled: List[int] = []
     failures: List[Tuple[str, Exception]] = []
     best_latency = float("inf")
+    h_untuned = {"num_stages": default["h_num_stages"], "threads": default["h_threads"]}
     for block_v in candidates:
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
         try:
             config, latency = _tune_sub_kernel(
-                kernel, label, h_builder(*shape, block_v=block_v), PIPELINE_CONFIGS, warmup, rep
+                kernel,
+                label,
+                h_builder(*shape, block_v=block_v),
+                PIPELINE_CONFIGS,
+                warmup,
+                rep,
+                h_untuned if block_v == default["h_block_v"] else None,
             )
         except Exception as exc:  # one width must not sink the rest
             # The builder only wraps the kernel; the compile is inside the
@@ -327,7 +340,13 @@ def tune_delta_rule_fwd(
         h_block_v = preferred if preferred in compiled else compiled[0]
 
     o_config, _ = _tune_sub_kernel(
-        kernel, "output_o", o_builder(*shape), OUTPUT_CONFIGS, warmup, rep
+        kernel,
+        "output_o",
+        o_builder(*shape),
+        OUTPUT_CONFIGS,
+        warmup,
+        rep,
+        {"threads": default["o_threads"]},
     )
 
     config = {

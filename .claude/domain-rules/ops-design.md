@@ -50,4 +50,6 @@
 
 - A candidate config key MUST name a parameter of the builder being tuned; a parameter spelled `<key>_arg` MUST have `<key>` in `_AUTOTUNE_PARAM_ALIASES`. **Why:** TileLang binds candidates by parameter name and raises on a key that names none.
 
+- Time the candidates `Kernel.tuning_candidates(configs, untuned)` returns in every tuning loop, with *untuned* the launch config the untuned kernel runs; `tune_jit_kernel` does so with its `seed_config`. **Why:** tuning keeps the fastest config it times, so a search space without the untuned config can leave a tuned kernel slower than an untuned one.
+
 - A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True` with the reason. `tune_jit_kernel` refuses the unanswered case. **Why:** TileLang generates an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.

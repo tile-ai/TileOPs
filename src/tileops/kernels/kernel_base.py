@@ -1,6 +1,6 @@
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
+from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Sequence, Union
 
 import torch
 
@@ -351,6 +351,46 @@ class Kernel(ABC):
             if name in parameters and key not in parameters
         }
 
+    def tuning_candidates(
+        self, configs: Sequence[Dict[str, Any]], untuned: Optional[Dict[str, Any]] = None
+    ) -> list[dict]:
+        """Return *configs* with the untuned config added when none of them is it.
+
+        Tuning keeps the fastest config it times, so a search space that leaves out the
+        config a kernel runs untuned can make the tuned kernel slower than the untuned
+        one. Every tuning loop times what this returns.
+
+        Args:
+            configs: The candidates. Each names the same keys.
+            untuned: The config the kernel runs untuned, cut to the candidates' keys;
+                ``default_config`` when omitted.
+
+        Returns:
+            A new list: *configs*, then the untuned config if it is not among them.
+
+        Raises:
+            ValueError: The candidates name different keys, or *untuned* lacks one.
+        """
+        candidates = [dict(config) for config in configs]
+        if not candidates:
+            return candidates
+        keys = list(candidates[0])
+        if any(set(config) != set(keys) for config in candidates):
+            raise ValueError(
+                f"{type(self).__name__} tunes candidates naming different keys: "
+                f"{sorted({tuple(sorted(config)) for config in candidates})}"
+            )
+        untuned = self.default_config if untuned is None else untuned
+        missing = [key for key in keys if key not in untuned]
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__}'s untuned config {untuned} lacks the tuned keys {missing}"
+            )
+        default = {key: untuned[key] for key in keys}
+        if default not in candidates:
+            candidates.append(default)
+        return candidates
+
     def tune_jit_kernel(
         self,
         jit_kernel: Callable,
@@ -368,11 +408,12 @@ class Kernel(ABC):
 
         Args:
             jit_kernel: The ``@tilelang.jit``-decorated builder to tune.
-            configs: Candidate configs handed to TileLang's autotuner.
+            configs: Candidate configs handed to TileLang's autotuner. The seed
+                config joins them when none of them is it.
             warmup: Warmup iterations per candidate.
             rep: Timed iterations per candidate.
-            seed_config: Config supplying the seeded JIT parameter values;
-                ``default_config`` when omitted.
+            seed_config: The config *jit_kernel* runs untuned, which supplies the
+                seeded JIT parameter values; ``default_config`` when omitted.
             supply_prog: Input supplier for the candidates. Defaults to
                 ``autotune_supply_prog``, which is written against
                 ``self.kernel``; a sub-kernel taking different inputs must pass
@@ -387,6 +428,7 @@ class Kernel(ABC):
         # from the cache key; without this, the seed values read as "already
         # tuned" and the benchmarking sweep is skipped (returning config=None).
         seeds = self._autotune_initial_kwargs(jit_kernel, seed_config)
+        configs = self.tuning_candidates(configs, seed_config)
         rename = self._param_name_aliases(jit_kernel)
         if rename:
             configs = [{rename.get(k, k): v for k, v in cfg.items()} for cfg in configs]

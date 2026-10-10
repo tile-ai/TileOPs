@@ -131,6 +131,58 @@ def test_autotune_initial_kwargs_support_common_jit_param_aliases():
     assert captured == {"threads_arg": 128, "npt_arg": 4}
 
 
+class _KernelMissingItsDefault(_KernelWithRequiredTunables):
+    """A kernel whose search space leaves out the config it runs untuned."""
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [{"block_m": 64, "threads": 128}]
+
+
+def test_tuning_times_the_untuned_config_the_search_space_leaves_out(monkeypatch):
+    """Tuning keeps the fastest config it times, so it must time the untuned one."""
+    calls: dict[str, object] = {}
+
+    def fake_autotune(**autotune_kwargs):
+        calls["configs"] = autotune_kwargs["configs"]
+        return lambda kernel: lambda **kwargs: _TunedKernel()
+
+    monkeypatch.setattr(tilelang.autotuner, "autotune", fake_autotune)
+
+    _KernelMissingItsDefault().autotune()
+
+    assert calls["configs"] == [
+        {"block_m": 64, "threads": 128},
+        {"block_m": 128, "threads": 256},
+    ]
+
+
+def test_a_search_space_holding_the_untuned_config_is_timed_as_declared():
+    kernel = _KernelWithRequiredTunables()
+
+    assert kernel.tuning_candidates(kernel.autotune_configs) == kernel.autotune_configs
+
+
+@pytest.mark.parametrize(
+    ("configs", "untuned", "match"),
+    [
+        pytest.param(
+            [{"block_m": 64}], {"threads": 128}, "lacks the tuned keys", id="untuned-lacks-a-key"
+        ),
+        pytest.param(
+            [{"block_m": 64}, {"threads": 128}],
+            {"block_m": 128, "threads": 256},
+            "different keys",
+            id="candidates-disagree",
+        ),
+    ],
+)
+def test_tuning_refuses_a_search_space_it_cannot_add_the_untuned_config_to(configs, untuned, match):
+    """Skipping the untuned config there would drop the guarantee without a word."""
+    with pytest.raises(ValueError, match=match):
+        _KernelWithRequiredTunables().tuning_candidates(configs, untuned)
+
+
 class _FakeIntJit(_FakeJit):
     out_idx = [-1]
 
