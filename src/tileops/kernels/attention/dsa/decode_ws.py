@@ -50,6 +50,7 @@ def _dsa_decode_ws_kernel(
     block_k = 64  # selected keys per block; blocks are taken in pairs
     half = 256  # value dims each consumer accumulates
     atom = 64  # columns one 128-byte swizzle atom holds
+    tail_atoms = 1  # the key tail, when present, is one atom
     vec = 8  # elements one 16-byte cp.async moves
     lanes = atom // vec  # producer lanes per tile row
     warpgroup = 128
@@ -108,7 +109,7 @@ def _dsa_decode_ws_kernel(
             )
             if with_tail and has_tail:
                 copy_cols(
-                    dst_tail, row, KV, b, src_rows[blk, r], g, dim, tail_dim // atom, lane,
+                    dst_tail, row, KV, b, src_rows[blk, r], g, dim, tail_atoms, lane,
                     live_rows[blk, r],
                 )  # fmt: skip
         T.cp_async_barrier_noinc(k_ready[part])
@@ -127,7 +128,7 @@ def _dsa_decode_ws_kernel(
             copy_cols(QL, row, Q, b, s, h0 + row, 0, half // atom, lane, True)
             copy_cols(QR, row, Q, b, s, h0 + row, half, half // atom, lane, True)
             if has_tail:
-                copy_cols(QT, row, Q, b, s, h0 + row, dim, tail_dim // atom, lane, True)
+                copy_cols(QT, row, Q, b, s, h0 + row, dim, tail_atoms, lane, True)
         T.cp_async_barrier_noinc(q_full[0])
 
         src_rows = T.alloc_local([2, block_k // rows_per_pass], "int32")
