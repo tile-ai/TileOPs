@@ -848,17 +848,13 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     autotune_configs = None
 
     @classmethod
-    def applies(cls, call: GemmW4A16Call) -> bool:
-        """Every call with 128-wide groups that some whole-K tile covers.
+    def refusal(cls, call: GemmW4A16Call) -> Optional[str]:
+        """Serve every call with 128-wide groups that some whole-K tile covers.
 
         `GemmW4A16FwdOp` declares the repacked weight order, so a call that
         reaches this kernel is already in it, and the tile is chosen from the
         token count inside :attr:`default_config` rather than by dispatch.
         """
-        return cls._region_refusal(call) is None
-
-    @classmethod
-    def refusal(cls, call: GemmW4A16Call) -> Optional[str]:
         return cls._region_refusal(call)
 
     @staticmethod

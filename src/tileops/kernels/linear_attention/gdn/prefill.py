@@ -37,10 +37,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GDNCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GDNCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 

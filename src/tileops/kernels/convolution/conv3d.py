@@ -611,11 +611,9 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv3dCall) -> bool:
-        return call.groups == 1
-
-    @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -772,11 +770,9 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv3dCall) -> bool:
-        return call.groups > 1
-
-    @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
         operands = (
             call.n * call.c_in * call.d * call.h * call.w,
             call.c_out * call.c_in_g * call.kernel_volume,
@@ -997,23 +993,20 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
     _OUT_PAD_COLS = 2
 
     @classmethod
-    def applies(cls, call: Conv3dCall) -> bool:
-        """Dense 16-bit calls whose output amortizes the two layout transforms.
-
-        The staging is a fixed cost paid before any math, so pointwise and small-output
-        calls stay on the dense implementation even though this one computes them.
-        """
-        return (
-            call.groups == 1
-            and call.dtype in {torch.float16, torch.bfloat16}
-            and call.c_in % 32 == 0
-            and call.c_out >= 64
-            and call.output_spatial >= 1024
-            and call.kernel_volume > 1
-        )
-
-    @classmethod
     def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        """Dense 16-bit calls whose output amortizes the two layout transforms."""
+        # The staging is a fixed cost paid before any math, so pointwise and small-output
+        # calls stay on the dense implementation even though this one computes them.
+        if call.groups != 1:
+            return "serves ungrouped convolution"
+        if call.dtype not in {torch.float16, torch.bfloat16}:
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.c_in % 32 != 0 or call.c_out < 64:
+            return "requires input channels a multiple of 32 and at least 64 output channels"
+        if call.output_spatial < 1024 or call.kernel_volume <= 1:
+            return (
+                "an output this small or a pointwise kernel does not amortize the layout transforms"
+            )
         # The GEMM tiles the batch's output positions (output_spatial) along y; the two
         # layout copies run one image, then one output channel, a block row along z.
         m_tiles = -(-call.output_spatial // min(cls.block_m_candidates))

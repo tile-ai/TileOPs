@@ -479,15 +479,20 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     _MAX_BATCH: int = 448
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return (
-            call.dtype in ATTENTION_DTYPES
-            and call.dim in cls._DIMS
-            and not call.is_fp8
-            and not call.uses_sliding_window
-            and not call.empty_kv
-            and call.batch <= cls._MAX_BATCH
-        )
+    def refusal(cls, call) -> "str | None":
+        if call.dtype not in ATTENTION_DTYPES:
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.dim not in cls._DIMS:
+            return f"requires head dim in {sorted(cls._DIMS)}, got {call.dim}"
+        if call.is_fp8:
+            return "does not serve FP8"
+        if call.uses_sliding_window:
+            return "does not serve a sliding window"
+        if call.empty_kv:
+            return "does not serve an empty KV sequence"
+        if call.batch > cls._MAX_BATCH:
+            return f"serves at most {cls._MAX_BATCH} sequences, got {call.batch}"
+        return super().refusal(call)
 
     def _make_kernel(self):
         return _gqa_prefill_varlen_ws_kernel(

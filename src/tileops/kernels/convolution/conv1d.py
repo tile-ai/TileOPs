@@ -644,18 +644,16 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return (
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if not (
             call.groups == 1
             and call.kernel_l == 1
             and call.stride_l == 1
             and call.pad_left == 0
             and call.pad_right == 0
             and call.dilation_l == 1
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        ):
+            return "serves an ungrouped pointwise convolution: kernel 1, stride 1, no padding or dilation"
         return (
             super().refusal(call)
             or operand_refusal(call.n * call.c_out * call.out_l)
@@ -753,11 +751,9 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     _builder = staticmethod(_conv1d_kernel)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups == 1
-
-    @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -889,11 +885,9 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     _builder = staticmethod(_conv1d_unit_stride_kernel)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups == 1 and call.stride_l == 1 and call.kernel_l > 1 and call.c_in >= 16
-
-    @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.stride_l != 1 or call.kernel_l <= 1 or call.c_in < 16:
+            return "serves unit stride, a kernel wider than 1 and at least 16 input channels"
         return super().refusal(call) or operand_refusal(call.n * call.c_out * call.out_l)
 
     @property
@@ -944,16 +938,14 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
     block_m_candidates: tuple[int, ...] = (16, 32, 64, 128)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups > 1
-
-    @classmethod
     def _grid_z(cls, call: Conv1dCall) -> int:
         """Blocks the program launches along grid z: one per image and group."""
         return call.n * call.groups
 
     @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
@@ -1093,8 +1085,10 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
     preferred_over = frozenset({"group_conv1d"})
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+    def refusal(cls, call) -> "str | None":
+        if call.c_in_g != 1 or call.c_out_g != 1:
+            return "serves one input and one output channel per group"
+        return super().refusal(call)
 
     @classmethod
     def _grid_z(cls, call: Conv1dCall) -> int:

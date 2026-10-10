@@ -438,8 +438,10 @@ class LogicalReduceEdgeTwoPassKernel(Kernel, LogicalReduceFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: LogicalReduceCall) -> bool:
-        return call.edge_kept > 0
+    def refusal(cls, call: LogicalReduceCall) -> "str | None":
+        if call.edge_kept <= 0:
+            return "serves kept axes between a reduced prefix and suffix"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
@@ -505,10 +507,14 @@ class CountNonzeroEdgeTwoPassKernel(LogicalReduceEdgeTwoPassKernel, CountNonzero
     """The two-pass edge-axis count: partial counts cross between the passes in fp32."""
 
     @classmethod
-    def applies(cls, call: LogicalReduceCall) -> bool:
-        # fp32 is exact up to FP32_EXACT_INT_LIMIT.
+    def refusal(cls, call: LogicalReduceCall) -> "str | None":
         kept = call.edge_kept
-        return kept > 0 and prod(call.shape) // kept <= FP32_EXACT_INT_LIMIT
+        if kept <= 0:
+            return "serves kept axes between a reduced prefix and suffix"
+        # fp32 is exact up to FP32_EXACT_INT_LIMIT.
+        if prod(call.shape) // kept > FP32_EXACT_INT_LIMIT:
+            return f"counts in float32, exact up to {FP32_EXACT_INT_LIMIT}"
+        return super().refusal(call)
 
 
 class LogicalReduceEdgeFusedKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInterface):
@@ -536,9 +542,14 @@ class LogicalReduceEdgeFusedKernel(Kernel, LogicalReduceFwdInterface, CountNonze
     _FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
 
     @classmethod
-    def applies(cls, call: LogicalReduceCall) -> bool:
+    def refusal(cls, call: LogicalReduceCall) -> "str | None":
         kept = call.edge_kept
-        return kept > 0 and kept >= cls._FUSED_MIN_KEPT.get(call.calibration, math.inf)
+        if kept <= 0:
+            return "serves kept axes between a reduced prefix and suffix"
+        least = cls._FUSED_MIN_KEPT.get(call.calibration, math.inf)
+        if kept < least:
+            return f"fuses at least {least} kept positions on this board, got {kept}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:

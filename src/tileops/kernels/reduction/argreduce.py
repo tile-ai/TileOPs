@@ -661,11 +661,13 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
     """
 
     @classmethod
-    def applies(cls, call: ArgreduceCall) -> bool:
+    def refusal(cls, call: ArgreduceCall) -> "str | None":
         # A row shorter than 32768 is a handful of passes, so splitting cannot save more
         # than the second pass costs; past 512 rows the blocks already queue, and
         # splitting only adds the final pass.
-        return call.n >= 32768 and call.m < 512
+        if call.n < 32768 or call.m >= 512:
+            return f"splits rows of at least 32768 in fewer than 512 rows, got {call.m} x {call.n}"
+        return super().refusal(call)
 
     def _program(self, call: ArgreduceCall) -> object:
         return _argreduce_multicta_partial_kernel(call.m, call.n, call.op_kind, self.dtype_str)
@@ -702,10 +704,12 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
     """
 
     @classmethod
-    def applies(cls, call: ArgreduceCall) -> bool:
+    def refusal(cls, call: ArgreduceCall) -> "str | None":
         # A thread walks the whole axis, which pays only while the walk is short; it loses
         # from 32 positions up.
-        return call.inner_stride > 1 and call.n <= 16
+        if call.inner_stride <= 1 or call.n > 16:
+            return "serves a strided axis of at most 16 positions"
+        return super().refusal(call)
 
     def _program(self, call: ArgreduceCall) -> object:
         return _argreduce_output_kernel(

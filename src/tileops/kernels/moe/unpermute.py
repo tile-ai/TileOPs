@@ -104,12 +104,14 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     _LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
-    def applies(cls, call: PostPermuteCall) -> bool:
-        return (
-            call.layout_key in cls._LAYOUT_KEYS
-            and call.input_dtype in (torch.bfloat16, torch.float16)
-            and call.output_dtype == call.input_dtype
-        )
+    def refusal(cls, call: PostPermuteCall) -> "str | None":
+        if call.layout_key not in cls._LAYOUT_KEYS:
+            return f"serves layouts {sorted(cls._LAYOUT_KEYS)}, not {call.layout_key}"
+        if call.input_dtype not in (torch.bfloat16, torch.float16):
+            return f"requires float16 or bfloat16, got {call.input_dtype}"
+        if call.output_dtype != call.input_dtype:
+            return f"writes {call.input_dtype}, not {call.output_dtype}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: PostPermuteCall) -> Entry:

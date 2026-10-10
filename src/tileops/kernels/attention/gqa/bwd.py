@@ -492,10 +492,6 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     )
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Require complete WGMMA contractions and shared memory for the narrowest default."""
         if call.dim % 16 != 0:

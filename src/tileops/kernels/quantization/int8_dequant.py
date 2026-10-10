@@ -378,8 +378,10 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.m * call.k < cls._SMALL_N
+    def refusal(cls, call: DequantizeCall) -> "str | None":
+        if call.m * call.k >= cls._SMALL_N:
+            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
+        return super().refusal(call)
 
 
 @functools.lru_cache(maxsize=32)
@@ -672,5 +674,7 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.m * call.k < cls._SMALL_N
+    def refusal(cls, call: DequantizeCall) -> "str | None":
+        if call.m * call.k >= cls._SMALL_N:
+            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
+        return super().refusal(call)

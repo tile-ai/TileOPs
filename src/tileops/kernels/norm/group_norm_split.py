@@ -221,16 +221,22 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
     _STAGED_TWO_BYTE_ROW = 16384
 
     @classmethod
-    def applies(cls, call: GroupNormCall) -> bool:
+    def refusal(cls, call: GroupNormCall) -> "str | None":
         d = call.c // call.num_groups * call.spatial
         d_padded = row_padding(d, call.dtype.itemsize)
         if GroupNormKernel._holds_row_in_registers(d, d_padded):
-            return d_padded > cls._REGISTER_ROW
-        if call.dtype.itemsize == 2 and d_padded > cls._STAGED_TWO_BYTE_ROW:
-            return True
-        # A staged row sits in shared memory beside the reduction's scratch, a word a thread.
-        config = select_row_config_by_width(d_padded, GroupNormKernel._row_widths_for(d, d_padded))
-        return d_padded * call.dtype.itemsize + config["threads"] * 4 > call.smem_budget
+            split = d_padded > cls._REGISTER_ROW
+        elif call.dtype.itemsize == 2 and d_padded > cls._STAGED_TWO_BYTE_ROW:
+            split = True
+        else:
+            # A staged row sits in shared memory beside the reduction's scratch, a word a thread.
+            config = select_row_config_by_width(
+                d_padded, GroupNormKernel._row_widths_for(d, d_padded)
+            )
+            split = d_padded * call.dtype.itemsize + config["threads"] * 4 > call.smem_budget
+        if not split:
+            return f"a group row of {d} elements fits one block"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GroupNormCall) -> Entry:

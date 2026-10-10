@@ -440,10 +440,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (*arguments, index), lambda: cls(*arguments)
 
     @classmethod
-    def applies(cls, call: DeltaNetChunkCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 

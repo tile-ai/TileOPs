@@ -867,10 +867,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         if not call.is_fp8:
             return "does not serve this call"

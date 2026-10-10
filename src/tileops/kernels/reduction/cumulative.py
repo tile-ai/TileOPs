@@ -463,8 +463,10 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
     program takes no tunable parameter."""
 
     @classmethod
-    def applies(cls, call: CumulativeCall) -> bool:
-        return cls.stages_whole_row(call)
+    def refusal(cls, call: CumulativeCall) -> "str | None":
+        if not cls.stages_whole_row(call):
+            return f"one block does not stage a row of {call.n}"
+        return super().refusal(call)
 
     def _program(self) -> object:
         # The chunk length is a compile-time bound, so the thread count is baked in.
@@ -485,8 +487,10 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
     that one block cannot stage; the launch shape is fixed."""
 
     @classmethod
-    def applies(cls, call: CumulativeCall) -> bool:
-        return call.m < 128 and call.n > 8192 and not cls.stages_whole_row(call)
+    def refusal(cls, call: CumulativeCall) -> "str | None":
+        if call.m >= 128 or call.n <= 8192 or cls.stages_whole_row(call):
+            return "serves fewer than 128 rows longer than 8192 that one block does not stage"
+        return super().refusal(call)
 
     def _program(self) -> None:
         return None

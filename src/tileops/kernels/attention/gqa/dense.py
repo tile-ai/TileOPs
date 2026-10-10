@@ -631,10 +631,6 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous prefill region: more than one query position, no window, not FP8."""
         if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
@@ -922,10 +918,6 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
     supported_archs: list[int] = [90]
-
-    @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:

@@ -26,12 +26,11 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
     build_entry,
-    serves_extents,
+    extents_refusal,
 )
 from tileops.kernels.linear_attention.gla.varlen_prefill import (
     CHUNK_TOKENS,
@@ -513,8 +512,31 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        """Why the call cannot run, or ``None``; a call refused here takes the per-sequence walk."""
-        reason = head_count_refusal(call.heads) or super().refusal(call)
+        """A packed or part-chunk call whose sequences the per-sequence walk serves badly.
+
+        Two cases reach that, and each is read from the shapes alone. A call whose rows are
+        equal states its own chunk count, so a row holding more chunks than the longest
+        partition has something to partition. A packed call does not, so what is read
+        instead is the blocks a per-sequence walk would launch: past what the device holds
+        resident, the state slicing it takes is re-read traffic rather than parallelism.
+        """
+        reason = extents_refusal(call)
+        if reason is not None:
+            return reason
+        if not call.varlen:
+            if not (
+                call.seq_len > 1
+                and call.seq_len % CHUNK_TOKENS != 0
+                and call.seq_len // CHUNK_TOKENS > cls._partition_lengths[0]
+            ):
+                return "equal rows hold no more chunks than the longest partition"
+        else:
+            # The per-sequence walk splits the state tile to the GEMM's minimum operand extent
+            # along the key axis and once along the value axis, which is the finest split it has.
+            per_sequence_blocks = call.num_sequences * call.heads * (call.dim_k // GEMM_MIN_N) * 2
+            if per_sequence_blocks <= cls._blocks_per_sm * call.sm_count:
+                return "the device holds every block of the per-sequence walk resident"
+        reason = super().refusal(call)
         if reason is not None or not call.smem_budget:
             return reason
         need = cls._shared_bytes(call.dim_k, call.dim_v, call.dtype.itemsize, call.num_sequences)
@@ -524,29 +546,6 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
             f"needs {need} bytes of shared memory per block for {call.num_sequences} sequences "
             f"at head dim {call.dim_k}; the device gives {call.smem_budget}"
         )
-
-    @classmethod
-    def applies(cls, call: GLACall) -> bool:
-        """A packed or part-chunk call whose sequences the per-sequence walk serves badly.
-
-        Two cases reach that, and each is read from the shapes alone. A call whose rows are
-        equal states its own chunk count, so a row holding more chunks than the longest
-        partition has something to partition. A packed call does not, so what is read
-        instead is the blocks a per-sequence walk would launch: past what the device holds
-        resident, the state slicing it takes is re-read traffic rather than parallelism.
-        """
-        if not serves_extents(call):
-            return False
-        if not call.varlen:
-            return (
-                call.seq_len > 1
-                and call.seq_len % CHUNK_TOKENS != 0
-                and call.seq_len // CHUNK_TOKENS > cls._partition_lengths[0]
-            )
-        # The per-sequence walk splits the state tile to the GEMM's minimum operand extent
-        # along the key axis and once along the value axis, which is the finest split it has.
-        per_sequence_blocks = call.num_sequences * call.heads * (call.dim_k // GEMM_MIN_N) * 2
-        return per_sequence_blocks > cls._blocks_per_sm * call.sm_count
 
     @classmethod
     def _partitions(cls, dim_k: int, dim_v: int) -> tuple[int, int]:

@@ -85,15 +85,11 @@ class _ElementwiseKernel(Kernel):
     row_broadcast_inner: int | None = None
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call) -> "str | None":
         """Refuse an element type this family's programs do not serve.
 
-        ``refusal`` is the primitive here and ``applies`` reads it, so a caller told that
-        nothing served the call learns which element types each class does serve. A class
+        A caller told that nothing served the call learns which element types each class
+        does serve. A class
         that computes a semantic dtype in another storage type states its own.
         """
         if cls.SUPPORTED_DTYPES is None or call.dtype in cls.SUPPORTED_DTYPES:
@@ -837,10 +833,6 @@ class TorchFallbackKernel(Kernel):
             return None
         served = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
         return f"serves dtypes [{served}], not {call.dtype}"
-
-    @classmethod
-    def applies(cls, call) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def entry_for(cls, call) -> Entry:

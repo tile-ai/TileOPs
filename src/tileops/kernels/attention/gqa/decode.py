@@ -516,10 +516,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous decode region and the limits the program builds within."""
         if not call.dense_decode_region:

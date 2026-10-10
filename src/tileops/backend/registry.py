@@ -90,8 +90,8 @@ def register_implementation(op: str, key: str, implementation: type) -> None:
     """Add *implementation* to *op* under *key*, beside the in-tree implementations.
 
     It joins every instance of the op constructed afterwards, under each kernel interface it
-    inherits, and is selected by the same rule as the in-tree ones: its ``applies`` /
-    ``refusal``, ``general`` and ``preferred_over``. A call it does not serve stays with the
+    inherits, and is selected by the same rule as the in-tree ones: its ``refusal``,
+    ``general`` and ``preferred_over``. A call it does not serve stays with the
     in-tree implementations. The op checks it against the interface when an instance is
     constructed.
 

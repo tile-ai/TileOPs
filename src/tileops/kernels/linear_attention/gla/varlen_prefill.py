@@ -15,12 +15,11 @@ import torch
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
     build_entry,
-    serves_extents,
+    extents_refusal,
 )
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 
@@ -496,7 +495,16 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        reason = head_count_refusal(call.heads) or super().refusal(call)
+        """Either the call is packed, or its rows are equal-length and not a whole chunk.
+
+        The two are the same work once the rows are read as one packed sequence each.
+        """
+        reason = extents_refusal(call)
+        if reason is not None:
+            return reason
+        if not (call.varlen or (call.seq_len > 1 and call.seq_len % CHUNK_TOKENS != 0)):
+            return f"serves a packed call or equal rows that are not a whole number of {CHUNK_TOKENS}-token chunks"
+        reason = super().refusal(call)
         if reason is not None or not call.smem_budget:
             return reason
         need = cls._shared_bytes(call.dim_k, call.dim_v, call.dtype.itemsize, call.num_sequences)
@@ -505,16 +513,6 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         return (
             f"needs {need} bytes of shared memory per block for {call.num_sequences} sequences "
             f"at head dim {call.dim_k}; the device gives {call.smem_budget}"
-        )
-
-    @classmethod
-    def applies(cls, call: GLACall) -> bool:
-        """Either the call is packed, or its rows are equal-length and not a whole chunk.
-
-        The two are the same work once the rows are read as one packed sequence each.
-        """
-        return serves_extents(call) and (
-            call.varlen or (call.seq_len > 1 and call.seq_len % CHUNK_TOKENS != 0)
         )
 
     @staticmethod

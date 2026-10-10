@@ -258,8 +258,10 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         return cluster, threads, held_bytes // (threads * VECTOR_ACCESS_BYTES), ctas_per_sm
 
     @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return cls._plan(call) is not None
+    def refusal(cls, call: SoftmaxCall) -> "str | None":
+        if cls._plan(call) is None:
+            return f"no plan of this kernel holds a row of {call.n}"
+        return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)

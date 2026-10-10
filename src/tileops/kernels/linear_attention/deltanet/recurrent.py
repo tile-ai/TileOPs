@@ -271,10 +271,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     general = True
 
     @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
 
@@ -393,10 +389,6 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [90]
-
-    @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
@@ -634,10 +626,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
-
-    @classmethod
-    def applies(cls, call: DeltaNetDecodeCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
