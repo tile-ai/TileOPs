@@ -245,14 +245,14 @@ class GQADenseDecodeCall(CallWorkload, GQADenseDecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.indices
+        indices = call.indices
         GQADenseDecodeWorkload.__init__(
             self,
-            ix["B"],
-            ix["H"],
-            ix["H_kv"],
-            ix["S_kv"],
-            ix["D"],
+            indices["B"],
+            indices["H"],
+            indices["H_kv"],
+            indices["S_kv"],
+            indices["D"],
             _dtype(call, "q"),
             sm_scale=call.params["sm_scale"],
             softcap=call.params["softcap"],
@@ -270,23 +270,23 @@ class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
         GQADensePrefillWorkload.__init__(
             self,
-            ix["B"],
-            ix["S_q"],
-            ix["S_kv"],
-            ix["H"],
-            ix["H_kv"],
-            ix["D"],
+            indices["B"],
+            indices["S_q"],
+            indices["S_kv"],
+            indices["H"],
+            indices["H_kv"],
+            indices["D"],
             _dtype(call, "q"),
             out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
             is_causal=params["is_causal"],
             sm_scale=params["sm_scale"],
             softcap=params["softcap"],
-            rotary_dim=ix["R"] if rope else None,
+            rotary_dim=indices["R"] if rope else None,
             rope_layout=params["rope_layout"],
         )
 

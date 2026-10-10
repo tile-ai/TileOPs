@@ -83,9 +83,16 @@ class TopKSelectCall(CallWorkload, TopKSelectWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.indices
+        indices = call.indices
         TopKSelectWorkload.__init__(
-            self, ix["B"], ix["S"], ix["S_kv"], ix["G"], ix["topk"], torch.float32, torch.int32
+            self,
+            indices["B"],
+            indices["S"],
+            indices["S_kv"],
+            indices["G"],
+            indices["topk"],
+            torch.float32,
+            torch.int32,
         )
 
     gen_inputs = CallWorkload.gen_inputs

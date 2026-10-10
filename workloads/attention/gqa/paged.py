@@ -174,17 +174,17 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         GQAPagedFwdWorkload.__init__(
             self,
-            ix["H"],
-            ix["H_kv"],
-            ix["D"],
+            indices["H"],
+            indices["H_kv"],
+            indices["D"],
             _segments(call.metadata_values("cu_seqlens_q")),
             call.metadata_values("cache_seqlens"),
-            ix["PS"],
-            ix["W"],
-            ix["NP"],
+            indices["PS"],
+            indices["W"],
+            indices["NP"],
             _dtype(call, "q"),
             is_causal=params["is_causal"],
             window_size_left=params["window_size_left"],

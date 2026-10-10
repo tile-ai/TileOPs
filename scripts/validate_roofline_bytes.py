@@ -56,7 +56,7 @@ READ_BOUND_EXCEPTIONS: dict = {
     # condition the declared read half stands: eval mode and p == 0 copy the input, p == 1
     # declares no read.
     "DropoutFwdOp": (
-        lambda ix: ix["training"] and 0.0 < ix["p"] < 1.0,
+        lambda indices: indices["training"] and 0.0 < indices["p"] < 1.0,
         "the mask can predicate away a dropped position's load",
     ),
 }

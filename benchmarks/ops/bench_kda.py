@@ -14,8 +14,8 @@ def test_kda_fwd_bench(case) -> None:
     # Why: no in-tree KDA kernel computes the decay from A_log and dt_bias, and the row
     #   exists because the manifest requires a row passing each optional input.
     # Cleanup: when an in-tree KDA kernel serves use_gate_in_kernel=True, delete this skip.
-    ix = case.params
-    if ix["use_gate_in_kernel"]:
+    params = case.params
+    if params["use_gate_in_kernel"]:
         pytest.skip("no in-tree KDA kernel serves use_gate_in_kernel=True")
     op = KDAFwdOp(**case.arguments)
 
@@ -26,13 +26,13 @@ def test_kda_fwd_bench(case) -> None:
         cu = None if cu is None else cu.clone()
         cu_cpu = None if cu_cpu is None else cu_cpu.clone()
         arguments = dict(
-            scale=ix["scale"],
+            scale=params["scale"],
             initial_state=state,
             output_final_state=True,
-            use_qk_l2norm_in_kernel=ix["use_qk_l2norm_in_kernel"],
-            use_beta_sigmoid_in_kernel=ix["use_beta_sigmoid_in_kernel"],
-            allow_neg_eigval=ix["allow_neg_eigval"],
-            state_v_first=ix["state_v_first"],
+            use_qk_l2norm_in_kernel=params["use_qk_l2norm_in_kernel"],
+            use_beta_sigmoid_in_kernel=params["use_beta_sigmoid_in_kernel"],
+            allow_neg_eigval=params["allow_neg_eigval"],
+            state_v_first=params["state_v_first"],
             cu_seqlens=cu,
         )
         if q.shape[1] == 1:

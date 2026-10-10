@@ -284,7 +284,7 @@ def test_roofline_expressions_read_only_ix():
     assert roofline_plan(sig, {"flops": "M * N", "bytes": "bytes(x) + bytes(output)"})[0] == []
     errors = roofline_plan(sig, {"flops": "NOPE", "extra": 1})[0]
     assert any("unknown key 'extra'" in e for e in errors)
-    assert any("'NOPE' is not in ix" in e for e in errors)
+    assert any("'NOPE' is not in indices" in e for e in errors)
     assert roofline_plan(None, {"flops": "isinstance(M)", "extra": 1})[0] == [
         "roofline: unknown key 'extra'",
         "roofline.flops: isinstance is not a built-in primitive",

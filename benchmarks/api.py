@@ -376,9 +376,7 @@ class Runner:
         result["bandwidth_tbs"] = memory / busy * 1e-9
         roof = self.op.roof_key()
         if roof is not None:
-            # The nightly report reads this field as `tileops_compute_roof`, and its stored
-            # history keeps the name, so the field name stays fixed.
-            result["compute_roof"] = roof
+            result["roof_key"] = roof
         # What decided this call's bytes where the input values did; a diagnostic only.
         decided_by = self._roofline_data_terms()
         if decided_by:

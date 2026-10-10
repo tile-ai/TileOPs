@@ -124,16 +124,16 @@ class MLADecodeCall(CallWorkload, MLADecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.indices
+        indices = call.indices
         MLADecodeWorkload.__init__(
             self,
-            ix["B"],
-            ix["H"],
-            ix["H_kv"],
-            ix["N_kv"],
-            ix["D"],
-            ix["PE"],
-            getattr(torch, ix["T"]),
+            indices["B"],
+            indices["H"],
+            indices["H_kv"],
+            indices["N_kv"],
+            indices["D"],
+            indices["PE"],
+            getattr(torch, indices["T"]),
         )
 
     gen_inputs = CallWorkload.gen_inputs

@@ -248,7 +248,9 @@ def roofline_plan(
         plan[key] = node
         if sig is None:
             continue
-        ix = {n for n, k in sig.forall.items() if k != "Seq[Int]"} | set(sig.params) | set(sig.let)
+        indices = (
+            {n for n, k in sig.forall.items() if k != "Seq[Int]"} | set(sig.params) | set(sig.let)
+        )
         tensors = {*sig.call_tensors, *sig.outputs}
         maybes = {p for p in sig.params if sig.kind(p).tag == "Maybe"}
         buffered = {_RESERVED} if any(o.buffer for o in sig.outputs.values()) else set()
@@ -262,7 +264,8 @@ def roofline_plan(
             ):
                 errors.append(f"roofline.{key}: {ast.unparse(call)} names no tensor")
         errors += [
-            f"roofline.{key}: name {n!r} is not in ix" for n in sorted(_formula_reads(node) - ix)
+            f"roofline.{key}: name {n!r} is not in indices"
+            for n in sorted(_formula_reads(node) - indices)
         ]
     return errors, (None if errors else {"bytes": None, **plan})
 

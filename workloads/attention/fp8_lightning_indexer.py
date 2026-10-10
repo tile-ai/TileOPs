@@ -250,11 +250,18 @@ class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.indices
+        indices = call.indices
         FP8LightningIndexerWorkload.__init__(
-            self, ix["B"], ix["S"], ix["H"], ix["D"], ix["S_kv"], ix["G"], ix["clean_logits"]
+            self,
+            indices["B"],
+            indices["S"],
+            indices["H"],
+            indices["D"],
+            indices["S_kv"],
+            indices["G"],
+            indices["clean_logits"],
         )
-        self.index_dtype = getattr(torch, ix["T"])
+        self.index_dtype = getattr(torch, indices["T"])
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         index_q, index_k, weights, ks, ke, index_k_scale = CallWorkload.gen_inputs(self)

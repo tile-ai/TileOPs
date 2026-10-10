@@ -396,16 +396,16 @@ class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         q_lens = _segments(call.metadata_values("cu_seqlens_q"))
         GQAVarlenFwdWorkload.__init__(
             self,
             len(q_lens),
             q_lens,
             _segments(call.metadata_values("cu_seqlens_kv")),
-            ix["H"],
-            ix["H_kv"],
-            ix["D"],
+            indices["H"],
+            indices["H_kv"],
+            indices["D"],
             params["is_causal"],
             params.get("window_size_left", -1),
             params.get("window_size_right", -1),
@@ -413,7 +413,7 @@ class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
             sm_scale=params.get("sm_scale"),
             softcap=params.get("softcap"),
             pos_encoding_mode=params.get("pos_encoding_mode", "none"),
-            rotary_dim=ix.get("R") if params.get("pos_encoding_mode") == "rope" else None,
+            rotary_dim=indices.get("R") if params.get("pos_encoding_mode") == "rope" else None,
             rope_layout=params.get("rope_layout", "neox"),
         )
 
@@ -429,7 +429,7 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         q_lens = _segments(call.metadata_values("cu_seqlens_q"))
         out_dtype = params["out_dtype"]
         rope = params["pos_encoding_mode"] == "rope"
@@ -438,9 +438,9 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
             len(q_lens),
             q_lens,
             _segments(call.metadata_values("cu_seqlens_kv")),
-            ix["H"],
-            ix["H_kv"],
-            ix["D"],
+            indices["H"],
+            indices["H_kv"],
+            indices["D"],
             params["is_causal"],
             params.get("window_size_left", -1),
             params.get("window_size_right", -1),
@@ -448,7 +448,7 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
             sm_scale=params.get("sm_scale"),
             softcap=params.get("softcap"),
             out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
-            rotary_dim=ix["R"] if rope else None,
+            rotary_dim=indices["R"] if rope else None,
             rope_layout=params["rope_layout"],
         )
 

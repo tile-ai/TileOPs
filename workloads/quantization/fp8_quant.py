@@ -19,9 +19,13 @@ class FP8QuantWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "FP8QuantWorkload":
         """The workload of one manifest call of ``FP8QuantFwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["batch"], ix["seq_len_kv"], ix["kv_group"], ix["index_dim"], getattr(torch, ix["T"])
+            indices["batch"],
+            indices["seq_len_kv"],
+            indices["kv_group"],
+            indices["index_dim"],
+            getattr(torch, indices["T"]),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor]:

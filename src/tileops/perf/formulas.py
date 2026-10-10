@@ -115,15 +115,15 @@ def _routing_flops(call) -> int:
     """Routing as FusedTopKFwdOp prices it, per token: scoring (sigmoid 4 per logit; softmax 3,
     plus the row sum and a divide per kept weight unless renormalizing), top_k
     compare-and-selects per logit, the bias add, and 2 * top_k to renormalize."""
-    ix = call.indices
-    experts, top_k, renormalize = ix["E"], ix["top_k"], ix["renormalize"]
-    if ix["scoring_func"] == "sigmoid":
+    indices = call.indices
+    experts, top_k, renormalize = indices["E"], indices["top_k"], indices["renormalize"]
+    if indices["scoring_func"] == "sigmoid":
         scoring = 4 * experts
     else:
         scoring = 3 * experts + (0 if renormalize else experts + top_k)
     per_token = scoring + top_k * experts + (2 * top_k if renormalize else 0)
     per_token += experts if call.present("correction_bias") else 0
-    return ix["T"] * per_token
+    return indices["T"] * per_token
 
 
 def _routed_flops(tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
@@ -166,10 +166,10 @@ def fused_moe_fwd_roofline(call) -> tuple[int, int]:
     (docs/design/roofline.md §4.7). Where no such call exists, the price takes the
     data-independent lower bound: each token selects ``top_k`` distinct experts.
     """
-    ix = call.indices
-    t, f, h, top_k = ix["T"], ix["F"], ix["H"], ix["top_k"]
+    indices = call.indices
+    t, f, h, top_k = indices["T"], indices["F"], indices["H"], indices["top_k"]
     flops = _routing_flops(call)
-    flops += _routed_flops(t, t * top_k, f, h, ix["routed_scaling_factor"] != 1.0)
+    flops += _routed_flops(t, t * top_k, f, h, indices["routed_scaling_factor"] != 1.0)
     nbytes = fused_moe_active_experts(call) * _expert_weight_bytes(call)
     nbytes += 2 * call.bytes("hidden_states")
     nbytes += call.bytes("gating_output")
@@ -244,18 +244,18 @@ def _active_weight_bytes(call: "CallView", *weights: str) -> int:
 def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
     """Grouped expert GEMM over the valid rows, and the gated activation when fused; an expert
     with no valid row reads no weight, every other tensor moves once."""
-    ix = call.indices
+    indices = call.indices
     rows, fused = moe_layout_rows(call), call.indices["activation"] is not None
-    flops = 2 * rows * (2 * ix["N"] if fused else ix["N"]) * ix["K"]
-    flops += _GATED_ACTIVATION * rows * ix["N"] if fused else 0
+    flops = 2 * rows * (2 * indices["N"] if fused else indices["N"]) * indices["K"]
+    flops += _GATED_ACTIVATION * rows * indices["N"] if fused else 0
     return flops, _active_weight_bytes(call, "b")
 
 
 def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
     """Grouped expert GEMM over the valid rows, with no fused activation; an expert with no
     valid row reads neither its weight nor that weight's scale."""
-    ix = call.indices
-    flops = 2 * moe_layout_rows(call) * ix["N"] * ix["K"]
+    indices = call.indices
+    flops = 2 * moe_layout_rows(call) * indices["N"] * indices["K"]
     return flops, _active_weight_bytes(call, "b", "b_scale")
 
 
@@ -275,10 +275,10 @@ def hadamard_roofline(call: "CallView") -> tuple[int, int]:
     ``base_order x base_order`` Hadamard product per group, two FLOPs per element-column.
     The ``1 / sqrt(n)`` scaling is one multiply per element. Each tensor moves once.
     """
-    ix = call.indices
-    n, order = ix["n"], ix["base_order"]
+    indices = call.indices
+    n, order = indices["n"], indices["base_order"]
     radix2 = (n // order).bit_length() - 1
-    flops = prod(ix["B"]) * n * (radix2 + 1 + (2 * order if order > 1 else 0))
+    flops = prod(indices["B"]) * n * (radix2 + 1 + (2 * order if order > 1 else 0))
     return flops, sum(call.bytes(t) for t in call.tensors)
 
 
@@ -338,28 +338,28 @@ def _windowed_bytes(call: "CallView", axes: "list[tuple]") -> int:
 def pool_roofline(call: "CallView") -> tuple[int, int]:
     """Fixed-window pooling: one add or comparison per input tap a window covers, and an
     average's division per output; ``input`` is read where some window reads it."""
-    ix = call.indices
-    if "L_in" in ix:
+    indices = call.indices
+    if "L_in" in indices:
         axes = (("L", "W"),)
-    elif "D_in" in ix:
+    elif "D_in" in indices:
         axes = (("D", "D"), ("H", "H"), ("W", "W"))
     else:
         axes = (("H", "H"), ("W", "W"))
     geometry = [
         (
-            ix[f"{axis}_in"],
-            ix[f"{axis}_out"],
-            ix[f"k{k}"],
-            ix[f"s{k}"],
-            ix[f"p{k}"],
-            ix.get(f"d{k}", 1),
+            indices[f"{axis}_in"],
+            indices[f"{axis}_out"],
+            indices[f"k{k}"],
+            indices[f"s{k}"],
+            indices[f"p{k}"],
+            indices.get(f"d{k}", 1),
         )
         for axis, k in axes
     ]
     taps = prod(_window_taps(*g) for g in geometry)
-    flops = ix["N"] * ix["C"] * taps
-    if "count_include_pad" in ix:  # an average divides each window's sum once
-        flops += ix["N"] * ix["C"] * prod(ix[f"{axis}_out"] for axis, _ in axes)
+    flops = indices["N"] * indices["C"] * taps
+    if "count_include_pad" in indices:  # an average divides each window's sum once
+        flops += indices["N"] * indices["C"] * prod(indices[f"{axis}_out"] for axis, _ in axes)
     return flops, _windowed_bytes(call, geometry)
 
 
@@ -367,33 +367,35 @@ def conv_roofline(call: "CallView") -> tuple[int, int]:
     """Direct convolution: a multiply-add per input channel of the group and in-range tap of
     each output element, padded taps being none, and the bias add when present; ``input`` is
     read where some window reads it, every other tensor moves once."""
-    ix = call.indices
-    if "L_in" in ix:
+    indices = call.indices
+    if "L_in" in indices:
         axes = (("L_in", "L_out", "W"),)
-    elif "kD" in ix:
+    elif "kD" in indices:
         axes = (("D", "out_D", "D"), ("H", "out_H", "H"), ("W", "out_W", "W"))
     else:
         axes = (("H", "out_H", "H"), ("W", "out_W", "W"))
-    same = ix["padding"] == "same"
+    same = indices["padding"] == "same"
     geometry = []
     for extent, out, k in axes:
-        kernel, dilation = ix[f"k{k}"], ix[f"d{k}"]
+        kernel, dilation = indices[f"k{k}"], indices[f"d{k}"]
         # "same" pads the left side by half the dilated kernel span, rounded down.
-        pad = dilation * (kernel - 1) // 2 if same else ix[f"p{k}"]
-        geometry.append((ix[extent], ix[out], kernel, ix[f"s{k}"], pad, dilation))
+        pad = dilation * (kernel - 1) // 2 if same else indices[f"p{k}"]
+        geometry.append((indices[extent], indices[out], kernel, indices[f"s{k}"], pad, dilation))
     taps = prod(_window_taps(*g) for g in geometry)
     outputs = prod(g[1] for g in geometry)
-    flops = 2 * ix["N"] * ix["C_out"] * ix["C_in_g"] * taps
+    flops = 2 * indices["N"] * indices["C_out"] * indices["C_in_g"] * taps
     if call.present("bias"):
-        flops += ix["N"] * ix["C_out"] * outputs
+        flops += indices["N"] * indices["C_out"] * outputs
     return flops, _windowed_bytes(call, geometry)
 
 
 def adaptive_pool2d_roofline(call: "CallView") -> tuple[int, int]:
     """Adaptive 2D pooling: one add or comparison per element each bin reads."""
-    ix = call.indices
-    scan = _adaptive_scan(ix["H_in"], ix["H_out"]) * _adaptive_scan(ix["W_in"], ix["W_out"])
-    return prod(ix["B"]) * ix["C"] * scan, sum(call.bytes(t) for t in call.tensors)
+    indices = call.indices
+    scan = _adaptive_scan(indices["H_in"], indices["H_out"]) * _adaptive_scan(
+        indices["W_in"], indices["W_out"]
+    )
+    return prod(indices["B"]) * indices["C"] * scan, sum(call.bytes(t) for t in call.tensors)
 
 
 # ---------------------------------------------------------------- attention
@@ -467,27 +469,33 @@ def _softcap(call: "CallView") -> bool:
 
 def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Dense GQA forward: the attention arithmetic of the visible scores; each tensor moved once."""
-    ix = call.indices
+    indices = call.indices
     scores, rows = visible_score_rows(
-        ix["S_q"], ix["S_kv"], ix["is_causal"], ix["window_size_left"], ix["window_size_right"]
+        indices["S_q"],
+        indices["S_kv"],
+        indices["is_causal"],
+        indices["window_size_left"],
+        indices["window_size_right"],
     )
-    flops = ix["B"] * attention_flops(ix["H"], scores, rows, ix["D"], ix["D"], _softcap(call))
+    flops = indices["B"] * attention_flops(
+        indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
+    )
     return flops, _derived_bytes(call)
 
 
 def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Packed GQA forward: the attention arithmetic of the scores each request sees under its
     mask and window, summed over the requests the offsets carry; each tensor moved once."""
-    ix = call.indices
-    left, right = ix["window_size_left"], ix["window_size_right"]
+    indices = call.indices
+    left, right = indices["window_size_left"], indices["window_size_right"]
     pairs = [
-        visible_score_rows(q, kv, ix["is_causal"], left, right)
+        visible_score_rows(q, kv, indices["is_causal"], left, right)
         for q, kv in zip(
             _segments(call, "cu_seqlens_q"), _segments(call, "cu_seqlens_kv"), strict=True
         )
     ]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
-    flops = attention_flops(ix["H"], scores, rows, ix["D"], ix["D"], _softcap(call))
+    flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
     return flops, _derived_bytes(call)
 
 
@@ -498,19 +506,19 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(call: "CallView") -> tuple[int,
     distinct cache rows the requests' cached tokens name are read once, the new tokens are
     appended into the cache, and the block table is read as far as each request's pages reach.
     """
-    ix = call.indices
-    heads_kv, dim, page_size = ix["H_kv"], ix["D"], ix["page_size"]
+    indices = call.indices
+    heads_kv, dim, page_size = indices["H_kv"], indices["D"], indices["page_size"]
     q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens")
-    is_causal = ix["is_causal"]
+    is_causal = indices["is_causal"]
     visible = sum(
         q * c + q * (q + 1) // 2 if is_causal else q * (c + q)
         for q, c in zip(q_lens, cache_lens, strict=True)
     )
     # Every query sees at least its own new key.
-    flops = attention_flops(ix["H"], visible, sum(q_lens), dim, dim, _softcap(call))
+    flops = attention_flops(indices["H"], visible, sum(q_lens), dim, dim, _softcap(call))
     cache_elem = call.bytes("k_pages") // max(1, prod(call.tensors["k_pages"][0]))
     old_kv = 2 * gqa_prefill_paged_cache_rows(call) * heads_kv * dim
-    append = 2 * ix["T_q"] * heads_kv * dim
+    append = 2 * indices["T_q"] * heads_kv * dim
     # A request with no new token consults no block-table entry.
     pages_named = sum(
         -(-(c + q) // page_size) for q, c in zip(q_lens, cache_lens, strict=True) if q
@@ -585,10 +593,12 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     The cache is read as far as some query of each request sees, from the pages its page
     table names; every other tensor moves once.
     """
-    ix = call.indices
+    indices = call.indices
     q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens")
     pairs = [
-        visible_score_rows(q, c, ix["is_causal"], ix["window_size_left"], ix["window_size_right"])
+        visible_score_rows(
+            q, c, indices["is_causal"], indices["window_size_left"], indices["window_size_right"]
+        )
         for q, c in zip(q_lens, cache_lens, strict=True)
     ]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
@@ -602,7 +612,9 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
-    return attention_flops(ix["H"], scores, rows, ix["D"], ix["D"], _softcap(call)), moved
+    return attention_flops(
+        indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
+    ), moved
 
 
 def paged_decode_cache_rows(call: "CallView") -> int:
@@ -618,13 +630,15 @@ def paged_decode_roofline(call: "CallView") -> tuple[int, int]:
     when it carries several; the pool is read as far as those lengths reach through the
     block table.
     """
-    ix = call.indices
+    indices = call.indices
     lengths = call.metadata_values("real_seqlen_kv")
-    s_q = ix.get("S_q", 1)
-    pairs = [visible_score_rows(s_q, n, ix.get("is_causal", False), -1, -1) for n in lengths]
+    s_q = indices.get("S_q", 1)
+    pairs = [visible_score_rows(s_q, n, indices.get("is_causal", False), -1, -1) for n in lengths]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
-    moved = _paged_kv_bytes(call, "k", "v", "block_table", lengths, ix["page_size"])
-    return attention_flops(ix["H"], scores, rows, ix["D"], ix["D"], _softcap(call)), moved
+    moved = _paged_kv_bytes(call, "k", "v", "block_table", lengths, indices["page_size"])
+    return attention_flops(
+        indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
+    ), moved
 
 
 def _closed_chunks(length: int, block_size: int) -> int:
@@ -641,10 +655,12 @@ def nsa_closed_chunk_pairs(call: "CallView") -> int:
 def nsa_compressed_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA compression forward: the attention arithmetic of each scored (token, chunk) pair,
     over the tokens that close at least one chunk; every tensor is moved once."""
-    ix = call.indices
-    bs = ix["bs"]
+    indices = call.indices
+    bs = indices["bs"]
     rows = sum(max(0, n - bs + 1) for n in _segments(call, "offsets"))
-    flops = attention_flops(ix["H"], nsa_closed_chunk_pairs(call), rows, ix["DK"], ix["DV"])
+    flops = attention_flops(
+        indices["H"], nsa_closed_chunk_pairs(call), rows, indices["DK"], indices["DV"]
+    )
     return flops, _derived_bytes(call)
 
 
@@ -662,8 +678,8 @@ def nsa_topk_scored_pairs(call: "CallView") -> int:
 
 def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA block selection: one QK contraction per scored pair, no PV."""
-    ix = call.indices
-    flops = 2 * nsa_topk_scored_pairs(call) * ix["H"] * ix["D"]
+    indices = call.indices
+    flops = 2 * nsa_topk_scored_pairs(call) * indices["H"] * indices["D"]
     return flops, _derived_bytes(call)
 
 
@@ -707,11 +723,13 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     The attention arithmetic of each scored (token, key) pair per query head. In: q, the
     distinct k/v rows the selection reaches and the selection metadata. Out: the output.
     """
-    ix = call.indices
+    indices = call.indices
     scored, distinct, rows = _nsa_selection(call)
     elem = call.bytes("q") // max(1, prod(call.tensors["q"][0]))
-    flops = attention_flops(ix["H"] // ix["H_kv"], scored, rows, ix["D"], ix["D"])
-    moved = call.bytes("q") + call.bytes("o_slc") + 2 * distinct * ix["D"] * elem
+    flops = attention_flops(
+        indices["H"] // indices["H_kv"], scored, rows, indices["D"], indices["D"]
+    )
+    moved = call.bytes("q") + call.bytes("o_slc") + 2 * distinct * indices["D"] * elem
     moved += call.bytes("block_indices") + call.bytes("block_counts")
     moved += call.bytes("offsets") + call.bytes("token_indices")
     return flops, moved
@@ -724,8 +742,8 @@ def _dsa_selections(call: "CallView") -> "list[tuple[int, int, set]]":
     position ``(j + 1) * stride_kv - 1`` is at or before the query's ``q_start_index_s + s``;
     padded and repeated slots select nothing more.
     """
-    ix = call.indices
-    stride, first, extent = ix["stride_kv"], ix["q_start_index_s"], ix["S_kv"]
+    indices = call.indices
+    stride, first, extent = indices["stride_kv"], indices["q_start_index_s"], indices["S_kv"]
     return [
         (b, g, {j for j in slots if 0 <= j < extent and (j + 1) * stride - 1 <= first + s})
         for b, batch in enumerate(call.metadata_values("indices"))
@@ -748,11 +766,17 @@ def dsa_decode_roofline(call: "CallView") -> tuple[int, int]:
     """DeepSeek sparse decode: the attention arithmetic of each selected key per query head, QK
     over ``D + dim_tail`` and PV over ``D``. ``kv`` is read at the rows some query selects;
     every other tensor moves once."""
-    ix = call.indices
+    indices = call.indices
     selections = _dsa_selections(call)
     scores = sum(len(keys) for _b, _g, keys in selections)
     rows = sum(1 for _b, _g, keys in selections if keys)
-    flops = attention_flops(ix["H"] // ix["H_kv"], scores, rows, ix["D"] + ix["dim_tail"], ix["D"])
+    flops = attention_flops(
+        indices["H"] // indices["H_kv"],
+        scores,
+        rows,
+        indices["D"] + indices["dim_tail"],
+        indices["D"],
+    )
     kv_row = call.bytes("kv") // max(1, prod(call.tensors["kv"][0][:-1]))
     return flops, _derived_bytes(call) - call.bytes("kv") + dsa_distinct_kv_rows(call) * kv_row
 
@@ -771,9 +795,11 @@ def lightning_indexer_scored_keys(call: "CallView") -> int:
 def fp8_lightning_indexer_roofline(call: "CallView") -> tuple[int, int]:
     """Lightning indexer: per query head and windowed key, a D-long contraction and the relu,
     weight and head-sum epilogue; each tensor moves once, ``logits`` written whole."""
-    ix = call.indices
-    per_score = 2 * ix["D"] + _INDEXER_EPILOGUE_PER_SCORE
-    return ix["B"] * ix["H"] * per_score * lightning_indexer_scored_keys(call), _derived_bytes(call)
+    indices = call.indices
+    per_score = 2 * indices["D"] + _INDEXER_EPILOGUE_PER_SCORE
+    return indices["B"] * indices["H"] * per_score * lightning_indexer_scored_keys(
+        call
+    ), _derived_bytes(call)
 
 
 def topk_select_window_scores(call: "CallView") -> int:
@@ -790,11 +816,11 @@ def topk_select_window_scores(call: "CallView") -> int:
 def topk_select_roofline(call: "CallView") -> tuple[int, int]:
     """Top-k selection: one comparison per score in a row's window, per group; only those
     scores are read."""
-    ix = call.indices
+    indices = call.indices
     widths = topk_select_window_scores(call)
     shape = call.tensors["index_score"][0]
-    read = widths * ix["G"] * call.bytes("index_score") // max(1, prod(shape))
-    return ix["G"] * widths, _derived_bytes(call) - call.bytes("index_score") + read
+    read = widths * indices["G"] * call.bytes("index_score") // max(1, prod(shape))
+    return indices["G"] * widths, _derived_bytes(call) - call.bytes("index_score") + read
 
 
 def gqa_prefill_paged_cache_rows(call: "CallView") -> int:
@@ -832,13 +858,13 @@ def mla_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     head, into the softmax denominator. The cache is read at the rows the block table reaches;
     every other tensor moves once.
     """
-    ix = call.indices
+    indices = call.indices
     lengths = call.metadata_values("cache_seqlens")
-    pairs = [visible_score_rows(ix["S_q"], c, ix["is_causal"], -1, -1) for c in lengths]
+    pairs = [visible_score_rows(indices["S_q"], c, indices["is_causal"], -1, -1) for c in lengths]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
-    flops = attention_flops(ix["H"], scores, rows, ix["DK"], ix["kv_lora_rank"])
+    flops = attention_flops(indices["H"], scores, rows, indices["DK"], indices["kv_lora_rank"])
     if call.tensors["kv_cache"][1] in FLOAT8_DTYPES:
-        flops += ix["H"] * rows
+        flops += indices["H"] * rows
     moved = _derived_bytes(call) - call.bytes("kv_cache") - call.bytes("block_table")
     moved += _paged_cache_read_bytes(call, "kv_cache", "block_table", lengths)
     return flops, moved
@@ -847,12 +873,15 @@ def mla_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
 def mla_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Packed MLA prefill: QK over ``DN + PE``, PV over ``DV``, for the scores each request
     sees under its mask; every tensor moves once."""
-    ix = call.indices
+    indices = call.indices
     pairs = [
-        visible_score_rows(n, n, ix["is_causal"], -1, -1) for n in _segments(call, "cu_seqlens")
+        visible_score_rows(n, n, indices["is_causal"], -1, -1)
+        for n in _segments(call, "cu_seqlens")
     ]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
-    flops = attention_flops(ix["H"], scores, rows, ix["DN"] + ix["PE"], ix["DV"])
+    flops = attention_flops(
+        indices["H"], scores, rows, indices["DN"] + indices["PE"], indices["DV"]
+    )
     return flops, _derived_bytes(call)
 
 
@@ -868,7 +897,7 @@ def dsa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     value) and read once; the block table is read at the pages the slots resolve to; ``q`` is
     read at the query rows with a score; every other tensor moves once.
     """
-    ix = call.indices
+    indices = call.indices
     lengths, table = call.metadata_values("cache_seqlens"), call.metadata_values("block_table")
     page_size = call.tensors["kv_cache"][0][1]
     scores = rows = 0
@@ -882,12 +911,12 @@ def dsa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
             for j in valid:
                 pages.add((b, j // page_size))
                 distinct.add((table[b][j // page_size], j % page_size))
-    flops = attention_flops(ix["H"], scores, rows, _DSA_QK_DIM, _DSA_V_DIM)
+    flops = attention_flops(indices["H"], scores, rows, _DSA_QK_DIM, _DSA_V_DIM)
     flops += _DSA_V_DIM * len(distinct)
     shape = call.tensors["kv_cache"][0]
     moved = _derived_bytes(call) - call.bytes("q") - call.bytes("kv_cache")
     moved -= call.bytes("block_table")
-    moved += rows * ix["H"] * _DSA_QK_DIM * _elem_bytes(call, "q")
+    moved += rows * indices["H"] * _DSA_QK_DIM * _elem_bytes(call, "q")
     moved += len(distinct) * shape[2] + len(pages) * _elem_bytes(call, "block_table")
     return flops, moved
 
@@ -914,15 +943,15 @@ def mla_kv_cache_write_roofline(call: "CallView") -> tuple[int, int]:
     """MLA latent-cache write: each token with a slot reads kv_c and k_pe and writes the
     concatenated row; an FP8 cache scales and saturates each value (2 per value), and a fused
     RoPE rotates k_pe (3 per value) from the cos/sin rows the tokens' positions name."""
-    ix = call.indices
-    width, pe = ix["DC"] + ix["PE"], ix["PE"]
+    indices = call.indices
+    width, pe = indices["DC"] + indices["PE"], indices["PE"]
     slots = call.metadata_values("slot_mapping")
     tokens = _written_slots(call)
     flops = 2 * tokens * width if call.tensors["kv_cache"][1] in FLOAT8_DTYPES else 0
     moved = tokens * width * (_elem_bytes(call, "kv_c") + _elem_bytes(call, "kv_cache"))
     moved += call.bytes("slot_mapping")
     moved += call.bytes("scale") if tokens * width and call.present("scale") else 0
-    if ix["fuse_rope"]:
+    if indices["fuse_rope"]:
         flops += 3 * tokens * pe
         positions = [
             p for p, s in zip(call.metadata_values("positions"), slots, strict=True) if s >= 0
@@ -953,14 +982,16 @@ def fused_qk_norm_rope_roofline(call: "CallView") -> tuple[int, int]:
     """Q/K RMSNorm and RoPE in place: per q and k value, RMSNorm with its weight (4), and 3
     per rotated value. The q and k columns are read and written, the v columns untouched,
     and the cos/sin rows the positions name read once."""
-    ix = call.indices
-    heads = ix["num_heads"] + ix["num_kv_heads"]
-    values = ix["N"] * heads * ix["D"]
-    flops = ix["N"] * heads * (4 * ix["D"] + 3 * ix["R"])
+    indices = call.indices
+    heads = indices["num_heads"] + indices["num_kv_heads"]
+    values = indices["N"] * heads * indices["D"]
+    flops = indices["N"] * heads * (4 * indices["D"] + 3 * indices["R"])
     moved = 2 * values * _elem_bytes(call, "qkv")
     moved += sum(call.bytes(t) for t in ("q_weight", "k_weight", "positions"))
     moved += (
-        len(set(call.metadata_values("positions"))) * ix["R"] * _elem_bytes(call, "cos_sin_cache")
+        len(set(call.metadata_values("positions")))
+        * indices["R"]
+        * _elem_bytes(call, "cos_sin_cache")
     )
     return flops, moved
 

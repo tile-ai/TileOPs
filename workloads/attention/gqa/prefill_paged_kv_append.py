@@ -231,17 +231,17 @@ class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCache
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         q_lens = _segments(call.metadata_values("cu_seqlens_q"))
         GQAPrefillPagedWithKVCacheFwdWorkload.__init__(
             self,
             len(q_lens),
-            ix["H"],
-            ix["H_kv"],
+            indices["H"],
+            indices["H_kv"],
             q_lens,
             call.metadata_values("cache_seqlens"),
             params["page_size"],
-            ix["D"],
+            indices["D"],
             params["is_causal"],
             _dtype(call, "q"),
             fuse_rope=params["fuse_rope"],

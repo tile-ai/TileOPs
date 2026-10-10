@@ -39,18 +39,18 @@ class Conv1dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv1dWorkload":
         """The workload of one manifest call of ``Conv1dFwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["N"],
-            ix["C_in"],
-            ix["L_in"],
-            ix["C_out"],
-            ix["kW"],
-            ix["stride"],
-            ix["padding"],
-            ix["dilation"],
-            ix["groups"],
-            getattr(torch, ix["T"]),
+            indices["N"],
+            indices["C_in"],
+            indices["L_in"],
+            indices["C_out"],
+            indices["kW"],
+            indices["stride"],
+            indices["padding"],
+            indices["dilation"],
+            indices["groups"],
+            getattr(torch, indices["T"]),
             bias=call.present("bias"),
         )
 
@@ -123,19 +123,19 @@ class Conv2dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv2dWorkload":
         """The workload of one manifest call of ``Conv2dFwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["N"],
-            ix["C_in"],
-            ix["H"],
-            ix["W"],
-            ix["C_out"],
-            (ix["kH"], ix["kW"]),
-            ix["stride"],
-            ix["padding"],
-            ix["dilation"],
-            ix["groups"],
-            getattr(torch, ix["T"]),
+            indices["N"],
+            indices["C_in"],
+            indices["H"],
+            indices["W"],
+            indices["C_out"],
+            (indices["kH"], indices["kW"]),
+            indices["stride"],
+            indices["padding"],
+            indices["dilation"],
+            indices["groups"],
+            getattr(torch, indices["T"]),
             bias=call.present("bias"),
         )
 
@@ -211,20 +211,20 @@ class Conv3dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv3dWorkload":
         """The workload of one manifest call of ``Conv3dFwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["N"],
-            ix["C_in"],
-            ix["D"],
-            ix["H"],
-            ix["W"],
-            ix["C_out"],
-            (ix["kD"], ix["kH"], ix["kW"]),
-            ix["stride"],
-            ix["padding"],
-            ix["dilation"],
-            ix["groups"],
-            getattr(torch, ix["T"]),
+            indices["N"],
+            indices["C_in"],
+            indices["D"],
+            indices["H"],
+            indices["W"],
+            indices["C_out"],
+            (indices["kD"], indices["kH"], indices["kW"]),
+            indices["stride"],
+            indices["padding"],
+            indices["dilation"],
+            indices["groups"],
+            getattr(torch, indices["T"]),
             bias=call.present("bias"),
         )
 

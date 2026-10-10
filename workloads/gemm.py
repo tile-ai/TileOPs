@@ -30,8 +30,15 @@ class GemmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmWorkload":
         """The workload of one manifest call of ``GemmFwdOp``."""
-        ix = call.indices
-        return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["trans_a"], ix["trans_b"])
+        indices = call.indices
+        return cls(
+            indices["M"],
+            indices["N"],
+            indices["K"],
+            getattr(torch, indices["T"]),
+            indices["trans_a"],
+            indices["trans_b"],
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
@@ -80,20 +87,20 @@ class GemmFP8Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmFP8Workload":
         """The workload of one manifest call of ``GemmFP8FwdOp``."""
-        ix = call.indices
-        if tuple(ix["SA"]) == (1, 1):
+        indices = call.indices
+        if tuple(indices["SA"]) == (1, 1):
             scale_mode = "per_tensor"
-        elif tuple(ix["SB"]) == (ix["N"], -(-ix["K"] // 128)):
+        elif tuple(indices["SB"]) == (indices["N"], -(-indices["K"] // 128)):
             scale_mode = "block128"
         else:
             scale_mode = "block128x128"
         return cls(
-            ix["M"],
-            ix["N"],
-            ix["K"],
-            getattr(torch, ix["T"]),
+            indices["M"],
+            indices["N"],
+            indices["K"],
+            getattr(torch, indices["T"]),
             scale_mode,
-            out_dtype=getattr(torch, ix["out_dtype"]),
+            out_dtype=getattr(torch, indices["out_dtype"]),
             bias=call.present("bias"),
         )
 
@@ -290,8 +297,14 @@ class GemmW4A16Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmW4A16Workload":
         """The workload of one manifest call of ``GemmW4A16FwdOp``."""
-        ix = call.indices
-        return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["group_size"])
+        indices = call.indices
+        return cls(
+            indices["M"],
+            indices["N"],
+            indices["K"],
+            getattr(torch, indices["T"]),
+            indices["group_size"],
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return activation, prepacked weight, scale, and zero point."""
@@ -339,8 +352,10 @@ class BmmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "BmmWorkload":
         """The workload of one manifest call of ``BmmFwdOp``."""
-        ix = call.indices
-        return cls(ix["B"], ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]))
+        indices = call.indices
+        return cls(
+            indices["B"], indices["M"], indices["N"], indices["K"], getattr(torch, indices["T"])
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         a = torch.randn(self.batch, self.m, self.k, device=run_device(), dtype=self.dtype)
@@ -379,15 +394,15 @@ class BmmFP8Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "BmmFP8Workload":
         """The workload of one manifest call of ``BmmFP8FwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["B"],
-            ix["M"],
-            ix["N"],
-            ix["K"],
-            getattr(torch, ix["T"]),
-            out_dtype=getattr(torch, ix["out_dtype"]),
-            trans_b=ix["trans_b"],
+            indices["B"],
+            indices["M"],
+            indices["N"],
+            indices["K"],
+            getattr(torch, indices["T"]),
+            out_dtype=getattr(torch, indices["out_dtype"]),
+            trans_b=indices["trans_b"],
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -460,15 +475,15 @@ class GroupedGemmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GroupedGemmWorkload":
         """The workload of one manifest call of ``GroupedGemmFwdOp``."""
-        ix = call.indices
+        indices = call.indices
         return cls(
-            ix["M"],
-            ix["G"],
-            ix["N"],
-            ix["K"],
-            getattr(torch, ix["T"]),
-            ix["transpose_a"],
-            ix["transpose_b"],
+            indices["M"],
+            indices["G"],
+            indices["N"],
+            indices["K"],
+            getattr(torch, indices["T"]),
+            indices["transpose_a"],
+            indices["transpose_b"],
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:

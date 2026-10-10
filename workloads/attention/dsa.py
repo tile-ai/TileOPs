@@ -141,22 +141,22 @@ class DSADecodeCall(CallWorkload, DSADecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.indices, call.params
+        indices, params = call.indices, call.params
         DSADecodeWorkload.__init__(
             self,
-            ix["B"],
-            ix["H"],
-            ix["S"],
-            ix["S_kv"],
-            ix["D"],
+            indices["B"],
+            indices["H"],
+            indices["S"],
+            indices["S_kv"],
+            indices["D"],
             params["dim_tail"],
-            ix["K"],
+            indices["K"],
             params["stride_kv"],
-            ix["H_kv"],
+            indices["H_kv"],
             params["q_start_index_s"],
             sm_scale=params["sm_scale"],
             is_causal=params["is_causal"],
-            dtype=getattr(torch, ix["T"]),
+            dtype=getattr(torch, indices["T"]),
         )
 
     gen_inputs = CallWorkload.gen_inputs

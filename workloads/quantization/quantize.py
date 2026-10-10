@@ -106,8 +106,8 @@ class _QuantizeWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "_QuantizeWorkload":
         """The workload of one manifest call of the op this class is named for."""
-        ix = call.indices
-        return cls(ix[cls._ROWS], ix["K"], getattr(torch, ix["T"]))
+        indices = call.indices
+        return cls(indices[cls._ROWS], indices["K"], getattr(torch, indices["T"]))
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         x = torch.randn(self.rows, self.cols, dtype=self.dtype, device=run_device())
@@ -171,8 +171,8 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
 
     @classmethod
     def from_call(cls, call: Any) -> "INT4QuantPerGroupWorkload":
-        ix = call.indices
-        return cls(ix["N"], ix["K"], getattr(torch, ix["T"]), ix["group_size"])
+        indices = call.indices
+        return cls(indices["N"], indices["K"], getattr(torch, indices["T"]), indices["group_size"])
 
     def ref_program(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return int4_quant_per_group(w, self.group_size)
