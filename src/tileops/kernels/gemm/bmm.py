@@ -736,6 +736,12 @@ class BmmKernel(Kernel, BmmFwdInterface):
         ]
         return [c for c in configs if self.k % c["block_k"] == 0]
 
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
+        # and keeps it; dropping it makes the next launch compile the tuned config.
+        self.__dict__.pop("_compiled_kernel", None)
+
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not hasattr(self, "_compiled_kernel"):
             self._compiled_kernel = self.kernel(**self.config)
@@ -960,6 +966,12 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
     @property
     def out_dtype_str(self) -> str:
         return self.dtype_to_str(self.out_dtype)
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
+        # and keeps it; dropping it makes the next launch compile the tuned config.
+        self.__dict__.pop("_compiled_kernel", None)
 
     def forward(
         self,
@@ -1231,6 +1243,12 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
             for block in self.TILE_CANDIDATES
             for threads in self.THREAD_CANDIDATES
         ]
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
+        # and keeps it; dropping it makes the next launch compile the tuned config.
+        self.__dict__.pop("_compiled_kernel", None)
 
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         """Return ``src`` with its last two axes swapped, contiguous.

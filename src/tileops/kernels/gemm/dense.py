@@ -3310,6 +3310,14 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
             for ns in [2, 3, 4]
         ]
 
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``forward`` compiles ``_compiled_kernel`` and, for split-K, ``_compiled_reduce``
+        # from ``self.config`` on its first launch and keeps them; dropping them makes the
+        # next launch compile the tuned config.
+        self.__dict__.pop("_compiled_kernel", None)
+        self.__dict__.pop("_compiled_reduce", None)
+
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if not hasattr(self, "_compiled_kernel"):
             jit_config = {k: v for k, v in self.config.items() if k != "pass_configs"}

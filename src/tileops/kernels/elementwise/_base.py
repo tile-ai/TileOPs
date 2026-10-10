@@ -138,6 +138,17 @@ class _StrategyKernel(_ElementwiseKernel):
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
+        self._compile_program()
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``forward`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
+        # A tune inside construction runs before it exists; ``init_config`` compiles it then.
+        if hasattr(self, "_compiled_fn"):
+            self._compile_program()
+
+    def _compile_program(self) -> None:
+        """Compile ``_compiled_fn``, the program ``forward`` launches, from ``self.config``."""
         # Tuning returns only the axes it swept; the rest keeps its default.
         self.config = {**self.default_config, **self.config}
         self.config["strategy"] = self.strategy
@@ -765,6 +776,17 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     def init_config(self, config=None, tune=False):
         Kernel.init_config(self, config, tune)
+        self._compile_program()
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        super().autotune(warmup, rep)
+        # ``_run`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
+        # A tune inside construction runs before it exists; ``init_config`` compiles it then.
+        if hasattr(self, "_compiled_fn"):
+            self._compile_program()
+
+    def _compile_program(self) -> None:
+        """Compile ``_compiled_fn``, the program ``_run`` launches, from ``self.config``."""
         cfg = self.config
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
