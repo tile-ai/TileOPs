@@ -23,7 +23,7 @@ def test_int8_quant_per_block_bench(case) -> None:
 
     op = INT8QuantPerBlockFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
     implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: bench.Implementation(

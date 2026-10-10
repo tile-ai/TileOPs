@@ -574,7 +574,7 @@ def test_gemm(
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -666,7 +666,7 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -677,7 +677,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
     op = GemmFwdOp(trans_a=False, trans_b=False)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -739,14 +739,14 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
+def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
     inputs = test.gen_inputs()
     op = GemmW4A16FwdOp(target=BUILTIN)
     expected = op(*inputs)
 
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
-        op.autotune()
+        op.request_tune()
 
     assert op._tune_requested is False
     assert torch.equal(op(*inputs), expected)
@@ -757,7 +757,7 @@ def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
 
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
         new_op = GemmW4A16FwdOp()
-        new_op.autotune()
+        new_op.request_tune()
     assert new_op._tune_requested is False
 
 

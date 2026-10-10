@@ -144,6 +144,6 @@ class Mamba2FwdOp(Op):
         y = self._chunk_scan_op(x, cb, dA_cumsum, C, prev_states, dt_out)  # (B, S, H, P) float32
         return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["x"][1])

@@ -141,7 +141,7 @@ class DSADecodeCall(CallWorkload, DSADecodeWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        ix, params = call.indices, call.params
         DSADecodeWorkload.__init__(
             self,
             ix["B"],

@@ -33,5 +33,5 @@ def test_fp8_quant_op(
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, dtype)
     op = FP8QuantFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())

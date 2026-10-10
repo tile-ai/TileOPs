@@ -66,14 +66,14 @@ class IndexedExpertMLPFwdOp(Op):
         self.routed_scaling_factor = routed_scaling_factor
         super().__init__(target=target)
 
-    def roofline_inputs(self) -> dict[str, int]:
+    def roofline_data_terms(self) -> dict[str, int]:
         """The experts this call's routing selected, which its weight reads follow."""
         from tileops.perf.formulas import routed_active_experts
 
         return {"active_experts": routed_active_experts(self.last_call)}
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["D"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,

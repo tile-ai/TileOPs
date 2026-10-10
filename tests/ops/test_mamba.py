@@ -56,7 +56,7 @@ from workloads.numerics import compare_outputs
 def test_ssd_chunk_coupling_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
     op = SSDChunkCouplingFwdOp(chunk_len)
     if tune:
-        op.autotune()
+        op.request_tune()
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
@@ -107,7 +107,7 @@ def test_ssd_chunk_cumsum_fwd(
         out_dtype=dtype,
     )
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -138,7 +138,7 @@ def test_ssd_chunk_scan_fwd(
     )
     op = SSDChunkScanFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -156,7 +156,7 @@ def test_ssd_chunk_state_fwd(
     )
     op = SSDChunkStateFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -210,7 +210,7 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     op = SSDStatePassingFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
@@ -224,7 +224,7 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
     op = SSDRecurrentFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs(), runs=lambda *args: ssd_decode_result(op, *args))
 
 

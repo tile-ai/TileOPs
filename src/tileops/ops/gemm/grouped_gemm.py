@@ -112,6 +112,6 @@ class GroupedGemmFwdOp(Op):
         )
         return self.kernel_for("grouped_gemm", call)(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

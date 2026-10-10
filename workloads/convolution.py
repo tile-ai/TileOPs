@@ -39,7 +39,7 @@ class Conv1dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv1dWorkload":
         """The workload of one manifest call of ``Conv1dFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(
             ix["N"],
             ix["C_in"],
@@ -123,7 +123,7 @@ class Conv2dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv2dWorkload":
         """The workload of one manifest call of ``Conv2dFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(
             ix["N"],
             ix["C_in"],
@@ -211,7 +211,7 @@ class Conv3dWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "Conv3dWorkload":
         """The workload of one manifest call of ``Conv3dFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(
             ix["N"],
             ix["C_in"],

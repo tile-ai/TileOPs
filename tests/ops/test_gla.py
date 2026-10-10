@@ -100,7 +100,7 @@ def test_gla_fwd(
         scale=scale,
     )
     if tune:
-        fwd_op.autotune()
+        fwd_op.request_tune()
     op_o, _ = fwd_op(q, k, v, g)
 
     cos = cosine_sim(ref_o, op_o)
@@ -201,7 +201,7 @@ def test_gla_bwd(
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
     if tune:
-        bwd_op.autotune()
+        bwd_op.request_tune()
     op_dq, op_dk, op_dv, op_dg = bwd_op(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
@@ -251,7 +251,7 @@ def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
         op(q, k, v, g, h, do, dht)
     for interface in GLAChunkBwdOp.interfaces:
-        assert not op.built_kernels(interface)
+        assert not op.built_entries(interface)
 
 
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAFwdWorkload) -> None:
@@ -442,7 +442,7 @@ def test_gla_packed_varlen_refuses_offsets_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="shared memory per block for 16384 sequences"):
         op(q, k, v, g, None, cu_seqlens)
     for interface in GLAFwdOp.interfaces:
-        assert not op.built_kernels(interface)
+        assert not op.built_entries(interface)
 
 
 @pytest.mark.smoke
@@ -579,7 +579,7 @@ def test_gla_decode(
     test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
     op = GLARecurrentFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -599,7 +599,7 @@ def test_gla_decode_multi_step(
 
     op = GLARecurrentFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -647,7 +647,7 @@ def test_gla_decode_vs_fla(
 
     op = GLARecurrentFwdOp(scale=scale)
     if tune:
-        op.autotune()
+        op.request_tune()
     with torch.no_grad():
         o_tile, s_tile = op(q, k, v, gk, state)
 

@@ -120,7 +120,7 @@ class MoEGroupedGemmFwdOp(Op):
         "grouped_gemm": MGroupedGemmFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops.perf.formulas import moe_layout_rows
 
@@ -151,9 +151,9 @@ class MoEGroupedGemmFwdOp(Op):
         self.out_dtype = out_dtype
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,
@@ -211,7 +211,7 @@ class MoEExpertMLPFwdOp(Op):
         "down": MoEGroupedGemmFwdOp,
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops.perf.formulas import moe_layout_rows
 
@@ -238,9 +238,9 @@ class MoEExpertMLPFwdOp(Op):
         self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
         self.down = self.delegate_for("down", None, layout=layout)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,

@@ -70,7 +70,7 @@ class NSATopKVarlenFwdOp(Op):
 
         super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
         from tileops.perf.formulas import nsa_topk_scored_pairs
 
@@ -113,7 +113,7 @@ class NSATopKVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_topk_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -161,7 +161,7 @@ class NSAVarlenFwdOp(Op):
 
         super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The key rows this call's selection scores and the distinct rows it reads."""
         from tileops.perf.formulas import nsa_selected_rows
 
@@ -209,7 +209,7 @@ class NSAVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_fwd_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -251,7 +251,7 @@ class NSACompressedVarlenFwdOp(Op):
 
         super().__init__(target=target)
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
         from tileops.perf.formulas import nsa_closed_chunk_pairs
 
@@ -297,6 +297,6 @@ class NSACompressedVarlenFwdOp(Op):
         )
         return self.kernel_for("nsa_compressed_fwd_varlen_kernel", call)(*tensors)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

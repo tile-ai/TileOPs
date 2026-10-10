@@ -51,7 +51,7 @@ class SoftmaxFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # tune=True regression: kernel must be built before autotune runs
+                # request_tune() regression: kernel must be built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -100,7 +100,7 @@ def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> N
     test = SoftmaxTest(shape, dtype, dim=dim)
     op = SoftmaxFwdOp(dim=dim)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -185,7 +185,7 @@ class LogSoftmaxFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # tune=True regression: kernel must be built before autotune runs
+                # request_tune() regression: kernel must be built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -234,7 +234,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     test = LogSoftmaxTest(shape, dtype, dim=dim)
     op = LogSoftmaxFwdOp(dim=dim)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -321,7 +321,7 @@ class LogSumExpFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # tune=True regression: kernel must be built before autotune runs
+                # request_tune() regression: kernel must be built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1: dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -373,7 +373,7 @@ def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) ->
     test = LogSumExpTest(shape, dtype, dim=dim)
     op = LogSumExpFwdOp(dim=dim)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

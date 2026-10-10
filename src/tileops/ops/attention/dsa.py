@@ -36,7 +36,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
         "dsa_decode": SparseMLADecodeFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The keys this call's selection makes it score, which its flops follow, and the
         distinct ``kv`` rows they reach, which its bytes follow."""
         from tileops.perf.formulas import dsa_distinct_kv_rows, dsa_selected_keys
@@ -122,6 +122,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
         kernel = self.kernel_for("dsa_decode", self._dsa_decode_call(q, kv, indices))
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

@@ -280,11 +280,11 @@ _GLOBALS = {
 
 @dataclass(frozen=True)
 class SignatureCall(CallView):
-    """One checked call: `ix`, every present tensor's shape and dtype, its effects, the
+    """One checked call: its `indices`, every present tensor's shape and dtype, its effects, the
     metadata tensors whose values decide its traffic, and the checked calls its sub-ops
     completed during it (docs/design/roofline.md)."""
 
-    ix: dict
+    indices: dict
     # Present tensors, outputs included, as `(shape, dtype name)`.
     tensors: dict
     # `(tensor, reads, writes)` per tensor the effect rules charge.
@@ -292,9 +292,9 @@ class SignatureCall(CallView):
     device: object = None
     # The inputs this call writes, and whether a caller passed `out`.
     written: frozenset = frozenset()
-    out: bool = False
+    has_out: bool = False
     # The discriminant point the call took, as its plan keys it.
-    key: tuple = ()
+    branch_key: tuple = ()
     # The metadata tensors the call passed: inputs declaring `values`.
     metadata: dict = None
     # The checked calls the op's sub-ops completed during this call, by stage.
@@ -309,7 +309,7 @@ class SignatureCall(CallView):
         object.__setattr__(self, "stages", stages)
         return self
 
-    def values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list:
         """The contents of metadata tensor *name*.
 
         Raises:
@@ -729,7 +729,7 @@ class _CallCheck:
         b = self.branch
         present = set(b.shapes)
         buffer = point.get("present(out)", False)
-        e.emit("_k = self._construction_ix")
+        e.emit("_k = self._construction_indices")
         for n in sorted(built.known):
             e.emit(f"{n} = _k[{n!r}]")
         for t in sig.inputs:
@@ -799,14 +799,14 @@ class _CallCheck:
             return e.function(name, "self, tensors, dtypes")
         values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
         solved = {s.name for s in unification(nodes, known, b.lets) if s.name}
-        ix = sorted((known | solved) - values)
-        e.emit(f"_ix = {{{', '.join(f'{n!r}: {n}' for n in ix)}}}")
+        indices = sorted((known | solved) - values)
+        e.emit(f"_indices = {{{', '.join(f'{n!r}: {n}' for n in indices)}}}")
         shapes = ", ".join(f"{t!r}: (_s_{t}, _d_{t})" for t in (*inputs, *ctor, *outputs))
         metadata = ", ".join(
             f"{t!r}: {t}" for t in (*inputs, *ctor) if sig.call_tensors[t].values is not None
         )
         e.emit(
-            f"return _SignatureCall(_ix, {{{shapes}}}, {_traffic(sig, point, present)!r}, _device, "
+            f"return _SignatureCall(_indices, {{{shapes}}}, {_traffic(sig, point, present)!r}, _device, "
             f"frozenset({sorted(_written(sig, point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}})"
         )
         return e.function(name, "self, tensors")
@@ -851,7 +851,7 @@ class _CallCheck:
 
 
 def _roofline_source(sig: Signature, b: PlanBranch) -> str:
-    """`roofline(_c)` at one point: its folded inline formula over the call's `ix`."""
+    """`roofline(_c)` at one point: its folded inline formula over the call's `indices`."""
     tensors = {*sig.call_tensors, *sig.outputs, "out"}
     exprs = [n for n in b.roofline.values() if n is not None]
     read = sorted(set().union(set(), *(names(n) for n in exprs)) - tensors)
@@ -864,7 +864,7 @@ def _roofline_source(sig: Signature, b: PlanBranch) -> str:
     return "\n".join(
         [
             "def roofline(_c):",
-            *(f"    {n} = _c.ix[{n!r}]" for n in read),
+            *(f"    {n} = _c.indices[{n!r}]" for n in read),
             f"    return ({flops}, {moved})",
         ]
     )
@@ -890,7 +890,7 @@ def _rejecting(sig: Signature, message: str):
     return check
 
 
-class _Plan:
+class _SignaturePlan:
     """One entry's discriminant axes and the checks emitted for each of their points.
 
     A construction point's checks are emitted when an op is first constructed there, so a
@@ -1034,7 +1034,7 @@ class _Plan:
                 point[key] = tensors.get(name) is not None
         return point
 
-    def construct(self, op) -> dict:
+    def check_construction(self, op) -> dict:
         """Check what construction decides and return what it solved: the index values."""
         key = self.built_key(self.point(op, {}, self.built_axes))
         if key in self._pending:
@@ -1051,12 +1051,12 @@ class _Plan:
         """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
         return self._lookup(self.shapes, op, shapes)(op, shapes, dtypes)
 
-    def effect(self, op, present: tuple) -> tuple:
+    def effect_branch(self, op, present: tuple) -> tuple:
         """The inputs this call writes, whether it passes `out`, and the outputs it emits.
 
         *present* is the presence of :attr:`tensor_axes`, in order. Every other coordinate of
         the discriminant point is a param or a constructor tensor of *op*, which construction
-        reads once and keeps as ``_construction_ix``, so the branch is settled by *present*
+        reads once and keeps as ``_construction_indices``, so the branch is settled by *present*
         alone and is looked up once per instance and presence.
         """
         cache = op._effect_branches
@@ -1066,11 +1066,11 @@ class _Plan:
             branch = cache[present] = self._lookup(self.effects, op, tensors)
         return branch
 
-    def roofline(self, call: SignatureCall) -> tuple[int, int]:
+    def eval_roofline(self, call: SignatureCall) -> tuple[int, int]:
         """`(flops, bytes)` of a checked call (docs/design/roofline.md)."""
         if self.entry.roofline is not None and "func" in self.entry.roofline:
             return _counts(self.sig.name, self.entry.roofline["func"](call))
-        return _counts(self.sig.name, self.roofs[call.key](call))
+        return _counts(self.sig.name, self.roofs[call.branch_key](call))
 
     def _lookup(self, table: dict, op, tensors: dict):
         point = self.point(op, tensors)
@@ -1107,7 +1107,7 @@ def check_result(
         if name not in call.tensors:
             _require(item is None, f"{sig.name}: {name} is returned where it is absent")
             continue
-        if decl.buffer and call.out:
+        if decl.buffer and call.has_out:
             _require(item is tensors["out"], f"{sig.name}: {name} must be the `out` it was given")
         if decl.alias in call.written:
             _require(
@@ -1123,7 +1123,7 @@ def check_result(
         )
         if decl.contiguous:
             _require(item.is_contiguous(), f"{sig.name}: {name} must be contiguous")
-        fresh = not (decl.buffer and call.out) and decl.alias not in call.written
+        fresh = not (decl.buffer and call.has_out) and decl.alias not in call.written
         _require(
             not fresh or traced or not any(_shares_storage(item, other) for other in taken),
             f"{sig.name}: {name} shares storage with a tensor it does not declare as its alias",
@@ -1138,7 +1138,7 @@ def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
     return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
 
 
-def _construction_check(plan: _Plan):
+def _construction_check(plan: _SignaturePlan):
     """`_check_construction`: parameter values against their `type`, construction-time tensor
     presence, then what the construction point decides; it returns the index values solved."""
     sig = plan.sig
@@ -1155,7 +1155,7 @@ def _construction_check(plan: _Plan):
                 convert(_dname(value) if p in dtypes else value, decl.get("type"), sig.adts)
             except ValueError as exc:
                 raise CheckError(f"{sig.name}: {p} = {exc}") from None
-        return plan.construct(self)
+        return plan.check_construction(self)
 
     return check
 
@@ -1171,8 +1171,8 @@ def _counts(name: str, result) -> tuple[int, int]:
     return result
 
 
-def _last_call(op) -> SignatureCall:
-    call = getattr(op, "_signature_call", None)
+def _completed_call(op) -> SignatureCall:
+    call = getattr(op, "_last_call", None)
     if call is None:
         raise RuntimeError(f"{type(op).__name__}: eval_roofline needs a completed call")
     return call
@@ -1185,14 +1185,14 @@ def _last_call(op) -> SignatureCall:
 _ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
 
 
-class _Boundary:
+class _CompileBoundary:
     """The compile-boundary operators of one class: one per effect branch.
 
     A branch is the set of inputs a call writes, whether it passes `out`, and the outputs it
     emits; its operator's schema, written arguments and fake follow from the signature there.
     """
 
-    def __init__(self, cls: type, plan: _Plan, family: str):
+    def __init__(self, cls: type, plan: _SignaturePlan, family: str):
         """Register one operator per effect branch of *plan*'s signature.
 
         `forward`'s code-defined execution parameters follow the signature's arguments in every
@@ -1260,7 +1260,7 @@ class _Boundary:
             op = get_instance(key)
             writes = {"out": values[count]} if out else {}
             execution = dict(zip((n for n, _ in self.execution), values[tail:], strict=True))
-            result = op._serve(tuple(values[:count]), op.forward, writes, written, execution)
+            result = op._run_call(tuple(values[:count]), op.forward, writes, written, execution)
             if not returned:
                 return None
             if len(sig.outputs) == 1:
@@ -1283,8 +1283,8 @@ class _Boundary:
             if detect_fake_mode() is None and not torch.compiler.is_compiling():
                 # An eager call on meta tensors completes here, not in `operator`; it runs no
                 # sub-op, so it opens and closes its call at once.
-                op._open_call()
-                op._keep_call(call)
+                op._begin_call()
+                op._record_call(call)
             return None if not built else built[0] if len(built) == 1 else built
 
         operator.__name__ = name.replace("::", "_")
@@ -1328,7 +1328,7 @@ class _Boundary:
             writes.get("out") is not None if i is None else inputs[i] is not None
             for i in self.presence
         )
-        operator, out, returns, picks = self.branches[self.plan.effect(op, present)]
+        operator, out, returns, picks = self.branches[self.plan.effect_branch(op, present)]
         result = operator(
             *inputs,
             *([writes["out"]] if out else []),
@@ -1348,7 +1348,7 @@ class _Boundary:
         ]
         return None if not values else values[0] if len(values) == 1 else tuple(values)
 
-    def binder(self, cls: type):
+    def build_call_boundary(self, cls: type):
         """`_call_boundary` for *cls*: `forward`'s parameters bound by plain Python arguments."""
         parameters = list(inspect.signature(cls.forward).parameters.values())[1:]
         defaults = {f"_d{i}": p.default for i, p in enumerate(parameters)}
@@ -1414,7 +1414,7 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
         entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
-    plan = _Plan(entry_plan_)
+    plan = _SignaturePlan(entry_plan_)
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)
@@ -1425,7 +1425,7 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
         dtypes=True,
     )
     if entry_plan_.roofline is not None:
-        cls.eval_roofline = lambda self: plan.roofline(_last_call(self))
+        cls.eval_roofline = lambda self: plan.eval_roofline(_completed_call(self))
     abc.update_abstractmethods(cls)
     return True
 
@@ -1445,8 +1445,8 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
     if not has_compile_boundary(entry):
         cls.compile_op_names = ()
         return
-    boundary = _Boundary(cls, cls._signature, entry["family"])
-    cls._call_boundary = boundary.binder(cls)
+    boundary = _CompileBoundary(cls, cls._signature, entry["family"])
+    cls._call_boundary = boundary.build_call_boundary(cls)
 
 
 def maybe_install_signature(cls: type) -> bool:

@@ -9,7 +9,7 @@ yet know which device they will run on.
 import pytest
 import torch
 
-from tileops.backend import BUILTIN, register_implementation, registry
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.utils import forget_device_properties, get_sm_version
 from workloads.device import run_device_available
@@ -126,12 +126,12 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
         supported_archs = None
         preferred_over = frozenset({key})
 
-    register_implementation("ReluFwdOp", "relu_unrestricted", UnrestrictedKernel)
+    register_kernel_type("ReluFwdOp", "relu_unrestricted", UnrestrictedKernel)
     op = cls(target=BUILTIN)
     x = torch.randn(8, device="cuda", dtype=torch.float16)
 
     y = op(x)
-    ((built,),) = [tuple(op.built_kernels(ELEMENTWISE).values())]
+    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
     assert isinstance(built, UnrestrictedKernel), "the added implementation is what got built"
     compare_outputs(y, torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
 
@@ -166,12 +166,12 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
         def forward(self, a, b):
             return a & b
 
-    register_implementation("BitwiseAndFwdOp", "native_bool_and", NativeBoolAnd)
+    register_kernel_type("BitwiseAndFwdOp", "native_bool_and", NativeBoolAnd)
     op = BitwiseAndFwdOp(target=BUILTIN)
     x = torch.tensor([True, False] * 32, device="cuda")
 
     compare_outputs(op(x, ~x), x & ~x, ElementwiseWorkload(type(op).__name__, ()).verification())
-    ((built,),) = [tuple(op.built_kernels(ELEMENTWISE).values())]
+    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
     assert isinstance(built, NativeBoolAnd)
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
 

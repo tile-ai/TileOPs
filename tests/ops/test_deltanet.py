@@ -84,7 +84,7 @@ def test_deltanet_fwd(
     test = DeltaNetChunkwiseTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     op = DeltaNetChunkFwdOp(chunk_size=chunk_size)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -148,7 +148,7 @@ def test_deltanet_bwd(
     # Kernel
     op = DeltaNetChunkBwdOp(chunk_size=BC)
     if tune:
-        op.autotune()
+        op.request_tune()
     op_outputs = op(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
 
     compare_outputs(
@@ -358,7 +358,7 @@ def test_deltanet_decode(
     test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
     op = DeltaNetRecurrentFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -378,7 +378,7 @@ def test_deltanet_decode_multi_step(
 
     op = DeltaNetRecurrentFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)

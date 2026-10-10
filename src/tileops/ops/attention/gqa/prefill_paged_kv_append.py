@@ -57,7 +57,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         """
         return None
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The distinct cache rows this call reads, which its cache traffic follows."""
         from tileops.perf.formulas import gqa_prefill_paged_cache_rows
 
@@ -275,6 +275,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             "compute per-sample from cu_seqlens and cache_seqlens at call time."
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

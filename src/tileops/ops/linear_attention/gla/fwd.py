@@ -64,10 +64,10 @@ class GLAFwdOp(Op):
         self.scale = scale
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Prefill contracts chunks on tensor cores; a decode step is a matvec on CUDA cores."""
         q_shape, q_dtype = self.last_call.tensors["q"]
-        return super().compute_roof() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
+        return super().roof_key() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
 
     def forward(
         self,

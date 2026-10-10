@@ -16,7 +16,7 @@ from tileops.quantization import INT8QuantPerChannelFwdOp
 def test_int8_quant_per_channel_bench(case) -> None:
     # Autotuning is a bench-run policy, not a workload property.
     op = INT8QuantPerChannelFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
 
     # vllm's Triton ``per_token_quant_int8`` and its CUDA ``scaled_int8_quant`` without a
     # scale, both dynamic with one scale per row; each returns ``scale`` as ``[N, 1]``.

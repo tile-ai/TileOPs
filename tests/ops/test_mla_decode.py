@@ -63,7 +63,7 @@ def test_mla_decode(
     test = MLADecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MLADecodeWithKVCacheFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

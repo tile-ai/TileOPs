@@ -324,7 +324,9 @@ def test_inference_decode_keeps_its_strict_output_and_state_bound(family, dtype,
     got = list(expected)
     got[wrong_output] = got[wrong_output] + 1e-4
     # Both unit and manifest consumers must reject a drift accepted by prefill's bound.
-    manifest_consumer = SimpleNamespace(call=SimpleNamespace(ix={"use_qk_l2norm_in_kernel": False}))
+    manifest_consumer = SimpleNamespace(
+        call=SimpleNamespace(indices={"use_qk_l2norm_in_kernel": False})
+    )
     for evidence in (workload.verification(q), call_type.verification(manifest_consumer, q)):
         with pytest.raises(AssertionError):
             compare_outputs(tuple(got), expected, evidence)

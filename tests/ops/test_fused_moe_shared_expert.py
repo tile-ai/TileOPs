@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import register_implementation, registry
+from tileops.backend import register_kernel_type, registry
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
@@ -283,9 +283,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
     state = registry.snapshot()
     try:
-        register_implementation(
-            "SharedExpertMLPFwdOp", "shared_expert_mlp_replacement", Replacement
-        )
+        register_kernel_type("SharedExpertMLPFwdOp", "shared_expert_mlp_replacement", Replacement)
         op = FusedMoESharedExpertFwdOp(top_k=K)
     finally:
         registry.restore(state)

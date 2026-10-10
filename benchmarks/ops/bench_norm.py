@@ -72,7 +72,7 @@ def _in_place_fused_add(fn, inputs: tuple, eps: float) -> bench.Implementation:
 def test_rms_norm_bench(case) -> None:
     x, weight = case.inputs
     op = RMSNormFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     shape = tuple(case.params["normalized_shape"])
     eps = case.params["eps"]
     eps = torch.finfo(torch.float32).eps if eps is None else eps
@@ -105,7 +105,7 @@ def test_rms_norm_bench(case) -> None:
 @pytest.mark.parametrize("case", bench.cases(FusedAddRMSNormFwdOp), ids=lambda case: case.id)
 def test_fused_add_rms_norm_bench(case) -> None:
     op = FusedAddRMSNormFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     eps = case.params["eps"]
     bench.Runner(op, case).compare(
         {
@@ -123,7 +123,7 @@ def test_fused_add_rms_norm_bench(case) -> None:
 def test_layer_norm_bench(case) -> None:
     x, weight, bias = case.inputs
     op = LayerNormFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     shape, eps = (tuple(case.params["normalized_shape"]), case.params["eps"])
     baseline_fn = case.reference
     library = {}
@@ -167,7 +167,7 @@ def test_layer_norm_bench(case) -> None:
 @pytest.mark.parametrize("case", bench.cases(FusedAddLayerNormFwdOp), ids=lambda case: case.id)
 def test_fused_add_layer_norm_bench(case) -> None:
     op = FusedAddLayerNormFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     eps = case.params["eps"]
     baseline_fn = case.reference
 

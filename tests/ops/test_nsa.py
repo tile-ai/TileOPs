@@ -160,7 +160,7 @@ def test_nsa_varlen_op(
         block_size=block_size,
     )
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -213,7 +213,7 @@ def test_nsa_compressed_fwd_varlen_op(
     inputs = test.gen_inputs()
     op = NSACompressedVarlenFwdOp(scale=scale, bs=bs)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *inputs)
 
 
@@ -285,7 +285,7 @@ def test_nsa_topk_varlen_op(
         bs=bs,
     )
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *inputs)
 
 
@@ -330,7 +330,7 @@ def test_nsa_varlen_reference_returns_the_declared_output() -> None:
         for row in load_workloads(name)
         for case in row.get("dtype_cases") or [{}]
     ]
-    call = min(calls, key=lambda c: c.ix["T_q"] * c.ix["H"] * c.ix["D"])
+    call = min(calls, key=lambda c: c.indices["T_q"] * c.indices["H"] * c.indices["D"])
     workload = NSAFwdCall(call)
     output = workload.ref_program(*workload.gen_inputs())
     spec = call.specs["o_slc"]

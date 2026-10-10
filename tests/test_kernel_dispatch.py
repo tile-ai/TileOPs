@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 
 import tileops.ops
-from tileops.backend import BUILTIN, register_implementation, registry
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
@@ -138,7 +138,7 @@ def test_selection_takes_the_implementation_no_other_is_preferred_over() -> None
 
 def test_availability_filters_before_precedence() -> None:
     """An implementation that cannot run on the call's device takes nothing it is preferred over."""
-    register_implementation(
+    register_kernel_type(
         "_ScaleOp",
         "meta_positive",
         _implementation(
@@ -152,7 +152,7 @@ def test_availability_filters_before_precedence() -> None:
 
 
 def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
-    register_implementation(
+    register_kernel_type(
         "_ScaleOp", "also_positive", _implementation("AlsoPositive", lambda c: c.n > 0)
     )
     assert _selected(_ScaleOp(), 5) == {5: "dispatch is ambiguous"}
@@ -166,7 +166,7 @@ def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
 def test_an_added_implementation_its_device_cannot_run_leaves_the_call_to_the_original() -> None:
     """A registered implementation built for another architecture is unavailable, so the
     implementation it is preferred over builds the entry."""
-    register_implementation(
+    register_kernel_type(
         "_ScaleOp",
         "sm90_positive",
         _implementation(
@@ -187,7 +187,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
     def unreachable(*args, **kwargs):
         raise AssertionError("a hit resolved something")
 
-    monkeypatch.setattr(op, "_resolve_entry", unreachable)
+    monkeypatch.setattr(op, "_get_or_build_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
     assert op.kernel_for("scale", call) is first
     assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
@@ -197,15 +197,15 @@ def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
     op = _ScaleOp()
     assert op.entry(1) is op.entry(9)
     assert op.entry(1) is not op.entry(20)
-    assert len(op.built_kernels("scale")) == 2
+    assert len(op.built_entries("scale")) == 2
 
 
 def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
-    """An equal call spec after ``autotune`` serves the tuned entry; builders take no tune."""
+    """An equal call spec after ``request_tune`` serves the tuned entry; builders take no tune."""
     op = _ScaleOp()
     entry = op.entry(5)
     assert entry.config == {}
-    op.autotune()
+    op.request_tune()
     assert op.entry(5) is entry and entry.config == {"tuned": True}
     assert op.entry(7) is entry
     assert op.entry(25).config == {"tuned": True}
@@ -228,7 +228,7 @@ class _ScalingOnly(_Scaling):
 
 
 @pytest.mark.parametrize(
-    ("implementation", "error", "match"),
+    ("kernel_type", "error", "match"),
     [
         (_ScalingOnly, TypeError, "does not implement _Scaling; .* inherits _Scaling"),
         (
@@ -243,8 +243,8 @@ class _ScalingOnly(_Scaling):
         ),
     ],
 )
-def test_a_registered_implementation_implements_its_interface(implementation, error, match) -> None:
-    register_implementation("_ScaleOp", "added", implementation)
+def test_a_registered_implementation_implements_its_interface(kernel_type, error, match) -> None:
+    register_kernel_type("_ScaleOp", "added", kernel_type)
     with pytest.raises(error, match=match):
         _ScaleOp()
 
@@ -270,7 +270,7 @@ def test_a_registered_implementation_implements_its_interface(implementation, er
 )
 def test_installation_refuses_a_malformed_registration(added, match) -> None:
     for key, cls in added.items():
-        register_implementation("_ScaleOp", key, cls)
+        register_kernel_type("_ScaleOp", key, cls)
     with pytest.raises(ValueError, match=match):
         _ScaleOp()
 
@@ -309,8 +309,8 @@ def test_an_installed_implementation_set_cannot_change() -> None:
     op = _ScaleOp()
     op.entry(5)
     with pytest.raises(TypeError):
-        op._registered["positive"] = _NEGATIVE
-    register_implementation(
+        op._installed_kernel_types["positive"] = _NEGATIVE
+    register_kernel_type(
         "_ScaleOp",
         "later",
         _implementation("Later", lambda c: c.n > 0, preferred_over=frozenset({"positive"})),
@@ -390,21 +390,29 @@ def _layer_norm(op, n: int):
     weight, bias = torch.randn(n, device=run_device()), torch.randn(n, device=run_device())
     expected = F.layer_norm(x, (n,), weight, bias)
     torch.testing.assert_close(op(x, weight, bias), expected, atol=1e-4, rtol=1e-4)
-    return [type(k).__name__ for k in op.built_kernels("layer_norm").values()]
+    return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
 
 
 def test_an_added_implementation_needs_only_the_published_contract() -> None:
     class _EveryRowTorchLayerNorm(_TorchLayerNorm):
         preferred_over = frozenset(LayerNormFwdOp.kernel_types)
 
-    register_implementation("LayerNormFwdOp", "torch_layer_norm", _EveryRowTorchLayerNorm)
+    register_kernel_type("LayerNormFwdOp", "torch_layer_norm", _EveryRowTorchLayerNorm)
     op = LayerNormFwdOp((256,), target=BUILTIN)
     assert _layer_norm(op, 256) == ["_EveryRowTorchLayerNorm"]
 
 
+def test_register_kernel_type_takes_its_parameters_by_name() -> None:
+    register_kernel_type(
+        op="LayerNormFwdOp", key="torch_short_rows", kernel_type=_NarrowTorchLayerNorm
+    )
+    op = LayerNormFwdOp((256,), target=BUILTIN)
+    assert op._installed_kernel_types["torch_short_rows"] is _NarrowTorchLayerNorm
+
+
 @pytest.mark.cuda_only
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
-    register_implementation("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
+    register_kernel_type("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
     assert _layer_norm(LayerNormFwdOp((256,)), 256) == ["_NarrowTorchLayerNorm"]
     assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
 

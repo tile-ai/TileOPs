@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-from tileops.backend import BUILTIN, register_implementation, registry
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
@@ -147,7 +147,7 @@ class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
 def registered_candidate():
     """``_ExecutableGroupedCandidate`` registered for every grouped GEMM this test builds."""
     state = registry.snapshot()
-    register_implementation("MoEGroupedGemmFwdOp", _CANDIDATE_KEY, _ExecutableGroupedCandidate)
+    register_kernel_type("MoEGroupedGemmFwdOp", _CANDIDATE_KEY, _ExecutableGroupedCandidate)
     yield
     registry.restore(state)
 
@@ -164,7 +164,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache(registered
     b = torch.ones(1, 8, 8, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
     op = MoEGroupedGemmFwdOp(_TIGHT, target=BUILTIN)
-    op.autotune()
+    op.request_tune()
 
     first = op(a, b, ends)
     second = op(a, b, ends)
@@ -187,8 +187,8 @@ def test_expert_mlp_installs_a_registered_implementation_in_both_gemms(
     registered_candidate,
 ) -> None:
     mlp = MoEExpertMLPFwdOp(_TIGHT)
-    assert mlp.gate_up._registered[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
-    assert mlp.down._registered[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
+    assert mlp.gate_up._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
+    assert mlp.down._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
     assert MoEExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
 
 

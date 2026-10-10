@@ -10,7 +10,7 @@ from tileops.ops import FFTC2CFwdOp
 @pytest.mark.parametrize("case", bench.cases(FFTC2CFwdOp), ids=lambda case: case.id)
 def test_fft_bench(case) -> None:
     op = FFTC2CFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     bench.Runner(op, case).compare(
         {
             "torch-cufft": case.reference,

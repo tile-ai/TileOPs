@@ -96,7 +96,7 @@ def test_mha_decode_paged_bench(case) -> None:
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = MHADecodePagedWithKVCacheFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     implementations = {}
 
     fa3_fn = _fa3_mha_decode_paged(workload, k, v)

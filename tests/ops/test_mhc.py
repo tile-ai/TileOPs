@@ -44,7 +44,7 @@ def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tun
         test.sinkhorn_eps,
     )
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -72,5 +72,5 @@ def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tu
     test = MHCPostTest(batch, n_expand, c_x, dtype)
     op = MHCPostFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())

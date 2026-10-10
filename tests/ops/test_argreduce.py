@@ -598,7 +598,7 @@ def test_argmax_wide_rows_under_tuning(tune: bool) -> None:
     x[2, 64000] = float("nan")
     op = ArgmaxFwdOp(dim=-1)
     if tune:
-        op.autotune()
+        op.request_tune()
     compare_outputs(
         op(x),
         torch.argmax(x, dim=-1),

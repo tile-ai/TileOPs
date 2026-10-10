@@ -34,14 +34,14 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         "mha_decode_paged": MHAPagedDecodeFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows they reach,
         which its flops and cache reads follow."""
         from tileops.perf.formulas import paged_decode_cache_rows
 
         call = self.last_call
         return {
-            "kv_tokens": sum(call.values("real_seqlen_kv")),
+            "kv_tokens": sum(call.metadata_values("real_seqlen_kv")),
             "cache_rows": paged_decode_cache_rows(call),
         }
 
@@ -112,6 +112,6 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         kernel = self.kernel_for("mha_decode_paged", self._attention_call(q, k, block_table))
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

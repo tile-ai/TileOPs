@@ -81,7 +81,7 @@ def test_mean_pooling_op(
     )
     op = MeanPoolingFwdOp(chunk_size=chunk_size, accum_dtype=torch.float32)
     if tune:
-        op.autotune()
+        op.request_tune()
     inputs = list(test.gen_inputs())
     if seq_lens is not None:
         # Output rows follow the caller's chunk order, not the canonical one.

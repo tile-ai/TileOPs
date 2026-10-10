@@ -7,7 +7,7 @@ and runs the op's ``forward`` inside it:
     @torch.library.custom_op("tileops::foo", mutates_args=())
     def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         op = get_instance(instance_key)
-        return op._serve((x,), op.forward)
+        return op._run_call((x,), op.forward)
 
     # What the generated ``FooOp._call_boundary`` does, which ``FooOp.__call__`` calls:
     _foo(x, self._instance_key)

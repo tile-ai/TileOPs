@@ -79,13 +79,12 @@ class BmmFwdOp(Op):
         a, b = a.contiguous(), b.contiguous()
         batch, m, k = a.shape
         call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
-        # Expose the active kernel so autotune()/introspection can find it.
         kernel = self.kernel_for("bmm", call)
         return kernel(a, b)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class BmmFP8FwdOp(Op):
@@ -216,6 +215,6 @@ class BmmFP8FwdOp(Op):
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

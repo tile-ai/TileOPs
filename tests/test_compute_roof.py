@@ -1,4 +1,4 @@
-"""Contract tests for ``Op.compute_roof`` (docs/design/roofline.md §1.4)."""
+"""Contract tests for ``Op.roof_key`` (docs/design/roofline.md §1.4)."""
 
 from types import SimpleNamespace
 
@@ -33,11 +33,11 @@ class TestComputeRoofContract:
         from tileops.ops.elementwise.arithmetic import AddFwdOp
 
         op = AddFwdOp.__new__(AddFwdOp)
-        assert op.compute_roof() == "cuda_core.fp32"
+        assert op.roof_key() == "cuda_core.fp32"
 
     def test_matmul_op_prices_on_the_bound_dtype(self):
         from tileops.ops.gemm.gemm import GemmFwdOp
 
         op = GemmFwdOp.__new__(GemmFwdOp)
-        op._signature_call = SimpleNamespace(ix={"T": "bfloat16"})
-        assert op.compute_roof() == "tensor_core.bf16"
+        op._last_call = SimpleNamespace(indices={"T": "bfloat16"})
+        assert op.roof_key() == "tensor_core.bf16"

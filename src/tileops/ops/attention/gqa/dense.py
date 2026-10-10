@@ -216,7 +216,7 @@ class GQADenseFwdOp(Op):
         self.out_dtype = out_dtype
         super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 

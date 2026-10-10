@@ -21,7 +21,7 @@ _TUNE = True
 def test_fp8_quant_per_block_bench(case) -> None:
     op = FP8QuantPerBlockFwdOp(**case.arguments)
     if _TUNE:
-        op.autotune()
+        op.request_tune()
 
     # vllm's per_block_cast_to_fp8 with 128x128 tiles, a torch.compile'd expression.
     vllm_quant = functools.partial(

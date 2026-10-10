@@ -78,15 +78,15 @@ def _get_env_metadata() -> list[str]:
     return lines
 
 
-def _run_config(op: object) -> Optional[dict]:
+def _kernel_config(op: object) -> Optional[dict]:
     """What the op ran with, as the op itself reports it.
 
-    An Op answers through ``run_config()``. A baseline that is not an Op has no
+    An Op answers through ``kernel_config()``. A baseline that is not an Op has no
     such report, and a row for it carries no config.
     """
-    run_config = getattr(op, "run_config", None)
-    if callable(run_config):
-        return run_config()
+    kernel_config = getattr(op, "kernel_config", None)
+    if callable(kernel_config):
+        return kernel_config()
     return None
 
 
@@ -135,7 +135,7 @@ class BenchmarkReport:
             )
         name = op.__class__.__name__
         op_module = op.__class__.__module__
-        op_config = _run_config(op)
+        op_config = _kernel_config(op)
 
         def _is_serializable(v: Any) -> bool:
             if v is None or isinstance(v, (int, float, bool, str, torch.dtype)):
@@ -160,7 +160,7 @@ class BenchmarkReport:
         if op_module:
             record_entry["op_module"] = op_module
         if op_config:
-            record_entry["run_config"] = op_config
+            record_entry["kernel_config"] = op_config
         BenchmarkReport._records.setdefault(name, []).append(record_entry)
         # The same row, handed to the pytest hook that turns the running case's
         # rows into XML properties. One row recorded once: the log and the XML
@@ -236,10 +236,10 @@ class BenchmarkReport:
                 # Union, not the first row's keys: a tag whose later cases carry evidence
                 # the first does not would otherwise publish them without it.
                 param_keys = list(dict.fromkeys(k for e in tag_group for k in e["params"]))
-                has_config = any("run_config" in e for e in tag_group)
+                has_config = any("kernel_config" in e for e in tag_group)
                 header_parts = param_keys + result_keys
                 if has_config:
-                    header_parts.append("run_config")
+                    header_parts.append("kernel_config")
                 lines.append("| " + " | ".join(header_parts) + " |")
                 lines.append("| " + " | ".join(["---"] * len(header_parts)) + " |")
 
@@ -254,7 +254,7 @@ class BenchmarkReport:
                         else:
                             row.append(str(val))
                     if has_config:
-                        cfg = entry.get("run_config")
+                        cfg = entry.get("kernel_config")
                         row.append(str(cfg) if cfg else "")
                     lines.append("| " + " | ".join(row) + " |")
 

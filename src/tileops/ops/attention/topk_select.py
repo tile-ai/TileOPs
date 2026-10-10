@@ -32,7 +32,7 @@ class TopKSelectFwdOp(Op):
         "topk_select": TopKSelectFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The scores this call's windows hold, which its flops and score reads follow."""
         from tileops.perf.formulas import topk_select_window_scores
 

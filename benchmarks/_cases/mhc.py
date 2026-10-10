@@ -9,9 +9,9 @@ from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 def _pre(call) -> MHCPreWorkload:
     # The scaling params come from the manifest row, not from the generator.
     return MHCPreWorkload(
-        call.ix["B"],
-        call.ix["n"],
-        call.ix["c_x"],
+        call.indices["B"],
+        call.indices["n"],
+        call.indices["c_x"],
         getattr(torch, call.tensors["x"][1]),
         **call.arguments({}),
     )
@@ -19,7 +19,10 @@ def _pre(call) -> MHCPreWorkload:
 
 def _post(call) -> MHCPostWorkload:
     return MHCPostWorkload(
-        call.ix["B"], call.ix["n"], call.ix["c_x"], getattr(torch, call.tensors["x_res"][1])
+        call.indices["B"],
+        call.indices["n"],
+        call.indices["c_x"],
+        getattr(torch, call.tensors["x_res"][1]),
     )
 
 

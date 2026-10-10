@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import register_implementation, registry
+from tileops.backend import register_kernel_type, registry
 from tileops.ops import GQAPagedFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 
@@ -65,7 +65,7 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
 
     state = registry.snapshot()
     try:
-        register_implementation("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
+        register_kernel_type("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
         op = GQAPagedFwdOp(**semantics)
     finally:
         registry.restore(state)
@@ -92,7 +92,7 @@ def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
                 general = False
                 preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
 
-            register_implementation(
+            register_kernel_type(
                 "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
             )
         op = GQAPagedFwdOp(sm_scale=-0.125)

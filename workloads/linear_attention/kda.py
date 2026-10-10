@@ -93,7 +93,7 @@ class KDAFwdCall(CallWorkload):
         q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias = (
             super().gen_inputs()
         )
-        raw_gate = self.call.ix["use_gate_in_kernel"]
+        raw_gate = self.call.indices["use_gate_in_kernel"]
         if raw_gate:
             # Log decay rates in [1, 16]; dt_bias around zero, as a trained layer holds it.
             a_log = torch.empty_like(a_log).uniform_(1.0, 16.0).log()
@@ -103,7 +103,7 @@ class KDAFwdCall(CallWorkload):
             _small(k),
             _small(v),
             g if raw_gate else _channel_log_gates(g),
-            beta if self.call.ix["use_beta_sigmoid_in_kernel"] else _step_sizes(beta),
+            beta if self.call.indices["use_beta_sigmoid_in_kernel"] else _step_sizes(beta),
             _small(initial_state, 0.01),
             cu_seqlens,
             cu_seqlens_cpu,
@@ -114,7 +114,7 @@ class KDAFwdCall(CallWorkload):
     def ref_program(
         self, q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias
     ):
-        p = self.call.ix
+        p = self.call.indices
         return kda_ref(
             q,
             k,

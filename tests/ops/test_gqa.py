@@ -531,7 +531,7 @@ def test_gqa_bwd(
     test = GQABwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GQABwdOp(causal)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -559,7 +559,7 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
     with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
         op(*test.gen_inputs())
     for interface in GQABwdOp.interfaces:
-        assert not op.built_kernels(interface)
+        assert not op.built_entries(interface)
 
 
 @pytest.mark.sm90
@@ -678,7 +678,7 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
     v = torch.randn_like(k)
     op = GQADenseFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     compare_outputs(
         op(q, k, v),
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),

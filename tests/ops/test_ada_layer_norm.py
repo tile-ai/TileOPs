@@ -205,7 +205,7 @@ def test_ada_layer_norm_under_tuning(tune: bool) -> None:
     test = AdaLayerNormTest(17, 514, torch.float16)
     op = AdaLayerNormFwdOp(eps=test.eps)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -214,7 +214,7 @@ def test_ada_layer_norm_zero_under_tuning(tune: bool) -> None:
     test = AdaLayerNormZeroTest(17, 514, torch.float16)
     op = AdaLayerNormZeroFwdOp(eps=test.eps)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

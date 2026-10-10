@@ -30,7 +30,7 @@ class GemmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmWorkload":
         """The workload of one manifest call of ``GemmFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["trans_a"], ix["trans_b"])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -80,7 +80,7 @@ class GemmFP8Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmFP8Workload":
         """The workload of one manifest call of ``GemmFP8FwdOp``."""
-        ix = call.ix
+        ix = call.indices
         if tuple(ix["SA"]) == (1, 1):
             scale_mode = "per_tensor"
         elif tuple(ix["SB"]) == (ix["N"], -(-ix["K"] // 128)):
@@ -290,7 +290,7 @@ class GemmW4A16Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GemmW4A16Workload":
         """The workload of one manifest call of ``GemmW4A16FwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["group_size"])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -339,7 +339,7 @@ class BmmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "BmmWorkload":
         """The workload of one manifest call of ``BmmFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(ix["B"], ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]))
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -379,7 +379,7 @@ class BmmFP8Workload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "BmmFP8Workload":
         """The workload of one manifest call of ``BmmFP8FwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(
             ix["B"],
             ix["M"],
@@ -460,7 +460,7 @@ class GroupedGemmWorkload(WorkloadBase):
     @classmethod
     def from_call(cls, call: Any) -> "GroupedGemmWorkload":
         """The workload of one manifest call of ``GroupedGemmFwdOp``."""
-        ix = call.ix
+        ix = call.indices
         return cls(
             ix["M"],
             ix["G"],

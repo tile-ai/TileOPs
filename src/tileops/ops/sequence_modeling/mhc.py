@@ -98,7 +98,7 @@ class MHCPreFwdOp(Op):
             self.sinkhorn_eps,
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions over the bfloat16 stream; priced on tensor cores."""
         return tensor_core_roof(torch.bfloat16)
 

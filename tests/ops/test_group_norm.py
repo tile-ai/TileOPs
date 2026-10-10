@@ -212,7 +212,7 @@ def test_group_norm_under_tuning(tune: bool) -> None:
     test = GroupNormTest(2, 32, (32, 32), 4, torch.float16)
     op = GroupNormFwdOp(num_groups=4)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

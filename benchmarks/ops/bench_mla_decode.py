@@ -48,5 +48,5 @@ def test_mla_decode_bench(case) -> None:
         return out.squeeze(1)
 
     op = MLADecodeWithKVCacheFwdOp(**case.arguments)
-    op.autotune()
+    op.request_tune()
     bench.Runner(op, case).compare({FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn})

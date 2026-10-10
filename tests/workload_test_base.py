@@ -22,7 +22,7 @@ def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
 
     The result is reported under *op*, and what executes reaches the kernel the way a
     caller does: through the op's dispatch. ``runs`` takes a compiled or wrapped form of
-    the op; a kernel is reached by registering it with ``register_implementation`` instead. Raised before the reference
+    the op; a kernel is reached by registering it with ``register_kernel_type`` instead. Raised before the reference
     runs.
     """
     from tileops.kernels.kernel_base import Kernel
@@ -36,7 +36,7 @@ def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
     if isinstance(getattr(runs, "__self__", runs), Kernel):
         raise AssertionError(
             "runs= takes a compiled or wrapped form of the op; reach a kernel through the "
-            "op's dispatch, registering it with register_implementation"
+            "op's dispatch, registering it with register_kernel_type"
         )
 
 

@@ -327,7 +327,7 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
 
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
     `*`, then keyword-only `target`, and only the injected objects the class lists in
-    `execution_parameters`. `forward` begins with the call-time inputs in order, positional,
+    `injected_parameters`. `forward` begins with the call-time inputs in order, positional,
     the optional ones defaulting to `None` and the others to nothing, then `out` when an
     output is a buffer. The `op` stages of `composition`
     are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
@@ -370,7 +370,7 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     ):
         suffix = ", ".join(f"{n}={d}" for n, d in _POLICY_PARAMETERS.items())
         errors.append(f"{where}: __init__ must end its policy parameters with *, {suffix}")
-    allowed = {*_POLICY_PARAMETERS, *getattr(cls, "execution_parameters", ())}
+    allowed = {*_POLICY_PARAMETERS, *getattr(cls, "injected_parameters", ())}
     errors += [
         f"{where}: __init__ parameter {p.name!r} is not a signature or execution-policy parameter"
         for p in rest.values()

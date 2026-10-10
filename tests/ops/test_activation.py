@@ -334,5 +334,5 @@ def test_leaky_relu_under_tuning(tune: bool) -> None:
     test = UnaryActivationTest(4096 * 7 + 13, torch.float16, "LeakyReluFwdOp", gen_fn=_randn)
     op = LeakyReluFwdOp()
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())

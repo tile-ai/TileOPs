@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, register_implementation, registry
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
     AvgPool2dFwdInterface,
@@ -460,7 +460,7 @@ def _run_avg_pool_case(
         op_kwargs["divisor_override"] = divisor_override
     op = _AVG_POOL_OPS[ndim](**op_kwargs)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs(*shape))
 
 
@@ -1115,7 +1115,7 @@ def _run_max_pool_case(
             ceil_mode=ceil_mode,
         )
         if tune:
-            op.autotune()
+            op.request_tune()
         test.check(op, *test.gen_inputs(*shape))
 
 
@@ -1568,7 +1568,7 @@ def test_avg_pool_runs_a_registered_implementation_preferred_over_the_general_on
 
     state = registry.snapshot()
     try:
-        register_implementation("AvgPool2dFwdOp", "avg_pool2d_passthrough", _PreferredPassthrough)
+        register_kernel_type("AvgPool2dFwdOp", "avg_pool2d_passthrough", _PreferredPassthrough)
         op = AvgPool2dFwdOp(kernel_size=2, target=BUILTIN)
     finally:
         registry.restore(state)
@@ -1755,7 +1755,7 @@ def test_adaptive_avg_pool2d(
     test = AdaptiveAvgPool2dTest(n, c_in, h_in, w_in, output_size, dtype)
     op = AdaptiveAvgPool2dFwdOp(output_size)
     if tune:
-        op.autotune()
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -1777,7 +1777,7 @@ def test_adaptive_max_pool2d(
         op_cls = AdaptiveMaxPool2dIndicesFwdOp if return_indices else AdaptiveMaxPool2dFwdOp
         op = op_cls(output_size)
         if tune:
-            op.autotune()
+            op.request_tune()
         test.check(op, *test.gen_inputs())
 
 
