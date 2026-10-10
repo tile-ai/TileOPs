@@ -98,17 +98,9 @@ def test_payload_backward_compatibility(preserve_trace_state):
 
 
 def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path):
-    """End-to-end test: writer-election fallback + constant payload.
+    """A kernel that binds no threadIdx.x still records its range and payload.
 
-    This test verifies:
-    1. trace.range(..., payload=...) actually lowers to CUDA markers
-    2. Payload is written to slots and can be decoded
-    3. Writer-election fallback (__tl_thread_idx_x) works when threadIdx.x is not bound
-    4. Range begin/end pairs correctly into a slice
-
-    Note: __tl_thread_idx_x() is used for writer-election (determining which thread
-    writes markers), NOT as a payload source. The payload=42 is an explicit user-provided
-    constant, unrelated to thread indices.
+    ``tileops::trace_thread_idx_x`` elects the thread that writes the markers.
     """
     trace.enable(output=str(tmp_path))
 
@@ -116,8 +108,7 @@ def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path)
     def build():
         @T.prim_func
         def kernel(out: T.Tensor((16,), "float32")):
-            # Use simple T.Kernel(..., threads=16) - no explicit threadIdx.x binding
-            # This triggers the __tl_thread_idx_x() writer-election fallback
+            # T.Kernel(..., threads=16) binds no threadIdx.x.
             with T.Kernel(1, threads=16):
                 tx = T.get_thread_binding()
                 with trace.range("test_range", payload=42):

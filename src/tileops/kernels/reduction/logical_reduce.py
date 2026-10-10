@@ -196,7 +196,7 @@ def _logical_fold_kernel(
                         if stream:
                             T.call_extern(
                                 "handle",
-                                "tl::tileops_load16_evict_first",
+                                "tileops::load16_evict_first",
                                 T.address_of(held[0]),
                                 T.address_of(x[lead_idx, row, k * step + tx * vec]),
                             )

@@ -363,7 +363,7 @@ def _gemm_w4a16_kernel(
             """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16."""
             return T.call_extern(
                 dtype,
-                "tileops_w4a16_dequant_word",
+                "tileops::w4a16_dequant_word",
                 word,
                 T.cast(fp16_nibble_bias + T.cast(zero, "int32"), dtype),
                 j,

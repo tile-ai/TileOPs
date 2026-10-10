@@ -77,14 +77,14 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
             if evict_first:
                 T.call_extern(
                     "handle",
-                    "tl::tileops_load16_evict_first",
+                    "tileops::load16_evict_first",
                     T.address_of(dst[row, 0]),
                     T.address_of(src[offset]),
                 )
             else:
                 T.call_extern(
                     "handle",
-                    "tl::tileops_load16",
+                    "tileops::load16",
                     T.address_of(dst[row, 0]),
                     T.address_of(src[offset]),
                 )

@@ -2,11 +2,12 @@ Rules a reader has to apply by hand. The deprecated `T.Buffer` annotation, a dty
 `T.reinterpret`, a literal cast to a narrow float, a `@tilelang.jit` builder closing over a
 non-scalar, and a file-level `noqa` are checked by `scripts/lint/tilelang_idioms_lint.py`;
 that file states why each one is wrong. A module-level constant's spelling is checked by
-`scripts/lint/module_constant_lint.py`.
+`scripts/lint/module_constant_lint.py`, and the names a `src/tileops/csrc/` header defines by
+`scripts/lint/csrc_names_lint.py`.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
 
-- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`; pre-include a header with `tileops._csrc.csrc_include("<file>", ...)`.
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`; pre-include a header with `tileops._csrc.csrc_include("<file>", ...)`. Call a csrc function as `tileops::<name>`.
 
 - Import absolutely (`from tileops.x import y`); never use a relative import.
 

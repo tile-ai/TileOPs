@@ -171,7 +171,7 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
                         if evict_first:
                             val = T.cast(
                                 T.call_extern(
-                                    dtype, "tl::tileops_load_evict_first", T.address_of(x[row, at])
+                                    dtype, "tileops::load_evict_first", T.address_of(x[row, at])
                                 ),
                                 _ACCUM_DTYPE,
                             )
@@ -190,7 +190,7 @@ def _windowed_builder(shape: _Shape, plan: _Plan):
                                 val = T.cast(
                                     T.call_extern(
                                         dtype,
-                                        "tl::tileops_load_evict_first",
+                                        "tileops::load_evict_first",
                                         T.address_of(x[row, iw]),
                                     ),
                                     _ACCUM_DTYPE,

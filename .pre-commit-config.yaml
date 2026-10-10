@@ -131,6 +131,12 @@ repos:
         files: \.py$
         exclude: ^src/tileops/_csrc\.py$
 
+      - id: csrc-names-lint
+        name: csrc header names live in namespace tileops
+        entry: python scripts/lint/csrc_names_lint.py
+        language: python
+        files: ^src/tileops/csrc/.*\.(h|cuh|hpp)$
+
       - id: native-source-strings-in-csrc
         name: C++/CUDA source strings belong in src/tileops/csrc
         entry: '\b(import_source\s*\(|prelude\s*=|(__)?asm(__)?(\s+(__)?volatile(__)?)?\s*\()|__(device|global)__'

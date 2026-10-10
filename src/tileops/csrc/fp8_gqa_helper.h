@@ -15,7 +15,7 @@
 #include <cutlass/gemm/collective/builders/sm90_common.inl>
 #include <type_traits>
 
-namespace tl {
+namespace tileops {
 template <typename BarrierType = uint64_t>
 TL_DEVICE void fp8_tma_load_4d_ptx(const CUtensorMap& descriptor,
                                    BarrierType& smem_mbar,
@@ -353,10 +353,10 @@ fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
 #pragma unroll
   for (int ki = 0; ki < 7; ++ki) {
     cute::GmmaDescriptor desc_b = tOrV(_, _, ki)(0);
-    wgmma_rs<DataType::kFloat8_e4m3, DataType::kFloat8_e4m3, DataType::kFloat32,
-             64, 128, 32, false, false>(p_regs + ki * 4, uint64_t(desc_b),
-                                        reinterpret_cast<uint32_t*>(acc_o),
-                                        true);
+    tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
+                 tl::DataType::kFloat32, 64, 128, 32, false, false>(
+        p_regs + ki * 4, uint64_t(desc_b), reinterpret_cast<uint32_t*>(acc_o),
+        true);
   }
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 }
@@ -474,8 +474,8 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
       partition_fragment_C(tiled_mma_qk, Shape<_64, Int<224>>{});
   Tensor tSrS = make_tensor(acc_s, tSrS_template.layout());
 
-  warpgroup_fence_operand(tSrS);
-  warpgroup_arrive();
+  cute::warpgroup_fence_operand(tSrS);
+  cute::warpgroup_arrive();
   tiled_mma_qk.accumulate_ = GMMA::ScaleOut::Zero;
 
 #pragma unroll
@@ -484,7 +484,7 @@ __device__ __forceinline__ void fp8_qk_cute_grouped_fa3_raw_64x224x128(
     tiled_mma_qk.accumulate_ = GMMA::ScaleOut::One;
   }
 
-  warpgroup_commit_batch();
+  cute::warpgroup_commit_batch();
 }
 template <typename OutT>
 struct FP8Fa3OutputStore64x128 {
@@ -663,4 +663,4 @@ __device__ __forceinline__ void fp8_fa3_o_smem_store_global_packed_64x128_tail(
     }
   }
 }
-}  // namespace tl
+}  // namespace tileops

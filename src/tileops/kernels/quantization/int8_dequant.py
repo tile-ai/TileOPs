@@ -218,9 +218,7 @@ def _int8_dequant_per_tensor_kernel(
                 x_shared = T.alloc_shared((block,), out_dtype)
                 s = T.alloc_var(T.float32)
                 # Every block reads the one scale: kept in L1, later blocks on an SM hit it.
-                s = T.call_extern(
-                    T.float32, "tl::tileops_load_f32_evict_last", T.address_of(scale[0])
-                )
+                s = T.call_extern(T.float32, "tileops::load_f32_evict_last", T.address_of(scale[0]))
                 if bx < full_blocks:
                     # Every load of the block issues before the first conversion.
                     for r in T.unroll(steps):

@@ -27,7 +27,7 @@ _TAIL_PACK_RATIO = 4
 # to fill this many threads holds it at 32.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 # Every builder compiles with the device helpers an op body may call
-# (``tl::approx_reciprocal``). They are forceinline, so a kernel that calls none of
+# (``tileops::approx_reciprocal``). They are forceinline, so a kernel that calls none of
 # them compiles to the same SASS as one built without the header.
 _COMPILE_FLAGS = csrc_include("approx_math.h")
 

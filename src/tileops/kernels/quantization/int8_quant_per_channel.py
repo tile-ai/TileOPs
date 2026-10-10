@@ -93,7 +93,7 @@ def _quantize_rows(
     exact = aligned and threads * vpt == k // vec
     assert group == 1 or (exact and vpt % group == 0)
     warps = threads // WARP_LANES
-    load = "tl::tileops_load16_evict_first" if evict_first else "tl::tileops_load16"
+    load = "tileops::load16_evict_first" if evict_first else "tileops::load16"
 
     def slot(j, tx):
         return ((j // group) * threads + tx) * group + j % group
@@ -310,7 +310,7 @@ def _quantize_rows(
                         for h in T.unroll(vec // smooth_vec):
                             T.call_extern(
                                 "handle",
-                                "tl::tileops_load16",
+                                "tileops::load16",
                                 T.address_of(div[j, h * smooth_vec]),
                                 T.address_of(smooth[slot(j, tx) * vec + h * smooth_vec]),
                             )

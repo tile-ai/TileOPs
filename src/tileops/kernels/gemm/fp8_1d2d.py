@@ -153,10 +153,10 @@ def _gemm_fp8_1d2d_kernel(
             raise ValueError(f"group_size_m must be positive, got {group_size_m}")
         if num_stages < 1:
             raise ValueError(f"num_stages must be positive, got {num_stages}")
-        wgmma_helper = f"tl::fp8_gemm_wgmma_64x128_by_128x{block_n}"
-        promotion_helper = f"tl::fp8_gemm_1d2d_promote_64x{block_n}"
-        global_store_helper = f"tl::fp8_gemm_raw_acc_store_global_64x{block_n}_v2"
-        smem_store_helper = f"tl::fp8_gemm_raw_acc_stsm_bf16_64x{block_n}"
+        wgmma_helper = f"tileops::fp8_gemm_wgmma_64x128_by_128x{block_n}"
+        promotion_helper = f"tileops::fp8_gemm_1d2d_promote_64x{block_n}"
+        global_store_helper = f"tileops::fp8_gemm_raw_acc_store_global_64x{block_n}_v2"
+        smem_store_helper = f"tileops::fp8_gemm_raw_acc_stsm_bf16_64x{block_n}"
         fragment_regs = (half_m * block_n) // 128
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
@@ -397,7 +397,7 @@ def _gemm_fp8_1d2d_kernel(
                                     )
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_tma_store_2d_issue",
+                                        "tileops::fp8_tma_store_2d_issue",
                                         output_desc,
                                         T.address_of(shared_c[0, 0]),
                                         n_start,
@@ -677,7 +677,7 @@ def _gemm_fp8_1d2d_wave_kernel(m: int, n: int, k: int, *, sm_count: int) -> Call
                     )
             T.call_extern(
                 "handle",
-                f"tl::fp8_wave_wgmma_64x{block_n}",
+                f"tileops::fp8_wave_wgmma_64x{block_n}",
                 partial.data,
                 T.address_of(a_wave[slot, 0, 0]),
                 T.address_of(b_smem[slot, 0, 0]),
@@ -837,7 +837,7 @@ def _gemm_fp8_1d2d_wave_kernel(m: int, n: int, k: int, *, sm_count: int) -> Call
                                                 )
                                                 T.call_extern(
                                                     "handle",
-                                                    "tl::fp8_tma_prefetch_2d",
+                                                    "tileops::fp8_tma_prefetch_2d",
                                                     b_prefetch,
                                                     ks + block_k,
                                                     n_start,
@@ -867,12 +867,12 @@ def _gemm_fp8_1d2d_wave_kernel(m: int, n: int, k: int, *, sm_count: int) -> Call
                                     # them in uniform registers.
                                     slot = T.call_extern(
                                         "int32",
-                                        "tl::fp8_uniform",
+                                        "tileops::fp8_uniform",
                                         T.cast(consumer_index % num_stages, "int32"),
                                     )
                                     buf = T.call_extern(
                                         "int32",
-                                        "tl::fp8_uniform",
+                                        "tileops::fp8_uniform",
                                         T.cast(scale_consumer % scale_buffers, "int32"),
                                     )
                                     T.barrier_wait(full[slot], (consumer_index // num_stages) & 1)

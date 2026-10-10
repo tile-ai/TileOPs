@@ -118,7 +118,7 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
                     if exact or ((b < blocks) & (window(s, tx) < count)):
                         T.call_extern(
                             "handle",
-                            "tl::tileops_load16_evict_first",
+                            "tileops::load16_evict_first",
                             T.address_of(values[s, 0]),
                             T.address_of(x[lo + window(s, tx) * vec]),
                         )
@@ -265,7 +265,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
                         else:
                             T.call_extern(
                                 "handle",
-                                "tl::tileops_load16_evict_first",
+                                "tileops::load16_evict_first",
                                 T.address_of(raw[j * words]),
                                 T.address_of(x[v * vec]),
                             )

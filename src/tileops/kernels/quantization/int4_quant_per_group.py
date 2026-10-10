@@ -43,7 +43,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
         assert threads % WARP_LANES == 0
         assert threads * cpt >= lanes if per_cta else (threads % lanes == 0 and cpt == 1)
         warps = threads // WARP_LANES
-        load = "tl::tileops_load16_evict_first" if evict_first else "tl::tileops_load16"
+        load = "tileops::load16_evict_first" if evict_first else "tileops::load16"
 
         def widen(word, half):
             bits = T.cast(word >> T.cast(16 * half, "uint32"), "uint16")

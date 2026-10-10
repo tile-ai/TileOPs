@@ -73,7 +73,7 @@ def _rms_norm_on_chip_kernel(
                     if tx == 0:
                         T.call_extern(
                             "handle",
-                            "tl::tileops_expect_partials",
+                            "tileops::expect_partials",
                             T.address_of(received[0]),
                             4 * (cluster - 1),
                         )
@@ -119,7 +119,7 @@ def _rms_norm_on_chip_kernel(
                     if tx < cluster and tx != rank:
                         T.call_extern(
                             "handle",
-                            "tl::tileops_send_partial",
+                            "tileops::send_partial",
                             T.address_of(sums[own + rank]),
                             T.address_of(received[0]),
                             tx,

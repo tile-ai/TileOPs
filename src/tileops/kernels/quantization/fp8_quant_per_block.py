@@ -128,9 +128,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
                         if whole or ((row < n) & (col < k)):
                             T.call_extern(
                                 "handle",
-                                "tl::tileops_load16_evict_first"
-                                if evict_first
-                                else "tl::tileops_load16",
+                                "tileops::load16_evict_first" if evict_first else "tileops::load16",
                                 T.address_of(values[s, 0]),
                                 T.address_of(w[row * k + col]),
                             )

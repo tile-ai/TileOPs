@@ -1114,7 +1114,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, u
                 for k in T.unroll(steps, unroll_factor=unroll):
                     T.call_extern(
                         "handle",
-                        "tl::tileops_load16_evict_first",
+                        "tileops::load16_evict_first",
                         T.address_of(held[0]),
                         T.address_of(x[row, (k * threads + tx) * vec]),
                     )
@@ -1124,7 +1124,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, u
                 if steps * step + tx * vec < n:
                     T.call_extern(
                         "handle",
-                        "tl::tileops_load16_evict_first",
+                        "tileops::load16_evict_first",
                         T.address_of(held[0]),
                         T.address_of(x[row, steps * step + tx * vec]),
                     )

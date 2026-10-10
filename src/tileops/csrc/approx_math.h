@@ -1,6 +1,6 @@
 #pragma once
 
-namespace tl {
+namespace tileops {
 
 // One MUFU.RCP. ``__fdividef`` reaches the same instruction for a normal
 // divisor, but its PTX is ``div.approx.f32``, which ptxas guards with a test, a
@@ -20,4 +20,4 @@ __device__ __forceinline__ float approx_exp2(float x) {
   return r;
 }
 
-}  // namespace tl
+}  // namespace tileops
