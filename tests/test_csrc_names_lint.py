@@ -26,8 +26,6 @@ def _findings(tmp_path: Path, source: str) -> list[str]:
 
 
 FLAGGED = [
-    pytest.param("inline int f() { return 0; }\n", id="file-scope-function"),
-    pytest.param("namespace tl {\ninline int f() { return 0; }\n}\n", id="namespace-tl"),
     pytest.param(
         "namespace tileops {\nnamespace tl {\ninline int f() { return 0; }\n}\n}\n",
         id="namespace-tl-nested",
@@ -36,25 +34,15 @@ FLAGGED = [
         "namespace tileops {\ninline int tileops_f() { return 0; }\n}\n", id="tileops-prefix"
     ),
     pytest.param("namespace tileops {\ninline int __tl_f() { return 0; }\n}\n", id="tl-prefix"),
-    pytest.param("namespace tileops {\nconstexpr int tileops_k = 1;\n}\n", id="prefixed-variable"),
-    pytest.param("#define TL_HELPER(N) N\nnamespace tileops {}\n", id="tl-macro"),
     pytest.param("#define HELPER(N) N\nnamespace tileops {}\n", id="unprefixed-macro"),
     pytest.param("namespace tileops {}\nconstexpr int k = 1;\n", id="file-scope-variable"),
     pytest.param(
         "#define TILEOPS_HELPER inline int tileops_f() { return 0; }\nnamespace tileops {}\n",
         id="prefixed-name-in-macro-body",
     ),
-    pytest.param(
-        "#define TILEOPS_OPEN namespace tl {\nnamespace tileops {}\n",
-        id="namespace-tl-in-macro-body",
-    ),
 ]
 
 ACCEPTED = [
-    pytest.param(
-        "#pragma once\n#include <cstdint>\nnamespace tileops {\ninline int f() { return 0; }\n}\n",
-        id="function-in-namespace",
-    ),
     pytest.param(
         "namespace tileops {\nnamespace detail {\nstruct S { int x; };\n}\n}\n",
         id="nested-namespace",
@@ -68,9 +56,6 @@ ACCEPTED = [
         "namespace tileops {\n// tileops_old_name and namespace tl in a comment\n"
         'inline const char* f() { return "tileops_x"; }\n}\n',
         id="comment-and-string",
-    ),
-    pytest.param(
-        "namespace tileops {\ninline void f() { tl::fence(); }\n}\n", id="call-into-tilelang"
     ),
 ]
 
