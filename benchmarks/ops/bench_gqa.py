@@ -681,9 +681,9 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
 
 def _flashinfer_gqa_paged_decode(workload, inputs):
     """FlashInfer paged decode planned with the row's window, scale and softcap, or None where
-    it cannot serve the row: its decode kernel takes one query token per request, a
-    query-to-KV head ratio up to 8, and no right window."""
-    if workload.heads // workload.heads_kv > 8 or set(workload.q_lens) != {1}:
+    it cannot serve the row: tensor-core decode takes one query token per request
+    and no right window. Tensor cores also support GQA groups larger than eight."""
+    if set(workload.q_lens) != {1}:
         return None
     if workload.window_size_right >= 0:
         return None
@@ -693,7 +693,9 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     indptr = torch.tensor([0, *accumulate(pages_per_request)], dtype=torch.int32, device=q.device)
     indices = torch.cat([page_table[b, :n] for b, n in enumerate(pages_per_request)])
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = flashinfer_op("decode.BatchDecodeWithPagedKVCacheWrapper")(workspace, kv_layout="NHD")
+    wrapper = flashinfer_op("decode.BatchDecodeWithPagedKVCacheWrapper")(
+        workspace, kv_layout="NHD", use_tensor_cores=True
+    )
     wrapper.plan(
         indptr=indptr,
         indices=indices,
