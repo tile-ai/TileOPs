@@ -81,14 +81,10 @@ class UnaryOp(Op):
         """The call record for *input*; a subclass with parameters widens it."""
         return ElementwiseCall(device=input.device, n_total=input.numel(), dtype=input.dtype)
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
-        input = input.contiguous()
-        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
+        input = input.contiguous()
+        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
 
 
 class BinaryOp(Op):
@@ -131,16 +127,12 @@ class BinaryOp(Op):
             dtype=input.dtype,
         )
 
-    def _eager_forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
+    def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input`` and ``other``."""
         input = input.contiguous()
         other = other.contiguous()
         call = self._call_spec(input, other)
         return self.kernel_for(ELEMENTWISE, call)(input, other)
-
-    def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``other``."""
-        return self._call_boundary(input, other)
 
 
 class FusedGatedOp(Op):
@@ -176,15 +168,11 @@ class FusedGatedOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``x``."""
         x = x.contiguous()
         call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
         return self.kernel_for(ELEMENTWISE, call)(x)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``x``."""
-        return self._call_boundary(x)
 
 
 # Intermediate (private) base classes shared by leaf op modules
@@ -199,8 +187,9 @@ class _UnaryActivationMixin:
     carries the write in a traced graph.
     """
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        result = super()._eager_forward(input)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the activation on ``input``, into ``input`` itself when ``inplace`` is set."""
+        result = super().forward(input)
         if not self.inplace:
             return result
         input.copy_(result)

@@ -52,19 +52,6 @@ class MaskedFillTensorFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        mask: torch.Tensor,
-        value: torch.Tensor,
-    ) -> torch.Tensor:
-        n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
-        input = input.contiguous()
-        mask = mask.contiguous()
-        value = value.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        return self.kernel_for(ELEMENTWISE, call)(input, mask, value)
-
     def forward(
         self,
         input: torch.Tensor,
@@ -72,7 +59,12 @@ class MaskedFillTensorFwdOp(Op):
         value: torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``input``, ``mask`` and ``value``."""
-        return self._call_boundary(input, mask, value)
+        n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
+        input = input.contiguous()
+        mask = mask.contiguous()
+        value = value.contiguous()
+        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
+        return self.kernel_for(ELEMENTWISE, call)(input, mask, value)
 
 
 class MaskedFillScalarFwdOp(Op):
@@ -119,7 +111,8 @@ class MaskedFillScalarFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input`` and ``mask``."""
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
@@ -127,7 +120,3 @@ class MaskedFillScalarFwdOp(Op):
             device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
         )
         return self.kernel_for(ELEMENTWISE, call)(input, mask)
-
-    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``mask``."""
-        return self._call_boundary(input, mask)

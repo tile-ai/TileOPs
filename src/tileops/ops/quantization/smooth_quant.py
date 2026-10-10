@@ -65,12 +65,6 @@ class SmoothQuantFwdOp(Op):
         Returns:
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[M]$ in ``float32``.
         """
-        return self._call_boundary(x, smooth)
-
-    def _eager_forward(
-        self, x: torch.Tensor, smooth: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         smooth = smooth.contiguous()
         call = QuantizeCall(

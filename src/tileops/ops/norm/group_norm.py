@@ -76,7 +76,6 @@ class GroupNormFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(
         self,
@@ -94,18 +93,6 @@ class GroupNormFwdOp(Op):
         Returns:
             Normalized tensor of the same shape as *x*.
         """
-        return self._call_boundary(x, weight, bias)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
         channels = x.shape[1]
         affine = weight is not None or bias is not None
         if affine:
@@ -122,7 +109,6 @@ class GroupNormFwdOp(Op):
             passes_affine=affine,
         )
         kernel = self.kernel_for("group_norm", call)
-        self.kernel = kernel
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)

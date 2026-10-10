@@ -307,23 +307,6 @@ class GQADenseFwdOp(Op):
                 combinations violate the contract above, or no in-tree kernel
                 serves the call; the message names the limit each kernel refused.
         """
-        return self._call_boundary(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)

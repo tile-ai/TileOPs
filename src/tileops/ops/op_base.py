@@ -93,9 +93,6 @@ class Op(ABC):
     # Whether this instance has warned that a tuning request cannot reach its target.
     _tune_warned: bool = False
 
-    # An entry the op keeps bound directly, if it keeps one: a ``Kernel`` in-tree, whatever a
-    # target's builder returned otherwise. Specializations are held per interface.
-    kernel: Optional[Callable[..., object]]
     # The implementation that runs under each key, ``kernel_map=`` included: read-only once
     # installed.
     kernel_map: Optional[Mapping[str, Kernel]] = None
@@ -707,7 +704,7 @@ class Op(ABC):
         Every eager call that runs an implementation passes here, so the check, the record
         and the failure handling exist once: the compile-boundary operator's body calls it,
         and so does ``__call__`` for an op without a compile boundary. *body* is the op's
-        computation, called with *inputs* in manifest order, then *writes* and *execution*
+        ``forward``, called with *inputs* in manifest order, then *writes* and *execution*
         by name. The in-tree kernels run *body*; a target runs the whole op. *written* names
         the inputs this operator's kernel writes, when that is not every input the call
         writes: an op that registers an inplace companion writes nothing through its
@@ -938,8 +935,8 @@ class Op(ABC):
     def iter_kernels(self) -> Iterator[Kernel]:
         """Yield every ``Kernel`` instance the op's entries hold, each one once.
 
-        Reached: the entries of every interface, ``self.kernel``, and the same walk over
-        each ``kernel_delegates()`` entry. A kernel on any other attribute is not
+        Reached: the entries of every interface, and the same walk over each
+        ``kernel_delegates()`` entry. A kernel on any other attribute is not
         searched for — an op that holds one builds it through an interface.
 
         What ``autotune`` tunes and ``run_config`` reads. An entry holding no ``Kernel``
@@ -950,7 +947,6 @@ class Op(ABC):
         for op in self._walk_ops():
             roles = getattr(op, "_built_entries", None) or {}
             held = [entry for entries in roles.values() for entry in entries.values()]
-            held.append(getattr(op, "kernel", None))
             for entry in held:
                 for kernel in self._entry_kernels(entry):
                     if id(kernel) not in seen:
@@ -1051,14 +1047,15 @@ class Op(ABC):
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         """Make the op callable.
 
-        An op with a compile boundary calls its operator, whose eager body is
-        :meth:`_serve`. An op without one binds the call to ``forward``'s signature and
-        calls :meth:`_serve` itself, with ``forward`` as the body. Traced, an op without a
-        compile boundary runs no check: an instance a target serves calls the target's
-        kernel, and any other runs ``forward``.
+        ``forward`` is the op's computation, and it runs inside :meth:`_serve`. An op with
+        a compile boundary calls the generated ``_call_boundary``, whose operator's eager
+        body is :meth:`_serve`. An op without one binds the call to ``forward``'s signature
+        and calls :meth:`_serve` itself. Traced, an op without a compile boundary runs no
+        check: an instance a target serves calls the target's kernel, and any other runs
+        ``forward``.
         """
         if self.compile_op_names:
-            return self.forward(*args, **kwargs)
+            return self._call_boundary(*args, **kwargs)
         if torch.compiler.is_compiling():
             if self._served_by_target():
                 inputs, writes, _ = self._bind_forward(args, kwargs)
@@ -1109,13 +1106,6 @@ class Op(ABC):
         """
         for delegate in self.kernel_delegates():
             delegate._unsettle()
-        dropped = {
-            id(entry)
-            for entries in (getattr(self, "_built_entries", None) or {}).values()
-            for entry in entries.values()
-        }
-        if id(getattr(self, "kernel", None)) in dropped:
-            self.kernel = None
         self._builder = _UNRESOLVED
         self._settled_target = None
         self._built_entries = {}

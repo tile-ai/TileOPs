@@ -76,13 +76,6 @@ class MoEPrePermuteFwdOp(Op):
         local_expert_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(expert_input, layout_metadata, inverse_indices)``."""
-        return self._call_boundary(hidden_states, local_expert_ids)
-
-    def _eager_forward(
-        self,
-        hidden_states: torch.Tensor,
-        local_expert_ids: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = hidden_states.device
         call = PrePermuteCall(
             device=device,
@@ -192,15 +185,6 @@ class MoEGroupedGemmFwdOp(Op):
         Returns:
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
         """
-        return self._call_boundary(a, b, layout_metadata, out)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        layout_metadata: torch.Tensor,
-        out: torch.Tensor | None = None,
-    ) -> torch.Tensor:
         layout = self.layout
         masked = isinstance(layout, MaskedLayoutSpec)
         num_experts, n, k = b.shape
@@ -347,15 +331,6 @@ class MoEPostPermuteFwdOp(Op):
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Restore token order, apply routing weights, reduce top-k, and cast."""
-        return self._call_boundary(expert_output, topk_weights, inverse_indices, out)
-
-    def _eager_forward(
-        self,
-        expert_output: torch.Tensor,
-        topk_weights: torch.Tensor,
-        inverse_indices: torch.Tensor,
-        out: torch.Tensor | None = None,
-    ) -> torch.Tensor:
         masked = isinstance(self.layout, MaskedLayoutSpec)
         device = expert_output.device
         call = PostPermuteCall(

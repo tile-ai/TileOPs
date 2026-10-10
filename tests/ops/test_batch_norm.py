@@ -265,7 +265,7 @@ def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, ab
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
@@ -295,7 +295,7 @@ def test_forward_input_off_a_vector_boundary_matches_torch(training, shape, kern
         batch_norm_fwd_ref(x, weight, bias, rm.clone(), rv.clone(), training=training),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
@@ -316,7 +316,7 @@ def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> Non
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert type(bwd.kernel).__name__ == kernel
+    assert [type(k).__name__ for k in bwd.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
@@ -341,7 +341,7 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert type(op.kernel).__name__ == "BatchNormFwdTrainSplitKernel"
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["BatchNormFwdTrainSplitKernel"]
     grad_out = torch.randn_like(x)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
@@ -349,7 +349,7 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert type(bwd.kernel).__name__ == "BatchNormBwdSplitKernel"
+    assert [type(k).__name__ for k in bwd.iter_kernels()] == ["BatchNormBwdSplitKernel"]
 
 
 # Input validation and torch.compile.

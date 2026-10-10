@@ -80,18 +80,6 @@ class LayerNormFwdOp(Op):
         Returns:
             Normalized tensor of the same shape as *x*.
         """
-        return self._call_boundary(x, weight, bias)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
         x = x.contiguous()
         weight = None if weight is None else weight.contiguous()
         bias = None if bias is None else bias.contiguous()

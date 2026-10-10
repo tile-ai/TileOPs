@@ -73,21 +73,6 @@ class SSDRecurrentFwdOp(Op):
         Returns:
             y_out: (batch, n_heads, d_head) float32
         """
-        return self._call_boundary(A, dt, x, B_in, C_in, state)
-
-    def _eager_forward(
-        self,
-        A: torch.Tensor,
-        dt: torch.Tensor,
-        x: torch.Tensor,
-        B_in: torch.Tensor,
-        C_in: torch.Tensor,
-        state: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, n_heads, d_head = x.shape
         d_state = state.shape[3]
         n_groups = B_in.shape[1]

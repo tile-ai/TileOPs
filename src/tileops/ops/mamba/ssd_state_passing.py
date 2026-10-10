@@ -68,18 +68,6 @@ class SSDStatePassingFwdOp(Op):
             prev_states:  (batch, num_chunks, n_heads, d_state) float32
             final_states: (batch, n_heads, d_state) float32
         """
-        return self._call_boundary(states, dA_chunk_cumsum, initial_states)
-
-    def _eager_forward(
-        self,
-        states: torch.Tensor,
-        dA_chunk_cumsum: torch.Tensor,
-        initial_states: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, num_chunks, n_heads, d_state = states.shape
         call = SSDStatePassingCall(
             batch=batch,

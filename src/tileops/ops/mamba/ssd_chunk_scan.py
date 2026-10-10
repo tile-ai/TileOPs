@@ -74,21 +74,6 @@ class SSDChunkScanFwdOp(Op):
         Returns:
             y: (batch, seqlen, n_heads, d_head) float32
         """
-        return self._call_boundary(x, cb, dA_cumsum, C, prev_states, dt)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        cb: torch.Tensor,
-        dA_cumsum: torch.Tensor,
-        C: torch.Tensor,
-        prev_states: torch.Tensor,
-        dt: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, _seq_len, n_heads, d_head = x.shape
         num_chunks, n_groups, chunk_len = cb.shape[1], cb.shape[2], cb.shape[3]
         d_state = C.shape[3]

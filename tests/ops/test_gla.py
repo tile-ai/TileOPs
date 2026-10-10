@@ -100,7 +100,7 @@ def test_gla_fwd(
         scale=scale,
         tune=tune,
     )
-    op_o, _ = fwd_op.forward(q, k, v, g)
+    op_o, _ = fwd_op(q, k, v, g)
 
     cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
@@ -199,7 +199,7 @@ def test_gla_bwd(
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale, tune=tune)
-    op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
+    op_dq, op_dk, op_dv, op_dg = bwd_op(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
     compare_outputs(
@@ -224,11 +224,11 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
     v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLAChunkFwdOp(chunk_size=64).forward(q, k, v, g)
+        GLAChunkFwdOp(chunk_size=64)(q, k, v, g)
     h = torch.zeros(B, 2, H, K, V, device="cuda")
     dht = torch.zeros(B, H, K, V, device="cuda")
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLAChunkBwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
+        GLAChunkBwdOp(chunk_size=64)(q, k, v, g, h, do, dht)
 
 
 @pytest.mark.sm89

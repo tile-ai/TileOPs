@@ -37,7 +37,7 @@ __all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp", "_SoftmaxBaseOp"
 class _SoftmaxBaseOp(Op):
     """Softmax and log-softmax: normalize along one axis, keeping the shape.
 
-    The generated signature checks have run before ``_eager_forward``. The input is cast
+    The generated signature checks have run before ``forward``. The input is cast
     to ``dtype`` first when one is passed, as torch does.
     """
 
@@ -87,25 +87,8 @@ class _SoftmaxBaseOp(Op):
         Returns:
             A tensor of *x*'s shape, in ``dtype`` when one was passed.
         """
-        return self._call_boundary(x)
-
-    def _axis(self, rank: int) -> int:
-        if self.dim is not None:
-            return normalize_axis(self.dim, rank)
-        warnings.warn(
-            f"Implicit dimension choice for {self._op_kind} has been deprecated. "
-            "Change the call to include dim=X as an argument.",
-            UserWarning,
-            stacklevel=3,
-        )
-        return 0 if rank in (0, 1, 3) else 1
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator; closed forms need no kernel.
-
-        A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
-        input as stored. Any other cast runs first, as in torch.
-        """
+        # A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
+        # input as stored. Any other cast runs first, as in torch.
         out_dtype = x.dtype if self.dtype is None else self.dtype
         if x.ndim == 0 or out_dtype != torch.float32:
             x = x.to(out_dtype)
@@ -124,6 +107,17 @@ class _SoftmaxBaseOp(Op):
             out_dtype=out_dtype,
         )
         return self.kernel_for("softmax", call)(x)
+
+    def _axis(self, rank: int) -> int:
+        if self.dim is not None:
+            return normalize_axis(self.dim, rank)
+        warnings.warn(
+            f"Implicit dimension choice for {self._op_kind} has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return 0 if rank in (0, 1, 3) else 1
 
 
 class SoftmaxFwdOp(_SoftmaxBaseOp):

@@ -74,10 +74,6 @@ class INT8DequantPerTensorFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
@@ -135,10 +131,6 @@ class INT8DequantPerChannelFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
@@ -198,10 +190,6 @@ class INT8DequantPerBlockFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
-        return self._call_boundary(q, scale)
-
-    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],

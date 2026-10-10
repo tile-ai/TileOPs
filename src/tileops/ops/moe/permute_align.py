@@ -71,12 +71,6 @@ class MoEPermuteAlignFwdOp(Op):
             expert_ids:       [ceil_div(that, block_size)] int32
             num_tokens_post_pad: [1] int32
         """
-        return self._call_boundary(topk_ids)
-
-    def _eager_forward(
-        self, topk_ids: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Launch inside the operator, where dynamo does not follow the kernel call."""
         call = PermuteAlignCall(
             num_routes=topk_ids.numel(),
             num_experts=self.num_experts,

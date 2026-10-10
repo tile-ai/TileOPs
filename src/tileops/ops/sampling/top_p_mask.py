@@ -61,10 +61,6 @@ class TopPMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
-        return self._call_boundary(logits, p)
-
-    def _eager_forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         p = p.contiguous()
         batch, vocab = logits.shape

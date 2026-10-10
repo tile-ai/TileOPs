@@ -79,20 +79,6 @@ class DeltaNetRecurrentFwdOp(Op):
         Returns:
             ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
         """
-        return self._call_boundary(q, k, v, beta, state)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, heads, dim_k = q.shape
         call = DeltaNetDecodeCall(
             batch=batch,

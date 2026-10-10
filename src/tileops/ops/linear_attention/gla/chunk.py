@@ -77,7 +77,9 @@ class GLAChunkFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
-        return self._call_boundary(q, k, v, g, initial_state)
+        call = self._call(q, v, initial_state is not None)
+        kernel = self.kernel_for("gla_chunk_fwd", call)
+        return kernel(q, k, v, g, initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's own params."""
@@ -94,22 +96,6 @@ class GLAChunkFwdOp(Op):
             has_initial_state=has_initial_state,
             device=q.device,
         )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        call = self._call(q, v, initial_state is not None)
-        kernel = self.kernel_for("gla_chunk_fwd", call)
-        return kernel(q, k, v, g, initial_state)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -185,7 +171,9 @@ class GLAChunkBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dg).
         """
-        return self._call_boundary(q, k, v, g, h, do, dht)
+        inputs = (q, k, v, g, h, do, dht)
+        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
+        return kernel(*inputs, self.has_initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
         """The facts of one call: the shapes read off the tensors and the op's own params."""
@@ -202,24 +190,6 @@ class GLAChunkBwdOp(Op):
             has_initial_state=has_initial_state,
             device=q.device,
         )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        h: torch.Tensor,
-        do: torch.Tensor,
-        dht: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (q, k, v, g, h, do, dht)
-        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
-        return kernel(*inputs, self.has_initial_state)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

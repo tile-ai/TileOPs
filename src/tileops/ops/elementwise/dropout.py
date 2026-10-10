@@ -66,7 +66,8 @@ class DropoutFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input``."""
         if not self.training or self.p == 0.0:
             return input.clone()
         if self.p == 1.0:
@@ -78,7 +79,3 @@ class DropoutFwdOp(Op):
         )
         kernel = self.kernel_for("dropout", call)
         return kernel(flat).reshape(input.shape)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
-        return self._call_boundary(input)

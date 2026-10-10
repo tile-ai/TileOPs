@@ -56,9 +56,6 @@ class _AdaptivePool2dFwdOpBase(Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor):
         input = input.contiguous()
         c_in, h_in, w_in = input.shape[-3:]
         call = AdaptivePool2dCall(
@@ -71,8 +68,8 @@ class _AdaptivePool2dFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("adaptive_pool", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("adaptive_pool", call)
+        return kernel(input)
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
@@ -170,4 +167,4 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         Returns:
             ``output``, ``indices``, as the manifest declares.
         """
-        return self._call_boundary(input)
+        return super().forward(input)

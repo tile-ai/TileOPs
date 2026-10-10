@@ -42,9 +42,6 @@ class _AvgPoolFwdOpBase(Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
         call = AvgPoolCall(
@@ -60,8 +57,8 @@ class _AvgPoolFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("avg_pool", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("avg_pool", call)
+        return kernel(input)
 
 
 class AvgPool1dFwdOp(_AvgPoolFwdOpBase):

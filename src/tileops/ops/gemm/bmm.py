@@ -82,19 +82,12 @@ class BmmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b)
-
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b = a.contiguous(), b.contiguous()
         batch, m, k = a.shape
         call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
         # Expose the active kernel so autotune()/introspection can find it.
-        self.kernel = self.kernel_for("bmm", call)
-        return self.kernel(a, b)
+        kernel = self.kernel_for("bmm", call)
+        return kernel(a, b)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -181,19 +174,6 @@ class BmmFP8FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b, scale_a, scale_b)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a = a.contiguous()
         b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
@@ -207,8 +187,8 @@ class BmmFP8FwdOp(Op):
             out_dtype=self.out_dtype,
             device=a.device,
         )
-        self.kernel = self.kernel_for("bmm_fp8", call)
-        return self.kernel(a, b, scale_a, scale_b)
+        kernel = self.kernel_for("bmm_fp8", call)
+        return kernel(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
         self, b: torch.Tensor, dtype: torch.dtype, device: torch.device

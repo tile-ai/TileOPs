@@ -93,21 +93,6 @@ class EngramGateConvFwdOp(Op):
                 rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
                 rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
-        return self._call_boundary(H, k, v, rms_w_h, rms_w_v, conv_w)
-
-    def _eager_forward(
-        self,
-        H: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
         call = EngramGateConvCall(
             m=self.M,
@@ -209,29 +194,6 @@ class EngramGateConvBwdOp(Op):
                 drms_w_h: (d,) — fp32
                 drms_w_v: (d,) — fp32
                 dconv_w:  (4, d) — fp32
-        """
-        return self._call_boundary(
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
-        )
-
-    def _eager_forward(
-        self,
-        dY: torch.Tensor,
-        H: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-        vhat: torch.Tensor,
-        alpha: torch.Tensor,
-        rrms_h: torch.Tensor,
-        rrms_k: torch.Tensor,
-        rrms_v: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(
             t.contiguous()

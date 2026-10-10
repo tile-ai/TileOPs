@@ -79,14 +79,6 @@ class FusedTopKFwdOp(Op):
             topk_weights: [T, K] float32.
             topk_ids:     [T, K] int32.
         """
-        return self._call_boundary(gating_output, correction_bias)
-
-    def _eager_forward(
-        self,
-        gating_output: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Launch inside the operator, where dynamo does not follow the kernel call."""
         num_tokens, num_experts = gating_output.shape
         call = FusedTopKCall(
             num_tokens=num_tokens,

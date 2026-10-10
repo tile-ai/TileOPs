@@ -235,12 +235,6 @@ class TestIterKernels:
         op.build("aux", torch.bfloat16, "entry")
         assert sorted(k.name for k in op.iter_kernels()) == ["bwd", "pre", "record"]
 
-    def test_yields_the_directly_bound_kernel(self):
-        tuned: list[str] = []
-        op = _SlottedOp(tuned)
-        op.kernel = op.kernel_map["fwd"]("bound")
-        assert [k.name for k in op.iter_kernels()] == ["bound"]
-
     def test_ignores_kernels_bound_to_other_attributes(self):
         """Enumeration is explicit: an unregistered attribute is not searched."""
         tuned: list[str] = []
@@ -261,12 +255,6 @@ class TestIterKernels:
         assert list(op.iter_kernels()) == []
         op.autotune()
         assert tuned == []
-
-    def test_deduplicates_a_kernel_reachable_twice(self):
-        tuned: list[str] = []
-        op = _SlottedOp(tuned)
-        op.kernel = op.build("fwd", torch.float16, "fp16")
-        assert [k.name for k in op.iter_kernels()] == ["fp16"]
 
     def test_descends_into_delegates(self):
         tuned: list[str] = []
@@ -302,16 +290,15 @@ class TestIterKernels:
 class TestAutotune:
     """``Op.autotune`` tunes exactly what ``iter_kernels`` yields."""
 
-    def test_autotune_tunes_the_bound_kernel_and_every_role_entry(self):
+    def test_autotune_tunes_every_role_entry(self):
         tuned: list[str] = []
         op = _SlottedOp(tuned)
-        op.kernel = op.kernel_map["fwd"]("bound")
         op.build("fwd", torch.float16, "fp16")
         op.build("fwd", torch.bfloat16, "bf16")
         op.build("aux", torch.float16, "aux")
 
         op.autotune()
-        assert sorted(tuned) == ["aux", "bf16", "bound", "fp16"]
+        assert sorted(tuned) == ["aux", "bf16", "fp16"]
 
     def test_autotune_reaches_a_delegates_kernels(self):
         """A composite tunes through ``kernel_delegates``, not an override."""

@@ -59,7 +59,6 @@ class FP8LightningIndexerFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(
         self,
@@ -82,23 +81,6 @@ class FP8LightningIndexerFwdOp(Op):
 
         Returns:
             ``logits``, as the manifest declares.
-        """
-        return self._call_boundary(
-            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale
-        )
-
-    def _eager_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-        index_k_scale: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         if index_k_scale is None:
             # A bf16 call is quantized here; the kernel indexes FP8 keys and their scales.
@@ -123,8 +105,8 @@ class FP8LightningIndexerFwdOp(Op):
             t.contiguous()
             for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
         )
-        self.kernel = self.kernel_for("fp8_lightning_indexer", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("fp8_lightning_indexer", call)
+        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """Index scores contract at fp8 regardless of the input form."""

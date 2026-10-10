@@ -67,10 +67,6 @@ class FP8QuantPerBlockFwdOp(Op):
             ``q`` $[N \\times K]$ in ``float8_e4m3fn`` and ``scale``
                 $[\\lceil N / 128 \\rceil \\times \\lceil K / 128 \\rceil]$ in ``float32``.
         """
-        return self._call_boundary(w)
-
-    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,

@@ -1,24 +1,24 @@
 """Lets a torch.compile dispatch boundary find the op instance behind it.
 
 An operator's schema has no type for an op object, so ``self`` cannot cross the boundary.
-The op passes its key instead, and the operator body trades the key back for the instance:
-
-    class FooOp(Op):
-        def forward(self, x):
-            return _foo(x, self._instance_key)
+The op passes its key instead, and the operator body trades the key back for the instance
+and runs the op's ``forward`` inside it:
 
     @torch.library.custom_op("tileops::foo", mutates_args=())
     def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         op = get_instance(instance_key)
-        return op._serve((x,), op._eager_forward)
+        return op._serve((x,), op.forward)
+
+    # What the generated ``FooOp._call_boundary`` does, which ``FooOp.__call__`` calls:
+    _foo(x, self._instance_key)
 
 ``Op.dispatch_kernel`` assigns ``self._instance_key`` during ``__init__``, so an op gets a
 key without writing any registration code. Keys read as ``RMSNormFwdOp#3``, so a key in a
 graph dump or traceback says whose it is.
 
-The invariant this exists to keep: a dynamo-traced ``forward`` must not construct kernels or
-enter a TileLang builder. Everything past the operator body is untraced, so cache lookup,
-kernel construction and launch belong there.
+The invariant this exists to keep: a dynamo trace must not construct kernels or enter a
+TileLang builder. ``forward`` runs inside the operator body, which is untraced, so cache
+lookup, kernel construction and launch belong there.
 
 Two properties are load-bearing. The key is a ``str`` because dynamo treats string operator
 arguments as compile-time constants, while an ``int`` is generalized to an unhashable

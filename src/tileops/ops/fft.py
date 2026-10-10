@@ -58,7 +58,6 @@ class FFTC2CFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
@@ -70,14 +69,9 @@ class FFTC2CFwdOp(Op):
             Output tensor of same shape as input with FFT applied along the
             last dimension.
         """
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         n = input.shape[-1]
         if n == 1:
-            self.kernel = None
             return input.clone()
         call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device)
-        self.kernel = self.kernel_for("fft_c2c", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("fft_c2c", call)
+        return kernel(input)

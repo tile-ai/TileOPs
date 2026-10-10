@@ -125,15 +125,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
-        return self._call_boundary(q, kv, indices)
-
-    def _eager_forward(
-        self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = (q, kv, indices)
         kernel = self.kernel_for("dsa_decode", self._dsa_decode_call(q, kv, indices))
         return kernel(*inputs)

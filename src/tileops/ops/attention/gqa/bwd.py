@@ -95,21 +95,6 @@ class GQABwdOp(Op):
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H_kv, D)``; ``dv.shape == (B, S, H_kv, D)``.
         """
-        return self._call_boundary(q, k, v, o, do, lse)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        do: torch.Tensor,
-        lse: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         do = do.contiguous()
         call = self._attention_call(q, k)
         # Reject unsupported backward calls before compiling or launching preprocess.

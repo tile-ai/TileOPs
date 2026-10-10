@@ -47,7 +47,6 @@ class FP8QuantFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize ``input_tensor`` row by row.
@@ -60,10 +59,6 @@ class FP8QuantFwdOp(Op):
             ``scale_tensor`` $[B \\times S \\times G]$ in ``float32`` and ``output_tensor``
             $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn``.
         """
-        return self._call_boundary(input_tensor)
-
-    def _eager_forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         input_tensor = input_tensor.contiguous()
         batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
         call = FP8QuantCall(
@@ -74,5 +69,5 @@ class FP8QuantFwdOp(Op):
             dtype=input_tensor.dtype,
             device=input_tensor.device,
         )
-        self.kernel = self.kernel_for("fp8_quant", call)
-        return self.kernel(input_tensor)
+        kernel = self.kernel_for("fp8_quant", call)
+        return kernel(input_tensor)
