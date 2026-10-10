@@ -1017,10 +1017,6 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why this class does not serve *call*, or ``None`` when it does."""
         if not call.is_fp8:

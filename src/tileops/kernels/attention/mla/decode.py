@@ -794,10 +794,6 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
     _build = staticmethod(_mla_decode_ws_kernel)
 
     @classmethod
-    def applies(cls, call: MLADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MLADecodeCall) -> Optional[str]:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:

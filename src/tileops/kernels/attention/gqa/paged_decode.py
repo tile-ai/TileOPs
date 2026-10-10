@@ -524,10 +524,6 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
     general: bool = True
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside the decode region or no key tile covers its pages."""
         reason = call.paged_decode_refusal

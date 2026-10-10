@@ -220,9 +220,14 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
     _DEFAULT_LOAD_BYTES: ClassVar[int] = 176 << 20
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
+    def refusal(cls, call: QuantizeCall) -> "str | None":
         lanes = call.group_size // _CHUNK
-        return call.group_size % _CHUNK == 0 and lanes & (lanes - 1) == 0 and lanes <= WARP_LANES
+        if call.group_size % _CHUNK or lanes & (lanes - 1) or lanes > WARP_LANES:
+            return (
+                f"requires a group of a power-of-two number of {_CHUNK}-element chunks up to "
+                f"{WARP_LANES}, got {call.group_size}"
+            )
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -266,11 +271,11 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     _REGISTERS: ClassVar[int] = 64
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
-        return (
-            call.group_size % 128 == 0
-            and call.group_size <= cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
-        )
+    def refusal(cls, call: QuantizeCall) -> "str | None":
+        widest = cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
+        if call.group_size % 128 or call.group_size > widest:
+            return f"requires a group a multiple of 128 up to {widest}, got {call.group_size}"
+        return super().refusal(call)
 
     @property
     def default_config(self) -> dict:

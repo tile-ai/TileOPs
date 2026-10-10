@@ -245,10 +245,6 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     _MAX_SPLITS = 32
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Batch 1, one query position, a long cache, at most 16 heads per KV head."""
         served = (

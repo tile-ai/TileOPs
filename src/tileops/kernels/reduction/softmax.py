@@ -546,8 +546,10 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
     """
 
     @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return cls.split_seg_n(call) > 0
+    def refusal(cls, call: SoftmaxCall) -> "str | None":
+        if cls.split_seg_n(call) <= 0:
+            return "the row grid fills the device without a split"
+        return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)
@@ -599,8 +601,12 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
     """
 
     @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return cls.row_plan(call)[1] != 0 and cls.split_seg_n(call) == 0
+    def refusal(cls, call: SoftmaxCall) -> "str | None":
+        if cls.row_plan(call)[1] == 0:
+            return "a row fits one tile"
+        if cls.split_seg_n(call) != 0:
+            return "the split kernel serves a row grid that leaves the device idle"
+        return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)
@@ -654,8 +660,10 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
     _MAX_TILE_N_CANDIDATES = 3
 
     @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return cls.row_plan(call)[1] == 0
+    def refusal(cls, call: SoftmaxCall) -> "str | None":
+        if cls.row_plan(call)[1] != 0:
+            return "a row does not fit one tile"
+        return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)
@@ -679,7 +687,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
     def _build_row_kernel(self, tile_n: int):
-        # ``applies`` admits one-tile rows only, so every candidate's tile_n is 0.
+        # ``refusal`` admits one-tile rows only, so every candidate's tile_n is 0.
         return _softmax_kernel_single(
             self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
         )

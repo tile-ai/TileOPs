@@ -490,10 +490,6 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         return None
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
         if call.dtype not in ATTENTION_DTYPES or call.cache_dtype != call.dtype:

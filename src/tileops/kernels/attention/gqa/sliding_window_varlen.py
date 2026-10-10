@@ -35,14 +35,18 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
     """Shared base for variable-length GQA sliding window forward kernels."""
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return (
-            call.uses_sliding_window
-            and not call.is_fp8
-            and not call.fuse_rope
-            and call.sm_scale is None
-            and call.softcap == 0.0
-        )
+    def refusal(cls, call) -> "str | None":
+        if not call.uses_sliding_window:
+            return "serves a sliding window only"
+        if call.is_fp8:
+            return "does not serve FP8"
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        if call.sm_scale is not None:
+            return "requires the default softmax scale"
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        return super().refusal(call)
 
     def _make_kernel(self) -> Callable:
         return _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(

@@ -39,8 +39,8 @@ class _DeviceFact:
 class CallSpec:
     """A call spec: the immutable facts of one call and the device it runs on.
 
-    A family subclasses this and adds every fact its implementations read in ``applies`` /
-    ``refusal`` / ``entry_for``, and nothing a tensor's contents decide. Equality and the
+    A family subclasses this and adds every fact its implementations read in ``refusal`` /
+    ``entry_for``, and nothing a tensor's contents decide. Equality and the
     hash cover those facts and ``device``, normalized to an explicit type and index.
 
     The device facts (``arch``, ``calibration``, ``sm_count``, ``smem_budget``) are derived from ``device``

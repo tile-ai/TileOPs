@@ -16,10 +16,6 @@ class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
     """Base for every in-tree implementation of the paged GQA prefill interface."""
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None``.
 

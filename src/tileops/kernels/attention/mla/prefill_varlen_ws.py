@@ -453,10 +453,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
     _MAX_BATCH: int = 256
 
     @classmethod
-    def applies(cls, call: MLAVarlenCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dtype not in ATTENTION_DTYPES:

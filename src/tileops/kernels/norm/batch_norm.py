@@ -825,8 +825,11 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
     _BLOCK_THREADS = 256
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._holder(call, 1) == "thread"
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 1)
+        if holder != "thread":
+            return f"a channel of this call is held by a {holder}, not a thread"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
@@ -872,8 +875,11 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
     """
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._holder(call, 1) == "block"
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 1)
+        if holder != "block":
+            return f"a channel of this call is held by a {holder}, not a block"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
@@ -938,8 +944,11 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     _SUM_THREADS = (128, 256, 512, 1024)
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._holder(call, 1) == "split"
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 1)
+        if holder != "split":
+            return f"a channel of this call is held by a {holder}, not a split"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
@@ -1990,8 +1999,11 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
     """
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._holder(call, 2) in ("thread", "block")
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 2)
+        if holder not in ("thread", "block"):
+            return f"a channel of this call is held by a {holder}, not a thread or a block"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
@@ -2053,8 +2065,11 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
     """
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._holder(call, 2) == "split"
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 2)
+        if holder != "split":
+            return f"a channel of this call is held by a {holder}, not a split"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:

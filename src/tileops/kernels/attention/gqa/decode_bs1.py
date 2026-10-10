@@ -518,10 +518,6 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         return glse, output_partial
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The batch-1 shape, within what the general decode kernel serves."""
         if not call.decode_bs1_region:

@@ -31,10 +31,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: DeltaNetCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetCall) -> Optional[str]:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 

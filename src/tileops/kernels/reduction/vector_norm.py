@@ -262,8 +262,10 @@ class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
     preferred_over = frozenset({"vector_norm_fold"})
 
     @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return cls.reduces_edge_axes(call)
+    def refusal(cls, call: ReduceCall) -> "str | None":
+        if not cls.reduces_edge_axes(call):
+            return "serves a reduced prefix and suffix around kept axes"
+        return super().refusal(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)

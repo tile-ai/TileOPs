@@ -1582,10 +1582,12 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
     general = False
 
     @classmethod
-    def applies(cls, call: FFTC2CCall) -> bool:
-        """True where the call's plan is one a single CTA runs in one launch."""
+    def refusal(cls, call: FFTC2CCall) -> "str | None":
+        """Refuse a call whose plan is not one a single CTA runs in one launch."""
         dtype = cls.dtype_to_str(call.dtype)
-        return _plan_for(call.n, dtype, call.arch, decomposed=False) is not None
+        if _plan_for(call.n, dtype, call.arch, decomposed=False) is None:
+            return f"no single-CTA plan covers n={call.n} in {dtype} on sm{call.arch}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:
@@ -1709,10 +1711,12 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
     general = False
 
     @classmethod
-    def applies(cls, call: FFTC2CCall) -> bool:
-        """True where the call's plan names more than one factor."""
+    def refusal(cls, call: FFTC2CCall) -> "str | None":
+        """Refuse a call whose plan does not name more than one factor."""
         dtype = cls.dtype_to_str(call.dtype)
-        return _plan_for(call.n, dtype, call.arch, decomposed=True) is not None
+        if _plan_for(call.n, dtype, call.arch, decomposed=True) is None:
+            return f"no decomposed plan covers n={call.n} in {dtype} on sm{call.arch}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: FFTC2CCall) -> Entry:

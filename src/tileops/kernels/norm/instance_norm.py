@@ -452,8 +452,11 @@ class InstanceNormFwdTrainSingleKernel(_InstanceNormTrainKernel):
     """InstanceNorm training forward in one launch: one block per channel holds the batch."""
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._block_m(call.n, call.spatial, call.dtype) >= call.n
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        if cls._block_m(call.n, call.spatial, call.dtype) < call.n:
+            return f"one block does not hold all {call.n} rows of a channel"
+        # The region replaces GroupNormNoAffineKernel's: an instance-norm call is no group-norm one.
+        return None
 
 
 class InstanceNormFwdTrainKernel(_InstanceNormTrainKernel):
@@ -468,8 +471,11 @@ class InstanceNormFwdTrainKernel(_InstanceNormTrainKernel):
     _STATS_THREADS = 128
 
     @classmethod
-    def applies(cls, call: BatchNormCall) -> bool:
-        return cls._block_m(call.n, call.spatial, call.dtype) < call.n
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        if cls._block_m(call.n, call.spatial, call.dtype) >= call.n:
+            return f"one block holds all {call.n} rows of a channel"
+        # The region replaces GroupNormNoAffineKernel's: an instance-norm call is no group-norm one.
+        return None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -657,10 +657,6 @@ class BmmKernel(Kernel, BmmFwdInterface):
     general = True
 
     @classmethod
-    def applies(cls, call: BmmCall) -> bool:
-        return cls._region_refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: BmmCall) -> Optional[str]:
         return cls._region_refusal(call)
 
@@ -769,8 +765,8 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
-    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls outside
-    :meth:`applies`; this path takes its configuration from the template selector.
+    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls
+    :meth:`refusal` refuses; this path takes its configuration from the template selector.
     """
 
     supported_archs: list[int] = [90]
@@ -779,10 +775,6 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     def _tiles(band: _PersistentBand, batch: int, m: int, n: int) -> int:
         """Output tiles this call launches at the band's tile."""
         return batch * -(-m // band.tile_m) * -(-n // band.tile_n)
-
-    @classmethod
-    def applies(cls, call: BmmCall) -> bool:
-        return cls._region_refusal(call) is None
 
     @classmethod
     def refusal(cls, call: BmmCall) -> Optional[str]:
@@ -877,13 +869,8 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
 
     @classmethod
-    def applies(cls, call: BmmFP8Call) -> bool:
-        return cls._k_refusal(call.k) is None
-
-    @classmethod
     def refusal(cls, call: BmmFP8Call) -> Optional[str]:
-        """The K-step reason where that is what refuses, else what the region says."""
-        return cls._k_refusal(call.k) or (None if cls.applies(call) else "does not serve this call")
+        return cls._k_refusal(call.k)
 
     @classmethod
     def entry_for(cls, call: BmmFP8Call) -> Entry:
@@ -1015,21 +1002,24 @@ class BmmFP8WSKernel(_BmmFP8Kernel):
         return block_k <= k and k % block_k == 0 and k // block_k >= 2
 
     @classmethod
-    def applies(cls, call: BmmFP8Call) -> bool:
-        if cls._k_refusal(call.k) is not None:
-            return False
+    def refusal(cls, call: BmmFP8Call) -> "str | None":
+        reason = super().refusal(call)
+        if reason is not None:
+            return reason
         if not any(cls._k_tile_fits(call.k, tile) for tile in cls.block_k_candidates):
-            return False
+            return f"no K tile in {list(cls.block_k_candidates)} fits k={call.k}"
         # ceil(1.5 * sm_count): below one and a half persistent waves of whole tiles the
         # producer warpgroup has nothing left to hide behind.
         min_total_tiles = (call.sm_count * 3 + 1) // 2
-        return any(
+        if not any(
             call.m % block_m == 0
             and call.n % block_n == 0
             and call.batch * (call.m // block_m) * (call.n // block_n) >= min_total_tiles
             for block_m in (*cls.block_m_candidates, 256)
             for block_n in cls.block_n_candidates
-        )
+        ):
+            return f"no whole-tile grid reaches {min_total_tiles} output tiles"
+        return None
 
     def _build_program(self) -> None:
         self.kernel = _bmm_fp8_persistent_ws_kernel(
@@ -1088,13 +1078,10 @@ class BmmFP8PersistentKernel(_BmmFP8Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: BmmFP8Call) -> bool:
-        return (
-            cls._k_refusal(call.k) is None
-            and call.m % 128 == 0
-            and call.n % 128 == 0
-            and call.k % 128 == 0
-        )
+    def refusal(cls, call: BmmFP8Call) -> "str | None":
+        if call.m % 128 or call.n % 128 or call.k % 128:
+            return f"requires m, n and k multiples of 128, got {call.m}, {call.n}, {call.k}"
+        return super().refusal(call)
 
     def _build_program(self) -> None:
         self.kernel = _bmm_fp8_persistent_kernel(

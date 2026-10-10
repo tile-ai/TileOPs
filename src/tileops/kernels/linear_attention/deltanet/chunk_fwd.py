@@ -250,10 +250,6 @@ def _output_o_tl(
 
 class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     @classmethod
-    def applies(cls, call: DeltaNetChunkCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 

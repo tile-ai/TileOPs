@@ -633,10 +633,6 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     _THREADS_SEQ = 128
 
     @classmethod
-    def applies(cls, call: GLAChunkCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``; reads lower bounds, so a call above
         them that TileLang still cannot place in the device's shared memory is built and

@@ -113,34 +113,39 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     preferred_over = frozenset({"avg_pool2d_kernel"})
 
     @classmethod
-    def applies(cls, call: AvgPoolCall) -> bool:
+    def refusal(cls, call: AvgPoolCall) -> "str | None":
         if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            return False
+            return f"requires float16, bfloat16 or float32, got {call.dtype}"
         if len(call.size) != 2:
-            return False
+            return "serves a 2-d window"
         (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
         (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
         run = VECTOR_ACCESS_BYTES // call.dtype.itemsize
-        if call.ceil_mode or call.divisor_override is not None or run % stride_w:
-            return False
+        if call.ceil_mode or call.divisor_override is not None:
+            return "does not serve ceil_mode or divisor_override"
+        if run % stride_w:
+            return f"requires a stride dividing the {run}-element load, got {stride_w}"
         if (pad_h or pad_w) and not call.count_include_pad:
-            return False
+            return "requires count_include_pad where it pads"
         out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
         out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
         # Each element past a load is a load of its own.
         max_reach = 1
         # The row loop is unrolled, so taller windows stay on AvgPool2dKernel.
         max_rows = 16
-        return (
-            kernel_h <= max_rows
-            and pad_w <= max_reach
-            and kernel_w - stride_w - pad_w <= max_reach
-            and out_h > 0
+        if kernel_h > max_rows:
+            return f"unrolls at most {max_rows} window rows, got {kernel_h}"
+        if pad_w > max_reach or kernel_w - stride_w - pad_w > max_reach:
+            return f"reads at most {max_reach} element past a load"
+        if not (
+            out_h > 0
             and out_w > 0
             and out_w % (run // stride_w) == 0
             and out_w * stride_w <= w_in
             and w_in % run == 0
-        )
+        ):
+            return f"requires whole {run}-element loads along the row"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:

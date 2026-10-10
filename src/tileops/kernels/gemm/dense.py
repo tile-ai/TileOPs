@@ -320,8 +320,10 @@ class GemmFP8TensorScaleKernel(_GemmFP8Kernel):
     BLOCK_SCALED = False
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if call.scale_a_shape != (1, 1) or call.scale_b_shape != (1, 1):
+            return "requires one scale per tensor"
+        return super().refusal(call)
 
 
 class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
@@ -335,8 +337,13 @@ class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
     general = True
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return cls.block_scale_grid(call) is not None
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) is None:
+            return (
+                f"scales of shape {call.scale_a_shape} and {call.scale_b_shape} form no "
+                f"block128 grid"
+            )
+        return super().refusal(call)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2629,10 +2636,6 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         super().init_config(config, tune)
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GemmCall) -> Optional[str]:
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
@@ -2962,7 +2965,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
     def band_for(cls, call: GemmCall) -> Optional[str]:
         """The band serving *call*, or ``None`` when this class does not serve it.
 
-        Read by :meth:`applies` and by :meth:`entry_for`, so the region is stated once.
+        Read by :meth:`refusal` and by :meth:`entry_for`, so the region is stated once.
         """
         vector = cls._vector_operand(call)
         if vector is not None:
@@ -2974,8 +2977,10 @@ class GemvKernel(Kernel, GemmFwdInterface):
         return "lhs_rows"
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.band_for(call) is not None
+    def refusal(cls, call: GemmCall) -> "str | None":
+        if cls.band_for(call) is None:
+            return "no GEMV band serves this shape"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:
@@ -3233,10 +3238,6 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
             f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
             f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
         )
-
-    @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: GemmCall) -> Optional[str]:

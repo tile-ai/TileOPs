@@ -363,8 +363,10 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
     """
 
     @classmethod
-    def applies(cls, call: GroupNormCall) -> bool:
-        return call.passes_affine
+    def refusal(cls, call: GroupNormCall) -> "str | None":
+        if not call.passes_affine:
+            return "requires the affine weight and bias"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GroupNormCall) -> Entry:
@@ -571,8 +573,10 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
     """
 
     @classmethod
-    def applies(cls, call: GroupNormCall) -> bool:
-        return not call.passes_affine
+    def refusal(cls, call: GroupNormCall) -> "str | None":
+        if call.passes_affine:
+            return "serves a call without the affine weight and bias"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GroupNormCall) -> Entry:

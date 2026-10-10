@@ -60,7 +60,7 @@ __all__ = [
 class _StreamingLogSumExpPolicy:
     """Launch shape and eligibility gate of the streaming kernel.
 
-    The launch pair is fixed rather than tuned, and ``LogSumExpStreamingKernel.applies``
+    The launch pair is fixed rather than tuned, and ``LogSumExpStreamingKernel.refusal``
     keeps the kernel on the shapes that pair suits.
     """
 
@@ -487,7 +487,7 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
     runs. Serves the calls that have an :meth:`edge_view`.
     """
 
-    preferred_over = frozenset({"logsumexp_streaming", "logsumexp_split"})
+    preferred_over = frozenset({"logsumexp_streaming"})
 
     @classmethod
     def edge_view(cls, call: LogSumExpCall) -> "tuple[int, int, int] | None":
@@ -496,8 +496,10 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
         return edge_split_view(call.shape, k, j, DEFAULT_THREADS) if k else None
 
     @classmethod
-    def applies(cls, call: LogSumExpCall) -> bool:
-        return cls.edge_view(call) is not None
+    def refusal(cls, call: LogSumExpCall) -> "str | None":
+        if cls.edge_view(call) is None:
+            return "serves kept axes between a reduced prefix and suffix"
+        return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
         super().__init__(device_index=call.device.index)
@@ -530,14 +532,15 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
     preferred_over = frozenset({"logsumexp_split"})
 
     @classmethod
-    def applies(cls, call: LogSumExpCall) -> bool:
+    def refusal(cls, call: LogSumExpCall) -> "str | None":
         policy = _STREAMING_LOGSUMEXP
-        return (
-            call.dtype in (torch.float16, torch.bfloat16)
-            and policy.min_rows <= call.m
-            and policy.min_cols <= call.n
-            and call.n % (policy.threads * policy.cols_per_thread) == 0
-        )
+        if call.dtype not in (torch.float16, torch.bfloat16):
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.m < policy.min_rows or call.n < policy.min_cols:
+            return f"streams at least {policy.min_rows} rows of {policy.min_cols}"
+        if call.n % (policy.threads * policy.cols_per_thread):
+            return f"requires rows a multiple of {policy.threads * policy.cols_per_thread}"
+        return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
         super().__init__(device_index=call.device.index)
@@ -565,8 +568,10 @@ class LogSumExpSplitKernel(_LogSumExpKernelBase):
     """
 
     @classmethod
-    def applies(cls, call: LogSumExpCall) -> bool:
-        return cls.split_seg_n(call) > 0
+    def refusal(cls, call: LogSumExpCall) -> "str | None":
+        if cls.split_seg_n(call) <= 0:
+            return "the row grid fills the device without a split"
+        return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
         super().__init__(device_index=call.device.index)
@@ -603,10 +608,6 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
 
     general: bool = True
     _MAX_TILE_N_CANDIDATES = 3
-
-    @classmethod
-    def applies(cls, call: LogSumExpCall) -> bool:
-        return True
 
     def __init__(self, call: LogSumExpCall):
         super().__init__(device_index=call.device.index)

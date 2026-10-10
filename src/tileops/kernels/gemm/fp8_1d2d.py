@@ -1014,20 +1014,23 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return (
-            cls.block_scale_grid(call) == "1d2d"
-            and call.dtype == torch.float8_e4m3fn
-            and call.out_dtype == torch.bfloat16
-            and not call.has_bias
-            and cls._shape_refusal(
-                call.m,
-                call.n,
-                call.k,
-                shared_epilogue=cls._calibrated_epilogue(call.m, call.n, call.k, call.calibration),
-            )
-            is None
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) != "1d2d":
+            return "requires 1d2d block scales"
+        if call.dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {call.dtype}"
+        if call.out_dtype != torch.bfloat16:
+            return f"writes bfloat16, not {call.out_dtype}"
+        if call.has_bias:
+            return "does not serve a bias"
+
+        reason = cls._shape_refusal(
+            call.m,
+            call.n,
+            call.k,
+            shared_epilogue=cls._calibrated_epilogue(call.m, call.n, call.k, call.calibration),
         )
+        return reason or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmFP8Call) -> Entry:
@@ -1151,14 +1154,19 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
     preferred_over = frozenset({"gemm_fp8_1d2d"})
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return (
-            cls.block_scale_grid(call) == "1d2d"
-            and call.dtype == torch.float8_e4m3fn
-            and call.out_dtype == torch.bfloat16
-            and not call.has_bias
-            and (call.m, call.n, call.k) in _FP8_1D2D_WAVE_CONFIGS.get(call.calibration, {})
-        )
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) != "1d2d":
+            return "requires 1d2d block scales"
+        if call.dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {call.dtype}"
+        if call.out_dtype != torch.bfloat16:
+            return f"writes bfloat16, not {call.out_dtype}"
+        if call.has_bias:
+            return "does not serve a bias"
+
+        if (call.m, call.n, call.k) not in _FP8_1D2D_WAVE_CONFIGS.get(call.calibration, {}):
+            return f"has no wave config for {(call.m, call.n, call.k)} on this board"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmFP8Call) -> Entry:

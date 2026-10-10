@@ -123,10 +123,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     preferred_over = frozenset({"layer_norm"})
 
     @classmethod
-    def applies(cls, call: LayerNormCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: LayerNormCall) -> Optional[str]:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         if call.n % ALIGNMENT == 0:

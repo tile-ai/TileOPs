@@ -326,10 +326,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     _THREADS = 128
 
     @classmethod
-    def applies(cls, call: FP8LightningIndexerCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
         """Why the call cannot fit the device's shared memory at one query a block, or ``None``."""
         if not call.smem_budget:

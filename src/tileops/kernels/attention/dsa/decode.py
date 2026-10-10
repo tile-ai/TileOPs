@@ -775,10 +775,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
     general = True
 
     @classmethod
-    def applies(cls, call: DSADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         """The shared shape region, where the default config fits the block's shared memory."""
         reason = cls.shape_refusal(
@@ -1072,10 +1068,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         if dim % 128 != 0 or tail_dim != 64:
             return "requires dim a multiple of 128 and tail_dim 64"
         return None
-
-    @classmethod
-    def applies(cls, call: DSADecodeCall) -> bool:
-        return cls.refusal(call) is None
 
     @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:

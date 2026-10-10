@@ -605,10 +605,6 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     """The chunked forward as the training op calls it, with its own recurrent state."""
 
     @classmethod
-    def applies(cls, call: GLAChunkCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 

@@ -723,22 +723,23 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     block_m_candidates: tuple[int, ...] = (64, 128)
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
         # The tile question is asked of this class, so a kernel_map override answers
         # for its own tiling rather than for the shipped one.
-        return (
-            call.groups == 1
-            and call.kernel_h == call.kernel_w
+        if call.groups != 1:
+            return "serves ungrouped convolution"
+        if not (
+            call.kernel_h == call.kernel_w
             and call.stride[0] == call.stride[1]
             and call.padding[0] == call.padding[1]
             and call.padding_end in (None, call.padding)
             and call.dilation[0] == call.dilation[1]
-            and call.c_in % 32 == 0
-            and cls.tile_stays_in_one_image(call.n, call.out_hw, min(cls.block_m_candidates))
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        ):
+            return "serves a square kernel with equal stride, padding and dilation on both axes"
+        if call.c_in % 32 != 0:
+            return f"requires input channels a multiple of 32, got {call.c_in}"
+        if not cls.tile_stays_in_one_image(call.n, call.out_hw, min(cls.block_m_candidates)):
+            return "requires every output tile to stay in one image"
         m_tiles = -(-(call.n * call.out_hw) // min(cls.block_m_candidates))
         return super().refusal(call) or grid_refusal(y=m_tiles)
 
@@ -885,11 +886,9 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups == 1
-
-    @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -1038,16 +1037,14 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups > 1
-
-    @classmethod
     def _grid_z(cls, call: Conv2dCall) -> int:
         """Blocks the program launches along grid z: one per image and group."""
         return call.n * call.groups
 
     @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
@@ -1209,8 +1206,10 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
     preferred_over = frozenset({"group_conv2d"})
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+    def refusal(cls, call) -> "str | None":
+        if call.c_in_g != 1 or call.c_out_g != 1:
+            return "serves one input and one output channel per group"
+        return super().refusal(call)
 
     @classmethod
     def _grid_z(cls, call: Conv2dCall) -> int:
@@ -1270,8 +1269,8 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
     preferred_over = frozenset({"conv2d_symmetric"})
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return (
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if not (
             call.groups == 1
             and call.kernel_h == 1
             and call.kernel_w == 1
@@ -1279,10 +1278,8 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             and call.padding == (0, 0)
             and call.padding_end in (None, (0, 0))
             and call.dilation == (1, 1)
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        ):
+            return "serves an ungrouped 1x1 convolution: stride 1, no padding or dilation"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod

@@ -272,8 +272,10 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     _aligned = True
 
     @classmethod
-    def applies(cls, call: QuantizeCall) -> bool:
-        return call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES == 0
+    def refusal(cls, call: QuantizeCall) -> "str | None":
+        if call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES:
+            return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
+        return super().refusal(call)
 
 
 class FP8QuantPerBlockUnalignedFwdKernel(_FP8QuantPerBlockFwdKernel):

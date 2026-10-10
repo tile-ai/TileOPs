@@ -297,10 +297,6 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
     general: bool = True
 
     @classmethod
-    def applies(cls, call: MLAVarlenCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dim_nope % 16 != 0 or call.dim_pe % 16 != 0 or call.dim_v % 16 != 0:

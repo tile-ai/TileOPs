@@ -795,10 +795,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside.
 

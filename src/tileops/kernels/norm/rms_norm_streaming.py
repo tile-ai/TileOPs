@@ -109,10 +109,12 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     preferred_over = frozenset({"rms_norm"})
 
     @classmethod
-    def applies(cls, call: LayerNormCall) -> bool:
+    def refusal(cls, call: LayerNormCall) -> "str | None":
         element_bytes = call.dtype.itemsize
         budget = torch.cuda.get_device_properties(call.device).shared_memory_per_block_optin
-        return align_up(call.n, ALIGNMENT) * element_bytes > budget
+        if align_up(call.n, ALIGNMENT) * element_bytes <= budget:
+            return f"a row of {call.n} elements fits the {budget}-byte shared memory of a block"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

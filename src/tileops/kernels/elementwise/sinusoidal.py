@@ -96,10 +96,6 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
         return f"serves dtypes [{supported}], not {call.dtype}"
 
     @classmethod
-    def applies(cls, call: SinusoidalCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def entry_for(cls, call: SinusoidalCall) -> Entry:
         index = None if call.device is None else call.device.index
         return call, lambda: cls(call.seq_len, call.d_model, call.dtype, device_index=index)

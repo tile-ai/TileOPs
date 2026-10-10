@@ -63,16 +63,19 @@ class _Implementation(Kernel, _Scaling):
         self.config = {"tuned": True}
 
 
-def _implementation(name: str, applies=lambda call: True, **attrs) -> type:
-    """An implementation of ``_Scaling`` that serves the calls *applies* accepts."""
-    namespace = {"applies": classmethod(lambda cls, call: applies(call)), **attrs}
+def _implementation(name: str, serves=lambda call: True, **attrs) -> type:
+    """An implementation of ``_Scaling`` that serves the calls *serves* accepts."""
+    namespace = {
+        "refusal": classmethod(lambda cls, call: None if serves(call) else f"{name} declines"),
+        **attrs,
+    }
     return type(name, (_Implementation,), namespace)
 
 
 _GENERAL = _implementation("General", general=True)
 _POSITIVE = _implementation("Positive", lambda c: c.n > 0)
 _BAND = _implementation("Band", lambda c: 10 < c.n <= 50, preferred_over=frozenset({"positive"}))
-# Never applies with the band; it wins over the positive through it.
+# Never serves a call the band serves; it wins over the positive through it.
 _HUNDREDS = _implementation("Hundreds", lambda c: c.n > 100, preferred_over=frozenset({"band"}))
 _NEGATIVE = _implementation("Negative", lambda c: c.n < 0)
 
@@ -362,8 +365,8 @@ class _NarrowTorchLayerNorm(_TorchLayerNorm):
     preferred_over = frozenset({"layer_norm"})
 
     @classmethod
-    def applies(cls, call: LayerNormCall) -> bool:
-        return call.n <= 256
+    def refusal(cls, call: LayerNormCall) -> "str | None":
+        return None if call.n <= 256 else "serves rows of at most 256"
 
 
 def _layer_norm(op, n: int):

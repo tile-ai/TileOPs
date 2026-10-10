@@ -167,10 +167,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     general = True
 
     @classmethod
-    def applies(cls, call: GLADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GLADecodeCall) -> Optional[str]:
         return head_count_refusal(call.heads)
 
@@ -394,8 +390,10 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call: GLADecodeCall) -> bool:
-        return call.dtype == torch.float32 and head_count_refusal(call.heads) is None
+    def refusal(cls, call: GLADecodeCall) -> "str | None":
+        if call.dtype != torch.float32:
+            return f"serves float32, got {call.dtype}"
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:
