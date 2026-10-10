@@ -511,13 +511,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                         digit_shift[0] = T.cast(
                             T.max(
                                 0,
-                                32
-                                - walk_bits
-                                - T.call_extern(
-                                    "int32",
-                                    "__clz",
-                                    T.cast(bound[0] - settled[0], "int32"),
-                                ),
+                                32 - walk_bits - T.clz(T.cast(bound[0] - settled[0], "int32")),
                             ),
                             "uint32",
                         )

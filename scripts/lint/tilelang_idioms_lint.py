@@ -29,6 +29,17 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   ``tests/`` or ``benchmarks/``. That code takes arguments; a value read from the
   environment reaches no cache key and no caller can see it.
 
+- An extern call (``T.call_extern``, ``T.call_pure_extern``, TVM's spelling, or any other
+  call named ``call_extern`` / ``call_pure_extern``) whose target is neither a
+  ``tileops::`` csrc helper nor listed in ``_EXTERN_TARGETS``. A CUDA function a ``T.*``
+  intrinsic emits (``T.ieee_fdiv`` for ``__fdiv_rn``, ``T.clz`` for ``__clz``) is called
+  through the intrinsic, so the repo spells each device call one way and TileLang's
+  passes see what the call is. A function no intrinsic emits joins ``_EXTERN_TARGETS``
+  with the reason. A target that does not resolve to strings in the file is reported,
+  and so is the extern function used any way but called where it is named — bound to
+  another name, passed on, or named in a string for ``getattr``, ``__dict__`` or
+  ``vars()`` — since its target could not be checked there.
+
 Usage: ``tilelang_idioms_lint.py [FILE ...]``. With no arguments, scans the
 source trees that carry TileLang code (``src/tileops/``, ``tests/``,
 ``benchmarks/``, ``workloads/``). Exits 1 when any rule fires.
@@ -63,6 +74,25 @@ _ENV_READ = (
     "the environment is invisible to cache keys and callers"
 )
 _SETENV = "monkeypatch.setenv configures code through the environment — pass the argument instead"
+
+# The CUDA functions a kernel may name in T.call_extern: no T.* intrinsic emits them.
+_EXTERN_TARGETS = {
+    # div.approx.f32 with no range guard; T.ieee_fdiv rounds exactly.
+    "__fdividef",
+    # The high 32 bits of a 32x32-bit product.
+    "__umulhi",
+    # Two 16-bit lanes of a 32-bit word, compared or maxed at once.
+    "__vcmpeq2",
+    "__vcmpgeu2",
+    "__vcmpgtu2",
+    "__vmaxu2",
+    # The bulk reduce-add store from a shared pointer; T.atomic_add(..., use_tma=True)
+    # emits the tensor-map form instead, one box at a time, with its own commit and wait.
+    "tl::tma_store_add",
+    # The trace marker placeholder, which src/tileops/trace/passes.py rewrites before codegen.
+    "tl_trace_marker",
+}
+_EXTERN_CALLS = ("call_extern", "call_pure_extern")
 
 _FILE_LEVEL_NOQA = re.compile(r"^#\s*(ruff|flake8)\s*:\s*noqa")
 _DTYPE_NAME = re.compile(r"^(u?int[0-9]+|b?float[0-9]+|float8[a-z0-9_]*|bool|handle)$")
@@ -435,6 +465,151 @@ def _environment_uses(path: Path, tree: ast.Module) -> list[str]:
     return out
 
 
+def _strings(node: ast.AST, assigned: dict[str, list[str] | None]) -> list[str] | None:
+    """The strings *node* can evaluate to, an f-string's fields read as ``{}``; None if unknown."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        return ["".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _strings(node.left, assigned), _strings(node.right, assigned)
+        return None if left is None or right is None else [a + b for a in left for b in right]
+    if isinstance(node, ast.IfExp):
+        body, orelse = _strings(node.body, assigned), _strings(node.orelse, assigned)
+        return None if body is None or orelse is None else body + orelse
+    if isinstance(node, ast.Name):
+        return assigned.get(node.id)
+    return None
+
+
+def _module_source(module: str) -> Path | None:
+    """The file under ``src/`` that defines *module*, for a ``tileops`` module."""
+    if module.split(".", 1)[0] != "tileops":
+        return None
+    base = REPO_ROOT / "src" / Path(*module.split("."))
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _string_bindings(tree: ast.Module, follow_imports: bool = True) -> dict[str, list[str] | None]:
+    """Each name the file binds, mapped to the strings it can hold; None where one is unknown.
+
+    Bindings from every scope merge, so a target read through a name passes only when
+    every string the file binds that name to does. A name imported from a ``tileops``
+    module takes the strings that module binds it to. Any other binding — a parameter,
+    a ``def`` or ``class``, a loop, ``with``, ``except`` or ``match`` target, an
+    unpacking, an augmented assignment, another import — makes the name unknown.
+    """
+    out: dict[str, list[str] | None] = {}
+    # The Name nodes an Assign below records itself, so the Store pass skips exactly those.
+    recorded: set[int] = set()
+
+    def bind(name: str, values: list[str] | None) -> None:
+        known = out.get(name, [])
+        out[name] = None if values is None or known is None else known + values
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            source = _module_source(node.module) if follow_imports and node.level == 0 else None
+            bound = (
+                _string_bindings(ast.parse(source.read_text()), follow_imports=False)
+                if node.module and source
+                else {}
+            )
+            for alias in node.names:
+                bind(alias.asname or alias.name, bound.get(alias.name))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bind(alias.asname or alias.name.split(".", 1)[0], None)
+        elif isinstance(node, ast.arg):
+            bind(node.arg, None)
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            or isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar))
+            and node.name
+        ):
+            bind(node.name, None)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bind(node.rest, None)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    bind(target.id, _strings(node.value, {}))
+                    recorded.add(id(target))
+                else:
+                    for name in ast.walk(target):
+                        if isinstance(name, ast.Name):
+                            bind(name.id, None)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            # Loop, with, comprehension, walrus and augmented targets.
+            if id(node) not in recorded:
+                bind(node.id, None)
+    return out
+
+
+def _extern_targets(path: Path, tree: ast.Module) -> list[str]:
+    """Extern calls whose target is outside ``tileops::`` and ``_EXTERN_TARGETS``.
+
+    Any call to an attribute or a name spelled ``call_extern`` / ``call_pure_extern`` is
+    checked, whatever it is reached through, and the function is never referred to any
+    other way, so no alias can carry it past the check.
+    """
+    assigned = _string_bindings(tree)
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    indirect = (
+        "is used other than called where it is named — call it directly so its target "
+        "can be checked"
+    )
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _EXTERN_CALLS and alias.asname not in (None, alias.name):
+                    out.append(
+                        f"{path}:{node.lineno}: {alias.name} imported as {alias.asname} {indirect}"
+                    )
+            continue
+        named = (
+            node.attr
+            if isinstance(node, ast.Attribute)
+            else node.id
+            if isinstance(node, ast.Name)
+            else None
+        )
+        if named in _EXTERN_CALLS and id(node) not in called:
+            out.append(f"{path}:{node.lineno}: {named} {indirect}")
+            continue
+        # The name as a string reaches the function through getattr, __dict__, vars().
+        if isinstance(node, ast.Constant) and node.value in _EXTERN_CALLS:
+            out.append(f"{path}:{node.lineno}: {node.value!r} as a string {indirect}")
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        member = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if member not in _EXTERN_CALLS:
+            continue
+        target = _arg(node, 1, "func_name")
+        names = None if target is None else _strings(target, assigned)
+        if names is None:
+            out.append(
+                f"{path}:{node.lineno}: {member} target does not resolve to a string here — "
+                "name the function with a string the linter can read"
+            )
+            continue
+        for name in names:
+            function = name.split("<", 1)[0]
+            if not function.startswith("tileops::") and function not in _EXTERN_TARGETS:
+                out.append(
+                    f"{path}:{node.lineno}: {member}({function!r}) — call the T.* intrinsic "
+                    "that emits it; a function no intrinsic emits joins _EXTERN_TARGETS"
+                )
+    return out
+
+
 def check(path: Path) -> list[str]:
     """Violations in one file, each rendered as ``path:line: message``."""
     raw = path.read_bytes()
@@ -460,6 +635,7 @@ def check(path: Path) -> list[str]:
 
     aliases, bare = _tilelang_names(tree)
     out += _value_selecting_boolops(path, tree, aliases, bare)
+    out += _extern_targets(path, tree)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and _member(node, aliases, bare) == "Buffer":
