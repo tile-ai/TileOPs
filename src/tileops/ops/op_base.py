@@ -681,21 +681,35 @@ class Op(ABC):
     def _keep_call(self, call: object) -> None:
         """Keep *call* as the last completed one, with the checked calls its sub-ops completed
         during it, by stage and in completion order (docs/design/roofline.md §2.2), and report
-        it to the call this one ran inside."""
+        it to the call this one ran inside.
+
+        Raises:
+            RuntimeError: A sub-op this op does not hold through :meth:`delegate_for`
+                completed a call during it. Its stage is unknown, so ``stages`` would miss
+                it and the roofline priced from them would be wrong.
+        """
         calls = _open_calls()
-        collected = calls.pop()[1] if calls and calls[-1][0] is self else []
+        mine = bool(calls) and calls[-1][0] is self
+        collected = calls[-1][1] if mine else []
         if collected:
             stage_of = getattr(self, "_delegate_stages", None) or {}
             stages = {stage: [] for stage in self.delegate_types}
             for op, done in collected:
                 stage = stage_of.get(id(op))
-                if stage is not None:
-                    stages[stage].append(done)
+                if stage is None:
+                    raise RuntimeError(
+                        f"{type(self).__name__}: {type(op).__name__} completed a call inside "
+                        f"this call but is not held through delegate_for, so no stage records "
+                        f"it; hold every sub-op with delegate_for(stage, identity, ...)"
+                    )
+                stages[stage].append(done)
             stages = {k: tuple(v) for k, v in stages.items()}
         else:
             # An op that holds no sub-op, or whose sub-ops completed no call, maps every
             # declared stage to the same empty tuple on every call.
             stages = self._no_stages()
+        if mine:
+            calls.pop()
         self._signature_call = call = call.with_stages(stages)
         if calls:
             calls[-1][1].append((self, call))
@@ -879,6 +893,7 @@ class Op(ABC):
 
         Raises:
             KeyError: *stage* is not declared in ``delegate_types``.
+            ValueError: *given* is already held under another stage or identity.
         """
         cls = self.delegate_types[stage]
         held = getattr(self, "_delegates", None)
@@ -887,15 +902,24 @@ class Op(ABC):
             self._delegates, self._delegate_stages = held, {}
         entries = held.setdefault(stage, {})
         if key not in entries:
-            entries[key] = (
+            delegate = (
                 given
                 if given is not None
                 else cls(
                     **params, target=self.target, kernel_map=self._given_kernel_map, tune=self.tune
                 )
             )
+            # A sub-op's completed calls are filed under the one stage that holds it.
+            if id(delegate) in self._delegate_stages:
+                raise ValueError(
+                    f"{type(self).__name__} already holds this {type(delegate).__name__} for "
+                    f"stage {self._delegate_stages[id(delegate)]!r}; one sub-op is held under "
+                    f"one (stage, identity), so it cannot also be held for {stage!r} under "
+                    f"{key!r}"
+                )
+            entries[key] = delegate
             # Which stage holds each sub-op, extended here rather than rebuilt per call.
-            self._delegate_stages[id(entries[key])] = stage
+            self._delegate_stages[id(delegate)] = stage
         return entries[key]
 
     def kernel_delegates(self) -> Sequence["Op"]:

@@ -7,9 +7,11 @@ enumeration ``Op.autotune`` runs over.
 import dataclasses
 import types
 from abc import abstractmethod
+from pathlib import Path
 
 import pytest
 import torch
+import yaml
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
@@ -104,6 +106,28 @@ def _make_op_subclass():
         "eval_roofline": lambda self: (0, 0),
     }
     return type("TestOp", (Op,), attrs)
+
+
+_GATED = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_text())["entries"][
+    "SiluAndMulFwdOp"
+]["signature"]
+
+
+def _gated_op(name: str, forward, delegate_types=None) -> type:
+    """An op on the gated activation's signature whose ``forward`` is *forward*."""
+    from tileops.ops._signature_codegen import install
+
+    def construct(self, *, target=None, kernel_map=None, tune=False):
+        self.target = target
+        self.dispatch_kernel(kernel_map)
+
+    cls = type(
+        name,
+        (Op,),
+        {"__init__": construct, "forward": forward, "delegate_types": delegate_types or {}},
+    )
+    install(cls, {"family": "probe", "signature": _GATED, "roofline": {"flops": "1"}})
+    return cls
 
 
 class TestCompositeKernelMapOverride:
@@ -462,6 +486,41 @@ class TestDelegateFor:
             op._serve((), op.forward)
         assert delegate._builder is None
         assert list(delegate.built_kernels("fwd").values()) == [entry]
+
+
+class TestStages:
+    """Every call a sub-op completes inside its parent's call is filed under one stage."""
+
+    def test_a_sub_op_not_held_through_delegate_for_fails_the_parent_call(self):
+        leaf_cls = _gated_op("ProbeStrayLeafFwdOp", lambda self, x: x[:, : x.shape[1] // 2] * 1)
+        stray = leaf_cls()
+
+        def forward(self, x):
+            held = self.delegate_for("leaf", None)
+            return stray(x) if self.stray else held(x)
+
+        parent = _gated_op("ProbeStrayFwdOp", forward, {"leaf": leaf_cls})()
+        parent.stray = False
+        x = torch.ones(3, 8, dtype=torch.float16)
+        parent(x)
+        kept = parent.last_call
+        parent.stray = True
+        with pytest.raises(RuntimeError, match="not held through delegate_for"):
+            parent(x)
+        assert parent.last_call is kept
+
+    def test_one_sub_op_is_held_under_one_stage_and_identity(self):
+        class CompositeOp(_SlottedOp):
+            delegate_types = {"first": _SlottedOp, "second": _SlottedOp}
+
+        op = CompositeOp([])
+        shared = _SlottedOp([])
+        assert op.delegate_for("first", None, shared) is shared
+        assert op.delegate_for("first", None, shared) is shared
+        with pytest.raises(ValueError, match="already holds"):
+            op.delegate_for("second", None, shared)
+        with pytest.raises(ValueError, match="already holds"):
+            op.delegate_for("first", 1, shared)
 
 
 class TestInstanceKeys:
