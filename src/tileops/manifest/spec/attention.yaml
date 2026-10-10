@@ -102,6 +102,7 @@ GQAVarlenFwdOp:
       v_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
       rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      sinks: {dtype: float32, shape: "[H]", optional: true}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
     let:
@@ -138,6 +139,11 @@ GQAVarlenFwdOp:
   - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-fp8-q-lt-kv}
   - {T_q: 3017, T_kv: 6146, H: 32, H_kv: 4, D: 128, q_lens: [1, 17, 1000, 0, 1999], kv_lens: [1, 17, 1000, 3000, 2128], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-fp8-ragged}
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-w256}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 64, q_lens: [257, 767], kv_lens: [1024, 2048], some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-small}
+  - {T_q: 4096, T_kv: 6144, H: 64, H_kv: 8, D: 64, q_lens: [1024, 3072], kv_lens: [2048, 4096], some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-medium}
+  - {T_q: 8192, T_kv: 8192, H: 64, H_kv: 8, D: 64, q_lens: [2048, 6144], kv_lens: [2048, 6144], some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sinks-large}
+  - {T_q: 8192, T_kv: 8192, H: 64, H_kv: 8, D: 64, q_lens: [2048, 6144], kv_lens: [2048, 6144], window_size_left: 127, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-w128}
+  - {T_q: 273, T_kv: 2049, H: 8, H_kv: 2, D: 128, q_lens: [17, 256], kv_lens: [512, 1537], out_dtype: bfloat16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: scaled-sinks-ragged}
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
 

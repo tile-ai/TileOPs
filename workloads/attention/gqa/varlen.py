@@ -98,6 +98,7 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         pos_encoding_mode: str = "none",
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
     ) -> None:
         self.batch = batch
         self.seqlens_q = seqlens_q
@@ -114,6 +115,7 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = dim if rotary_dim is None else rotary_dim
         self.rope_layout = rope_layout
+        self.has_sinks = has_sinks
 
     @property
     def max_seqlen_q(self) -> int:
@@ -143,8 +145,13 @@ class GQAVarlenFwdWorkload(WorkloadBase):
             dtype=torch.int32,
             device=run_device(),
         )
+        sinks = None
+        if self.has_sinks:
+            v = (v.float() + 1.0).to(self.dtype)
+            sinks = torch.linspace(-2, 8, self.heads, device=run_device(), dtype=torch.float32)
         if self.pos_encoding_mode != "rope":
-            return q, k, v, cu_seqlens_q, cu_seqlens_k
+            packed = (q, k, v, cu_seqlens_q, cu_seqlens_k)
+            return (*packed, None, None, None, None, None, sinks) if self.has_sinks else packed
         # Angles span a whole turn. A narrow draw puts every cosine near one and every sine
         # near zero, which makes the rotation near-identity: a kernel that skips it, pairs
         # the wrong channels, or rotates the channels a partial width should leave alone
@@ -153,7 +160,8 @@ class GQAVarlenFwdWorkload(WorkloadBase):
             max(max(self.seqlens_k), 1), self.rotary_dim // 2, device=run_device()
         ) * (2 * math.pi)
         cos, sin = angles.cos().to(self.dtype), angles.sin().to(self.dtype)
-        return q, k, v, cu_seqlens_q, cu_seqlens_k, None, None, None, cos, sin
+        packed = (q, k, v, cu_seqlens_q, cu_seqlens_k, None, None, None, cos, sin)
+        return (*packed, sinks) if self.has_sinks else packed
 
     def ref_program(
         self,
@@ -167,6 +175,7 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         v_scale: torch.Tensor | None = None,
         rope_cos: torch.Tensor | None = None,
         rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Canonical materialized reference for regular and windowed Varlen GQA.
 
@@ -208,7 +217,9 @@ class GQAVarlenFwdWorkload(WorkloadBase):
             if self.wr >= 0:
                 visible &= kv_pos <= q_pos + self.wr
             scores = scores.masked_fill(~visible.view(1, q_len, kv_len), float("-inf"))
-            probs = torch.softmax(scores, dim=-1)
+            if sinks is not None:
+                scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
+            probs = torch.softmax(scores, dim=-1)[..., :kv_len]
             probs = torch.where(
                 visible.any(dim=-1).view(1, q_len, 1), probs, torch.zeros_like(probs)
             )
@@ -243,7 +254,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
 
     An FP8 ``dtype`` adds the per-request, per-KV-head scales and needs a 16-bit
     ``out_dtype``; a ``rotary_dim`` adds the RoPE tables. ``gen_inputs`` emits the
-    ten tensor slots the op declares, in signature order, with ``None`` where the
+    tensor slots the op declares, in signature order, with ``None`` where the
     call omits one.
     """
 
@@ -264,6 +275,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
         out_dtype: torch.dtype | None = None,
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
     ) -> None:
         super().__init__(
             batch,
@@ -282,6 +294,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
         self.out_dtype = dtype if out_dtype is None else out_dtype
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.has_sinks = has_sinks
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         total_q = sum(self.seqlens_q)
@@ -322,7 +335,14 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
             )
             rope_cos = angles.cos().to(self.out_dtype)
             rope_sin = angles.sin().to(self.out_dtype)
-        return (
+        sinks = None
+        if self.has_sinks:
+            v = (v.float() + 1.0).to(self.dtype)
+            sink_max = 20 if self.dtype == torch.float8_e4m3fn else 8
+            sinks = torch.linspace(
+                -2, sink_max, self.heads, device=run_device(), dtype=torch.float32
+            )
+        packed = (
             q,
             k,
             v,
@@ -332,6 +352,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
             rope_cos,
             rope_sin,
         )
+        return (*packed, sinks) if self.has_sinks else packed
 
     def ref_program(
         self,
@@ -345,6 +366,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
         v_scale: torch.Tensor | None = None,
         rope_cos: torch.Tensor | None = None,
         rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Dequantize, rotate, then attend with the inherited per-request reference."""
         groups = self.heads // self.heads_kv
@@ -384,6 +406,7 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
             v_ref.to(self.out_dtype),
             cu_seqlens_q,
             cu_seqlens_kv,
+            sinks=sinks,
         )
 
 
@@ -415,6 +438,7 @@ class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
             pos_encoding_mode=params.get("pos_encoding_mode", "none"),
             rotary_dim=ix.get("R") if params.get("pos_encoding_mode") == "rope" else None,
             rope_layout=params.get("rope_layout", "neox"),
+            has_sinks=call.present("sinks"),
         )
 
     gen_inputs = GQAVarlenFwdWorkload.gen_inputs
@@ -450,6 +474,7 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
             out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
             rotary_dim=ix["R"] if rope else None,
             rope_layout=params["rope_layout"],
+            has_sinks=call.present("sinks"),
         )
 
     gen_inputs = GQAVarlenScaledWorkload.gen_inputs

@@ -65,6 +65,7 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
+    has_sinks: bool = False
     cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
     max_position: Optional[int] = None
@@ -263,6 +264,7 @@ class GQAVarlenFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries to its own keys; nothing is written in place.
 
@@ -279,6 +281,7 @@ class GQAVarlenFwdInterface(KernelInterface):
             v_scale: The same, for ``v``.
             rope_cos: RoPE table, passed exactly when ``call.fuse_rope``.
             rope_sin: The same, passed exactly when ``rope_cos`` is.
+            sinks: Optional FP32 ``(heads,)`` denominator-only logits.
 
         Returns:
             A new ``(total_q, heads, dim)`` output in ``call.dtype``.

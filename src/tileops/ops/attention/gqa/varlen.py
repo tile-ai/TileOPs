@@ -36,6 +36,10 @@ class GQAVarlenFwdOp(Op):
     result carries the error of a single e4m3 rounding of the softmax weights, so it
     agrees with the 16-bit path to about 2% relative.
 
+    Optional ``sinks`` supplies one FP32 logit per query head, shared by all
+    requests. It contributes only to the softmax denominator, outside score
+    scaling, softcap, and masking; its value vector is zero.
+
     By default the op does not check the contents of ``cu_seqlens_q`` and
     ``cu_seqlens_kv``. The kernels read and write the packed tensors at the positions the
     offsets name. Malformed offsets can cause out-of-bounds accesses or incorrect results.
@@ -110,7 +114,7 @@ class GQAVarlenFwdOp(Op):
 
     def varlen_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """Describe one packed call using tensor shapes and Op semantics."""
-        q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin = inputs
+        q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None and cu_q is not None
         _, heads, dim = q.shape
         _, heads_kv, _ = k.shape
@@ -128,6 +132,7 @@ class GQAVarlenFwdOp(Op):
             is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
             empty_kv=k.shape[0] == 0,
+            has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim)
@@ -181,10 +186,21 @@ class GQAVarlenFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
         return self._call_boundary(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale, rope_cos, rope_sin
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+            sinks,
         )
 
     def _eager_forward(
@@ -199,6 +215,7 @@ class GQAVarlenFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Resolve the implementation and launch it."""
         if self.validate_inputs:
@@ -214,5 +231,6 @@ class GQAVarlenFwdOp(Op):
             v_scale,
             rope_cos,
             rope_sin,
+            sinks,
         )
         return self._get_kernel(inputs)(*inputs)

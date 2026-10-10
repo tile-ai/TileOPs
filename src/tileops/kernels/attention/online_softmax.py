@@ -18,6 +18,7 @@ __all__ = [
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
     "make_rescale",
+    "make_varlen_sink_scale",
 ]
 
 # log2(e) -- used to convert exp(x) into exp2(x * log2(e))
@@ -190,3 +191,25 @@ def make_rescale(block_rows, head_dim):
             acc_o[i, j] *= scores_scale[i]
 
     return rescale
+
+
+def make_varlen_sink_scale(scale, block_rows, groups=1):
+    """Attenuate a completed softmax by a zero-valued, per-query-head sink.
+
+    Packed FP8 tiles give each of ``groups`` heads a contiguous run of rows.
+    Empty or fully
+    masked rows retain the caller's zero-output convention, including -inf sinks.
+    """
+
+    @T.macro
+    def sink_scale(logsum, scores_max, sinks, factor, head_base):
+        for i in T.Parallel(block_rows):
+            factor[i] = 1.0
+            if logsum[i] > 0:
+                lse = T.log2(logsum[i]) + scores_max[i] * scale
+                sink = sinks[head_base + i // (block_rows // groups)] * LOG2E
+                maximum = T.max(lse, sink)
+                mass = T.exp2(lse - maximum)
+                factor[i] = mass / (mass + T.exp2(sink - maximum))
+
+    return sink_scale
