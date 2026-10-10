@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     FP8_E4M3_MAX,
     QUANT_SCALE_BLOCK,
@@ -50,7 +50,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
     # infinities are not bounded by it.
     largest = torch.finfo(torch.float32).max
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _fp8_quant_per_block_func(threads: int, min_blocks: Optional[int], evict_first: bool):
         cols = QUANT_SCALE_BLOCK // vec
         rows = threads // cols

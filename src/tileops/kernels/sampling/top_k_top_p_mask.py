@@ -11,7 +11,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
@@ -66,14 +66,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     walk_bins = 512
     walk_bits = walk_bins.bit_length() - 1
 
-    @tilelang.jit(
-        compile_flags=[
-            "-include",
-            csrc_path("streaming_load.h"),
-            "-include",
-            csrc_path("top_k_mask_helper.h"),
-        ]
-    )
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h", "top_k_mask_helper.h"))
     def _top_k_top_p_mask_func(threads: int, cluster: int, slots: int):
         chunk = slots * threads * vec
         assert cluster * chunk >= vocab

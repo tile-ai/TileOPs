@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
     AttentionCall,
@@ -30,7 +30,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
-_FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
 
 
 @functools.lru_cache(maxsize=32)
@@ -75,8 +74,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             "-O3",
             "-DENABLE_BF16",
             "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
-            "-include",
-            _FP8_GQA_HELPER_PATH,
+            *csrc_include("fp8_gqa_helper.h"),
         ],
     )
     def func():

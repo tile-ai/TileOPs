@@ -23,7 +23,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall
 from tileops.kernels.attention.fp8_fa3_layouts import (
     fa3_acc_fragment,
@@ -57,7 +57,6 @@ _FP8_DTYPE = "float8_e4m3fn"
 # A call without rotation still hands the program its tables, so the placeholder's
 # innermost extent is a whole vectorized access, which the packed ABI requires.
 _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
-_FP8_GQA_HELPER_PATH = csrc_path("fp8_gqa_helper.h")
 # The work counter the persistent CTAs claim from: the next item to hand out, and the
 # CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
 # every launch and no call has to clear it.
@@ -376,8 +375,7 @@ def _gqa_varlen_fp8_ws_kernel(
             "-O3",
             "-DENABLE_BF16",
             "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
-            "-include",
-            _FP8_GQA_HELPER_PATH,
+            *csrc_include("fp8_gqa_helper.h"),
         ],
     )
     def func():

@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     QUANT_SCALE_BLOCK,
     SM_RESIDENT_BLOCKS,
@@ -193,7 +193,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
 def _int8_dequant_per_tensor_kernel(
     n: int, out_dtype: str, vec: int, staged: bool, resident_threads: int, resident_blocks: int
 ):
-    @tilelang.jit(out_idx=[2], compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
     def _int8_dequant_per_tensor_func(threads, steps):
         chunk = threads * vec
         block = chunk * steps

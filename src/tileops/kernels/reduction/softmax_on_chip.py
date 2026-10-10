@@ -14,7 +14,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.reduction._primitives import (
     LOG2E,
@@ -55,12 +55,7 @@ def _softmax_on_chip_kernel(
 
     @tilelang.jit(
         out_idx=[1],
-        compile_flags=[
-            "-include",
-            csrc_path("cluster_partials.h"),
-            "-include",
-            csrc_path("approx_math.h"),
-        ],
+        compile_flags=csrc_include("cluster_partials.h", "approx_math.h"),
     )
     def build():
         def fold(peak, total, other_peak, other_total):

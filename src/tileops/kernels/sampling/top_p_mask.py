@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     LOG2E,
     MAX_BLOCK_THREADS,
@@ -63,7 +63,7 @@ def _top_p_mask_kernel(
     # and every bit of a negative one, so the keys sort the way the values do.
     sign_bit = 31
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _top_p_mask_func(reg_tiles: int, smem_tiles: int, pace: int):
         kept = min(chunk, reg_tiles)
         parked = min(chunk - kept, smem_tiles)

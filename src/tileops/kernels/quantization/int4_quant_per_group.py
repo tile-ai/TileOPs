@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import INT4QuantPerGroupFwdInterface, QuantizeCall
@@ -38,7 +38,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
     groups = total // group_size
     lanes = group_size // _CHUNK
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int4_quant_per_group_func(threads: int, cpt: int, evict_first: bool, min_blocks: int):
         assert threads % WARP_LANES == 0
         assert threads * cpt >= lanes if per_cta else (threads % lanes == 0 and cpt == 1)

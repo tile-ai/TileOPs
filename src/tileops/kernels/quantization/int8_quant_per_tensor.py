@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -50,7 +50,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
     held = "uint32" if words else dtype
     width = vec // 2 if words else vec
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int8_quant_per_tensor_func(reg_tiles: int, smem_tiles: int, batch: int):
         reg = min(reg_tiles, whole)
         smem = min(smem_tiles, whole - reg)

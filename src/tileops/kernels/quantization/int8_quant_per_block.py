@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import QUANT_SCALE_BLOCK, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import INT8QuantPerBlockFwdInterface, QuantizeCall
@@ -45,7 +45,7 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     # every number, as torch's amax takes it.
     magnitude = 0x7FFF7FFF if per_word == 2 else 0x7FFFFFFF
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int8_quant_per_block_func(threads: int, lanes: int, pack: int):
         groups = threads // lanes
         slots = QUANT_SCALE_BLOCK // vec // lanes
@@ -177,7 +177,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
     ragged_end = n % vec != 0
     magnitude = 0x7FFF7FFF if per_word == 2 else 0x7FFFFFFF
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int8_quant_per_block_shifted_func(threads: int, lanes: int):
         groups = threads // lanes
         # Vectors' worth of elements in a lane's run, and the words that hold them.

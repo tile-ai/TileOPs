@@ -12,7 +12,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_path
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.quantization.call_spec import (
@@ -370,7 +370,7 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
     """Build the quantization of ``rows`` rows of ``k`` contiguous elements."""
     n = rows * k
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int8_quant_per_channel_func(
         threads: int, vpt: int, pair: bool, evict_first: bool, min_blocks: int
     ):
@@ -398,7 +398,7 @@ def _smooth_quant_kernel(rows: int, k: int, dtype: str):
     n = rows * k
     vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
 
-    @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
+    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _smooth_quant_func(
         threads: int, vpt: int, pair: bool, evict_first: bool, min_blocks: int, ctas: int
     ):
