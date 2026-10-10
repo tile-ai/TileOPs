@@ -63,6 +63,12 @@ python -m pytest -q tests/test_validate_manifest.py   # manifest spec validator
 python -m pytest -q benchmarks/tests                  # benchmark base-class contract
 ```
 
+CI runs on SM90, so it skips every test marked `sm89`: those guard paths an SM89 device selects. On an SM89 device, run the whole group across tiers:
+
+```bash
+python -m pytest -q tests -m sm89
+```
+
 The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.
 
 ## Lint

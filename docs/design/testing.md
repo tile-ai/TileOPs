@@ -43,6 +43,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - A test reaches a path with an input that dispatch sends there. A path no input reaches on any device is a dispatch defect: dispatch is fixed, or the code is removed. `kernel_map` in a test tests the `kernel_map` mechanism only.
 - A path another device selects is tested on that device; a test does not emulate a device.
+- A test of such a path carries that architecture's marker and is skipped elsewhere. Its docstring names the hardware fact the path depends on, never a byte count or threshold of the current kernel.
 - Autotune candidates are covered by one `tune=True` test per op that checks the chosen result.
 - An input inside the signature domain that every implementation refuses is a coverage gap; one test per gap asserts the op refuses it before building anything and names the reason.
 - `check(runs=...)` takes only a compiled or wrapped form of the op; it refuses a kernel.

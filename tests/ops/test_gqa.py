@@ -547,6 +547,19 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> None:
+    """Every backward kernel contracts the head dim in steps of 16, so head dim 24 is refused."""
+    test = GQABwdTest(1, 8, 2, 128, 24, True, torch.float16)
+    op = GQABwdOp(target=BUILTIN)
+    with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
+        op(*test.gen_inputs())
+    for interface in GQABwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
