@@ -44,6 +44,18 @@ class MLADecodeFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="tail-heads",
                 ),
+                pytest.param(
+                    1,
+                    128,
+                    1,
+                    4096,
+                    512,
+                    64,
+                    torch.float16,
+                    True,
+                    marks=[pytest.mark.full, pytest.mark.sm89],
+                    id="sm89-autotune",
+                ),
             ],
         ),
     ]
