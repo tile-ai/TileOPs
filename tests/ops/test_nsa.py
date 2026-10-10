@@ -229,12 +229,30 @@ class NSATopKFixture(FixtureBase):
                 for dtype in (torch.float16, torch.bfloat16)
             ]
             + [
+                # A 32-head group fills a 64-row tile with two tokens, so half the warps sort.
+                pytest.param(
+                    4,
+                    2048,
+                    64,
+                    64,
+                    32,
+                    0.125,
+                    8,
+                    32,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),
                 pytest.param(
                     3, 512, 32, 128, 16, 1.0, 16, 32, torch.float16, False, marks=pytest.mark.full
                 ),
                 # Two sort pairs per lane must not put barriers under a partial-lane mask.
                 pytest.param(
                     1, 65, 16, 64, 16, 0.125, 8, 64, torch.float16, False, marks=pytest.mark.full
+                ),
+                # A 48-head group fills no whole tile and takes the per-token kernel.
+                pytest.param(
+                    2, 817, 48, 64, 48, 0.125, 16, 32, torch.float16, False, marks=pytest.mark.full
                 ),
             ],
         ),
