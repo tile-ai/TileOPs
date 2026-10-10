@@ -252,12 +252,17 @@ def _dsa_decode_kernel(
                 indices_local = T.alloc_local([1], indices_dtype)
 
                 # TODO: Multi buffer
-                bar_k_0_ready = T.alloc_barrier(arrive_count=producer_threads)
-                bar_k_1_ready = T.alloc_barrier(arrive_count=producer_threads)
+                # Each producer thread arrives twice: once from its cp.async copies, and once
+                # with release semantics for the masks and zero-filled rows it stores directly,
+                # which the cp.async arrival does not order.
+                bar_k_0_ready = T.alloc_barrier(arrive_count=2 * producer_threads)
+                bar_k_1_ready = T.alloc_barrier(arrive_count=2 * producer_threads)
                 bar_k_0_free = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_k_1_free = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_s_scale_and_s_ready = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_s_scale_and_s_free = T.alloc_barrier(arrive_count=consumer_threads)
+                # Consumer 0's warpgroup publishes the row sums consumer 1 divides by.
+                bar_sum_exp_ready = T.alloc_barrier(arrive_count=128)
 
                 b_i, g_i = by, bz
                 s_i = (
@@ -365,6 +370,7 @@ def _dsa_decode_kernel(
 
                     for h_i in T.Parallel(h_per_block):
                         sum_exp_shared[h_i] = sumexp[h_i]
+                    T.barrier_arrive(bar_sum_exp_ready)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_l[h_i, d_i] /= sumexp[h_i]
                     for h_i in T.Parallel(h_per_block):
@@ -393,6 +399,7 @@ def _dsa_decode_kernel(
                         if i_i != T.ceildiv(n_i, 2) - 1:
                             T.barrier_arrive(bar_s_scale_and_s_free)
 
+                    T.barrier_wait(bar_sum_exp_ready, 0)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
@@ -463,6 +470,7 @@ def _dsa_decode_kernel(
                                         (tx - 256) % 8 * 8 + v,
                                     ] = 0
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
+                        T.barrier_arrive(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(i_block // producer_rows):
@@ -522,6 +530,7 @@ def _dsa_decode_kernel(
                                         (tx - 256) % 8 * 8 + v,
                                     ] = 0
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
+                        T.barrier_arrive(bar_k_1_ready[0])
 
         return _dsa_decode_fwd_main
 
