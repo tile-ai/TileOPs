@@ -164,6 +164,21 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.l2norm = l2norm
         self.dtype = dtype
 
+    def _scan_value_tile(self, value_tile: int, arch: int, *, total: int, num_seqs: int) -> int:
+        """Trade repeated key loads for more CTAs on sparse, long SM89 scans."""
+        minimum_tokens = 4096
+        sparse_heads = 8
+        narrow_value_tile = 16
+        if (
+            num_seqs == 1
+            and total >= minimum_tokens
+            and self.value_heads <= sparse_heads
+            and self.dim_k == 128
+            and arch == 89
+        ):
+            return min(value_tile, narrow_value_tile)
+        return value_tile
+
     def forward(
         self,
         q: torch.Tensor,
@@ -199,12 +214,12 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
 
         name = self.dtype_to_str(self.dtype)
         index = q.device.index
-        plan = _plan(
-            K, self.dtype.itemsize, num_seqs, get_shared_memory_optin(index), get_sm_version(index)
-        )
+        arch = get_sm_version(index)
+        plan = _plan(K, self.dtype.itemsize, num_seqs, get_shared_memory_optin(index), arch)
         if plan is None:
             raise ValueError(f"{num_seqs} sequences need more shared memory than the device has")
         lean, value_tile = plan
+        value_tile = self._scan_value_tile(value_tile, arch, total=total, num_seqs=num_seqs)
         prepare = chunk_prepare_program(
             H, HV, K, V, CHUNK_SIZE, name, self.scale, self.l2norm, total, num_seqs, lean=lean
         )
