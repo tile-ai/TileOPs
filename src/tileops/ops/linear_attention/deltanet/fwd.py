@@ -38,8 +38,6 @@ class DeltaNetFwdOp(Op):
     not apply a sigmoid or another beta transform.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_dense_decode": DeltaNetDenseDecodeFwdKernel,
         "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel,

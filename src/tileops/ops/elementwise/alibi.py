@@ -52,7 +52,7 @@ class AlibiFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from ``device``.
             kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+                ``Kernel`` subclasses. Falls back to ``kernel_types``.
             tune: Whether to autotune.
         """
         self.seq_len = seq_len

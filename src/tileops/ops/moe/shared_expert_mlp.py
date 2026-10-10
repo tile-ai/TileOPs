@@ -24,8 +24,6 @@ class SharedExpertMLPFwdOp(Op):
     the gated activation is rounded to the input dtype before the down projection.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "shared_expert_mlp": SharedExpertMLPKernel
     }

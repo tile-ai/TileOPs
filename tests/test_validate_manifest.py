@@ -158,6 +158,8 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
     """`__init__` takes `signature.params` then the policy suffix; `forward` the inputs."""
 
     class ProbeFwdOp:
+        compile_op_names = ("tileops::probe_fwd",)
+
         def __init__(self, dim, *, kernel_map=None, target=None, tune=False, surprise=None):
             pass
 
@@ -206,6 +208,33 @@ def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch)
         "[signature] ProbeFwdOp: composition op stages [('second', 'BFwdOp'), ('first', 'AFwdOp')] "
         "are not delegate_types [('first', 'AFwdOp'), ('second', 'BFwdOp')]",
         "[signature] ProbeFwdOp: composition kernel stages [] are not kernel_types ['own']",
+    ]
+
+
+def test_an_entry_decides_whether_its_class_names_compile_operators(validator, monkeypatch):
+    """`compile_op_names` is non-empty exactly for a call-time tensor input and no composition."""
+
+    class ProbeFwdOp:
+        compile_op_names = ()
+
+        def __init__(self, *, target=None, kernel_map=None, tune=False):
+            pass
+
+        def forward(self, x):
+            pass
+
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {"family": "probe", "signature": {"inputs": {"x": {"dtype": "T", "shape": "[M]"}}}}
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: compile_op_names must be non-empty: the entry has a call-time "
+        "tensor input and no composition"
+    ]
+    ProbeFwdOp.compile_op_names = ("tileops::probe_fwd",)
+    assert validator._parity_errors("ProbeFwdOp", entry) == []
+    entry["composition"] = {"kind": "composite", "stages": []}
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: compile_op_names must be empty: the entry has no call-time "
+        "tensor input or has a composition"
     ]
 
 
@@ -294,20 +323,22 @@ class TestCompileContractRegistry:
     on this file on a CPU runner.
     """
 
-    def test_declarations_match_registered_evidence(self):
-        """The implemented classes declaring a compile boundary are exactly the registered
-        compile tests; a broken registration or a typo'd op name surfaces as a set diff."""
+    def test_entries_with_a_compile_boundary_match_registered_evidence(self):
+        """The implemented entries with a call-time tensor input and no composition are
+        exactly the ops with a registered cold ``fullgraph=True`` compile test; a broken
+        registration or a typo'd op name surfaces as a set diff."""
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
-        from tileops.manifest.registry import op_class
 
-        declared = {
+        required = {
             name
             for name, entry in load_manifest().items()
-            if entry.get("status") == "implemented" and op_class(name, entry).compile_boundary
+            if entry.get("status") == "implemented"
+            and (entry.get("signature") or {}).get("inputs")
+            and not entry.get("composition")
         }
         registered = compile_contract_ops()
-        assert declared == registered, (
-            f"evidence without declaration: {sorted(registered - declared)}; "
-            f"declaration without evidence: {sorted(declared - registered)}"
+        assert required == registered, (
+            f"evidence for an op without a compile boundary: {sorted(registered - required)}; "
+            f"compile boundary without evidence: {sorted(required - registered)}"
         )

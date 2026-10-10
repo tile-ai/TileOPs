@@ -36,7 +36,6 @@ class AdaLayerNormZeroFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormZeroKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ada_layer_norm": AdaLayerNormZeroFwdInterface

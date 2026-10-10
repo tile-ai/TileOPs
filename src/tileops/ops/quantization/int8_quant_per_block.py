@@ -33,8 +33,6 @@ class INT8QuantPerBlockFwdOp(Op):
     about ``8.8e-44``, reachable only in float32) that its ``scale`` rounds to zero.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_quant_per_block_fwd": INT8QuantPerBlockFwdKernel,
         "int8_quant_per_block_shifted_fwd": INT8QuantPerBlockShiftedFwdKernel,

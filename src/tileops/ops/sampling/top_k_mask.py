@@ -25,8 +25,6 @@ class TopKMaskFwdOp(Op):
     its NaNs.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_k_mask_fwd": TopKMaskFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "top_k_mask_fwd": TopKMaskFwdInterface

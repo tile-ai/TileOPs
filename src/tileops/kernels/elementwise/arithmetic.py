@@ -17,6 +17,7 @@ from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOO
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
+    DivCall,
     LerpCall,
     LerpFwdInterface,
     LerpTensorFwdInterface,
@@ -119,6 +120,12 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode is not None:
+            return f"divides exactly, not with rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
+
     @property
     def stage_broadcast(self) -> bool:
         """The extern call scalarises the copies, so keep them off its loop."""
@@ -145,6 +152,12 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode != "trunc":
+            return f"truncates the quotient, not rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
 
     @property
     def stage_broadcast(self) -> bool:
@@ -353,6 +366,12 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     dtype. ``floor(a / b)`` differs where ``a / b`` rounds up to a whole number
     (``1.0 // 0.1`` is 9) and at an infinite b.
     """
+
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode != "floor":
+            return f"floors the quotient, not rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
 
     @staticmethod
     def _floor_divide(num, den, dtype):

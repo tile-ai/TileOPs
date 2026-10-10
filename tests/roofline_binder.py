@@ -44,7 +44,7 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
         vars(self).update(params)
         self.dispatch_kernel(None)
 
-    body = {"__init__": construct, "default_kernel_map": property(lambda self: {})}
+    body = {"__init__": construct}
     body["forward"] = body["_eager_forward"] = lambda self, *args: None
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):

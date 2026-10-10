@@ -38,7 +38,6 @@ class MoEPrePermuteFwdOp(Op):
     Global placement and communication belong to EPDispatch.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "pre_permute_contiguous": MoEPrePermuteContiguousKernel
     }
@@ -126,7 +125,6 @@ class MoEGroupedGemmFwdOp(Op):
     doing so would synchronise.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "grouped_gemm": MoEGroupedGemmKernel,
         "grouped_gemm_mma": MoEGroupedGemmMMAKernel,
@@ -305,7 +303,6 @@ class MoEExpertMLPFwdOp(Op):
 class MoEPostPermuteFwdOp(Op):
     """Restore token order and apply the declared local routing epilogue."""
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "post_permute_contiguous": MoEUnpermuteKernel
     }

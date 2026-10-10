@@ -27,7 +27,6 @@ class FusedTopKFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fused_topk": FusedTopKKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "fused_topk": FusedTopKFwdInterface

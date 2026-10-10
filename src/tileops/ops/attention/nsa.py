@@ -40,7 +40,6 @@ class NSATopKVarlenFwdOp(Op):
     the call rather than from construction.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_topk_varlen_kernel": NSATopKVarlenKernel
     }
@@ -151,7 +150,6 @@ class NSAVarlenFwdOp(Op):
     contributes nothing, and a token no block gives a key outputs zeros.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel,
         "nsa_fwd_varlen_tma_kernel": NSAFwdVarlenTMAKernel,
@@ -268,7 +266,6 @@ class NSACompressedVarlenFwdOp(Op):
     size and the chunk count come from the call rather than from construction.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdVarlenKernel
     }

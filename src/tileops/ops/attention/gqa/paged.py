@@ -35,7 +35,6 @@ class GQAPagedFwdOp(Op):
     cache length. FP8 calls still require an external target implementation.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,

@@ -32,8 +32,6 @@ class CumulativeOp(Op):
 
     _op_kind: str
 
-    compile_boundary = True
-
     def __init__(
         self,
         dim: int = -1,

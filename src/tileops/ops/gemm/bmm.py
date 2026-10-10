@@ -40,8 +40,6 @@ class BmmFwdOp(Op):
     The in-tree kernels need $K$ to be a multiple of 16 and refuse other calls when built.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bmm_persistent": BmmPersistentKernel,
         "bmm": BmmKernel,
@@ -116,8 +114,6 @@ class BmmFP8FwdOp(Op):
     either value of the flag, and is the faster call. The in-tree kernel needs $K$
     to be a multiple of 32 and refuses other calls when built.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "bmm_fp8_ws": BmmFP8WSKernel,

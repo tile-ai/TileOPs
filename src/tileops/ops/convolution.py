@@ -75,8 +75,6 @@ def _out_dim(size: int, kernel: int, stride: int, before: int, after: int, dilat
 class Conv1dFwdOp(Op):
     """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``."""
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv1d_pointwise": Conv1dPointwiseKernel,
         "conv1d": Conv1dKernel,
@@ -194,8 +192,6 @@ class Conv2dFwdOp(Op):
     They multiply float32 operands in TF32, as cuDNN does by default.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv2d_1x1": Conv2d1x1Kernel,
         "conv2d_symmetric": Conv2dSymmetricKernel,
@@ -307,8 +303,6 @@ class Conv3dFwdOp(Op):
 
     They multiply float32 operands in TF32, as cuDNN does by default.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv3d": Conv3dKernel,

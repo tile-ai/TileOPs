@@ -46,8 +46,6 @@ class GemmFwdOp(Op):
     | ``(True, True)`` | TT | $d = a^{\\top} \\mathbin{@} b^{\\top}$ |
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_tma": GemmTMAKernel,
         "gemm_cp_async": GemmCpAsyncKernel,
@@ -131,8 +129,6 @@ class GemmFP8FwdOp(Op):
     with ``scale_b`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
     block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_fp8_tensor_scale": GemmFP8TensorScaleKernel,
@@ -240,8 +236,6 @@ class GemmW4A16FwdOp(Op):
     The output is ``activation @ W.T`` with shape ``[M, N]``. The in-tree kernel serves
     ``group_size = 128`` only and refuses any other value when it is built.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_w4a16": GemmW4A16Kernel,

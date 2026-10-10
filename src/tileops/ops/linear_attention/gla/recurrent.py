@@ -29,7 +29,6 @@ class GLARecurrentFwdOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gla_decode": GLADecodeKernel,
         "gla_decode_fp32": GLADecodeFP32Kernel,

@@ -27,8 +27,6 @@ class INT8QuantPerTensorFwdOp(Op):
     unspecified.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_quant_per_tensor_fwd": INT8QuantPerTensorFwdKernel
     }

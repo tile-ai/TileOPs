@@ -21,7 +21,6 @@ class PreluFwdOp(Op):
     count arrive with the tensors.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"prelu": PreluFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: PreluFwdInterface}
 
@@ -38,7 +37,7 @@ class PreluFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+                ``Kernel`` subclasses. Falls back to ``kernel_types``.
             tune: Whether to autotune.
         """
         self.target = target

@@ -31,8 +31,6 @@ class SmoothQuantFwdOp(Op):
     row's amax is so small (below about ``8.8e-44``) that its ``scale`` rounds to zero.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"smooth_quant_fwd": SmoothQuantFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "smooth_quant_fwd": SmoothQuantFwdInterface

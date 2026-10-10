@@ -34,8 +34,6 @@ class FFTC2CFwdOp(Op):
     at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
         "fft_c2c_decomposed_kernel": FFTC2CFourStepKernel,

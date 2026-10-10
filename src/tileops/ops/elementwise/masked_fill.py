@@ -27,7 +27,6 @@ class MaskedFillTensorFwdOp(Op):
     ``value`` is a 0-dim Tensor, which the kernel reads at forward time.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: MaskedFillTensorValueFwdInterface
@@ -46,7 +45,7 @@ class MaskedFillTensorFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+                ``Kernel`` subclasses. Falls back to ``kernel_types``.
             tune: Whether to autotune.
         """
         self.target = target
@@ -86,7 +85,6 @@ class MaskedFillScalarFwdOp(Op):
     receives semantic bool either way.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"masked_fill": MaskedFillFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: MaskedFillFwdInterface
@@ -113,7 +111,7 @@ class MaskedFillScalarFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+                ``Kernel`` subclasses. Falls back to ``kernel_types``.
             tune: Whether to autotune.
         """
         self.value = value

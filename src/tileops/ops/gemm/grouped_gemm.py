@@ -34,8 +34,6 @@ class GroupedGemmFwdOp(Op):
     ``batch_offsets`` is its exclusive prefix sum.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     # The SM90 template serves every layout whose extents TMA can address; the
     # general kernel takes what it refuses.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

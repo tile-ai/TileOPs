@@ -41,7 +41,6 @@ class _SoftmaxBaseOp(Op):
     to ``dtype`` first when one is passed, as torch does.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "softmax_split": SoftmaxSplitKernel,
         "softmax_streaming": SoftmaxStreamingKernel,

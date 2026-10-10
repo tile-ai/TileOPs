@@ -11,7 +11,7 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.expr import SignatureError
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import _Plan, install, operator_name
+from tileops.ops._signature_codegen import _Plan, install, install_compile_boundary, operator_name
 
 pytestmark = pytest.mark.smoke
 
@@ -126,7 +126,11 @@ def _boundary_forward(eager):
 
 
 def _probe(name, signature, forward, *, boundary=False, roofline=None, status="implemented"):
-    """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*."""
+    """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*.
+
+    Without *boundary* the entry carries a composition, which is what leaves an op with a
+    call-time tensor input without a compile boundary.
+    """
     from tileops.ops.op_base import Op
 
     entry = {
@@ -135,6 +139,8 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
         "signature": signature,
         "roofline": roofline or {"flops": "1"},
     }
+    if not boundary:
+        entry["composition"] = {"kind": "composite", "stages": []}
 
     def construct(self, **params):
         vars(self).update(params)
@@ -142,14 +148,12 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
 
     body = {
         "__init__": construct,
-        "default_kernel_map": property(lambda self: {}),
         "forward": _boundary_forward(forward) if boundary else forward,
         "_eager_forward": forward,
     }
-    if boundary:
-        body["compile_boundary"] = True
     cls = type(name, (Op,), body)
     install(cls, entry)
+    install_compile_boundary(cls, entry)
     return cls
 
 
@@ -631,14 +635,19 @@ def test_shape_inference_binds_dtype_indices_from_the_dtypes_passed():
         op._infer_output_shapes((4,))
 
 
-def test_a_compile_boundary_needs_a_call_time_tensor_input():
-    signature = {
+def test_an_entry_with_a_call_time_input_and_no_composition_has_a_compile_boundary():
+    source = {
         "forall": {"T": "DType[float16]"},
         "params": {"n": {"type": "int"}},
         "outputs": {"y": {"dtype": "T", "shape": "[n]"}},
     }
-    with pytest.raises(TypeError, match="compile_boundary needs a call-time tensor input"):
-        _probe("ProbeSourceFwdOp", signature, lambda self: None, boundary=True)
+    # `boundary=True` leaves the composition out, so only the missing input decides here.
+    assert (
+        _probe("ProbeSourceFwdOp", source, lambda self: None, boundary=True).compile_op_names == ()
+    )
+    assert _probe("ProbeComposedFwdOp", _SILU, lambda self, x: None).compile_op_names == ()
+    leaf = _probe("ProbeLeafFwdOp", _SILU, lambda self, x: None, boundary=True)
+    assert leaf.compile_op_names == ("tileops::probe_leaf_fwd",)
 
 
 def test_a_target_served_call_leaves_constructor_attributes_alone():

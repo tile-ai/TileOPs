@@ -31,7 +31,6 @@ class LayerNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "layer_norm": LayerNormKernel,
         "layer_norm_warp_row": LayerNormWarpRowKernel,

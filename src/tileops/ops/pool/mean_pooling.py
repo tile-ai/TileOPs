@@ -46,8 +46,6 @@ class MeanPoolingFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mean_pooling_fwd_kernel": MeanPoolingFwdKernel
     }

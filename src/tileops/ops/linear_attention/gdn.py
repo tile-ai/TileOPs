@@ -51,8 +51,6 @@ class GDNFwdOp(Op):
     target implementation.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gdn_dense_decode": GDNDenseDecodeFwdKernel,
         "gdn_dense_prefill": GDNDensePrefillFwdKernel,

@@ -31,7 +31,6 @@ class ClampTensorFwdOp(Op):
     ``clamp_max``, one specialization each.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types = {"clamp_tensor": ClampTensorFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: ClampTensorFwdInterface

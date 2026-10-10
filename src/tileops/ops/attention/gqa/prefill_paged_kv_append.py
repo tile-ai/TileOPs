@@ -38,7 +38,6 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
     call at the cost of device synchronizations and cannot run inside CUDA Graph capture.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_prefill_paged_with_kv_cache_fwd_kernel": GQAPrefillPagedWithKVCacheFwdKernel,
         "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel": GQAPrefillPagedWithFP8KVCacheFwdKernel,

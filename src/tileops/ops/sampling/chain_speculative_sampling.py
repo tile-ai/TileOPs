@@ -39,8 +39,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
     exactly, whatever the batch and whatever grid the call takes.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "chain_speculative_sampling": ChainSpeculativeSamplingFwdKernel
     }

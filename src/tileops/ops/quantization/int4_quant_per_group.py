@@ -31,8 +31,6 @@ class INT4QuantPerGroupFwdOp(Op):
     of 128 up to 65536, with ``N * K <= 2**31 - 1``. Nonfinite groups are unspecified.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int4_quant_per_group_fwd": INT4QuantPerGroupFwdKernel,
         "int4_quant_per_group_row_fwd": INT4QuantPerGroupRowFwdKernel,

@@ -30,7 +30,6 @@ class _AvgPoolFwdOpBase(Op):
     """
 
     ndim: ClassVar[int]
-    compile_boundary = True
 
     def _setup(self, kernel_map: Optional[Dict[str, Kernel]]) -> None:
         """Resolve the kernel map, then the per-axis parameters the kernels take."""

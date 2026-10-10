@@ -30,7 +30,6 @@ class MoEPermuteAlignFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"permute_align": MoEPermuteAlignKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "permute_align": PermuteAlignFwdInterface

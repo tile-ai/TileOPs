@@ -5,8 +5,8 @@ curated compile tests are registered here at evidence-module import time —
 parametrized case tables register their ``op_cls`` entries directly, direct
 tests call :func:`register_compile_contract` next to the test they back.
 :func:`compile_contract_ops` aggregates the registered evidence set, which must
-equal the fullgraph declarations: the implemented classes declaring a compile
-boundary.
+equal the implemented entries that have a compile boundary: a call-time tensor
+input and no composition.
 
 Exploratory or regression compile tests that do not back the fullgraph
 contract must not register here.

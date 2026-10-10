@@ -44,7 +44,6 @@ class GQAVarlenFwdOp(Op):
     inside CUDA Graph capture.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_varlen": GQAPrefillVarlenFwdKernel,
         "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,

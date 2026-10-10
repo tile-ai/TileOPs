@@ -30,8 +30,6 @@ class FP8QuantPerBlockFwdOp(Op):
     or a NaN and a tile whose scale is subnormal or rounds to zero included.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fp8_quant_per_block_fwd": FP8QuantPerBlockFwdKernel,
         "fp8_quant_per_block_unaligned_fwd": FP8QuantPerBlockUnalignedFwdKernel,

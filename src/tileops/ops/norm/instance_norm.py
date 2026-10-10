@@ -63,7 +63,6 @@ class InstanceNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "instance_norm": InstanceNormKernel,
         "instance_norm_no_affine": InstanceNormNoAffineKernel,

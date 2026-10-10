@@ -31,7 +31,6 @@ class DeltaNetRecurrentFwdOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_decode": DeltaNetDecodeKernel,
         "deltanet_decode_fp32": DeltaNetDecodeFP32Kernel,

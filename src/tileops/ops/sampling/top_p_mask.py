@@ -27,8 +27,6 @@ class TopPMaskFwdOp(Op):
     all-NaN softmax, so nothing in it is masked and it passes through whole.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_p_mask_fwd": TopPMaskFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "top_p_mask_fwd": TopPMaskFwdInterface
