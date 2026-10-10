@@ -440,10 +440,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (*arguments, index), lambda: cls(*arguments)
 
     @classmethod
-    def applies(cls, call: DeltaNetChunkCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
@@ -480,7 +476,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         super().__init__()
         self.batch = batch
@@ -490,7 +485,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

@@ -105,7 +105,7 @@ class TestBytesOracle:
 
         plan = type(op)._signature
         call = plan.check(op, tensors)
-        return plan.roofline(dataclasses.replace(call, stages=stages))
+        return plan.eval_roofline(dataclasses.replace(call, stages=stages))
 
     @staticmethod
     def _routed_tensors(tokens, experts, top_k, hidden, ffn, ids):
@@ -218,18 +218,18 @@ class TestBytesOracle:
     def _nsa_forward_case(call):
         from tileops.perf.formulas import nsa_fwd_varlen_roofline
 
-        ix = call.ix
-        c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
-        block_size, selected = ix["block_size"], ix["SEL"]
+        indices = call.indices
+        c_seq_len, heads, head_kv, dim = indices["T_q"], indices["H"], indices["H_kv"], indices["D"]
+        block_size, selected = indices["block_size"], indices["SEL"]
         # Key rows some token scores, per KV head: each kept block cut at the token (causal)
         # or the sequence end; a row several tokens score is read once.
-        offsets = call.values("offsets")
+        offsets = call.metadata_values("offsets")
         rows = {
             (h, offsets[request] + r)
             for (request, position), counts, picks in zip(
-                call.values("token_indices"),
-                call.values("block_counts"),
-                call.values("block_indices"),
+                call.metadata_values("token_indices"),
+                call.metadata_values("block_counts"),
+                call.metadata_values("block_indices"),
                 strict=True,
             )
             for h in range(head_kv)
@@ -238,7 +238,9 @@ class TestBytesOracle:
                 start * block_size,
                 min(
                     (start + 1) * block_size,
-                    position + 1 if ix["is_causal"] else offsets[request + 1] - offsets[request],
+                    position + 1
+                    if indices["is_causal"]
+                    else offsets[request + 1] - offsets[request],
                 ),
             )
         }
@@ -268,7 +270,7 @@ class TestBytesOracle:
         # One token against an empty or single-page cache names one or two entries of
         # its block-table row; a length that does not divide by the page size is
         # rounded up to a page.
-        batch = len(_manifest_call(name, base).values("cache_seqlens"))
+        batch = len(_manifest_call(name, base).metadata_values("cache_seqlens"))
         short = dict(base, T_q=batch, q_lens=[1] * batch, cache_lens=[0, 64] * (batch // 2))
         rows = {
             "cached": base,
@@ -277,9 +279,17 @@ class TestBytesOracle:
         }
         for label, row in rows.items():
             call = _manifest_call(name, row)
-            ix = call.ix
-            heads, heads_kv, dim, page_size = ix["H"], ix["H_kv"], ix["D"], ix["page_size"]
-            offsets, cache_lens = call.values("cu_seqlens_q"), call.values("cache_seqlens")
+            indices = call.indices
+            heads, heads_kv, dim, page_size = (
+                indices["H"],
+                indices["H_kv"],
+                indices["D"],
+                indices["page_size"],
+            )
+            offsets, cache_lens = (
+                call.metadata_values("cu_seqlens_q"),
+                call.metadata_values("cache_seqlens"),
+            )
             q_lens = [b - a for a, b in zip(offsets, offsets[1:], strict=False)]
             total_q, cached, batch = sum(q_lens), sum(cache_lens), len(q_lens)
             cache = torch.float8_e4m3fn if "cache_dtype" in row else torch.float16
@@ -317,14 +327,14 @@ class TestBytesOracle:
 
         name = "GQAPagedFwdOp"
         call = _manifest_call(name)
-        ix = call.ix
-        heads, heads_kv, dim, page = ix["H"], ix["H_kv"], ix["D"], ix["PS"]
-        table, cached = call.values("page_table"), call.values("cache_seqlens")
+        indices = call.indices
+        heads, heads_kv, dim, page = indices["H"], indices["H_kv"], indices["D"], indices["PS"]
+        table, cached = call.metadata_values("page_table"), call.metadata_values("cache_seqlens")
         rows = {(table[b][r // page], r % page) for b, n in enumerate(cached) for r in range(n)}
         kv = ((len(rows), heads_kv, dim), torch.float16)
         oracle = _ledger(
             name,
-            q=((ix["T_q"], heads, dim), torch.float16),
+            q=((indices["T_q"], heads, dim), torch.float16),
             k_pages=kv,
             v_pages=kv,
             page_table=((sum(-(-n // page) for n in cached),), torch.int32),
@@ -335,7 +345,7 @@ class TestBytesOracle:
             v_scale=None,
             rope_cos=None,
             rope_sin=None,
-            o=((ix["T_q"], heads, dim), torch.float16),
+            o=((indices["T_q"], heads, dim), torch.float16),
         )
         assert gqa_paged_fwd_roofline(call)[1] == oracle
 
@@ -370,17 +380,20 @@ class TestBytesOracle:
         for op_name in ("AvgPool1dFwdOp", "MaxPool1dFwdOp", "MaxPool1dIndicesFwdOp"):
             for row in _manifest_rows(op_name):
                 call = _manifest_call(op_name, row)
-                ix = call.ix
+                indices = call.indices
                 read = {
-                    o * ix["sW"] - ix["pW"] + j * ix.get("dW", 1)
-                    for o in range(ix["L_out"])
-                    for j in range(ix["kW"])
-                } & set(range(ix["L_in"]))
+                    o * indices["sW"] - indices["pW"] + j * indices.get("dW", 1)
+                    for o in range(indices["L_out"])
+                    for j in range(indices["kW"])
+                } & set(range(indices["L_in"]))
                 dtype = getattr(torch, call.tensors["input"][1])
-                out = ((ix["N"], ix["C"], ix["L_out"]), dtype)
-                tensors = {"input": ((ix["N"], ix["C"], len(read)), dtype), "output": out}
+                out = ((indices["N"], indices["C"], indices["L_out"]), dtype)
+                tensors = {"input": ((indices["N"], indices["C"], len(read)), dtype), "output": out}
                 if op_name == "MaxPool1dIndicesFwdOp":
-                    tensors["indices"] = ((ix["N"], ix["C"], ix["L_out"]), torch.int64)
+                    tensors["indices"] = (
+                        (indices["N"], indices["C"], indices["L_out"]),
+                        torch.int64,
+                    )
                 assert pool_roofline(call)[1] == _ledger(op_name, **tensors), row["label"]
 
     def test_dsa_decode_reads_the_kv_rows_some_query_selects(self):
@@ -391,24 +404,24 @@ class TestBytesOracle:
         op_name = "DSADecodeWithKVCacheFwdOp"
         for row in _manifest_rows(op_name):
             call = _manifest_call(op_name, row)
-            ix = call.ix
+            indices = call.indices
             rows = {
                 (b, g, j)
-                for b, batch in enumerate(call.values("indices"))
+                for b, batch in enumerate(call.metadata_values("indices"))
                 for s, heads in enumerate(batch)
                 for g, slots in enumerate(heads)
                 for j in slots
-                if 0 <= j < ix["S_kv"]
-                and (j + 1) * ix["stride_kv"] - 1 <= ix["q_start_index_s"] + s
+                if 0 <= j < indices["S_kv"]
+                and (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
             }
             dtype = getattr(torch, call.tensors["q"][1])
-            width = ix["D"] + ix["dim_tail"]
+            width = indices["D"] + indices["dim_tail"]
             oracle = _ledger(
                 op_name,
-                q=((ix["B"], ix["S"], ix["H"], width), dtype),
+                q=((indices["B"], indices["S"], indices["H"], width), dtype),
                 kv=((len(rows), width), dtype),
-                indices=((ix["B"], ix["S"], ix["H_kv"], ix["K"]), torch.int32),
-                o=((ix["B"], ix["S"], ix["H"], ix["D"]), dtype),
+                indices=((indices["B"], indices["S"], indices["H_kv"], indices["K"]), torch.int32),
+                o=((indices["B"], indices["S"], indices["H"], indices["D"]), dtype),
             )
             assert dsa_decode_roofline(call)[1] == oracle, row["label"]
 
@@ -420,8 +433,15 @@ class TestBytesOracle:
         op_name = "DeltaNetChunkBwdOp"
         rows = {row["label"]: row for row in _manifest_rows(op_name)}
         for label, dtype_name, op, _oracle, _reads in manifest_cases(op_name):
-            ix = _manifest_call(op_name, rows[label]).ix
-            b, h, n, dk, dv, c = ix["B"], ix["H"], ix["L"], ix["DK"], ix["DV"], ix["chunk_size"]
+            indices = _manifest_call(op_name, rows[label]).indices
+            b, h, n, dk, dv, c = (
+                indices["B"],
+                indices["H"],
+                indices["L"],
+                indices["DK"],
+                indices["DV"],
+                indices["chunk_size"],
+            )
             dtype = getattr(torch, dtype_name)
             triangle = ((b, h, n // c, c * (c - 1) // 2), dtype)
             oracle = _ledger(
@@ -456,7 +476,7 @@ class TestBytesOracle:
         def priced(**params):
             op = DropoutFwdOp(**params)
             # The formula prices the op's last completed call; this one is that call.
-            op._signature_call = type(op)._signature.check(op, {"input": x})
+            op._last_call = type(op)._signature.check(op, {"input": x})
             return op.eval_roofline()[1]
 
         copied = _ledger(
@@ -493,8 +513,8 @@ def _evaluated(op_name: str, row: dict, case: dict, **values):
     cls = signature_class(op_name, entry)
     op = cls(**call.arguments(tensors))
     checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
-    metadata = {n: torch.tensor(call.values(n)) for n in checked.metadata}
-    op._signature_call = dataclasses.replace(checked, metadata=metadata)
+    metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
+    op._last_call = dataclasses.replace(checked, metadata=metadata)
     return op.eval_roofline(), call
 
 
@@ -536,7 +556,7 @@ class TestSpecOnlyRecounts:
         row = {"H": 3, "DK": 12, "PS": 4, "kv_lora_rank": 8, **row}
         (flops, moved), call = _evaluated(name, row, case)
         heads, dk, rank, page, s_q = row["H"], row["DK"], row["kv_lora_rank"], row["PS"], row["S_q"]
-        table, lengths = call.values("block_table"), call.values("cache_seqlens")
+        table, lengths = call.metadata_values("block_table"), call.metadata_values("cache_seqlens")
         fp8 = case["KV"] == "float8_e4m3fn"
         scores = rows = 0
         for c in lengths:
@@ -569,7 +589,11 @@ class TestSpecOnlyRecounts:
         # Request 1: a repeated slot, then nothing.
         indices = [[[-1, -1, -1, -1], [0, 4, 3, -1]], [[3, 3, -1, -1], [-1, -1, -1, -1]]]
         (flops, moved), call = _evaluated(name, row, {}, indices=indices)
-        table, lengths, page = call.values("block_table"), call.values("cache_seqlens"), row["PS"]
+        table, lengths, page = (
+            call.metadata_values("block_table"),
+            call.metadata_values("cache_seqlens"),
+            row["PS"],
+        )
         valid = [
             [[j for j in slots if 0 <= j < lengths[b]] for slots in per_q]
             for b, per_q in enumerate(indices)
@@ -661,7 +685,7 @@ class TestSpecOnlyRecounts:
         name = "PagedKVCacheGatherFwdOp"
         row = {"T_q": 7, "NP": 6, "PS": 4, "W": 3, "E": [2, 3], **row}
         (flops, moved), call = _evaluated(name, row, case)
-        table, page = call.values("block_table"), row["PS"]
+        table, page = call.metadata_values("block_table"), row["PS"]
         starts = row.get("starts", [0, 0])
         ranges = [range(s, s + n) for s, n in zip(starts, row["seq_lens"], strict=True)]
         cache_rows = {(table[b][j // page], j % page) for b, r in enumerate(ranges) for j in r}

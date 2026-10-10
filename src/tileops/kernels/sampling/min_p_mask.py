@@ -196,7 +196,6 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``reg_tiles``, ``smem_tiles`` and ``pace``.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -226,9 +225,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         return reason
 
-    def __init__(
-        self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
@@ -246,7 +243,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
         self.kernel = _min_p_mask_kernel(
             call.batch, call.vocab, self.dtype_str, threads, self._parts
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

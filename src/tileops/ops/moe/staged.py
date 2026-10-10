@@ -38,7 +38,6 @@ class MoEPrePermuteFwdOp(Op):
     Global placement and communication belong to EPDispatch.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "pre_permute_contiguous": MoEPrePermuteContiguousKernel
     }
@@ -52,8 +51,6 @@ class MoEPrePermuteFwdOp(Op):
         num_local_experts: int,
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure a pre-permute boundary for one layout and expert domain.
 
@@ -62,14 +59,10 @@ class MoEPrePermuteFwdOp(Op):
             num_local_experts: Number of local experts the ids index.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.num_local_experts = num_local_experts
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -77,13 +70,6 @@ class MoEPrePermuteFwdOp(Op):
         local_expert_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(expert_input, layout_metadata, inverse_indices)``."""
-        return self._call_boundary(hidden_states, local_expert_ids)
-
-    def _eager_forward(
-        self,
-        hidden_states: torch.Tensor,
-        local_expert_ids: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = hidden_states.device
         call = PrePermuteCall(
             device=device,
@@ -126,7 +112,6 @@ class MoEGroupedGemmFwdOp(Op):
     doing so would synchronise.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "grouped_gemm": MoEGroupedGemmKernel,
         "grouped_gemm_mma": MoEGroupedGemmMMAKernel,
@@ -135,7 +120,7 @@ class MoEGroupedGemmFwdOp(Op):
         "grouped_gemm": MGroupedGemmFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops.perf.formulas import moe_layout_rows
 
@@ -148,8 +133,6 @@ class MoEGroupedGemmFwdOp(Op):
         activation: str | None = None,
         out_dtype: torch.dtype | None = None,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Fix the expert layout, the fused activation and the output dtype policy.
 
@@ -162,19 +145,15 @@ class MoEGroupedGemmFwdOp(Op):
                 fp32 accumulator.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.activation = activation
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,
@@ -194,15 +173,6 @@ class MoEGroupedGemmFwdOp(Op):
         Returns:
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
         """
-        return self._call_boundary(a, b, layout_metadata, out)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        layout_metadata: torch.Tensor,
-        out: torch.Tensor | None = None,
-    ) -> torch.Tensor:
         layout = self.layout
         masked = isinstance(layout, MaskedLayoutSpec)
         num_experts, n, k = b.shape
@@ -241,7 +211,7 @@ class MoEExpertMLPFwdOp(Op):
         "down": MoEGroupedGemmFwdOp,
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops.perf.formulas import moe_layout_rows
 
@@ -253,8 +223,6 @@ class MoEExpertMLPFwdOp(Op):
         activation: str = "silu_and_mul",
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure two grouped GEMMs on ``layout``, the first fusing the gated activation.
 
@@ -263,20 +231,16 @@ class MoEExpertMLPFwdOp(Op):
             activation: ``"silu_and_mul"`` or ``"gelu_and_mul"``, fused into the gate_up
                 GEMM's epilogue.
             target: Which backend serves the delegates.
-            kernel_map: Optional overrides, forwarded to both GEMMs.
-            tune: Whether to autotune the GEMM kernels.
         """
         self.layout = layout
         self.activation = activation
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
         self.down = self.delegate_for("down", None, layout=layout)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self,
@@ -305,7 +269,6 @@ class MoEExpertMLPFwdOp(Op):
 class MoEPostPermuteFwdOp(Op):
     """Restore token order and apply the declared local routing epilogue."""
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "post_permute_contiguous": MoEUnpermuteKernel
     }
@@ -320,8 +283,6 @@ class MoEPostPermuteFwdOp(Op):
         out_dtype: torch.dtype | None = None,
         *,
         target: object = None,
-        kernel_map: dict[str, Kernel] | None = None,
-        tune: bool = False,
     ) -> None:
         """Configure inverse permutation and the exactly-once routing epilogue.
 
@@ -332,15 +293,11 @@ class MoEPostPermuteFwdOp(Op):
                 expert output's own.
             target: Which backend serves this instance; detected from the tensors when
                 ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune the kernel.
         """
         self.layout = layout
         self.epilogue = epilogue
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -350,15 +307,6 @@ class MoEPostPermuteFwdOp(Op):
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Restore token order, apply routing weights, reduce top-k, and cast."""
-        return self._call_boundary(expert_output, topk_weights, inverse_indices, out)
-
-    def _eager_forward(
-        self,
-        expert_output: torch.Tensor,
-        topk_weights: torch.Tensor,
-        inverse_indices: torch.Tensor,
-        out: torch.Tensor | None = None,
-    ) -> torch.Tensor:
         masked = isinstance(self.layout, MaskedLayoutSpec)
         device = expert_output.device
         call = PostPermuteCall(

@@ -32,7 +32,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 **Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
-**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, `tune=True` and `kernel_map` included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it.
+**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, tuned mode (`request_tune()`) included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it.
 
 **Location:**
 
@@ -41,10 +41,10 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 **Reachability:**
 
-- A test reaches a path with an input that dispatch sends there. A path no input reaches on any device is a dispatch defect: dispatch is fixed, or the code is removed. `kernel_map` in a test tests the `kernel_map` mechanism only.
+- A test reaches a path with an input that dispatch sends there. A path no input reaches on any device is a dispatch defect: dispatch is fixed, or the code is removed. A stand-in implementation a test adds through `register_kernel_type` tests registration only.
 - A path another device selects is tested on that device; a test does not emulate a device.
 - A test of such a path carries that architecture's marker and is skipped elsewhere. Its docstring names the hardware fact the path depends on, never a byte count or threshold of the current kernel.
-- Autotune candidates are covered by one `tune=True` test per op that checks the chosen result.
+- Autotune candidates are covered by one tuned-mode test per op, calling `request_tune()` on the constructed op, that checks the chosen result.
 - An input inside the signature domain that every implementation refuses is a coverage gap; one test per gap asserts the op refuses it before building anything and names the reason.
 - `check(runs=...)` takes only a compiled or wrapped form of the op; it refuses a kernel.
 
@@ -53,7 +53,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
 - A test of target dispatch names its target or isolates the registry.
 - A test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
-- A test about the in-tree implementation set — a coverage gap, a `kernel_map` replacement — pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
+- A test about the in-tree implementation set — a coverage gap, a registered stand-in implementation — pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
 
 **Device:**
 
@@ -94,7 +94,7 @@ Each parameterized case serves exactly one purpose:
 
 1. **Dtype correctness**: a supported dtype.
 1. **Shape coverage**: a distinct code path (boundary, tile edge, alignment).
-1. **Feature coverage**: a flag or mode (`causal=True`, `tune=True`).
+1. **Feature coverage**: a flag or mode (`causal=True`, tuned mode through `request_tune()`).
 1. **Regression**: a fixed bug. The docstring states the fault it guards; an issue or PR number does not belong in shipped source (`scripts/lint/shipped_refs_lint.py`).
 
 No performance exploration, autotune sweep or duplicate code path.

@@ -16,12 +16,11 @@ Chains the five sub-ops in order:
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -57,8 +56,6 @@ class Mamba2FwdOp(Op):
         dt_softplus: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op and its sub-ops. Shapes and dtype are taken from each call.
 
@@ -67,15 +64,10 @@ class Mamba2FwdOp(Op):
             dt_softplus:        Apply softplus to (dt + dt_bias) before use.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override, passed to every sub-op.
-            tune:               Whether to autotune the sub-ops' kernels when first built.
         """
         self.chunk_size = chunk_size
         self.dt_softplus = dt_softplus
-        self.target = target
-        self.tune = tune
-        # This composite owns no kernel; the override reaches the sub-ops that do.
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
         self._ssd_chunk_cumsum_ops = {
             getattr(torch, name): self.delegate_for(
@@ -152,6 +144,6 @@ class Mamba2FwdOp(Op):
         y = self._chunk_scan_op(x, cb, dA_cumsum, C, prev_states, dt_out)  # (B, S, H, P) float32
         return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["x"][1])

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -25,7 +25,6 @@ class SSDStatePassingFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_state_passing_fwd": SSDStatePassingFwdKernel
     }
@@ -37,20 +36,14 @@ class SSDStatePassingFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune the tile config when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -68,18 +61,6 @@ class SSDStatePassingFwdOp(Op):
         Returns:
             prev_states:  (batch, num_chunks, n_heads, d_state) float32
             final_states: (batch, n_heads, d_state) float32
-        """
-        return self._call_boundary(states, dA_chunk_cumsum, initial_states)
-
-    def _eager_forward(
-        self,
-        states: torch.Tensor,
-        dA_chunk_cumsum: torch.Tensor,
-        initial_states: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, num_chunks, n_heads, d_state = states.shape
         call = SSDStatePassingCall(

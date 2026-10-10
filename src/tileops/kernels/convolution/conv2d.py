@@ -723,22 +723,21 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     block_m_candidates: tuple[int, ...] = (64, 128)
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        # The tile question is asked of this class, so a kernel_map override answers
-        # for its own tiling rather than for the shipped one.
-        return (
-            call.groups == 1
-            and call.kernel_h == call.kernel_w
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
+        if not (
+            call.kernel_h == call.kernel_w
             and call.stride[0] == call.stride[1]
             and call.padding[0] == call.padding[1]
             and call.padding_end in (None, call.padding)
             and call.dilation[0] == call.dilation[1]
-            and call.c_in % 32 == 0
-            and cls.tile_stays_in_one_image(call.n, call.out_hw, min(cls.block_m_candidates))
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        ):
+            return "serves a square kernel with equal stride, padding and dilation on both axes"
+        if call.c_in % 32 != 0:
+            return f"requires input channels a multiple of 32, got {call.c_in}"
+        if not cls.tile_stays_in_one_image(call.n, call.out_hw, min(cls.block_m_candidates)):
+            return "requires every output tile to stay in one image"
         m_tiles = -(-(call.n * call.out_hw) // min(cls.block_m_candidates))
         return super().refusal(call) or grid_refusal(y=m_tiles)
 
@@ -779,7 +778,6 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -813,7 +811,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @staticmethod
     def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:
@@ -885,11 +883,9 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups == 1
-
-    @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -937,7 +933,6 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
         has_bias: bool = False,
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -982,7 +977,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
             pad_h_end=self.pad_h_end,
             pad_w_end=self.pad_w_end,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -1038,16 +1033,14 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups > 1
-
-    @classmethod
     def _grid_z(cls, call: Conv2dCall) -> int:
         """Blocks the program launches along grid z: one per image and group."""
         return call.n * call.groups
 
     @classmethod
     def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
@@ -1102,7 +1095,6 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1138,7 +1130,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
                 f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
             )
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_program(self) -> None:
         """Compile the grouped implicit GEMM over this call's group shape."""
@@ -1209,8 +1201,10 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
     preferred_over = frozenset({"group_conv2d"})
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+    def refusal(cls, call) -> "str | None":
+        if call.c_in_g != 1 or call.c_out_g != 1:
+            return "serves one input and one output channel per group"
+        return super().refusal(call)
 
     @classmethod
     def _grid_z(cls, call: Conv2dCall) -> int:
@@ -1270,8 +1264,8 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
     preferred_over = frozenset({"conv2d_symmetric"})
 
     @classmethod
-    def applies(cls, call: Conv2dCall) -> bool:
-        return (
+    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        if not (
             call.groups == 1
             and call.kernel_h == 1
             and call.kernel_w == 1
@@ -1279,10 +1273,8 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             and call.padding == (0, 0)
             and call.padding_end in (None, (0, 0))
             and call.dilation == (1, 1)
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+        ):
+            return "serves an ungrouped 1x1 convolution: stride 1, no padding or dilation"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -1318,7 +1310,6 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1348,7 +1339,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

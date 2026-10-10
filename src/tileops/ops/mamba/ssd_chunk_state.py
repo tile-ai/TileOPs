@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -30,7 +30,6 @@ class SSDChunkStateFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_state_fwd": SSDChunkStateFwdKernel
     }
@@ -42,20 +41,14 @@ class SSDChunkStateFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune:       Whether to autotune the tile config when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -76,20 +69,6 @@ class SSDChunkStateFwdOp(Op):
 
         Returns:
             states: (batch, num_chunks, n_heads, d_head, d_state) float32
-        """
-        return self._call_boundary(x, Bmat, dt, dA_cumsum, seq_idx)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        Bmat: torch.Tensor,
-        dt: torch.Tensor,
-        dA_cumsum: torch.Tensor,
-        seq_idx: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, seq_len, n_heads, d_head = x.shape
         num_chunks, chunk_len = dt.shape[2], dt.shape[3]
@@ -123,6 +102,6 @@ class SSDChunkStateFwdOp(Op):
 
         return kernel(x, Bmat, dt, dA_cumsum, seq_idx)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["x"][1])

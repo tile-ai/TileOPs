@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -24,7 +24,6 @@ class SSDChunkCumsumFwdOp(Op):
     is computed from the fp32 dt values before casting, ensuring numerical precision.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_cumsum_fwd": SSDChunkCumsumFwdKernel
     }
@@ -41,8 +40,6 @@ class SSDChunkCumsumFwdOp(Op):
         dt_max: float = float("inf"),
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes are taken from each call.
 
@@ -54,17 +51,13 @@ class SSDChunkCumsumFwdOp(Op):
             dt_max: Upper clamp bound applied after bias and softplus.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune the tile config when a kernel is first built.
         """
         self.chunk_len = chunk_len
         self.out_dtype = out_dtype
         self.dt_softplus = dt_softplus
         self.dt_min = dt_min
         self.dt_max = dt_max
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -83,18 +76,6 @@ class SSDChunkCumsumFwdOp(Op):
             dt_out: (batch, n_heads, num_chunks, chunk_len) ``out_dtype`` — processed dt.
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
                 of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
-        """
-        return self._call_boundary(dt, A, dt_bias)
-
-    def _eager_forward(
-        self,
-        dt: torch.Tensor,
-        A: torch.Tensor,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, seq_len, n_heads = dt.shape
         dt = dt.contiguous()

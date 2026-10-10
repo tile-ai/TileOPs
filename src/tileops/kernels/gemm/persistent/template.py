@@ -105,7 +105,7 @@ def _make_prim_func(
     # Whole output tiles across more than one wave: the store of a tile can then
     # overlap the next tile's epilogue, and every tile writes a full TMA box. A
     # partial tile or a single wave takes the synchronous copy instead. Narrower
-    # than BmmPersistentKernel.applies, which decides only which kernel runs.
+    # than BmmPersistentKernel.refusal, which decides only which kernel runs.
     batched_async_store = (
         batched
         and shape_m > 0
@@ -834,7 +834,6 @@ class GemmTemplate(Kernel):
         expected_m: int = 0,
         sm_count: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         """Fix the template's operand-side parameters; the schedule is chosen per call.
@@ -853,8 +852,6 @@ class GemmTemplate(Kernel):
             sm_count: Persistent grid size; the device's SM count when ``None``.
             config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
                 running the selector.
-            tune: Kernel-protocol flag; this kernel has no autotune space, the selector
-                stands in for it, so ``True`` only warns.
             device_index: Device the kernel is built for; the current one when ``None``.
         """
         super().__init__(device_index=device_index)
@@ -882,7 +879,7 @@ class GemmTemplate(Kernel):
         self.explicit_config = config
         self._spec_cache: dict[GemmDesc, GroupedGemmSpec] = {}
         self._empty_layout = None
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

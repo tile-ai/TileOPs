@@ -11,7 +11,7 @@ Input tensors accept shape (N, C, *spatial); the kernel reshapes to
 """
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -43,7 +43,6 @@ class GroupNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "group_norm": GroupNormKernel,
         "group_norm_no_affine": GroupNormNoAffineKernel,
@@ -59,8 +58,6 @@ class GroupNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -69,15 +66,10 @@ class GroupNormFwdOp(Op):
             eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
         self.num_groups = num_groups
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -95,18 +87,6 @@ class GroupNormFwdOp(Op):
         Returns:
             Normalized tensor of the same shape as *x*.
         """
-        return self._call_boundary(x, weight, bias)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
-        """
         channels = x.shape[1]
         affine = weight is not None or bias is not None
         if affine:
@@ -123,7 +103,6 @@ class GroupNormFwdOp(Op):
             passes_affine=affine,
         )
         kernel = self.kernel_for("group_norm", call)
-        self.kernel = kernel
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)

@@ -2,7 +2,7 @@
 CB Producer Op - High-level interface for CB matrix computation.
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -23,7 +23,6 @@ class SSDChunkCouplingFwdOp(Op):
     with causal masking (cb[l,s] = 0 if s > l).
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_coupling": SSDChunkCouplingKernel
     }
@@ -36,8 +35,6 @@ class SSDChunkCouplingFwdOp(Op):
         chunk_len: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -45,13 +42,9 @@ class SSDChunkCouplingFwdOp(Op):
             chunk_len: Chunk length (Q).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional pre-initialized kernels
-            tune: Whether to autotune
         """
         self.chunk_len = chunk_len
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -65,17 +58,6 @@ class SSDChunkCouplingFwdOp(Op):
 
         Returns:
             cb: [B, C, G, Q, Q]  dtype
-        """
-        return self._call_boundary(C_mat, B_mat)
-
-    def _eager_forward(
-        self,
-        C_mat: torch.Tensor,
-        B_mat: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
@@ -92,6 +74,6 @@ class SSDChunkCouplingFwdOp(Op):
         kernel = self.kernel_for("ssd_chunk_coupling", call)
         return kernel(C_mat, B_mat)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["C_mat"][1])

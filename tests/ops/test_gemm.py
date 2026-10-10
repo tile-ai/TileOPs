@@ -572,7 +572,9 @@ def test_gemm(
 ) -> None:
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
-    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
+    op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -662,7 +664,9 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
 def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
-    op = GemmFwdOp(trans_a=False, trans_b=True, tune=tune)
+    op = GemmFwdOp(trans_a=False, trans_b=True)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -671,7 +675,9 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
     m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
-    op = GemmFwdOp(trans_a=False, trans_b=False, tune=tune)
+    op = GemmFwdOp(trans_a=False, trans_b=False)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -733,16 +739,16 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
+def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
     inputs = test.gen_inputs()
     op = GemmW4A16FwdOp(target=BUILTIN)
     expected = op(*inputs)
 
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
-        op.autotune()
+        op.request_tune()
 
-    assert op.tune is False
+    assert op._tune_requested is False
     assert torch.equal(op(*inputs), expected)
 
     next_test = GemmW4A16Test(2, 1024, 8192, torch.float16)
@@ -750,8 +756,9 @@ def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
     next_test.check(op, *next_inputs)
 
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
-        new_op = GemmW4A16FwdOp(tune=True)
-    assert new_op.tune is False
+        new_op = GemmW4A16FwdOp()
+        new_op.request_tune()
+    assert new_op._tune_requested is False
 
 
 @pytest.mark.smoke

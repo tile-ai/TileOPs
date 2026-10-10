@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -38,7 +38,6 @@ class FusedAddLayerNormFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fused_add_layer_norm": FusedAddLayerNormKernel
     }
@@ -51,8 +50,6 @@ class FusedAddLayerNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -60,13 +57,9 @@ class FusedAddLayerNormFwdOp(Op):
             eps: Epsilon for numerical stability (manifest ``params.eps``).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
@@ -85,15 +78,6 @@ class FusedAddLayerNormFwdOp(Op):
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
-        """
-        return self._call_boundary(x, residual, weight, bias)
-
-    def _eager_forward(
-        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         n = x.shape[-1]
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.

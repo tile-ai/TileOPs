@@ -131,7 +131,7 @@ def resolve_roof(profile: dict, key: str) -> dict | None:
 
     Args:
         profile: A dict from :func:`load_profile`.
-        key: ``"<unit>.<dtype>"`` as declared by ``Op.compute_roof()``.
+        key: ``"<unit>.<dtype>"`` as declared by ``Op.roof_key()``.
 
     Returns:
         The section dict (with ``theoretical`` / ``effective``), or ``None``

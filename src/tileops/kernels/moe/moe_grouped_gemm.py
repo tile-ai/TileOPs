@@ -183,10 +183,6 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
     _ALIGNED_TILE_HEIGHTS = (64, 128, 256)
 
     @classmethod
-    def applies(cls, call: MGroupedGemmCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MGroupedGemmCall) -> Optional[str]:
         """The layouts, dtypes and extents the template instantiates."""
         if (call.kind, call.packing, call.metadata_kind) not in cls._TYPES:

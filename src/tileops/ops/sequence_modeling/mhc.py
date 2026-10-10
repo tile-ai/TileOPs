@@ -1,5 +1,5 @@
 import math
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -29,7 +29,6 @@ class MHCPreFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_pre": MHCPreKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_pre": MHCPreFwdInterface}
 
@@ -42,8 +41,6 @@ class MHCPreFwdOp(Op):
         sinkhorn_eps: float = 0.02,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -55,18 +52,13 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps: Manifest ``params.sinkhorn_eps``, Sinkhorn entropy scale.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.alpha_pre = alpha_pre
         self.alpha_post = alpha_post
         self.alpha_res = alpha_res
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sinkhorn_eps = sinkhorn_eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -79,19 +71,6 @@ class MHCPreFwdOp(Op):
         Returns:
             ``x_res``, ``x_layer``, ``h_post``, as the manifest declares.
         """
-        return self._call_boundary(phi, x, b)
-
-    def _eager_forward(
-        self,
-        phi: torch.Tensor,
-        x: torch.Tensor,
-        b: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        # The call check has solved n * n + 2 * n == phi.shape[1] and n | x.shape[1].
         n_expand = math.isqrt(phi.shape[1] + 1) - 1
         batch, c_x = x.shape[0], x.shape[1] // n_expand
         phi, x, b = phi.contiguous(), x.contiguous(), b.contiguous()
@@ -107,8 +86,8 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps=self.sinkhorn_eps,
             device=x.device,
         )
-        self.kernel = self.kernel_for("mhc_pre", call)
-        return self.kernel(
+        kernel = self.kernel_for("mhc_pre", call)
+        return kernel(
             phi,
             x,
             b,
@@ -119,7 +98,7 @@ class MHCPreFwdOp(Op):
             self.sinkhorn_eps,
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions over the bfloat16 stream; priced on tensor cores."""
         return tensor_core_roof(torch.bfloat16)
 
@@ -133,7 +112,6 @@ class MHCPostFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_post": MHCPostKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mhc_post": MHCPostFwdInterface}
 
@@ -141,21 +119,14 @@ class MHCPostFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
@@ -170,15 +141,6 @@ class MHCPostFwdOp(Op):
         Returns:
             ``x_out``, as the manifest declares.
         """
-        return self._call_boundary(x_layer_out, h_post, x_res)
-
-    def _eager_forward(
-        self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         (batch, c_x), n_expand = x_layer_out.shape, h_post.shape[1]
         call = MHCPostCall(
             batch=batch,
@@ -188,5 +150,5 @@ class MHCPostFwdOp(Op):
             device=x_layer_out.device,
         )
         inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
-        self.kernel = self.kernel_for("mhc_post", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("mhc_post", call)
+        return kernel(*inputs)

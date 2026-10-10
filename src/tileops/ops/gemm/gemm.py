@@ -1,5 +1,5 @@
 import warnings
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -46,8 +46,6 @@ class GemmFwdOp(Op):
     | ``(True, True)`` | TT | $d = a^{\\top} \\mathbin{@} b^{\\top}$ |
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_tma": GemmTMAKernel,
         "gemm_cp_async": GemmCpAsyncKernel,
@@ -61,8 +59,6 @@ class GemmFwdOp(Op):
         trans_b: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -71,14 +67,10 @@ class GemmFwdOp(Op):
             trans_b: Whether ``b`` is stored transposed ($[N \\times K]$). Default ``True`` (NT).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune (applied when a kernel is first built).
         """
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiply the two matrices under the layout the constructor selected.
@@ -98,13 +90,6 @@ class GemmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b)
-
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b = a.contiguous(), b.contiguous()
         m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
         call = GemmCall(
@@ -118,8 +103,8 @@ class GemmFwdOp(Op):
         )
         return self.kernel_for("gemm", call)(a, b)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class GemmFP8FwdOp(Op):
@@ -131,8 +116,6 @@ class GemmFP8FwdOp(Op):
     with ``scale_b`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
     block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_fp8_tensor_scale": GemmFP8TensorScaleKernel,
@@ -147,8 +130,6 @@ class GemmFP8FwdOp(Op):
         out_dtype: torch.dtype = torch.bfloat16,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -156,13 +137,9 @@ class GemmFP8FwdOp(Op):
             out_dtype: Output dtype, ``torch.bfloat16`` or ``torch.float16``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.out_dtype = out_dtype
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -194,20 +171,6 @@ class GemmFP8FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(a, b, scale_a, scale_b, bias)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
@@ -222,11 +185,11 @@ class GemmFP8FwdOp(Op):
             has_bias=bias is not None,
             device=a.device,
         )
-        self.kernel = self.kernel_for("gemm_fp8", call)
-        return self.kernel(a, b, scale_a, scale_b, bias)
+        kernel = self.kernel_for("gemm_fp8", call)
+        return kernel(a, b, scale_a, scale_b, bias)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class GemmW4A16FwdOp(Op):
@@ -240,8 +203,6 @@ class GemmW4A16FwdOp(Op):
     The output is ``activation @ W.T`` with shape ``[M, N]``. The in-tree kernel serves
     ``group_size = 128`` only and refuses any other value when it is built.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_w4a16": GemmW4A16Kernel,
@@ -258,8 +219,6 @@ class GemmW4A16FwdOp(Op):
         group_size: int = 128,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -267,24 +226,13 @@ class GemmW4A16FwdOp(Op):
             group_size: Weights per dequantization group along K (default 128).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Accepted for the common op interface and ignored with a warning.
-                W4A16 uses its calibrated selector because generic autotuning cannot
-                time the composite path.
         """
         self.group_size = group_size
-        if tune:
-            warnings.warn(
-                "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
-                UserWarning,
-                stacklevel=2,
-            )
-        self.tune = False
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def autotune(self) -> None:
-        """Keep the op out of tuned mode until composite-path tuning is supported."""
+    def request_tune(self) -> None:
+        """Warn and stay out of tuned mode: W4A16 uses its calibrated selector, because
+        generic autotuning cannot time the composite path."""
         warnings.warn(
             "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
             UserWarning,
@@ -295,8 +243,7 @@ class GemmW4A16FwdOp(Op):
         """Put a row-major packed weight into the order ``forward`` reads.
 
         The order is a contract between this op's repack and its GEMM, so both come
-        from the same set of kernels: replacing one through ``kernel_map=`` replaces
-        the other with it.
+        from the same set of kernels.
 
         Args:
             packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:
@@ -351,19 +298,6 @@ class GemmW4A16FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._call_boundary(activation, packed_weight, weight_scale, weight_zero)
-
-    def _eager_forward(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        weight_zero: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(
             t.contiguous() for t in (activation, packed_weight, weight_scale, weight_zero)
         )
@@ -376,8 +310,8 @@ class GemmW4A16FwdOp(Op):
             group_size=self.group_size,
             device=activation.device,
         )
-        self.kernel = self.kernel_for("gemm_w4a16", call)
-        return self.kernel(*inputs)
+        kernel = self.kernel_for("gemm_w4a16", call)
+        return kernel(*inputs)
 
-    def compute_roof(self) -> str:
-        return tensor_core_roof(self.last_call.ix["T"])
+    def roof_key(self) -> str:
+        return tensor_core_roof(self.last_call.indices["T"])

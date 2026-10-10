@@ -1,6 +1,6 @@
 """The shared expert of an MoE layer: a dense gated MLP."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -24,8 +24,6 @@ class SharedExpertMLPFwdOp(Op):
     the gated activation is rounded to the input dtype before the down projection.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "shared_expert_mlp": SharedExpertMLPKernel
     }
@@ -37,24 +35,18 @@ class SharedExpertMLPFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["D"])
+        return tensor_core_roof(self.last_call.indices["D"])
 
     def forward(
         self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
@@ -69,12 +61,6 @@ class SharedExpertMLPFwdOp(Op):
         Returns:
             $[T \\times H]$ in the dtype of ``hidden_states``.
         """
-        return self._call_boundary(hidden_states, w_gate_up, w_down)
-
-    def _eager_forward(
-        self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         tokens, hidden = hidden_states.shape
         tensors = (hidden_states, w_gate_up, w_down)
         call = SharedExpertMLPCall(

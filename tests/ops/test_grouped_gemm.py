@@ -111,7 +111,9 @@ def test_grouped_gemm(
     # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
-    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=tune)
+    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

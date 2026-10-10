@@ -21,6 +21,7 @@ from tileops.kernels.elementwise.call_spec import (
     BoundsCall,
     EluCall,
     EluFwdInterface,
+    GeluCall,
     LeakyReluCall,
     LeakyReluFwdInterface,
     SoftplusCall,
@@ -63,6 +64,12 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
 
+    @classmethod
+    def refusal(cls, call: GeluCall) -> "str | None":
+        if call.approximate != "none":
+            return f"evaluates the erf form, not approximate={call.approximate!r}"
+        return super().refusal(call)
+
     @staticmethod
     def op_func(x):
         inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
@@ -78,6 +85,12 @@ class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
     matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
     """
+
+    @classmethod
+    def refusal(cls, call: GeluCall) -> "str | None":
+        if call.approximate != "tanh":
+            return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
+        return super().refusal(call)
 
     @staticmethod
     def op_func(x):
@@ -217,9 +230,9 @@ class LeakyReluFwdKernel(ScalarParamUnaryKernel, LeakyReluFwdInterface):
     def entry_for(cls, call: LeakyReluCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.negative_slope)
 
-    def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
+    def __init__(self, N_total, dtype, negative_slope=0.01, config=None):
         self.negative_slope = negative_slope
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
         return f"negative_slope={self.negative_slope!r}"
@@ -245,9 +258,9 @@ class EluFwdKernel(ScalarParamUnaryKernel, EluFwdInterface):
     def entry_for(cls, call: EluCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.alpha)
 
-    def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
+    def __init__(self, N_total, dtype, alpha=1.0, config=None):
         self.alpha = alpha
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
         return f"alpha={self.alpha!r}"
@@ -272,10 +285,10 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     def entry_for(cls, call: BoundsCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
 
-    def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
+    def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None):
         self.min_val = min_val
         self.max_val = max_val
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
         return f"min_val={self.min_val!r}|max_val={self.max_val!r}"
@@ -339,10 +352,10 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
     def entry_for(cls, call: SoftplusCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.beta, call.threshold)
 
-    def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
+    def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None):
         self.beta = beta
         self.threshold = threshold
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def _builder_fn():

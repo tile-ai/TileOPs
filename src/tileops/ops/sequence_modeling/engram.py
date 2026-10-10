@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Mapping, Optional
+from typing import ClassVar, List, Mapping
 
 import torch
 
@@ -28,7 +28,6 @@ class EngramGateConvFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_fwd": EngramGateConvFwdKernel
     }
@@ -44,8 +43,6 @@ class EngramGateConvFwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -56,16 +53,12 @@ class EngramGateConvFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -94,21 +87,6 @@ class EngramGateConvFwdOp(Op):
                 rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
                 rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
-        return self._call_boundary(H, k, v, rms_w_h, rms_w_v, conv_w)
-
-    def _eager_forward(
-        self,
-        H: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
         call = EngramGateConvCall(
             m=self.M,
@@ -134,7 +112,6 @@ class EngramGateConvBwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "engram_gate_conv_bwd": EngramGateConvBwdKernel
     }
@@ -150,8 +127,6 @@ class EngramGateConvBwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -162,16 +137,12 @@ class EngramGateConvBwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -211,29 +182,6 @@ class EngramGateConvBwdOp(Op):
                 drms_w_h: (d,) — fp32
                 drms_w_v: (d,) — fp32
                 dconv_w:  (4, d) — fp32
-        """
-        return self._call_boundary(
-            dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
-        )
-
-    def _eager_forward(
-        self,
-        dY: torch.Tensor,
-        H: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-        vhat: torch.Tensor,
-        alpha: torch.Tensor,
-        rrms_h: torch.Tensor,
-        rrms_k: torch.Tensor,
-        rrms_v: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(
             t.contiguous()

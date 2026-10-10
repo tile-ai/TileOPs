@@ -1,6 +1,6 @@
 """The categorical draw from probabilities op."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -31,8 +31,6 @@ class SamplingFromProbsFwdOp(Op):
     samples whatever the batch and whatever grid the call takes.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "sampling_from_probs": SamplingFromProbsFwdKernel
     }
@@ -44,20 +42,14 @@ class SamplingFromProbsFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
@@ -72,12 +64,6 @@ class SamplingFromProbsFwdOp(Op):
         Returns:
             ``[B]`` int32 drawn indices.
         """
-        return self._call_boundary(probs, seed, offset)
-
-    def _eager_forward(
-        self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         probs = probs.contiguous()
         seed = seed.contiguous()
         offset = offset.contiguous()

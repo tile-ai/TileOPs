@@ -123,10 +123,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     preferred_over = frozenset({"layer_norm"})
 
     @classmethod
-    def applies(cls, call: LayerNormCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: LayerNormCall) -> Optional[str]:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         if call.n % ALIGNMENT == 0:
@@ -151,7 +147,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a hidden size and dtype.
 
@@ -162,8 +157,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

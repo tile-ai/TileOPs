@@ -6,7 +6,7 @@ Provides:
   - Conv3dFwdOp: torch.nn.functional.conv3d
 """
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -75,8 +75,6 @@ def _out_dim(size: int, kernel: int, stride: int, before: int, after: int, dilat
 class Conv1dFwdOp(Op):
     """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``."""
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv1d_pointwise": Conv1dPointwiseKernel,
         "conv1d": Conv1dKernel,
@@ -94,8 +92,6 @@ class Conv1dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -106,16 +102,12 @@ class Conv1dFwdOp(Op):
             dilation: Dilation, an int or a 1-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -132,19 +124,6 @@ class Conv1dFwdOp(Op):
 
         Returns:
             The convolution result, $[N \\times C_{out} \\times L_{out}]$.
-        """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
         """
         n, c_in, l_in = input.shape
         c_out, c_in_g, kernel_l = weight.shape
@@ -180,12 +159,12 @@ class Conv1dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv1d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv1d", call)
+        return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class Conv2dFwdOp(Op):
@@ -193,8 +172,6 @@ class Conv2dFwdOp(Op):
 
     They multiply float32 operands in TF32, as cuDNN does by default.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv2d_1x1": Conv2d1x1Kernel,
@@ -213,8 +190,6 @@ class Conv2dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -225,16 +200,12 @@ class Conv2dFwdOp(Op):
             dilation: Dilation, an int or a 2-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -251,19 +222,6 @@ class Conv2dFwdOp(Op):
 
         Returns:
             The convolution result, $[N \\times C_{out} \\times H_{out} \\times W_{out}]$.
-        """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
         """
         n, c_in, h, w = input.shape
         c_out, c_in_g, kernel_h, kernel_w = weight.shape
@@ -294,12 +252,12 @@ class Conv2dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv2d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv2d", call)
+        return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])
 
 
 class Conv3dFwdOp(Op):
@@ -307,8 +265,6 @@ class Conv3dFwdOp(Op):
 
     They multiply float32 operands in TF32, as cuDNN does by default.
     """
-
-    compile_boundary: ClassVar[bool] = True
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv3d": Conv3dKernel,
@@ -325,8 +281,6 @@ class Conv3dFwdOp(Op):
         groups: int = 1,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
 
@@ -337,16 +291,12 @@ class Conv3dFwdOp(Op):
             dilation: Dilation, an int or a 3-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
         self.groups = groups
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -365,19 +315,6 @@ class Conv3dFwdOp(Op):
         Returns:
             The convolution result, $[N \\times C_{out} \\times D_{out} \\times H_{out}
             \\times W_{out}]$.
-        """
-        return self._call_boundary(input, weight, bias)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
         """
         n, c_in, d, h, w = input.shape
         c_out, c_in_g, kernel_d, kernel_h, kernel_w = weight.shape
@@ -416,9 +353,9 @@ class Conv3dFwdOp(Op):
             has_bias=bias is not None,
             device=input.device,
         )
-        self.kernel = self.kernel_for("conv3d", call)
-        return self.kernel(input, weight, bias)
+        kernel = self.kernel_for("conv3d", call)
+        return kernel(input, weight, bias)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

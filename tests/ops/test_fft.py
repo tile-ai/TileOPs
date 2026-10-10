@@ -120,7 +120,7 @@ def test_every_power_of_two_through_2_28_has_a_kernel(dtype: torch.dtype) -> Non
     """Every length in the manifest's domain, 2 through 2**28, has an implementation."""
     op = FFTC2CFwdOp()
     for exponent in range(1, 29):
-        op.select_implementation("fft_c2c", FFTC2CCall(n=1 << exponent, dtype=dtype))
+        op.key_for("fft_c2c", FFTC2CCall(n=1 << exponent, dtype=dtype))
 
 
 @pytest.mark.smoke
@@ -148,7 +148,8 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
     monkeypatch.setattr(FFTC2CFourStepKernel, "tune_jit_kernel", fake_tune)
     # The shortest decomposed length: two kernels.
     x = torch.randn(2, 1 << 14, device=run_device(), dtype=torch.complex128)
-    op = FFTC2CFwdOp(tune=True)
+    op = FFTC2CFwdOp()
+    op.request_tune()
     got = op(x)
 
     workload = FFTWorkload(x.shape[-1], x.dtype)

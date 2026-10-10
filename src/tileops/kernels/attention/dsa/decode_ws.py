@@ -447,10 +447,6 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     preferred_over: ClassVar[frozenset[str]] = frozenset({"dsa_decode_kernel"})
 
     @classmethod
-    def applies(cls, call: DSADecodeCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: DSADecodeCall) -> Optional[str]:
         if not call.is_causal:
             return "requires the causal mask"

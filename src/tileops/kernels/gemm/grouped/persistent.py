@@ -36,14 +36,16 @@ class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call: GroupedGemmCall) -> bool:
+    def refusal(cls, call: GroupedGemmCall) -> "str | None":
         if call.dtype not in (torch.bfloat16, torch.float16):
-            return False
+            return f"requires float16 or bfloat16, got {call.dtype}"
         # ``call.n`` is a's non-group extent, ``call.k`` b's; TT also strides b by numel.
         extents = [call.n, call.k]
         if call.transpose_a and call.transpose_b:
             extents.append(call.numel)
-        return all(extent % 8 == 0 for extent in extents)
+        if any(extent % 8 for extent in extents):
+            return f"requires extents {extents} multiples of 8"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GroupedGemmCall) -> Entry:

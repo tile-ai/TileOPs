@@ -344,7 +344,7 @@ class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
     def __init__(self, call: Any) -> None:
         CallWorkload.__init__(self, call)
         batch, seq_len, heads, dim = call.tensors["x"][0]
-        offsets = call.values("offsets") if call.present("offsets") else None
+        offsets = call.metadata_values("offsets") if call.present("offsets") else None
         MeanPoolingWorkload.__init__(
             self,
             batch=batch,

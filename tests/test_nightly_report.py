@@ -238,7 +238,7 @@ def _sol_row(**overrides):
         "tileops_flops": 2e9,
         "tileops_bytes": 4e9,  # 1 ms at effective HBM
         "tileops_device_busy_ms": 1.0,
-        "tileops_compute_roof": "cuda_core.fp32",
+        "tileops_roof_key": "cuda_core.fp32",
         "tileops_timing": "cupti",
     }
     row.update(overrides)
@@ -259,7 +259,7 @@ def test_sol_compute_bound_uses_the_declared_roof(report, profile):
             tileops_flops=7e11,
             tileops_bytes=1e6,
             tileops_device_busy_ms=2.0,
-            tileops_compute_roof="tensor_core.bf16",
+            tileops_roof_key="tensor_core.bf16",
         ),
         profile,
     )
@@ -283,7 +283,7 @@ def test_sol_skips_rows_the_model_cannot_judge(report, profile):
     del no_timing["tileops_timing"]
     assert report._compute_sol(no_timing, profile) is None
     assert report._compute_sol(_sol_row(tileops_bytes=0), profile) is None
-    assert report._compute_sol(_sol_row(tileops_compute_roof="tensor_core.fp8"), profile) is None
+    assert report._compute_sol(_sol_row(tileops_roof_key="tensor_core.fp8"), profile) is None
 
 
 def test_sol_latency_bound_needs_both_floors(report, profile):
@@ -311,7 +311,7 @@ def test_history_entry_records_the_sol_reading(report, profile):
     report.annotate_sol(bench_ops, profile)
     entry = report.build_history_entry(bench_ops, _RUN)
     tileops = entry["ops"][_OP][_KEY]["tileops"]
-    assert tileops["compute_roof"] == "cuda_core.fp32"
+    assert tileops["roof_key"] == "cuda_core.fp32"
     assert tileops["sol"] == {"efficiency": 1.0, "bound": "memory", "latency_bound": False}
 
 

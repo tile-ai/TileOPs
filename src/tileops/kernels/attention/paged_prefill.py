@@ -16,10 +16,6 @@ class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
     """Base for every in-tree implementation of the paged GQA prefill interface."""
 
     @classmethod
-    def applies(cls, call: AttentionCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None``.
 
@@ -108,7 +104,6 @@ class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -127,7 +122,7 @@ class PagedPrefillKernel(Kernel, GQAPrefillPagedFwdInterface):
         self.max_position = max_position
         self.rotary_dim = rotary_dim
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
 
     def _build_program(self) -> None:
         """Build whatever the implementation launches beyond its wrapped call."""

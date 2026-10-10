@@ -1,13 +1,13 @@
 """Sinusoidal positional encoding generative op."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import SinusoidalFwdKernel
 from tileops.kernels.elementwise.call_spec import SinusoidalCall, SinusoidalFwdInterface
-from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.kernel_base import KernelInterface
 from tileops.ops.elementwise._base import generated_on
 from tileops.ops.op_base import Op
 
@@ -39,8 +39,6 @@ class SinusoidalFwdOp(Op):
         out_dtype: torch.dtype = torch.float32,
         device: "torch.device | str | None" = None,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op: the extents and dtype are its parameters.
 
@@ -53,17 +51,12 @@ class SinusoidalFwdOp(Op):
                 target decides.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None`` to decide from ``device``.
-            kernel_map: Optional dispatch override mapping kernel keys to
-                ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
-            tune: Whether to autotune.
         """
         self.seq_len = seq_len
         self.d_model = d_model
         self.out_dtype = out_dtype
         self.device = device
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self) -> torch.Tensor:
         """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""

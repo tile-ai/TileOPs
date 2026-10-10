@@ -168,7 +168,7 @@ def test_a_row_value_call_states_the_call_its_list_does():
         instantiate(plan, _varlen(L=L)["workloads"][0], {"T": "float16"})
         for L in ("repeat(3, 2)", [3, 3])
     )
-    assert (written.case_id, written.ix) == (spelled.case_id, spelled.ix)
+    assert (written.case_id, written.indices) == (spelled.case_id, spelled.indices)
     assert {t: s.values for t, s in written.specs.items()} == {
         t: s.values for t, s in spelled.specs.items()
     }

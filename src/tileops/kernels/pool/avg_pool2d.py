@@ -122,7 +122,6 @@ class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
         divisor_override: Optional[int],
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.n = n
@@ -139,7 +138,7 @@ class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
             divisor_override=divisor_override,
         )
         self.kernel = _avg_pool2d_kernel(self.window, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

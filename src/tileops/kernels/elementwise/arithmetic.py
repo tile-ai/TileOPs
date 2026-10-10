@@ -17,6 +17,7 @@ from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOO
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
+    DivCall,
     LerpCall,
     LerpFwdInterface,
     LerpTensorFwdInterface,
@@ -119,6 +120,12 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode is not None:
+            return f"divides exactly, not with rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
+
     @property
     def stage_broadcast(self) -> bool:
         """The extern call scalarises the copies, so keep them off its loop."""
@@ -145,6 +152,12 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode != "trunc":
+            return f"truncates the quotient, not rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
 
     @property
     def stage_broadcast(self) -> bool:
@@ -354,6 +367,12 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     (``1.0 // 0.1`` is 9) and at an infinite b.
     """
 
+    @classmethod
+    def refusal(cls, call: DivCall) -> "str | None":
+        if call.rounding_mode != "floor":
+            return f"floors the quotient, not rounding_mode={call.rounding_mode!r}"
+        return super().refusal(call)
+
     @staticmethod
     def _floor_divide(num, den, dtype):
         """``(tiers, slow())`` for torch's ``div_floor_floating`` on two float32 values.
@@ -427,7 +446,7 @@ class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
 
     Args:
         weight: Scalar interpolation weight (default 0.5). Keyword-only so the
-            positional ``(dtype, config, tune)`` tail stays uniform.
+            positional ``(dtype, config)`` tail stays uniform.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -443,9 +462,9 @@ class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
     def entry_for(cls, call: LerpCall) -> Entry:
         return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, weight=call.weight)
 
-    def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, weight=0.5):
+    def __init__(self, a_shape, b_shape, dtype, config=None, *, weight=0.5):
         self._weight = weight
-        super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
+        super().__init__(a_shape, b_shape, dtype, config=config)
 
     def _get_effective_op_func(self):
         weight = self._weight

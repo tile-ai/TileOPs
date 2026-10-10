@@ -192,7 +192,8 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
 
     m, n, dtype = 8, 7935, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dim=-1, tune=True)
+    op = SumFwdOp(dim=-1)
+    op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -205,7 +206,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     ],
 )
 def test_reduce_tiled_autotune(op_kind: str) -> None:
-    """``tune=True`` must build and time every tiled candidate.
+    """``request_tune()`` must build and time every tiled candidate.
 
     N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
     fall back on an exact divisor, which hides a mis-derived tile_n.
@@ -215,10 +216,12 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     m, n, dtype = 4, 39999, torch.float16
     if op_kind == "sum":
         test = ReduceTest(m, n, dtype, "sum")
-        op = SumFwdOp(dim=-1, tune=True)
+        op = SumFwdOp(dim=-1)
+        op.request_tune()
     else:
         test = WelfordTest(m, n, dtype, "var", correction=1)
-        op = VarFwdOp(dim=-1, tune=True)
+        op = VarFwdOp(dim=-1)
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

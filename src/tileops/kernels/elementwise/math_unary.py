@@ -311,10 +311,6 @@ class RoundDecimalsFwdKernel(Kernel, RoundFwdInterface):
         return None
 
     @classmethod
-    def applies(cls, call: RoundCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def entry_for(cls, call: RoundCall) -> Entry:
         return call.decimals, lambda: cls(call.decimals)
 

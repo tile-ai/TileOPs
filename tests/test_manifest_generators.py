@@ -124,7 +124,7 @@ def test_sampling_chain_ids_allow_more_drafts_than_vocabulary():
     from workloads.workload_base import manifest_call
 
     call = manifest_call("ChainSpeculativeSamplingFwdOp", B=4, N=600, V=64)
-    rows = call.values("draft_token_ids")
+    rows = call.metadata_values("draft_token_ids")
     assert len(rows) == 4 and all(len(row) == 600 for row in rows)
     assert all(0 <= token < 64 for row in rows for token in row)
     assert any(len(set(row)) < len(row) for row in rows)

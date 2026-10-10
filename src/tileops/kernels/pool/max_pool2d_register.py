@@ -182,30 +182,37 @@ class _MaxPool2dRegisterKernelBase(Kernel):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: MaxPoolCall) -> bool:
+    def refusal(cls, call: MaxPoolCall) -> "str | None":
         # The window-row loop is unrolled, so a window of more than 16 rows stays on the
         # one-output-a-thread kernel. A thread reads at most one element past its load on
         # either side of a row, each a load of its own.
         max_rows, max_reach = 16, 1
-        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32) or len(call.size) != 2:
-            return False
+        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            return f"requires float16, bfloat16 or float32, got {call.dtype}"
+        if len(call.size) != 2:
+            return "serves a 2-d window"
         (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
         (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
         run = VECTOR_ACCESS_BYTES // call.dtype.itemsize
-        if call.ceil_mode or any(d != 1 for d in call.dilation) or run % stride_w:
-            return False
+        if call.ceil_mode or any(d != 1 for d in call.dilation):
+            return "does not serve ceil_mode or dilation"
+        if run % stride_w:
+            return f"requires a stride dividing the {run}-element load, got {stride_w}"
         out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
         out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
-        return (
-            kernel_h <= max_rows
-            and pad_w <= max_reach
-            and kernel_w - stride_w - pad_w <= max_reach
-            and out_h > 0
+        if kernel_h > max_rows:
+            return f"unrolls at most {max_rows} window rows, got {kernel_h}"
+        if pad_w > max_reach or kernel_w - stride_w - pad_w > max_reach:
+            return f"reads at most {max_reach} element past a load"
+        if not (
+            out_h > 0
             and out_w > 0
             and out_w % (run // stride_w) == 0
             and out_w * stride_w <= w_in
             and w_in % run == 0
-        )
+        ):
+            return f"requires whole {run}-element loads along the row"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: MaxPoolCall) -> Entry:
@@ -292,9 +299,12 @@ class MaxPool2dIndicesRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dIndi
     preferred_over = frozenset({"max_pool2d_with_indices_kernel"})
 
     @classmethod
-    def applies(cls, call: MaxPoolCall) -> bool:
+    def refusal(cls, call: MaxPoolCall) -> "str | None":
+        reason = super().refusal(call)
         # A position is held in int32.
-        return super().applies(call) and call.size[0] * call.size[1] <= 1 << 31
+        if reason is None and call.size[0] * call.size[1] > 1 << 31:
+            return f"holds a position in int32, and the plane has {call.size[0] * call.size[1]}"
+        return reason
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch, (y, indices) = self._launch(x)

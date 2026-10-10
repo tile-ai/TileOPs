@@ -1,6 +1,6 @@
 """The chain speculative sampling op."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -39,8 +39,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
     exactly, whatever the batch and whatever grid the call takes.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "chain_speculative_sampling": ChainSpeculativeSamplingFwdKernel
     }
@@ -52,20 +50,14 @@ class ChainSpeculativeSamplingFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -88,17 +80,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
             ``output_token_ids``, ``[B, N + 1]`` int32: the accepted drafts, the drawn token,
             then ``-1``; and ``num_accepted``, ``[B]`` int32.
         """
-        return self._call_boundary(draft_probs, draft_token_ids, target_probs, seed, offset)
-
-    def _eager_forward(
-        self,
-        draft_probs: torch.Tensor,
-        draft_token_ids: torch.Tensor,
-        target_probs: torch.Tensor,
-        seed: torch.Tensor,
-        offset: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         draft_probs = draft_probs.contiguous()
         draft_token_ids = draft_token_ids.contiguous()
         target_probs = target_probs.contiguous()

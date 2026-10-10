@@ -30,7 +30,7 @@ nothing here names a kernel class, a specialization axis, a priority or a fallba
 picks a target, the target picks a kernel.
 
 A backend that serves part of one kernel interface instead registers an implementation with
-``register_implementation``. It inherits the interface and joins the in-tree implementations
+``register_kernel_type``. It inherits the interface and joins the in-tree implementations
 of every instance of the op; a call it does not serve stays with them.
 
 Depends on torch only — importing this does not import tilelang.
@@ -58,8 +58,8 @@ from tileops.backend.errors import (
 from tileops.backend.protocol import BUILTIN, BuildKernel, KernelResult, Target, TensorSpec
 from tileops.backend.registry import (
     register_detector,
-    register_implementation,
     register_kernel_builder,
+    register_kernel_type,
 )
 
 __all__ = [
@@ -75,8 +75,8 @@ __all__ = [
     "default_target",
     "load_failures",
     "register_detector",
-    "register_implementation",
     "register_kernel_builder",
+    "register_kernel_type",
     "registered_targets",
     "set_default_target",
 ]

@@ -1,5 +1,5 @@
 from math import prod
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -27,15 +27,11 @@ class _AdaptivePool2dFwdOpBase(Op):
     the batch axis.
     """
 
-    compile_boundary = True
-
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -43,13 +39,9 @@ class _AdaptivePool2dFwdOpBase(Op):
             output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``;
                 a ``None`` extent keeps the input's.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.output_size = output_size
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
         self._output_size = (
             (output_size, output_size)
             if output_size is None or isinstance(output_size, int)
@@ -58,9 +50,6 @@ class _AdaptivePool2dFwdOpBase(Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor):
         input = input.contiguous()
         c_in, h_in, w_in = input.shape[-3:]
         call = AdaptivePool2dCall(
@@ -73,8 +62,8 @@ class _AdaptivePool2dFwdOpBase(Op):
             dtype=input.dtype,
             device=input.device,
         )
-        self.kernel = self.kernel_for("adaptive_pool", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("adaptive_pool", call)
+        return kernel(input)
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
@@ -92,18 +81,14 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
         output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        super().__init__(output_size=output_size, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(output_size=output_size, target=target)
 
 
 class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
@@ -121,18 +106,14 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
         output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        super().__init__(output_size=output_size, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(output_size=output_size, target=target)
 
 
 class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
@@ -150,18 +131,14 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        super().__init__(output_size=output_size, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(output_size=output_size, target=target)
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
@@ -172,4 +149,4 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         Returns:
             ``output``, ``indices``, as the manifest declares.
         """
-        return self._call_boundary(input)
+        return super().forward(input)

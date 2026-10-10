@@ -28,7 +28,7 @@ design, calling conventions — live in
 
 ### Slot S2: <a id="slot-s2"></a> Import — `Kernel` base class
 
-- **Rule.** `from tileops.kernels.kernel_base import Kernel`, whenever `kernel_map` is annotated.
+- **Rule.** `from tileops.kernels.kernel_base import Kernel`, whenever `kernel_types` is annotated.
   Never alias it, never re-export it.
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
@@ -77,8 +77,8 @@ design, calling conventions — live in
 
 - **Rule.** `signature.params` entries in manifest key order; then `*` and any param declaring
   `kw_only: true`, followed by the execution-policy parameters of
-  [manifest.md table 7](./manifest.md#t-policy): `target`, `kernel_map` and `tune` on every op,
-  then the op's injected implementation objects or `config` where it takes them.
+  [manifest.md table 7](./manifest.md#t-policy): `target` on every op, then the op's injected
+  implementation objects where it takes them.
 - **Example.**
   ```python
   def __init__(
@@ -86,19 +86,19 @@ design, calling conventions — live in
       dim: int = -1,
       *,
       target: Target = None,
-      kernel_map: Optional[Dict[str, Kernel]] = None,
-      tune: bool = False,
   ):
   ```
 - **Common mistakes.** Parameters with no manifest source; taking an input dtype as `dtype` or
   `in_dtype` when the tensors carry it; making a param keyword-only that the manifest does not
-  declare `kw_only`.
+  declare `kw_only`; a tuning flag, which no constructor takes (`request_tune()` puts a constructed
+  op in tuned mode).
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
-- **Rule.** Sequence: (a) `self.<name> = <name>` per parameter, `target` among them; (b)
-  `self.dispatch_kernel(kernel_map)`, which resolves the kernel *class* and needs no tensor.
-  **Construct no kernel and declare no cache here**: the kernel is specialized by what the call
+- **Rule.** Sequence: (a) `self.<name> = <name>` per manifest parameter; (b)
+  `super().__init__(target=target)`, which stores the target, checks the manifest parameters and
+  installs the implementations, resolving each kernel *class* without a tensor; (c) any derived
+  attribute or sub-op, after the check. **Construct no kernel and declare no cache here**: the kernel is specialized by what the call
   carries, and L1 owns get-or-build
   ([Kernel caching](./ops-design.md#kernel-caching-and-enumeration)).
 
@@ -106,21 +106,21 @@ design, calling conventions — live in
 
   ```python
   self.dim = dim
-  self.target = target
-  self.tune = tune
-  self.dispatch_kernel(kernel_map)
+  super().__init__(target=target)
   ```
 
-- **Common mistakes.** Hard-coding the kernel class
-  instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; a private cache
-  dict in place of `Op.kernel_for`.
+- **Common mistakes.** Hard-coding the kernel class instead of declaring it in `kernel_types`;
+  assigning `self.target` by hand; calling `super().__init__` before the manifest parameters it
+  checks are assigned; storing `self.dtype` at ctor time; a private cache dict in place of
+  `Op.kernel_for`.
 
 ### Slot S14: <a id="slot-s14"></a> `kernel_types`
 
 - **Rule.** A class attribute declaring the op's dispatch keys: `snake_case` keys, Kernel-class
-  values. It is the one declaration of the keys; `default_kernel_map`, the instance's view, is
-  derived from it — all of it, or the entries a construction parameter selects. The code owns it;
-  the manifest does not list kernels. Beside it, `interfaces` maps each place the op calls a kernel to its
+  values. It is the one declaration of the in-tree keys, and every instance installs all of it; a
+  construction parameter that decides which implementation serves a call travels in the call spec,
+  where the implementations' `refusal` reads it. The code owns it; the manifest does not list
+  kernels. Beside it, `interfaces` maps each place the op calls a kernel to its
   kernel interface, and every key's class inherits one of them.
 - **Example.**
   ```python
@@ -132,8 +132,8 @@ design, calling conventions — live in
   }
   ```
 - **Common mistakes.** Keys that echo the class name instead of being dispatch strings; a
-  `default_kernel_map` naming a key `kernel_types` does not declare; an interface per shape
-  regime instead of one interface whose implementations split the regimes.
+  construction parameter that selects keys at construction instead of travelling in the call spec;
+  an interface per shape regime instead of one interface whose implementations split the regimes.
 
 ### Slot S15: <a id="slot-s15"></a> `forward` signature
 
@@ -154,9 +154,8 @@ design, calling conventions — live in
   `self.kernel_for(<interface>, <call>)`; (d) call what it returned with the parameters the
   interface's abstract `forward` declares, in that order — output buffers included, `None` for an
   absent optional one.
-  An op registered for `fullgraph=True` compilation keeps this body under the name `_eager_forward`,
-  and its `forward` becomes one call to the operator it registers — that operator is outside the
-  scaffold's scope, see
+  `forward` is the body for every op. An op with a compile boundary runs it inside the operator
+  its `__call__` enters — that operator is generated and outside the scaffold's scope, see
   [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
 - **Derivation.** The first argument is a key of `interfaces`; the call is that interface's
   call spec. The interface's abstract `forward` states what the kernel is handed, so the op passes
@@ -177,7 +176,8 @@ design, calling conventions — live in
       )
       return self.kernel_for("example_cumsum_fwd", call)(x)
   ```
-- **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
+- **Common mistakes.** Building a kernel in a traced `forward`; holding the returned entry on
+  `self` instead of asking `kernel_for` on every call; keying on shape alone, so a second
   dtype reuses the first dtype's kernel; calling the returned kernel with arguments the interface's
   `forward` does not declare, or out of its order; a `.is_cuda` check in the op; repeating a check
   the signature states; reshaping before the fetch; passing an already-built kernel where
@@ -190,15 +190,15 @@ design, calling conventions — live in
 - **Rule.** Generated from the signature; the op file does not define it.
 - **Common mistakes.** A hand-written override, which can disagree with the signature.
 
-### Slot S18: <a id="slot-s18"></a> `_validate_dtypes`
+### Slot S18: <a id="slot-s18"></a> Signature check
 
-- **Rule.** Generated from the signature's dtype expressions and `dtype_combos`; the op file does
-  not define it.
+- **Rule.** Generated from the signature, its dtype expressions and `dtype_combos` among it; it
+  runs on every call and is the only place an op rejects a dtype. The op file does not define it.
 - **Common mistakes.** A hand-written override, or an inline dtype check in `forward`.
 
 ### Slot S19: <a id="slot-s19"></a> `eval_roofline`
 
-- **Rule.** Generated from the `roofline` field over the `ix` of the op's last call; see
+- **Rule.** Generated from the `roofline` field over the `indices` of the op's last call; see
   [`roofline.md` §4.4](./roofline.md#44-op-codegen). It is defined only after at least one
   `forward()`.
 - **Common mistakes.** Class-level roofline expression strings parsed at runtime, any `ast.parse`

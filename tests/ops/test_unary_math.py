@@ -228,7 +228,7 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
         x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
     else:
         x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
-    y = op.forward(x)
+    y = op(x)
     assert y.dtype == int_dtype
     assert y.shape == x.shape
     compare_outputs(y, x, ElementwiseWorkload(type(op).__name__, (x,)).verification(*(x,)))
@@ -276,7 +276,7 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
         x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
     else:
         x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
-    y = op.forward(x)
+    y = op(x)
     assert y.dtype == int_dtype
     compare_outputs(
         y, torch_fn(x), ElementwiseWorkload(type(op).__name__, (x,)).verification(*(x,))
@@ -304,7 +304,7 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
         x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=non_float_dtype)
     else:
         x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=non_float_dtype)
-    y = op.forward(x)
+    y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == x.shape
     assert (y == expected).all()

@@ -1,6 +1,6 @@
 """Arg-reduction operators (argmax, argmin)."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -33,8 +33,6 @@ class _ArgreduceOpBase(_ReduceOpBase):
         keepdim: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -44,10 +42,8 @@ class _ArgreduceOpBase(_ReduceOpBase):
             keepdim: Whether to retain the reduced dimension as size 1.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel map.
-            tune: Whether to autotune the kernel.
         """
-        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim, keepdim, target=target)
 
     def _output_dtype(self, x: torch.Tensor) -> torch.dtype:
         return torch.int64

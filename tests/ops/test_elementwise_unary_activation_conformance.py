@@ -3,14 +3,14 @@
 The manifest L1 signature contract is enforced by
 ``scripts/validate_manifest.py`` for every op family; these tests
 exercise activation-specific *behavior* — ``inplace=True`` aliasing
-identity, ``approximate`` validation, kernel_map override
+identity, ``approximate`` validation, registered-implementation dispatch
 dispatch, and end-to-end correctness against the PyTorch reference.
 """
 
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
@@ -67,35 +67,37 @@ def _clamp_construct_kwargs(op_name: str) -> dict:
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.parametrize("op_name", _CLAMP_OPS)
-def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
-    """A user-supplied ``kernel_map`` value must reach the kernel build.
+def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> None:
+    """A registered implementation preferred over the in-tree one must reach the kernel build.
 
-    Construct each Clamp op with a ``kernel_map`` whose value is a
-    *subclass* of the default kernel and assert the constructed
-    kernel built for a dtype is an instance of that subclass — the
-    load-bearing invariant is that the override class is the one actually
-    used to build it.
+    Register, for each Clamp op, a *subclass* of its in-tree kernel under a new key and
+    assert the kernel built for a dtype is an instance of that subclass — the load-bearing
+    invariant is that the registered class is the one actually used to build it.
     """
     import tileops.ops.elementwise as mod
 
     cls = getattr(mod, op_name)
     kw = _clamp_construct_kwargs(op_name)
-    ((key, default_kernel_cls),) = cls(**kw).default_kernel_map.items()
+    ((key, default_kernel_cls),) = cls(**kw).kernel_types.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
-    inst = cls(**kw, kernel_map={key: MarkerKernel}, target=BUILTIN)
-    assert inst.kernel_map[key] is MarkerKernel, (
-        f"{op_name}: kernel_map override entry was not stored on "
-        f"self.kernel_map (got {inst.kernel_map[key]!r})"
-    )
+        general = False
+        preferred_over = frozenset({key})
+
+    state = registry.snapshot()
+    try:
+        register_kernel_type(op_name, f"{key}_marker", MarkerKernel)
+        inst = cls(**kw, target=BUILTIN)
+    finally:
+        registry.restore(state)
     x = torch.randn(2, 4, device="cuda", dtype=torch.float16)
     bound = torch.zeros_like(x)
     inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
-    ((built,),) = [tuple(inst.built_kernels(ELEMENTWISE).values())]
+    ((built,),) = [tuple(inst.built_entries(ELEMENTWISE).values())]
     assert isinstance(built, MarkerKernel), (
-        f"{op_name}: kernel_map override class was not used to build the "
+        f"{op_name}: the registered class was not used to build the "
         f"kernel (kernel type: {type(built).__name__})"
     )
 
@@ -195,4 +197,4 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 
 # Frozen ``__init__`` signatures for every unary activation Op. Tests, benches
 # and codegen read them, so pulling shared ``__init__`` / ``forward`` /
-# ``_eager_forward`` logic into a base or mixin must keep them byte-identical.
+# ``forward`` logic into a base or mixin must keep them byte-identical.

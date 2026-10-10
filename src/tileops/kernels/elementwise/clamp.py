@@ -33,10 +33,10 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     def entry_for(cls, call: BoundsCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
 
-    def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
+    def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None):
         self.min_val = min_val
         self.max_val = max_val
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
         return f"min_val={self.min_val!r}|max_val={self.max_val!r}"
@@ -147,7 +147,7 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
     def entry_for(cls, call: ClampTensorCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.has_min, call.has_max)
 
-    def __init__(self, N_total, dtype, has_min, has_max, config=None, tune=False):
+    def __init__(self, N_total, dtype, has_min, has_max, config=None):
         if not (has_min or has_max):
             raise ValueError("ClampTensorFwdKernel requires has_min or has_max to be True")
         self.has_min = bool(has_min)
@@ -157,7 +157,7 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
             *((("lo", "tile"),) if self.has_min else ()),
             *((("hi", "tile"),) if self.has_max else ()),
         )
-        super().__init__(N_total, dtype, config=config, tune=tune)
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def _builder_fn():

@@ -9,7 +9,7 @@ Edge cases:
 - training=False: identity pass-through
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -35,7 +35,6 @@ class DropoutFwdOp(Op):
     by default) for per-thread random number generation.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"dropout": DropoutKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dropout": DropoutFwdInterface}
 
@@ -46,8 +45,6 @@ class DropoutFwdOp(Op):
         training: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -57,17 +54,14 @@ class DropoutFwdOp(Op):
             training: If False, dropout is disabled (identity pass-through).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
         self.p = p
         self.seed = seed
         self.training = training
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input``."""
         if not self.training or self.p == 0.0:
             return input.clone()
         if self.p == 1.0:
@@ -79,7 +73,3 @@ class DropoutFwdOp(Op):
         )
         kernel = self.kernel_for("dropout", call)
         return kernel(flat).reshape(input.shape)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
-        return self._call_boundary(input)

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -27,13 +27,12 @@ class TopKSelectFwdOp(Op):
       one past the last key, which selects nothing.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"topk_select_kernel": TopKSelectKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "topk_select": TopKSelectFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The scores this call's windows hold, which its flops and score reads follow."""
         from tileops.perf.formulas import topk_select_window_scores
 
@@ -44,8 +43,6 @@ class TopKSelectFwdOp(Op):
         topk: int,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -53,16 +50,11 @@ class TopKSelectFwdOp(Op):
             topk: Manifest ``params.topk``, ``int``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.topk = topk
         self.out_dtype = torch.int32
-        self.tune = tune
 
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
@@ -77,15 +69,6 @@ class TopKSelectFwdOp(Op):
         Returns:
             Selected key positions [batch, seq_len, kv_group, topk], ``int32``.
         """
-        return self._call_boundary(index_score, starts, ends)
-
-    def _eager_forward(
-        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
         index_score = index_score.contiguous()
         starts, ends = starts.contiguous(), ends.contiguous()
@@ -99,5 +82,5 @@ class TopKSelectFwdOp(Op):
             out_dtype=self.out_dtype,
             device=index_score.device,
         )
-        self.kernel = self.kernel_for("topk_select", call)
-        return self.kernel(index_score, starts, ends)
+        kernel = self.kernel_for("topk_select", call)
+        return kernel(index_score, starts, ends)

@@ -1,6 +1,6 @@
 """The top-k logit filter op."""
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -25,8 +25,6 @@ class TopKMaskFwdOp(Op):
     its NaNs.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_k_mask_fwd": TopKMaskFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "top_k_mask_fwd": TopKMaskFwdInterface
@@ -36,20 +34,14 @@ class TopKMaskFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtypes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         """Mask each row of ``logits`` to its ``k`` largest.
@@ -61,10 +53,6 @@ class TopKMaskFwdOp(Op):
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
-        return self._call_boundary(logits, k)
-
-    def _eager_forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         logits = logits.contiguous()
         k = k.contiguous()
         batch, vocab = logits.shape

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -34,8 +34,6 @@ class FFTC2CFwdOp(Op):
     at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
         "fft_c2c_decomposed_kernel": FFTC2CFourStepKernel,
@@ -46,21 +44,14 @@ class FFTC2CFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel mapping for testing
-            tune: Whether to enable autotuning (default: False)
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
@@ -72,14 +63,9 @@ class FFTC2CFwdOp(Op):
             Output tensor of same shape as input with FFT applied along the
             last dimension.
         """
-        return self._call_boundary(input)
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
         n = input.shape[-1]
         if n == 1:
-            self.kernel = None
             return input.clone()
         call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device)
-        self.kernel = self.kernel_for("fft_c2c", call)
-        return self.kernel(input)
+        kernel = self.kernel_for("fft_c2c", call)
+        return kernel(input)

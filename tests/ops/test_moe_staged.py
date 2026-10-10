@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MGroupedGemmCall,
@@ -123,10 +123,15 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     assert dataclasses.replace(gemm, arch=100) == gemm
 
 
+_CANDIDATE_KEY = "grouped_gemm_candidate"
+
+
 class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
-    """A replacement that writes zeros of the GEMM's output shape instead of compiling."""
+    """A registered implementation that writes zeros of the GEMM's output shape instead of
+    compiling, preferred over every in-tree one."""
 
     builds = 0
+    preferred_over = frozenset(MoEGroupedGemmFwdOp.kernel_types)
 
     def __init__(self, call: MGroupedGemmCall) -> None:
         super().__init__()
@@ -138,20 +143,28 @@ class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
         return zeros if out is None else out.copy_(zeros)
 
 
+@pytest.fixture
+def registered_candidate():
+    """``_ExecutableGroupedCandidate`` registered for every grouped GEMM this test builds."""
+    state = registry.snapshot()
+    register_kernel_type("MoEGroupedGemmFwdOp", _CANDIDATE_KEY, _ExecutableGroupedCandidate)
+    yield
+    registry.restore(state)
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="candidate test uses CUDA calls")
-def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
+def test_injected_candidate_uses_common_selection_and_call_spec_cache(registered_candidate) -> None:
     device = torch.device("cuda")
     ends = torch.tensor([1], dtype=torch.int32, device=device)
-    # A shape the in-tree kernel serves: the replacement runs under the key it selects.
+    # A shape the in-tree kernel serves too: the registered candidate is preferred over it.
     a = torch.ones(1, 8, dtype=torch.bfloat16, device=device)
     b = torch.ones(1, 8, 8, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
-    op = MoEGroupedGemmFwdOp(
-        _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN, tune=True
-    )
+    op = MoEGroupedGemmFwdOp(_TIGHT, target=BUILTIN)
+    op.request_tune()
 
     first = op(a, b, ends)
     second = op(a, b, ends)
@@ -170,10 +183,12 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
-    mlp = MoEExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
-    assert mlp.gate_up.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
-    assert mlp.down.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
+def test_expert_mlp_installs_a_registered_implementation_in_both_gemms(
+    registered_candidate,
+) -> None:
+    mlp = MoEExpertMLPFwdOp(_TIGHT)
+    assert mlp.gate_up._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
+    assert mlp.down._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
     assert MoEExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
 
 
@@ -559,4 +574,4 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
     )
     op = MoEGroupedGemmFwdOp(spec, **({"activation": activation} if activation else {}))
     with pytest.raises(ValueError, match=reason):
-        op.select_implementation("grouped_gemm", _grouped_call(**facts))
+        op.key_for("grouped_gemm", _grouped_call(**facts))

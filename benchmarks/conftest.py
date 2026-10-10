@@ -12,7 +12,9 @@ from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 
 # What a row carries besides its measurements.
-_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
+_NOT_A_MEASUREMENT = frozenset(
+    {"tag", "op", "op_module", "ops", "params", "kernel_config", "result"}
+)
 
 
 def pytest_make_parametrize_id(config, val, argname):

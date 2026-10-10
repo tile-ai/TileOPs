@@ -85,9 +85,9 @@ def test_dsa_decode_decode(
         sm_scale=sm_scale,
         dtype=dtype,
     )
-    op = DSADecodeWithKVCacheFwdOp(
-        dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
-    )
+    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -118,7 +118,7 @@ def test_dsa_decode_refuses_what_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
         op(*test.gen_inputs())
     for interface in DSADecodeWithKVCacheFwdOp.interfaces:
-        assert not op.built_kernels(interface)
+        assert not op.built_entries(interface)
 
 
 def _padded_topk_indices(

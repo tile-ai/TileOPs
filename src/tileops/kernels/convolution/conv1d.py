@@ -644,18 +644,16 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return (
+    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if not (
             call.groups == 1
             and call.kernel_l == 1
             and call.stride_l == 1
             and call.pad_left == 0
             and call.pad_right == 0
             and call.dilation_l == 1
-        )
-
-    @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        ):
+            return "serves an ungrouped pointwise convolution: kernel 1, stride 1, no padding or dilation"
         return (
             super().refusal(call)
             or operand_refusal(call.n * call.c_out * call.out_l)
@@ -678,7 +676,6 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -699,7 +696,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -753,11 +750,9 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     _builder = staticmethod(_conv1d_kernel)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups == 1
-
-    @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
     @classmethod
@@ -790,7 +785,6 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         dilation_l: int = 1,
         has_bias: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -822,7 +816,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
             has_bias,
             self.dtype_str,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -889,11 +883,9 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     _builder = staticmethod(_conv1d_unit_stride_kernel)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups == 1 and call.stride_l == 1 and call.kernel_l > 1 and call.c_in >= 16
-
-    @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.stride_l != 1 or call.kernel_l <= 1 or call.c_in < 16:
+            return "serves unit stride, a kernel wider than 1 and at least 16 input channels"
         return super().refusal(call) or operand_refusal(call.n * call.c_out * call.out_l)
 
     @property
@@ -944,16 +936,14 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
     block_m_candidates: tuple[int, ...] = (16, 32, 64, 128)
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups > 1
-
-    @classmethod
     def _grid_z(cls, call: Conv1dCall) -> int:
         """Blocks the program launches along grid z: one per image and group."""
         return call.n * call.groups
 
     @classmethod
     def refusal(cls, call: Conv1dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
     @classmethod
@@ -992,7 +982,6 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -1014,7 +1003,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         if self.groups <= 1:
             raise ValueError(f"{type(self).__name__} requires groups > 1")
         self._build_program()
-        self.init_config(config, tune)
+        self.init_config(config)
         self._check_config()
 
     def _build_program(self) -> None:
@@ -1093,8 +1082,10 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
     preferred_over = frozenset({"group_conv1d"})
 
     @classmethod
-    def applies(cls, call: Conv1dCall) -> bool:
-        return call.groups > 1 and call.c_in_g == 1 and call.c_out_g == 1
+    def refusal(cls, call) -> "str | None":
+        if call.c_in_g != 1 or call.c_out_g != 1:
+            return "serves one input and one output channel per group"
+        return super().refusal(call)
 
     @classmethod
     def _grid_z(cls, call: Conv1dCall) -> int:

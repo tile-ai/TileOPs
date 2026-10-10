@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -34,8 +34,6 @@ class GroupedGemmFwdOp(Op):
     ``batch_offsets`` is its exclusive prefix sum.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     # The SM90 template serves every layout whose extents TMA can address; the
     # general kernel takes what it refuses.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -52,8 +50,6 @@ class GroupedGemmFwdOp(Op):
         transpose_b: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -63,14 +59,10 @@ class GroupedGemmFwdOp(Op):
             transpose_b: Whether the per-group operand is stored transposed. Default ``True`` (NT).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -102,19 +94,6 @@ class GroupedGemmFwdOp(Op):
             d = op(a, b, batch_sizes, batch_offsets)
             ```
         """
-        return self._call_boundary(a, b, batch_sizes, batch_offsets)
-
-    def _eager_forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        batch_sizes: torch.Tensor,
-        batch_offsets: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = tuple(t.contiguous() for t in (a, b, batch_sizes, batch_offsets))
         batch_sum, width = a.shape
         if self.transpose_a:
@@ -133,6 +112,6 @@ class GroupedGemmFwdOp(Op):
         )
         return self.kernel_for("grouped_gemm", call)(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.ix["T"])
+        return tensor_core_roof(self.last_call.indices["T"])

@@ -338,11 +338,13 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
     _SUPPORTED_LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
-    def applies(cls, call: PrePermuteCall) -> bool:
-        layout = call.layout
-        return getattr(
-            layout, "selection_key", None
-        ) in cls._SUPPORTED_LAYOUT_KEYS and call.input_dtype in (torch.bfloat16, torch.float16)
+    def refusal(cls, call: PrePermuteCall) -> "str | None":
+        key = getattr(call.layout, "selection_key", None)
+        if key not in cls._SUPPORTED_LAYOUT_KEYS:
+            return f"serves layouts {sorted(cls._SUPPORTED_LAYOUT_KEYS)}, not {key}"
+        if call.input_dtype not in (torch.bfloat16, torch.float16):
+            return f"requires float16 or bfloat16, got {call.input_dtype}"
+        return super().refusal(call)
 
     def __init__(self, call: PrePermuteCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)

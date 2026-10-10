@@ -16,7 +16,7 @@ Input tensors accept shape ``(N, C, *spatial)``.
 """
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -63,7 +63,6 @@ class InstanceNormFwdOp(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "instance_norm": InstanceNormKernel,
         "instance_norm_no_affine": InstanceNormNoAffineKernel,
@@ -84,8 +83,6 @@ class InstanceNormFwdOp(Op):
         eps: float = 1e-5,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -96,16 +93,11 @@ class InstanceNormFwdOp(Op):
             eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: If ``True``, autotune tile configurations.
         """
         self.use_input_stats = use_input_stats
         self.momentum = momentum
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -128,20 +120,6 @@ class InstanceNormFwdOp(Op):
 
         Returns:
             Normalized tensor of the same shape as *x*.
-        """
-        return self._call_boundary(x, running_mean, running_var, weight, bias)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernels and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         batch, channels = x.shape[0], x.shape[1]
         spatial = math.prod(x.shape[2:])
@@ -174,7 +152,6 @@ class InstanceNormFwdOp(Op):
             # buffer is served through a contiguous copy that is written back.
             stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
             kernel = self.kernel_for(interface, call)
-            self.kernel = kernel
             y = kernel(view, *stats, weight, bias)
             if self.use_input_stats:
                 for caller, used in zip((running_mean, running_var), stats, strict=True):
@@ -188,5 +165,4 @@ class InstanceNormFwdOp(Op):
         # kernel applies the per-channel affine itself.
         rows = x.view(batch * channels, spatial)
         kernel = self.kernel_for("instance_norm", call)
-        self.kernel = kernel
         return kernel(rows, running_mean, running_var, weight, bias).view(x.shape)

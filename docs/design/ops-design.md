@@ -14,7 +14,7 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`):** shared host-side plumbing (dispatch, get-or-build kernel caching, kernel enumeration, autotune) plus the methods generated from the manifest signature: the call checks, `_infer_output_shapes`, `_validate_dtypes` and `eval_roofline`.
+- **L1 (`Op`):** shared host-side plumbing (construction through `Op.__init__`, the steps of a call, target selection, get-or-build entry caching, kernel enumeration, tuning requests) plus the methods generated from the manifest signature: the construction and call checks, `_infer_output_shapes`, `eval_roofline` and the compile boundary.
 - **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring](#family-base-refactoring).
 - **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape); see [Family-Base Refactoring](#family-base-refactoring) for when a family graduates to L2.
 
@@ -28,29 +28,29 @@ Op                          ← L1: thin base, shared by all ops
 
 **An output dtype is a dtype expression of the signature** — a `DType` index solved from the inputs, a constant, a dtype primitive, or a dtype parameter the caller passes at construction ([manifest.md](manifest.md#dtypes)).
 
-The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
+The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `Op.__init__` installs the implementations: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
 
-The generated `_validate_dtypes` is the only dtype gate, and it runs on every `forward()` call: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
+The generated signature check is the only dtype gate, and it runs on every eager call: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. An op without a compile boundary runs no check while traced (see [Compile Dispatch Boundary](#compile-dispatch-boundary)). Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ### Kernel selection
 
-**Construction reads no device property.** Installing the kernel map resolves classes only; a device that cannot run the op is refused when a kernel is first selected, built or called. Why: the tensors arrive later, perhaps on a device the process has not touched.
+**Construction reads no device property.** Installing the kernel types resolves classes only; a device that cannot run the op is refused when a kernel is first selected, built or called. Why: the tensors arrive later, perhaps on a device the process has not touched.
 
 **A kernel interface is a place an op calls a kernel.** Its class publishes the call contract: the call spec, the tensors handed, what returns, and what `entry_for(call)` owes. An op opens one only where semantics or that contract changes. Why: a backend implements an interface from the contract alone.
 
 **An implementation is a kernel class that inherits an interface, registered under a key.** It is one complete algorithm; tile sizes, split counts and fusion among fixed stages are its plan. Why: it is the unit a backend replaces and selection chooses.
 
-**A call spec holds the immutable facts of one call.** Device facts derive from its device on a miss. Why: equal call specs denote one call, so one resolved entry serves every recurrence.
+**A call spec holds the immutable facts of one call.** Device facts derive from its device on a miss. A construction parameter that decides which implementation serves the call travels in the call spec, and every op installs all of its `kernel_types`. Why: equal call specs denote one call, so one resolved entry serves every recurrence, and `refusal` is the one place that selects a key.
 
 **Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 
-**Applicability states the calls an implementation serves, positively.** An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
+**`refusal(call)` states the calls an implementation serves.** It returns `None` for a call the implementation serves and names the limit it hits otherwise; an override that narrows a base class ends with `super().refusal(call)`. An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
 
-**Precedence picks among the available implementations that apply.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
+**Precedence picks among the available implementations that serve the call.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
 
 **An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Tuning acts on the entry. Why: a hit costs one lookup.
 
-**Adding a kernel takes two hooks.** Register the implementation, then state `applies`, adding `preferred_over` only where it overlaps another non-general implementation. Undeclared, an implementation is available on the CUDA devices of every architecture, applies to every call and has no precedence. Why: a single-implementation op only inherits its interface.
+**Adding a kernel takes two hooks.** Register the implementation, then state `refusal`, adding `preferred_over` only where it overlaps another non-general implementation. Undeclared, an implementation is available on the CUDA devices of every architecture, serves every call and has no precedence. Why: a single-implementation op only inherits its interface.
 
 Choosing the interface sits above selection, dtype specialization beside it. See [S13](op-slot-rules.md#slot-s13).
 
@@ -58,7 +58,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**`kernel_map=` replaces what runs under a key, not the key's rule.** The key keeps its registered implementation's applicability and precedence, and is available wherever either class runs; the replacement, like every implementation, inherits the key's interface and is built through its own `entry_for`; a selected key whose replacement cannot serve the call is an error, never a fallback. Why: what selects a key stays declared in one place, and changing which calls a kernel serves is registration.
+**A backend adds an implementation under a new key.** `register_kernel_type(op, key, kernel_type)` adds it beside the in-tree `kernel_types`, under a key the op does not already have; every instance constructed afterwards installs it under each kernel interface it inherits, and selects it by the same `refusal`, `general` and `preferred_over`. A call it does not serve stays with the in-tree implementations. Why: each key has one implementation, so what selects a key is declared in one place.
 
 **The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
@@ -70,7 +70,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
+L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. `forward` holds what `kernel_for` returned in a local and asks again on every call; a hit is one lookup.
 
 The identity is opaque to L1 and must carry every input that can change what gets built. The selected implementation names those axes in its own `entry_for`, because only it knows what its constructor reads.
 
@@ -81,20 +81,24 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 **Sub-ops follow the rule for kernels.** A sub-op's constructor arguments may come from the call, so an instance built at construction cannot show what a composite holds.
 
 - A composite declares the sub-op classes it may hold in `delegate_types`: its composition is a fact of the class, checkable before any call.
-- It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's execution policy.
-- `kernel_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `autotune()`.
+- It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's `target`.
+- One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
+- A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
+- `held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
-`delegate_for` is eager, like `kernel_for`: a sub-op that depends on the call is built in `_eager_forward`, never on a traced path.
+`delegate_for` is eager, like `kernel_for`: a traced `forward` reaches no miss.
 
-`built_kernels(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `autotune()` and `run_config()`, act on the TileOPs `Kernel` instances the entries hold. A target's builder is not passed `tune`, so a tuning request that cannot reach it warns instead of being dropped.
+`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `request_tune()` and `kernel_config()`, act on the TileOPs `Kernel` instances the entries hold.
+
+`request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. A target's builder is not passed a tuning request, so an op a target serves warns instead of dropping it.
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. The call checks, `_infer_output_shapes`, `_validate_dtypes` and `eval_roofline` are generated from the entry and are not scaffolded. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`op-slot-rules.md`](op-slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. The construction and call checks, `_infer_output_shapes`, `eval_roofline` and the compile boundary are generated from the entry and are not scaffolded. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`op-slot-rules.md`](op-slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
-**Input.** The Kernel classes the op dispatches to, and the family's kernel interfaces. The kernel map is owned by the code, not the manifest.
+**Input.** The Kernel classes the op dispatches to, and the family's kernel interfaces. `kernel_types` is owned by the code, not the manifest.
 
 **Output.**
 
@@ -105,7 +109,7 @@ Provides:
   - ExampleCumsumFwdOp: y = cumsum(x, dim=-1)
 """
 
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -157,24 +161,18 @@ def __init__(
     dim: int = -1,
     *,
     target: Target = None,
-    kernel_map: Optional[Dict[str, Kernel]] = None,
-    tune: bool = False,
 ):
     """Build the op.
 
     Args:
         dim: Reduction dimension (default -1).
         target: Backend target to serve this op, or None to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
     self.dim = dim
-    self.target = target
-    self.tune = tune
-    self.dispatch_kernel(kernel_map)
+    super().__init__(target=target)
 ```
 
-**Validation.** Every `__init__` kwarg has an `Args:` entry in its docstring; no extras. `__init__` matches `signature.params` item by item ([manifest.md](manifest.md#parameters)), followed by the table-7 execution-policy parameters it takes. `dtype` is not a kwarg — it is read from the input in `forward()`. A param declaring `kw_only: true` goes after `*`.
+**Validation.** Every `__init__` kwarg has an `Args:` entry in its docstring; no extras. `__init__` matches `signature.params` item by item ([manifest.md](manifest.md#parameters)), followed by the table-7 execution-policy parameters it takes. `dtype` is not a kwarg — it is read from the input in `forward()`. A param declaring `kw_only: true` goes after `*`. `super().__init__(target=target)` runs once every manifest parameter is assigned, because it checks them; derived attributes and sub-ops are built after it.
 
 **Reference.** [Slot S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
@@ -213,13 +211,13 @@ def __init__(
 
 **Input.** The whole entry.
 
-**Output.** Nothing to write. `_infer_output_shapes`, `_validate_dtypes`, the call checks around `forward` and `eval_roofline` are generated from the signature and the `roofline` field; see [manifest.md § Call Semantics](manifest.md#call-semantics) and [roofline.md §4.4](roofline.md#44-op-codegen).
+**Output.** Nothing to write. `_infer_output_shapes`, the signature check, the call checks around `forward`, `eval_roofline` and the compile boundary are generated from the signature and the `roofline` field; see [manifest.md § Call Semantics](manifest.md#call-semantics) and [roofline.md §4.4](roofline.md#44-op-codegen).
 
 **Validation.** `python scripts/validate_manifest.py`.
 
 **Reference.** [Slot S17](op-slot-rules.md#slot-s17), [S18](op-slot-rules.md#slot-s18), [S19](op-slot-rules.md#slot-s19).
 
-**Compute roof.** `Op.compute_roof()` names the GPU-profile unit that prices the FLOPs `eval_roofline()` counts; the base default `"cuda_core.fp32"` covers CUDA-core fp32 arithmetic. An op whose FLOPs are matmul contractions overrides it — normally `tensor_core_roof` of the contraction's input dtype read from `self.last_call`, branching on instance state (a backend switch) where the contraction dtype differs from the input dtype. Contract and rationale: [`roofline.md §1.4`](roofline.md#14-compute-roof).
+**Roof key.** `Op.roof_key()` names the GPU-profile unit that prices the FLOPs `eval_roofline()` counts; the base default `"cuda_core.fp32"` covers CUDA-core fp32 arithmetic. An op whose FLOPs are matmul contractions overrides it — normally `tensor_core_roof` of the contraction's input dtype read from `self.last_call`, branching on instance state (a backend switch) where the contraction dtype differs from the input dtype. Contract and rationale: [`roofline.md §1.4`](roofline.md#14-compute-roof).
 
 ### Step 6: Package registration
 
@@ -262,7 +260,7 @@ This playbook emits exactly the 16 slots above. The following are **not** produc
 - **Family-specific protocol variables and hooks.** `_op_kind`, and the hooks of [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix) (reduction). Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
-- **`fullgraph` compile registration.** Declaring a compile boundary is the class's claim that it supports `fullgraph=True`; its cold compile test, registered in `tests/compile_contract.py`, is the evidence, and the registered set equals the implemented classes declaring a boundary.
+- **`fullgraph` compile registration.** An op whose entry has a call-time tensor input and no composition has a compile boundary and must pass a cold `fullgraph=True` compile; its cold compile test, registered in `tests/compile_contract.py`, is the evidence, and the registered set equals the implemented entries that have a boundary.
 - **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
@@ -277,13 +275,13 @@ Contract for every op registered for `fullgraph=True` compilation while resolvin
 
 **Decisions.**
 
-- A class declaring `compile_boundary = True` claims `fullgraph=True` support. The manifest records nothing; the registered compile tests are the evidence, and their set equals the implemented classes declaring a boundary.
+- The manifest entry decides the boundary: a class whose entry has a call-time tensor input and no composition gets its operators when the class is defined, and its `compile_op_names` is non-empty exactly then, which the validator checks. Every such implemented op must pass a cold `fullgraph=True` compile; the registered compile tests are the evidence, and their set equals the implemented entries that have a boundary.
 - The operators are generated from the manifest entry, one `torch.library.custom_op` per effect branch ([manifest.md § Effects](manifest.md#effects)), so no op writes registration code and a schema cannot drift from its entry. The operator is what makes the graph node this op's, and it stays the same node when a target serves the op.
-- `forward` only chooses which operator to call. The operator's eager body runs the generated checks once, then the in-tree kernels (`_eager_forward`) or the target; its fake comes from the signature.
+- `forward` is the op's computation for every op, and a subclass writes nothing else to call it. `__call__` enters the generated `_call_boundary`, which chooses which operator to call; the operator's eager body runs the generated checks once, then `forward` on the in-tree kernels or the target's kernel. Its fake comes from the signature.
 - An op's operators write exactly the inputs the manifest marks `mutated`; the validator holds them equal.
 - The operator's name is derived from the family and the class; an op does not choose it.
 - The boundary covers forward-only compilation. No operator carries an autograd formula, so a backward op's operator refuses an input that tracks history; a caller that needs to backpropagate wires its own `torch.autograd.Function` around the forward and backward ops.
-- An op with no tensor input has no node to own and registers no boundary. An op that builds no kernel in `forward` does not need the boundary; the invariant still applies to it.
+- An op with no call-time tensor input has no node to own, and a composite's sub-ops own theirs; neither has a boundary. Eager, `__call__` runs the same call steps around `forward` for them; traced, it runs no check and calls the serving target's kernel or `forward`. The invariant still applies to them.
 
 ## Family-Base Refactoring
 
@@ -294,7 +292,7 @@ The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sh
 - [Slot Rules](op-slot-rules.md) — full Rule / Derivation / Example / Common mistakes per slot
 - [Codegen Details](ops-design-reference.md#codegen) — calling conventions, consistency enforcement
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — `Op` and `Kernel` base class attributes
-- [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_map` / builder function rules
+- [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_types` key / builder function rules
 - [Parameter Design](ops-design-reference.md#parameter-design) — construction time versus call time
 - [manifest.md](manifest.md) — manifest entry structure, signature, workloads, call semantics
 - [roofline.md](roofline.md) — roofline formula syntax, codegen, evaluator surface boundary

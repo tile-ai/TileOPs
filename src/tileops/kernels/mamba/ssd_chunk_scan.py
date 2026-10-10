@@ -516,7 +516,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         n_groups: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -540,7 +539,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             # layout TileLang infers only for the SM90 fragment.
             diagonal_microtile_size=32 if get_sm_version() == 90 else 0,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

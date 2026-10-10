@@ -46,8 +46,6 @@ class MeanPoolingFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mean_pooling_fwd_kernel": MeanPoolingFwdKernel
     }
@@ -62,8 +60,6 @@ class MeanPoolingFwdOp(Op):
         *,
         validate_inputs: bool = False,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -75,18 +71,14 @@ class MeanPoolingFwdOp(Op):
                 Disable during CUDA Graph capture; shapes and dtypes are always checked.
             target: Backend target to serve this op, or ``None`` to decide from the input
                 device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.validate_inputs = validate_inputs
         self.chunk_size = chunk_size
         self.accum_dtype = accum_dtype
-        self.target = target
-        self.tune = tune
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
         self._placeholders: Dict[tuple, torch.Tensor] = {}
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _placeholder(self, shape: tuple[int, ...], device: torch.device) -> torch.Tensor:
         key = (device, shape)
@@ -120,16 +112,6 @@ class MeanPoolingFwdOp(Op):
             ValueError: With ``validate_inputs=True``, ``indices`` disagrees with
                 ``offsets`` or ``offsets`` does not partition the sequence axis.
         """
-        return self._call_boundary(x, offsets, indices)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator."""
-        # Heads and dim are read as one width.
         x = x.contiguous()
         batch_size, seq_len, heads, dim = x.shape
         ragged = offsets is not None

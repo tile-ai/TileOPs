@@ -499,20 +499,20 @@ class NSACompressedFwdCall(CallWorkload, NSACompressedFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        indices, params = call.indices, call.params
         NSACompressedFwdWorkload.__init__(
             self,
-            ix["N"],
-            ix["T_q"],
-            ix["H"],
-            ix["DK"],
-            ix["DV"],
-            ix["H"] // ix["H_kv"],
+            indices["N"],
+            indices["T_q"],
+            indices["H"],
+            indices["DK"],
+            indices["DV"],
+            indices["H"] // indices["H_kv"],
             params["scale"],
             params["bs"],
-            getattr(torch, ix["T"]),
+            getattr(torch, indices["T"]),
         )
-        self.chunk_num = ix["C"]
+        self.chunk_num = indices["C"]
 
     gen_inputs = CallWorkload.gen_inputs
 
@@ -522,20 +522,20 @@ class NSATopKCall(CallWorkload, NSATopKWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        indices, params = call.indices, call.params
         NSATopKWorkload.__init__(
             self,
-            ix["N"],
-            ix["T_q"],
-            ix["H"],
-            ix["D"],
-            ix["H"] // ix["H_kv"],
+            indices["N"],
+            indices["T_q"],
+            indices["H"],
+            indices["D"],
+            indices["H"] // indices["H_kv"],
             params["scale"],
             params["selected_block_num"],
             params["bs"],
-            getattr(torch, ix["T"]),
+            getattr(torch, indices["T"]),
         )
-        self.chunk_num = ix["C"]
+        self.chunk_num = indices["C"]
 
     gen_inputs = CallWorkload.gen_inputs
 
@@ -545,23 +545,23 @@ class NSAFwdCall(CallWorkload, NSAFwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        indices, params = call.indices, call.params
         NSAFwdWorkload.__init__(
             self,
-            ix["N"],
-            ix["H"],
-            ix["T_q"],
-            ix["D"],
+            indices["N"],
+            indices["H"],
+            indices["T_q"],
+            indices["D"],
             params["is_causal"],
             params["scale"],
             params["block_size"],
-            ix["H"] // ix["H_kv"],
-            ix["SEL"],
-            getattr(torch, ix["T"]),
+            indices["H"] // indices["H_kv"],
+            indices["SEL"],
+            getattr(torch, indices["T"]),
         )
         # The reference scales the selected branch by its gate, which this op does not take.
         self.g_slc = torch.ones(
-            (ix["N"], ix["T_q"], ix["H"]), dtype=self.dtype, device=run_device()
+            (indices["N"], indices["T_q"], indices["H"]), dtype=self.dtype, device=run_device()
         )
 
     gen_inputs = CallWorkload.gen_inputs

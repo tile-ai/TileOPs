@@ -1,4 +1,4 @@
-from typing import Callable, ClassVar, Dict, Mapping, Optional
+from typing import Callable, ClassVar, Mapping, Optional
 
 import torch
 
@@ -44,7 +44,6 @@ class GQAVarlenFwdOp(Op):
     inside CUDA Graph capture.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_varlen": GQAPrefillVarlenFwdKernel,
         "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
@@ -70,8 +69,6 @@ class GQAVarlenFwdOp(Op):
         validate_inputs: bool = False,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Configure packed variable-length GQA semantics.
 
@@ -87,8 +84,6 @@ class GQAVarlenFwdOp(Op):
             rope_layout: ``"neox"`` or ``"interleaved"``.
             validate_inputs: Check cumulative offsets against packed tensors on the CPU.
             target: Backend target, or ``None`` to resolve from the input device.
-            kernel_map: Optional in-tree kernel overrides.
-            tune: Autotune a kernel when it is first built.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
@@ -100,11 +95,9 @@ class GQAVarlenFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.validate_inputs = validate_inputs
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """Varlen attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
@@ -183,24 +176,6 @@ class GQAVarlenFwdOp(Op):
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
-        return self._call_boundary(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale, rope_cos, rope_sin
-        )
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Resolve the implementation and launch it."""
         if self.validate_inputs:
             self._check_offsets(q, k, cu_seqlens_q, cu_seqlens_kv)
         inputs = self._canonicalize_inputs(

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -24,7 +24,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
     and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 
-    compile_boundary = True
     # The WGMMA warp-specialized kernels serve SM90 -- the seesaw kernel value dim 512,
     # the older one the other widths it covers; the architecture-agnostic basic kernel
     # serves everywhere else. Selection reads the device when a call arrives.
@@ -37,7 +36,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
         "dsa_decode": SparseMLADecodeFwdInterface
     }
 
-    def roofline_inputs(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> "dict[str, int]":
         """The keys this call's selection makes it score, which its flops follow, and the
         distinct ``kv`` rows they reach, which its bytes follow."""
         from tileops.perf.formulas import dsa_distinct_kv_rows, dsa_selected_keys
@@ -56,8 +55,6 @@ class DSADecodeWithKVCacheFwdOp(Op):
         is_causal: bool = True,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -70,11 +67,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
                         (True for causal, False for non-causal).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map (Optional[Dict[str, Kernel]], default=None):
-                        Optional mapping for custom kernels.
-            tune (bool, default=False): Whether to enable kernel tuning.
         """
-        self.target = target
         self.dim_tail = dim_tail
         self.stride_kv = stride_kv
         self.sm_scale = sm_scale
@@ -84,8 +77,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
         self.q_start_index_s = q_start_index_s
 
         self._cp0 = cp0
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def _dsa_decode_call(
         self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
@@ -126,19 +118,10 @@ class DSADecodeWithKVCacheFwdOp(Op):
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
-        return self._call_boundary(q, kv, indices)
-
-    def _eager_forward(
-        self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
         inputs = (q, kv, indices)
         kernel = self.kernel_for("dsa_decode", self._dsa_decode_call(q, kv, indices))
         return kernel(*inputs)
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])

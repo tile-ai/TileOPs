@@ -27,7 +27,7 @@ class SumFwdOp:
     def eval_roofline(self):
         return 1.0, 1.0
 
-    def compute_roof(self):
+    def roof_key(self):
         return None
 
 
@@ -249,6 +249,6 @@ def test_a_row_records_the_case_params(timed):
 )
 def test_what_decided_the_bytes_travels_with_the_reading(timed, reader, recorded):
     op = SumFwdOp()
-    op.roofline_inputs = reader
+    op.roofline_data_terms = reader
     results = bench.Runner(op, _case()).compare({})
-    assert results["tileops"].get("roofline_inputs", {}) == recorded
+    assert results["tileops"].get("roofline_data_terms", {}) == recorded

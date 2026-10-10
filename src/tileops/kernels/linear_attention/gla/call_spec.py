@@ -15,8 +15,8 @@ __all__ = [
     "GLACall",
     "GLAFwdInterface",
     "build_entry",
-    "serves_dense",
-    "serves_extents",
+    "dense_refusal",
+    "extents_refusal",
 ]
 
 
@@ -73,19 +73,23 @@ class GLAFwdInterface(KernelInterface):
         """
 
 
-def serves_dense(call: GLACall) -> bool:
-    """Whether *call* is a dense (not packed) call with K = V in {64, 128} in fp16 or bf16."""
-    return not call.varlen and serves_extents(call)
+def dense_refusal(call: GLACall) -> Optional[str]:
+    """Why *call* is not a dense (not packed) call with K = V in {64, 128} in fp16 or bf16."""
+    if call.varlen:
+        return "serves a dense call, not a packed one"
+    return extents_refusal(call)
 
 
-def serves_extents(call: GLACall) -> bool:
-    """Whether the in-tree GLA kernels compile *call*'s head count, widths and dtype."""
-    return (
-        head_count_refusal(call.heads) is None
-        and call.dim_k == call.dim_v
-        and call.dim_k in (64, 128)
-        and call.dtype in (torch.float16, torch.bfloat16)
-    )
+def extents_refusal(call: GLACall) -> Optional[str]:
+    """Why the in-tree GLA kernels do not compile *call*'s head count, widths and dtype."""
+    reason = head_count_refusal(call.heads)
+    if reason is not None:
+        return reason
+    if call.dim_k != call.dim_v or call.dim_k not in (64, 128):
+        return f"requires K = V in (64, 128), got {call.dim_k} and {call.dim_v}"
+    if call.dtype not in (torch.float16, torch.bfloat16):
+        return f"requires float16 or bfloat16, got {call.dtype}"
+    return None
 
 
 def build_entry(cls: type, call: GLACall, **build_arguments: int | bool) -> Entry:

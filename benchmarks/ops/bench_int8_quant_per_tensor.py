@@ -35,7 +35,9 @@ def _vllm_quant(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 @pytest.mark.parametrize("case", bench.cases(INT8QuantPerTensorFwdOp), ids=lambda case: case.id)
 def test_int8_quant_per_tensor_bench(case) -> None:
-    op = INT8QuantPerTensorFwdOp(**case.arguments, tune=_TUNE)
+    op = INT8QuantPerTensorFwdOp(**case.arguments)
+    if _TUNE:
+        op.request_tune()
     bench.Runner(op, case).compare(
         {
             VLLM_TAG: _vllm_quant,

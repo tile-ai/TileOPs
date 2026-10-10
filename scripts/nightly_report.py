@@ -38,7 +38,7 @@ _PERF_KEYS = (
     "tileops_flops",
     "tileops_bytes",
     "tileops_bandwidth_tbs",
-    "tileops_compute_roof",
+    "tileops_roof_key",
     "tileops_uncounted_copy_ms",
     "tileops_timing",
     "tileops_device_busy_p10_ms",
@@ -712,7 +712,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                     "tflops",
                     "flops",
                     "bytes",
-                    "compute_roof",
+                    "roof_key",
                     "device_busy_p10_ms",
                     "device_busy_p90_ms",
                 ):
@@ -994,7 +994,7 @@ def _compute_sol(cfg: dict, profile: dict) -> dict | None:
     flops = cfg.get("tileops_flops")
     nbytes = cfg.get("tileops_bytes")
     busy = cfg.get("tileops_device_busy_ms")
-    roof_key = cfg.get("tileops_compute_roof")
+    roof_key = cfg.get("tileops_roof_key")
     if not all(isinstance(v, (int, float)) for v in (flops, nbytes, busy)):
         return None
     if nbytes <= 0 or busy <= 0 or not isinstance(roof_key, str):

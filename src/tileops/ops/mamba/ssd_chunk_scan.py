@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import ClassVar, Mapping
 
 import torch
 
@@ -26,7 +26,6 @@ class SSDChunkScanFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "ssd_chunk_scan_fwd": SSDChunkScanFwdKernel
     }
@@ -38,20 +37,14 @@ class SSDChunkScanFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune the tile config when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -74,21 +67,6 @@ class SSDChunkScanFwdOp(Op):
 
         Returns:
             y: (batch, seqlen, n_heads, d_head) float32
-        """
-        return self._call_boundary(x, cb, dA_cumsum, C, prev_states, dt)
-
-    def _eager_forward(
-        self,
-        x: torch.Tensor,
-        cb: torch.Tensor,
-        dA_cumsum: torch.Tensor,
-        C: torch.Tensor,
-        prev_states: torch.Tensor,
-        dt: torch.Tensor,
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, _seq_len, n_heads, d_head = x.shape
         num_chunks, n_groups, chunk_len = cb.shape[1], cb.shape[2], cb.shape[3]
@@ -114,6 +92,6 @@ class SSDChunkScanFwdOp(Op):
             dt.contiguous(),
         )
 
-    def compute_roof(self) -> str:
+    def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["x"][1])

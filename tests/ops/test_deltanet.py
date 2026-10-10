@@ -82,7 +82,9 @@ def test_deltanet_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetChunkwiseTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = DeltaNetChunkFwdOp(chunk_size=chunk_size, tune=tune)
+    op = DeltaNetChunkFwdOp(chunk_size=chunk_size)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -136,7 +138,7 @@ def test_deltanet_bwd(
     from tileops.ops import DeltaNetChunkFwdOp
 
     fwd_op = DeltaNetChunkFwdOp(chunk_size=BC)
-    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
+    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op(q, k, v, beta)
     do = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
 
     # Reference via autograd
@@ -144,8 +146,10 @@ def test_deltanet_bwd(
     ref_outputs = (ref_dq, ref_dk, ref_dv, ref_dbeta)
 
     # Kernel
-    op = DeltaNetChunkBwdOp(chunk_size=BC, tune=tune)
-    op_outputs = op.forward(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
+    op = DeltaNetChunkBwdOp(chunk_size=BC)
+    if tune:
+        op.request_tune()
+    op_outputs = op(do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
 
     compare_outputs(
         op_outputs,
@@ -352,7 +356,9 @@ def test_deltanet_decode(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = DeltaNetRecurrentFwdOp(tune=tune)
+    op = DeltaNetRecurrentFwdOp()
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -370,7 +376,9 @@ def test_deltanet_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = DeltaNetRecurrentFwdOp(tune=tune)
+    op = DeltaNetRecurrentFwdOp()
+    if tune:
+        op.request_tune()
 
     state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
@@ -401,7 +409,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
-    op = DeltaNetRecurrentFwdOp(tune=False, target=BUILTIN)
+    op = DeltaNetRecurrentFwdOp(target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
     test.check(op, *inputs)
@@ -419,7 +427,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
-    op = DeltaNetRecurrentFwdOp(tune=False, target=BUILTIN)
+    op = DeltaNetRecurrentFwdOp(target=BUILTIN)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)

@@ -17,12 +17,11 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.call_spec import head_count_refusal
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
     build_entry,
-    serves_dense,
+    dense_refusal,
 )
 from tileops.utils import WARP_LANES
 
@@ -140,11 +139,12 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        return head_count_refusal(call.heads) or super().refusal(call)
-
-    @classmethod
-    def applies(cls, call: GLACall) -> bool:
-        return serves_dense(call) and call.seq_len == 1
+        reason = dense_refusal(call)
+        if reason is not None:
+            return reason
+        if call.seq_len != 1:
+            return f"decodes one token, got {call.seq_len}"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GLACall) -> Entry:

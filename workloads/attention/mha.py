@@ -114,17 +114,17 @@ class MHADecodePagedCall(CallWorkload, MHADecodePagedWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix, params = call.ix, call.params
+        indices, params = call.indices, call.params
         MHADecodePagedWorkload.__init__(
             self,
-            ix["B"],
-            ix["H"],
-            ix["S_q"],
-            ix["N_kv"],
-            ix["D"],
+            indices["B"],
+            indices["H"],
+            indices["S_q"],
+            indices["N_kv"],
+            indices["D"],
             params["page_size"],
             params["is_causal"],
-            getattr(torch, ix["T"]),
+            getattr(torch, indices["T"]),
         )
 
     gen_inputs = CallWorkload.gen_inputs

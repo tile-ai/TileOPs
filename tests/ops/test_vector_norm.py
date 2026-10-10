@@ -115,7 +115,10 @@ def _make_op(
     from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
     order = {"l1": 1, "l2": 2, "inf": inf}[op_kind]
-    return VectorNormFwdOp(order, dim=dim, keepdim=keepdim, tune=tune, target=target)
+    op = VectorNormFwdOp(order, dim=dim, keepdim=keepdim, target=target)
+    if tune:
+        op.request_tune()
+    return op
 
 
 @VectorNormBasicFixture
@@ -486,14 +489,15 @@ def test_empty_dim_full_reduction_3d_dtypes(
 
 @pytest.mark.smoke
 def test_vector_norm_tiled_autotune() -> None:
-    """``tune=True`` must build and time every tiled candidate.
+    """``request_tune()`` must build and time every tiled candidate.
 
     N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
     fall back on an exact divisor, which hides a mis-derived tile_n.
     """
     m, n, dtype = 4, 39999, torch.float16
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2", tune=True)
+    op = _make_op("l2")
+    op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

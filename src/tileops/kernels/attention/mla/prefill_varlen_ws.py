@@ -453,10 +453,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
     _MAX_BATCH: int = 256
 
     @classmethod
-    def applies(cls, call: MLAVarlenCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dtype not in ATTENTION_DTYPES:
@@ -496,7 +492,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
         dtype: torch.dtype,
         sm_scale: Optional[float] = None,
         config: Optional[dict] = None,
-        tune: bool = False,
         *,
         device_index: Optional[int] = None,
     ) -> None:
@@ -512,7 +507,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             dtype: Input and output dtype.
             sm_scale: Score scale, or ``None`` for ``(dim_nope + dim_pe) ** -0.5``.
             config: Unused; this kernel's geometry is fixed by its class constants.
-            tune: Unused; there is nothing to search.
             device_index: CUDA device the program is built for.
         """
         super().__init__(device_index=device_index)
@@ -540,7 +534,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             self._Q_SLOTS,
             get_sm_count(device_index),
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

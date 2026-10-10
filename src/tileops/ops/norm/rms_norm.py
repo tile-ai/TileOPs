@@ -1,7 +1,7 @@
 """Root Mean Square (RMS) norm operator."""
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional, Sequence
+from typing import ClassVar, Mapping, Optional, Sequence
 
 import torch
 
@@ -34,7 +34,6 @@ class RMSNormFwdOp(Op):
         ```
     """
 
-    compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "rms_norm": RMSNormKernel,
         "rms_norm_streaming": RMSNormStreamingKernel,
@@ -48,8 +47,6 @@ class RMSNormFwdOp(Op):
         eps: Optional[float] = None,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -59,14 +56,10 @@ class RMSNormFwdOp(Op):
                 float32, the dtype the reduction accumulates in, as torch does.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune (default ``False``).
         """
         self.normalized_shape = normalized_shape
         self.eps = eps
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Apply RMS normalization over the trailing ``normalized_shape``.
@@ -77,15 +70,6 @@ class RMSNormFwdOp(Op):
 
         Returns:
             Normalized tensor of the same shape as *x*.
-        """
-        return self._call_boundary(x, weight)
-
-    def _eager_forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()

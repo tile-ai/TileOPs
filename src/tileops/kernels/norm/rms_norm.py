@@ -159,7 +159,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ):
         """Build for a hidden size and dtype.
 
@@ -174,8 +173,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         self.N_padded = (
             1 << (N - 1).bit_length() if N <= self._SHARED_ROW_MAX else align_up(N, ALIGNMENT)
         )
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

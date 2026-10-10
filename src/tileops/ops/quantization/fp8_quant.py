@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -26,8 +26,6 @@ class FP8QuantFwdOp(Op):
     the clamp carry the non-finite value depends on the kernel serving the call.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fp8_quant": FP8QuantFwdInterface}
 
@@ -35,21 +33,14 @@ class FP8QuantFwdOp(Op):
         self,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
+        super().__init__(target=target)
 
     def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize ``input_tensor`` row by row.
@@ -62,10 +53,6 @@ class FP8QuantFwdOp(Op):
             ``scale_tensor`` $[B \\times S \\times G]$ in ``float32`` and ``output_tensor``
             $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn``.
         """
-        return self._call_boundary(input_tensor)
-
-    def _eager_forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         input_tensor = input_tensor.contiguous()
         batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
         call = FP8QuantCall(
@@ -76,5 +63,5 @@ class FP8QuantFwdOp(Op):
             dtype=input_tensor.dtype,
             device=input_tensor.device,
         )
-        self.kernel = self.kernel_for("fp8_quant", call)
-        return self.kernel(input_tensor)
+        kernel = self.kernel_for("fp8_quant", call)
+        return kernel(input_tensor)

@@ -344,7 +344,6 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     Args:
         call: The call's shape, dtype and device facts.
         config: Optional dict with ``reg_tiles``, ``smem_tiles`` and ``pace``.
-        tune: Whether to autotune.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -383,9 +382,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         return None
 
-    def __init__(
-        self, call: SamplingCall, config: Optional[dict] = None, tune: bool = False
-    ) -> None:
+    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
@@ -417,7 +414,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             self._parts,
             self._passes,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

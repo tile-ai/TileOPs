@@ -375,7 +375,6 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -391,7 +390,7 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

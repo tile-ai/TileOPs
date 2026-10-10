@@ -164,7 +164,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs = [90]
-    preferred_over = frozenset({"rms_norm", "rms_norm_streaming"})
+    preferred_over = frozenset({"rms_norm_streaming"})
 
     _THREADS = 1024
 
@@ -199,8 +199,10 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
         return None
 
     @classmethod
-    def applies(cls, call: LayerNormCall) -> bool:
-        return cls._plan(call.n, call.dtype, call.smem_budget) is not None
+    def refusal(cls, call: LayerNormCall) -> "str | None":
+        if cls._plan(call.n, call.dtype, call.smem_budget) is None:
+            return f"a row of {call.n} {call.dtype} elements does not fit on chip"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

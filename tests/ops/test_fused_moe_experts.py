@@ -143,7 +143,7 @@ class TestFusedMoEExpertsFwdOp:
         active = 3  # experts 0, 3 and 7
         expected = active * 3 * F * H * elem + 2 * T * H * elem + T * K * (4 + 4)
         assert experts.eval_roofline()[1] == expected
-        assert experts.roofline_inputs() == {"active_experts": active}
+        assert experts.roofline_data_terms() == {"active_experts": active}
 
     @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
@@ -226,9 +226,6 @@ class TestFusedMoEActivationInjection:
                 pass
 
             def _infer_output_shapes(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def _validate_dtypes(self, *args, **kwargs):
                 raise NotImplementedError
 
             def eval_roofline(self):

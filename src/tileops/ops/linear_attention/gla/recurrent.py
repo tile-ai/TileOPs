@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -29,7 +29,6 @@ class GLARecurrentFwdOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gla_decode": GLADecodeKernel,
         "gla_decode_fp32": GLADecodeFP32Kernel,
@@ -43,8 +42,6 @@ class GLARecurrentFwdOp(Op):
         scale: float = -1.0,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -52,13 +49,9 @@ class GLARecurrentFwdOp(Op):
             scale: Query scale; a non-positive value means ``DK ** -0.5``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.scale = scale
-        self.tune = tune
-        self.target = target
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -79,20 +72,6 @@ class GLARecurrentFwdOp(Op):
 
         Returns:
             ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
-        """
-        return self._call_boundary(q, k, v, gk, state)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        gk: torch.Tensor,
-        state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         batch, heads, dim_k = q.shape
         call = GLADecodeCall(

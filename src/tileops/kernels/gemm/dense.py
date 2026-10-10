@@ -170,7 +170,6 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
         b_scale_rows: int = 1,
         arch: Optional[int] = None,
@@ -187,7 +186,7 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
         arch = get_sm_version(self.device_index) if arch is None else arch
         self.ws_refusal = self._ws_refusal(m, n, k, dtype, arch)
         self.kernel = self._builder()
-        self.init_config(config, tune)
+        self.init_config(config)
         self._unused_bias: Optional[torch.Tensor] = None
 
     def _builder(self) -> Callable:
@@ -320,8 +319,10 @@ class GemmFP8TensorScaleKernel(_GemmFP8Kernel):
     BLOCK_SCALED = False
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if call.scale_a_shape != (1, 1) or call.scale_b_shape != (1, 1):
+            return "requires one scale per tensor"
+        return super().refusal(call)
 
 
 class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
@@ -335,8 +336,13 @@ class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
     general = True
 
     @classmethod
-    def applies(cls, call: GemmFP8Call) -> bool:
-        return cls.block_scale_grid(call) is not None
+    def refusal(cls, call: GemmFP8Call) -> "str | None":
+        if cls.block_scale_grid(call) is None:
+            return (
+                f"scales of shape {call.scale_a_shape} and {call.scale_b_shape} form no "
+                f"block128 grid"
+            )
+        return super().refusal(call)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2610,7 +2616,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
 
     _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
 
-    def init_config(self, config: Optional[dict] = None, tune: bool = False) -> None:
+    def init_config(self, config: Optional[dict] = None) -> None:
         """Take a structure-flagged explicit config verbatim.
 
         The base merge walks ``default_config``'s keys — right for one schema per
@@ -2626,11 +2632,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             self.config = dict(config)
             print(f"{type(self).__name__} initialized with config: {self.config}")
             return
-        super().init_config(config, tune)
-
-    @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.refusal(call) is None
+        super().init_config(config)
 
     @classmethod
     def refusal(cls, call: GemmCall) -> Optional[str]:
@@ -2647,7 +2649,6 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         trans_a: bool = False,
         trans_b: bool = False,
         device_index: Optional[int] = None,
@@ -2672,7 +2673,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
         )
 
-        self.init_config(config, tune)
+        self.init_config(config)
         if activation != "none":
             split_k = self.config.get("split_k", 1)
             unsupported = any(
@@ -2930,7 +2931,6 @@ class GemvKernel(Kernel, GemmFwdInterface):
         k: Contraction dim.
         dtype: Input/output torch dtype (fp16 / bf16); fp32 accumulation.
         config: Optional explicit config; defaults to :attr:`default_config`.
-        tune: Whether to autotune over :attr:`autotune_configs`.
         device_index: Device whose SM count and name pick the config.
     """
 
@@ -2962,7 +2962,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
     def band_for(cls, call: GemmCall) -> Optional[str]:
         """The band serving *call*, or ``None`` when this class does not serve it.
 
-        Read by :meth:`applies` and by :meth:`entry_for`, so the region is stated once.
+        Read by :meth:`refusal` and by :meth:`entry_for`, so the region is stated once.
         """
         vector = cls._vector_operand(call)
         if vector is not None:
@@ -2974,8 +2974,10 @@ class GemvKernel(Kernel, GemmFwdInterface):
         return "lhs_rows"
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.band_for(call) is not None
+    def refusal(cls, call: GemmCall) -> "str | None":
+        if cls.band_for(call) is None:
+            return "no GEMV band serves this shape"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:
@@ -3003,7 +3005,6 @@ class GemvKernel(Kernel, GemmFwdInterface):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -3017,7 +3018,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
         # What the body produces: the other operand's free dim, one row per row of ``a``.
         rows, self.out_len = (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
         self.kernel = _gemm_small_batch_kernel(rows, self.out_len, k, self.dtype_str)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -3235,10 +3236,6 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
         )
 
     @classmethod
-    def applies(cls, call: GemmCall) -> bool:
-        return cls.refusal(call) is None
-
-    @classmethod
     def refusal(cls, call: GemmCall) -> Optional[str]:
         return cls._narrow_k_row(call.k, call.dtype)
 
@@ -3253,7 +3250,6 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
         k: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
         trans_a: bool = False,
         trans_b: bool = False,
         device_index: Optional[int] = None,
@@ -3268,7 +3264,7 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
 
         self.kernel = _gemm_basic_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

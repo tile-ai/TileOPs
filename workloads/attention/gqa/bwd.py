@@ -141,9 +141,16 @@ class GQABwdCall(CallWorkload, GQABwdWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        ix = call.ix
+        indices = call.indices
         GQABwdWorkload.__init__(
-            self, ix["B"], ix["H"], ix["H_kv"], ix["S"], ix["D"], ix["is_causal"], _dtype(call, "q")
+            self,
+            indices["B"],
+            indices["H"],
+            indices["H_kv"],
+            indices["S"],
+            indices["D"],
+            indices["is_causal"],
+            _dtype(call, "q"),
         )
 
     gen_inputs = GQABwdWorkload.gen_inputs

@@ -220,8 +220,10 @@ class ReduceFoldKernel(
     _UNROLL = 16
 
     @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return call.n * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES == 0
+    def refusal(cls, call: ReduceCall) -> "str | None":
+        if call.n * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES:
+            return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
+        return super().refusal(call)
 
     def __init__(self, call: ReduceCall, config: Optional[dict] = None):
         super().__init__(call)
@@ -322,8 +324,10 @@ class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface
     preferred_over = frozenset({"reduce_fold"})
 
     @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return 0 < len(call.axes) < len(call.shape) and call.axes == tuple(range(len(call.axes)))
+    def refusal(cls, call: ReduceCall) -> "str | None":
+        if not 0 < len(call.axes) < len(call.shape) or call.axes != tuple(range(len(call.axes))):
+            return "serves a reduction over leading axes that keeps at least one"
+        return super().refusal(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
@@ -351,8 +355,10 @@ class ReduceEdgeKernel(ReduceKernelBase, ReduceFwdInterface):
     preferred_over = frozenset({"reduce_fold"})
 
     @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
-        return cls.reduces_edge_axes(call)
+    def refusal(cls, call: ReduceCall) -> "str | None":
+        if not cls.reduces_edge_axes(call):
+            return "serves a reduced prefix and suffix around kept axes"
+        return super().refusal(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
@@ -392,9 +398,13 @@ class WelfordEdgeKernel(ReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterf
     """
 
     @classmethod
-    def applies(cls, call: ReduceCall) -> bool:
+    def refusal(cls, call: ReduceCall) -> "str | None":
+        if not cls.reduces_edge_axes(call):
+            return "serves a reduced prefix and suffix around kept axes"
         # The merge folds counts in fp32, whose weights drift past its integer range.
-        return cls.reduces_edge_axes(call) and call.n <= FP32_EXACT_INT_LIMIT
+        if call.n > FP32_EXACT_INT_LIMIT:
+            return f"folds counts in float32, exact up to {FP32_EXACT_INT_LIMIT}"
+        return super().refusal(call)
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)

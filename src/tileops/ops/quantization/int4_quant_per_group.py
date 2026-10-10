@@ -1,6 +1,6 @@
 """Per-group asymmetric INT4 quantization operator."""
 
-from typing import ClassVar, Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -31,8 +31,6 @@ class INT4QuantPerGroupFwdOp(Op):
     of 128 up to 65536, with ``N * K <= 2**31 - 1``. Nonfinite groups are unspecified.
     """
 
-    compile_boundary: ClassVar[bool] = True
-
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int4_quant_per_group_fwd": INT4QuantPerGroupFwdKernel,
         "int4_quant_per_group_row_fwd": INT4QuantPerGroupRowFwdKernel,
@@ -46,8 +44,6 @@ class INT4QuantPerGroupFwdOp(Op):
         group_size: int = 128,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from each call.
 
@@ -55,13 +51,9 @@ class INT4QuantPerGroupFwdOp(Op):
             group_size: Elements per group along ``K`` (default 128).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dictionary.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.group_size = group_size
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantize and pack the groups of ``w``.
@@ -73,10 +65,6 @@ class INT4QuantPerGroupFwdOp(Op):
             ``packed_weight`` $[N \\times K / 2]$ in ``int8`` and ``params``
                 $[(N K / group\\_size) \\times 2]$ in ``float32``.
         """
-        return self._call_boundary(w)
-
-    def _eager_forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator."""
         w = w.contiguous()
         call = QuantizeCall(
             device=w.device,

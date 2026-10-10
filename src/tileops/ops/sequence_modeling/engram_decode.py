@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Mapping, Optional
+from typing import ClassVar, List, Mapping
 
 import torch
 
@@ -25,7 +25,6 @@ class EngramDecodeFwdOp(Op):
 
     """
 
-    compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "engram_decode": EngramDecodeFwdInterface
@@ -42,8 +41,6 @@ class EngramDecodeFwdOp(Op):
         eps: float = 1e-6,
         *,
         target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -57,10 +54,7 @@ class EngramDecodeFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.batch = batch
         self.d_mem = d_mem
         self.d = d
@@ -68,8 +62,7 @@ class EngramDecodeFwdOp(Op):
         self.conv_kernel_size = conv_kernel_size
         self.dilation = dilation
         self.eps = eps
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
+        super().__init__(target=target)
 
     def forward(
         self,
@@ -98,23 +91,6 @@ class EngramDecodeFwdOp(Op):
             [y_t, new_conv_state]:
                 y_t:            (B, d) — output to add as residual.
                 new_conv_state: (B, max_conv_len, d) — updated state for next step.
-        """
-        return self._call_boundary(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
-
-    def _eager_forward(
-        self,
-        e_t: torch.Tensor,
-        h_t: torch.Tensor,
-        conv_state: torch.Tensor,
-        W_K: torch.Tensor,
-        W_V: torch.Tensor,
-        rms_w_h: torch.Tensor,
-        rms_w_v: torch.Tensor,
-        conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
         """
         inputs = tuple(
             t.contiguous() for t in (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)

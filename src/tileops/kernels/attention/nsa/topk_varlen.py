@@ -574,7 +574,6 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
         config: Optional[dict] = None,
-        tune: bool = False,
     ) -> None:
         super().__init__()
         self.seq_num = seq_num
@@ -590,7 +589,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         self.dtype = dtype
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

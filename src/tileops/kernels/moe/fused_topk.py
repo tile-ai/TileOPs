@@ -329,10 +329,6 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             unbiased sigmoid scores to topk_weights. Requires scoring_func="sigmoid".
         dtype: Input logits dtype; routing arithmetic remains float32.
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
-        tune: Whether to autotune. ``TOKENS_PER_BLOCK`` is pinned to the
-            one-warp-per-token mapping the algorithm relies on, so
-            ``autotune_configs`` is undefined and ``tune=True`` degrades to the
-            default config with a warning from ``Kernel.init_config``.
 
     """
 
@@ -373,7 +369,6 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         with_correction_bias: bool = False,
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
@@ -406,7 +401,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             with_correction_bias,
             renormalize,
         )
-        self.init_config(config, tune)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:

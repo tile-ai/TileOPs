@@ -99,25 +99,19 @@ class Kernel(ABC):
     _tune_requested: bool = False
 
     @classmethod
-    def applies(cls, call: Any) -> bool:
-        """Whether this implementation serves the call *call* describes.
-
-        States the calls it serves positively, never what a sibling serves. Where two
-        non-general implementations both apply, ``preferred_over`` says which one wins.
-        Where it is available is ``devices`` and ``supported_archs``, not this.
-
-        The default serves every call.
-        """
-        return True
-
-    @classmethod
     def refusal(cls, call: Any) -> Optional[str]:
-        """Why this class does not serve *call*, or ``None`` when it does.
+        """Why this implementation does not serve *call*, or ``None`` when it does.
 
-        ``applies`` with a reason. A class that names the limit it refuses overrides this,
-        so a caller told that nothing served the call learns why each class declined.
+        States the calls it serves, never what a sibling serves; every refusal names the
+        limit it hits, so a caller told that nothing served the call learns why each
+        implementation declined. Where two non-general implementations both serve a call,
+        ``preferred_over`` says which one wins. Where it is available is ``devices`` and
+        ``supported_archs``, not this.
+
+        The default serves every call. An override that narrows it ends with
+        ``super().refusal(call)``, so the limits a base class states still apply.
         """
-        return None if cls.applies(call) else "does not serve this call"
+        return None
 
     @classmethod
     def unavailable(cls, call: Any) -> Optional[str]:
@@ -137,9 +131,9 @@ class Kernel(ABC):
     def entry_for(cls, call: Any) -> Entry:
         """How to build this class for *call*, and what makes two builds one entry.
 
-        The identity is the construction arguments other than ``tune``, so two calls
-        that would compile the same kernel share an entry and none reuses one compiled
-        for different arguments. The thunk runs only on a cache miss.
+        The identity is the construction arguments, so two calls that would compile the
+        same kernel share an entry and none reuses one compiled for different arguments.
+        The thunk runs only on a cache miss.
 
         The default is the identity mapping: this class is constructed from the call
         record itself. A class with a narrower constructor overrides it and states
@@ -198,34 +192,17 @@ class Kernel(ABC):
                     "Another target's backend serves other devices."
                 )
 
-    def init_config(self, config: Optional[Dict[str, Any]] = None, tune: bool = False) -> None:
-        if tune and self.autotune_configs is None:
-            import warnings
+    def init_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """Set ``self.config``: *config*'s value for each key it states, the default for the rest.
 
-            warnings.warn(
-                f"{self.__class__.__name__} does not define autotune_configs; "
-                "falling back to the provided config or default_config.",
-                stacklevel=2,
-            )
-            tune = False
-
-        if tune:
-            if config is not None:
-                import warnings
-
-                warnings.warn(
-                    "Both 'config' and 'tune' are set. "
-                    "'config' will be ignored in favor of autotuning.",
-                    stacklevel=2,
-                )
-            self._tune_requested = True
-            self.autotune()
+        Tuning is not a construction step: ``request_tune()`` puts the kernel in tuned mode
+        once it exists.
+        """
+        if config is not None:
+            for k, v in self.default_config.items():
+                self.config[k] = config[k] if config.get(k) is not None else v
         else:
-            if config is not None:
-                for k, v in self.default_config.items():
-                    self.config[k] = config[k] if config.get(k) is not None else v
-            else:
-                self.config = self.default_config
+            self.config = self.default_config
 
         print(f"{self.__class__.__name__} initialized with config: {self.config}")
 

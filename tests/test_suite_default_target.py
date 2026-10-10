@@ -31,7 +31,7 @@ def test_an_installed_backend_does_not_serve_the_suite(request, empty_registry) 
     # The stub's in-tree body returns zeros; the target's kernel is never built.
     x, weight = _inputs()
     assert torch.equal(op(x, weight), torch.zeros_like(x))
-    assert op._settled_target is BUILTIN
+    assert op._serving_target is BUILTIN
     assert recorder.calls == []
 
 

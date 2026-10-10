@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
     AvgPool2dFwdInterface,
@@ -455,11 +455,12 @@ def _run_avg_pool_case(
         "padding": padding,
         "ceil_mode": ceil_mode,
         "count_include_pad": count_include_pad,
-        "tune": tune,
     }
     if ndim > 1:
         op_kwargs["divisor_override"] = divisor_override
     op = _AVG_POOL_OPS[ndim](**op_kwargs)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs(*shape))
 
 
@@ -1112,8 +1113,9 @@ def _run_max_pool_case(
             padding=padding,
             dilation=dilation,
             ceil_mode=ceil_mode,
-            tune=tune,
         )
+        if tune:
+            op.request_tune()
         test.check(op, *test.gen_inputs(*shape))
 
 
@@ -1558,16 +1560,23 @@ class _PassthroughGenericKernel(Kernel, AvgPool2dFwdInterface):
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")
-def test_avg_pool_kernel_map_replaces_what_runs_under_the_key() -> None:
-    """A replacement inheriting the key's interface runs in its place."""
-    op = AvgPool2dFwdOp(
-        kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel}, target=BUILTIN
-    )
+def test_avg_pool_runs_a_registered_implementation_preferred_over_the_general_one() -> None:
+    """An added implementation inheriting the key's interface runs where it is preferred."""
+
+    class _PreferredPassthrough(_PassthroughGenericKernel):
+        preferred_over = frozenset({"avg_pool2d_kernel"})
+
+    state = registry.snapshot()
+    try:
+        register_kernel_type("AvgPool2dFwdOp", "avg_pool2d_passthrough", _PreferredPassthrough)
+        op = AvgPool2dFwdOp(kernel_size=2, target=BUILTIN)
+    finally:
+        registry.restore(state)
 
     # A width no 16-byte load divides, so no implementation preferred over the key serves it.
     op(torch.randn(1, 2, 8, 10, device="cuda", dtype=torch.float16))
 
-    assert isinstance(op.kernel, _PassthroughGenericKernel)
+    assert [type(k) for k in op.iter_kernels()] == [_PreferredPassthrough]
 
 
 class AdaptiveAvgPool2dFixture(FixtureBase):
@@ -1744,7 +1753,9 @@ def test_adaptive_avg_pool2d(
     tune: bool,
 ) -> None:
     test = AdaptiveAvgPool2dTest(n, c_in, h_in, w_in, output_size, dtype)
-    op = AdaptiveAvgPool2dFwdOp(output_size, tune=tune)
+    op = AdaptiveAvgPool2dFwdOp(output_size)
+    if tune:
+        op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
@@ -1764,7 +1775,9 @@ def test_adaptive_max_pool2d(
             n, c_in, h_in, w_in, output_size, dtype, return_indices=return_indices
         )
         op_cls = AdaptiveMaxPool2dIndicesFwdOp if return_indices else AdaptiveMaxPool2dFwdOp
-        op = op_cls(output_size, tune=tune)
+        op = op_cls(output_size)
+        if tune:
+            op.request_tune()
         test.check(op, *test.gen_inputs())
 
 
