@@ -74,6 +74,16 @@ def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.parametrize("n", [16384, 1 << 22])
+def test_fft_c2c_in_99_kb_of_shared_memory(n: int) -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, less than SM80 and SM90 do, so these
+    lengths run on decompositions of their own."""
+    test = FFTTest(n, torch.complex64)
+    test.check(FFTC2CFwdOp(), *test.gen_inputs())
+
+
 @pytest.mark.smoke
 def test_fft_batch_above_grid_y_limit() -> None:
     """The symbolic batch is grid.x, so batch may exceed CUDA grid.y's 65535 limit."""

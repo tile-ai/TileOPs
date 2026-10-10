@@ -231,6 +231,26 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
         GLAChunkBwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
 
 
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, too little for the float32 backward
+    at head dims 128 / 128, so the op refuses it before anything is built."""
+    B, T, H, K, V = 1, 128, 2, 128, 128
+    device = run_device()
+    q, k = (torch.randn(B, T, H, K, device=device) for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device)
+    v, do = (torch.randn(B, T, H, V, device=device) for _ in range(2))
+    h = torch.zeros(B, T // 64 + 1, H, K, V, device=device)
+    dht = torch.zeros(B, H, K, V, device=device)
+    op = GLAChunkBwdOp(chunk_size=64)
+    with pytest.raises(ValueError, match="bytes of shared memory per block"):
+        op(q, k, v, g, h, do, dht)
+    for interface in GLAChunkBwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAFwdWorkload) -> None:
     """Skip when *kernel_cls* declares that it does not serve *test*'s call on the run device."""
     call = GLACall(
@@ -399,6 +419,27 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
             cu_seqlens=cu_seqlens,
         )
         compare_outputs((o, final_state), (ref_o, ref_state), inference_verification(dtype))
+
+
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_packed_varlen_refuses_offsets_99_kb_cannot_hold() -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, and the prefill programs hold every
+    sequence's offset, so 16384 sequences at head dim 128 are refused before anything is built."""
+    sequences, heads, dim = 16384, 2, 128
+    device = run_device()
+    q, k, v = (
+        torch.randn(1, 2 * sequences, heads, dim, device=device, dtype=torch.float16)
+        for _ in range(3)
+    )
+    g = -torch.rand(1, 2 * sequences, heads, dim, device=device, dtype=torch.float16)
+    cu_seqlens = torch.arange(0, 2 * sequences + 1, 2, dtype=torch.int64, device=device)
+    op = GLAFwdOp()
+    with pytest.raises(ValueError, match="shared memory per block for 16384 sequences"):
+        op(q, k, v, g, None, cu_seqlens)
+    for interface in GLAFwdOp.interfaces:
+        assert not op.built_kernels(interface)
 
 
 @pytest.mark.smoke

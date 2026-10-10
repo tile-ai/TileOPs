@@ -107,6 +107,20 @@ def test_dsa_decode_decode_tail_and_dtype(dim_tail, dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_dsa_decode_refuses_what_99_kb_cannot_hold() -> None:
+    """SM89 has no WGMMA and gives a block 99 KB of opt-in shared memory, too little for a
+    head dim 2048 query tile, so the op refuses it before anything is built."""
+    test = DSADecodeTest(1, 16, 1, 2048, 2048, 64, 128, 1, 1, 2048)
+    op = DSADecodeWithKVCacheFwdOp(64, 1, 2048)
+    with pytest.raises(ValueError, match="bytes of shared memory per block"):
+        op(*test.gen_inputs())
+    for interface in DSADecodeWithKVCacheFwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
 def _padded_topk_indices(
     batch: int,
     seq_len: int,

@@ -265,6 +265,56 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
         compare_outputs(out, ref, top_p_mask_verification(logits, p, k=k))
 
 
+@pytest.mark.sm89
+def test_top_k_masks_hold_a_row_in_one_cta():
+    """Thread block clusters start at SM90, so on SM89 one CTA holds qwen3's bfloat16 row."""
+    vocab = 151936
+    k_list = [1, 50, vocab]
+    top_k = TopKMaskWorkload(
+        manifest_call("TopKMaskFwdOp", {"T": "bfloat16"}, V=vocab, k_list=k_list)
+    )
+    logits, k = top_k.gen_inputs()
+    out = TopKMaskFwdOp()(logits, k)
+    compare_outputs(out, top_k.ref_program(logits, k), top_k.verification(logits, k))
+
+    nucleus = TopKTopPMaskWorkload(
+        manifest_call("TopKTopPMaskFwdOp", {"T": "bfloat16"}, V=vocab, k_list=k_list)
+    )
+    logits, k, p = nucleus.gen_inputs()
+    out = TopKTopPMaskFwdOp()(logits, k, p)
+    compare_outputs(out, nucleus.ref_program(logits, k, p), nucleus.verification(logits, k, p))
+
+
+def _wide_row(vocab: int):
+    device = run_device()
+    logits = torch.randn(1, vocab, device=device, dtype=torch.bfloat16)
+    return logits, torch.ones(1, dtype=torch.int32, device=device)
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+def test_top_k_mask_refuses_a_row_one_cta_cannot_hold():
+    """Thread block clusters start at SM90, so on SM89 a row wider than one CTA holds is
+    refused before anything is built."""
+    op = TopKMaskFwdOp()
+    with pytest.raises(ValueError, match="supports rows of at most"):
+        op(*_wide_row(1 << 19))
+    for interface in TopKMaskFwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
+@pytest.mark.in_tree_kernels
+def test_top_k_top_p_mask_refuses_a_row_it_cannot_hold():
+    """A row of 2**19 values is wider than the kernel holds on any architecture, so it is
+    refused before anything is built."""
+    op = TopKTopPMaskFwdOp()
+    p = torch.full((1,), 0.9, device=run_device())
+    with pytest.raises(ValueError, match="supports rows of at most"):
+        op(*_wide_row(1 << 19), p)
+    for interface in TopKTopPMaskFwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
 def test_sampling_from_probs():
     """Unnormalized rows with every fourth weight zero, drawn in 65536 identical rows."""
     n, vocab = 65536, 64

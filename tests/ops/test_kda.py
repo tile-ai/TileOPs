@@ -102,6 +102,27 @@ def test_kda_prefill_continues_across_calls() -> None:
     )
 
 
+@pytest.mark.sm89
+def test_kda_prefill_in_99_kb_of_shared_memory() -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, so a packed head dim 128 prefill
+    runs on smaller programs than SM80 and SM90 build."""
+    torch.manual_seed(7)
+    _check(1, 0, 4, 128, torch.float16, sequence_lengths=(300, 1, 211))
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+def test_kda_prefill_refuses_offsets_99_kb_cannot_hold() -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, and the programs hold every
+    sequence's offset, so 2048 sequences at head dim 128 are refused before anything is built."""
+    test = KDAFwdTest(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(4,) * 2048)
+    op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
+    with pytest.raises(ValueError, match="bytes of shared memory for 2048 sequences"):
+        op(*test.gen_inputs())
+    for interface in KDAFwdOp.interfaces:
+        assert not op.built_kernels(interface)
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels

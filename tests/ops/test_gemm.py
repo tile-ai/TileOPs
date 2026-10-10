@@ -639,6 +639,15 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.parametrize("scale_mode", ["per_tensor", "block128", "block128x128"])
+def test_gemm_fp8_without_tma_or_wgmma(scale_mode: str) -> None:
+    """SM89 has FP8 tensor cores but no TMA or WGMMA, so every scale grid runs without them."""
+    test = GemmFP8Test(256, 512, 1024, torch.float8_e4m3fn, scale_mode)
+    test.check(GemmFP8FwdOp(), *test.gen_inputs())
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
