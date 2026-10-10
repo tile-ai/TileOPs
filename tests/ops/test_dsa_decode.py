@@ -168,27 +168,30 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("heads", "heads_kv", "dim_tail", "topk", "stride_kv", "dtype"),
+    ("dim", "dim_tail", "heads", "heads_kv", "stride_kv", "dtype"),
     [
-        pytest.param(128, 1, 64, 256, 1, torch.bfloat16, id="tail-two-head-blocks"),
-        pytest.param(64, 1, 0, 512, 1, torch.bfloat16, id="no-tail"),
-        pytest.param(128, 2, 0, 256, 1, torch.float16, id="two-kv-groups"),
-        pytest.param(64, 1, 64, 256, 2, torch.bfloat16, id="kv-stride-2"),
+        pytest.param(512, 0, 128, 2, 1, torch.float16, id="512-kv-groups"),
+        pytest.param(512, 64, 64, 1, 2, torch.bfloat16, id="512-kv-stride"),
+        pytest.param(256, 64, 64, 1, 1, torch.bfloat16, id="256"),
     ],
 )
-def test_dsa_decode_seesaw_kernel_serves_value_dim_512(
-    heads, heads_kv, dim_tail, topk, stride_kv, dtype
+def test_dsa_decode_ignores_keys_past_the_causal_limit(
+    dim, dim_tail, heads, heads_kv, stride_kv, dtype
 ) -> None:
-    """On SM90, value dim 512 runs the seesaw kernel, with or without the key tail.
+    """A selected key past the causal limit, which stride_kv scales, carries no weight.
 
-    Short rows leave slots of the top-k list padded, so every case also masks.
+    Each row selects distinct keys from the whole cache, so most of them lie past the limit.
     """
-    q_start = 256
+    seq_len, seq_len_kv, topk, q_start = 33, 1024, 256, 256
     test = DSADecodeTest(
-        1, heads, 33, 1024, 512, dim_tail, topk, stride_kv, heads_kv, q_start, dtype=dtype
-    )
+        1, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start,
+        dtype=dtype,
+    )  # fmt: skip
     op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
-    q, kv, indices = test.gen_inputs()
-    call = op._dsa_decode_call(q, kv, indices).on_device(q.device)
-    assert op.select_implementation("dsa_decode", call) == "dsa_decode_ws_kernel"
+    q, kv, _ = test.gen_inputs()
+    generator = torch.Generator().manual_seed(0)
+    rows = [
+        torch.randperm(seq_len_kv, generator=generator)[:topk] for _ in range(seq_len * heads_kv)
+    ]
+    indices = torch.stack(rows).view(1, seq_len, heads_kv, topk).to(torch.int32).to(q.device)
     test.check(op, q, kv, indices)

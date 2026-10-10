@@ -233,7 +233,10 @@ def _dsa_decode_kernel(
                 k_tail_shared_1 = T.alloc_shared([i_block, d_tail], dtype)
                 o_shared_l = q_shared_l
                 o_shared_r = q_shared_r
-                is_kv_valid = T.alloc_shared([i_block], "bool", scope="shared")
+                # One mask per KV buffer: the producer fills the next block's mask while a
+                # consumer still reads the other's.
+                is_kv_valid_0 = T.alloc_shared([i_block], "bool", scope="shared")
+                is_kv_valid_1 = T.alloc_shared([i_block], "bool", scope="shared")
 
                 acc_o_l = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
                 acc_o_r = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
@@ -249,12 +252,17 @@ def _dsa_decode_kernel(
                 indices_local = T.alloc_local([1], indices_dtype)
 
                 # TODO: Multi buffer
-                bar_k_0_ready = T.alloc_barrier(arrive_count=producer_threads)
-                bar_k_1_ready = T.alloc_barrier(arrive_count=producer_threads)
+                # Each producer thread arrives twice: once from its cp.async copies, and once
+                # with release semantics for the masks and zero-filled rows it stores directly,
+                # which the cp.async arrival does not order.
+                bar_k_0_ready = T.alloc_barrier(arrive_count=2 * producer_threads)
+                bar_k_1_ready = T.alloc_barrier(arrive_count=2 * producer_threads)
                 bar_k_0_free = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_k_1_free = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_s_scale_and_s_ready = T.alloc_barrier(arrive_count=consumer_threads)
                 bar_s_scale_and_s_free = T.alloc_barrier(arrive_count=consumer_threads)
+                # Consumer 0's warpgroup publishes the row sums consumer 1 divides by.
+                bar_sum_exp_ready = T.alloc_barrier(arrive_count=128)
 
                 b_i, g_i = by, bz
                 s_i = (
@@ -291,7 +299,7 @@ def _dsa_decode_kernel(
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(
-                                is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype)
+                                is_kv_valid_0[bi_i], 0, -T.infinity(acc_s.dtype)
                             )
                         T.wgmma_gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_shared_r, kv_shared_0_r, acc_s, transpose_B=True)
@@ -328,7 +336,7 @@ def _dsa_decode_kernel(
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(
-                                is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype)
+                                is_kv_valid_1[bi_i], 0, -T.infinity(acc_s.dtype)
                             )
                         T.wgmma_gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(q_shared_r, kv_shared_1_r, acc_s, transpose_B=True)
@@ -362,6 +370,7 @@ def _dsa_decode_kernel(
 
                     for h_i in T.Parallel(h_per_block):
                         sum_exp_shared[h_i] = sumexp[h_i]
+                    T.barrier_arrive(bar_sum_exp_ready)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_l[h_i, d_i] /= sumexp[h_i]
                     for h_i in T.Parallel(h_per_block):
@@ -390,6 +399,7 @@ def _dsa_decode_kernel(
                         if i_i != T.ceildiv(n_i, 2) - 1:
                             T.barrier_arrive(bar_s_scale_and_s_free)
 
+                    T.barrier_wait(bar_sum_exp_ready, 0)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
@@ -407,10 +417,10 @@ def _dsa_decode_kernel(
                                 g_i,
                                 (i_i * 2) * i_block + r * producer_rows + (tx - 256) // 8,
                             ]
-                            is_kv_valid[r * producer_rows + (tx - 256) // 8] = (
+                            is_kv_valid_0[r * producer_rows + (tx - 256) // 8] = (
                                 indices_local[0] >= 0
                             ) & (indices_local[0] <= max_kv_i)
-                            if is_kv_valid[r * producer_rows + (tx - 256) // 8]:
+                            if is_kv_valid_0[r * producer_rows + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(d // 128):
                                         for v in T.vectorized(8):
@@ -460,6 +470,7 @@ def _dsa_decode_kernel(
                                         (tx - 256) % 8 * 8 + v,
                                     ] = 0
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
+                        T.barrier_arrive(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(i_block // producer_rows):
@@ -469,10 +480,10 @@ def _dsa_decode_kernel(
                                 g_i,
                                 (i_i * 2 + 1) * i_block + r * producer_rows + (tx - 256) // 8,
                             ]
-                            is_kv_valid[r * producer_rows + (tx - 256) // 8] = (
+                            is_kv_valid_1[r * producer_rows + (tx - 256) // 8] = (
                                 indices_local[0] >= 0
                             ) & (indices_local[0] <= max_kv_i)
-                            if is_kv_valid[r * producer_rows + (tx - 256) // 8]:
+                            if is_kv_valid_1[r * producer_rows + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
                                     for u in T.serial(d // 128):
                                         for v in T.vectorized(8):
@@ -519,6 +530,7 @@ def _dsa_decode_kernel(
                                         (tx - 256) % 8 * 8 + v,
                                     ] = 0
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
+                        T.barrier_arrive(bar_k_1_ready[0])
 
         return _dsa_decode_fwd_main
 
@@ -600,6 +612,8 @@ def _dsa_decode_basic_kernel(
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
         h_per_block = DSADecodeBasicKernel.heads_per_block(head_kv, block_h)
+        # Width of the tail buffers; with no tail they are allocated but never read.
+        tail_cols = d_tail if d_tail > 0 else 16
 
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
@@ -623,9 +637,9 @@ def _dsa_decode_basic_kernel(
                 # consume kv_shared directly: V is the first `dim` columns of
                 # the fused KV cache (v = kv[..., :dim]).
                 q_shared = T.alloc_shared([h_per_block, d], dtype)
-                q_tail_shared = T.alloc_shared([h_per_block, d_tail or 16], dtype)
+                q_tail_shared = T.alloc_shared([h_per_block, tail_cols], dtype)
                 kv_shared = T.alloc_shared([i_block, d], dtype)
-                kv_tail_shared = T.alloc_shared([i_block, d_tail or 16], dtype)
+                kv_tail_shared = T.alloc_shared([i_block, tail_cols], dtype)
                 s_shared = T.alloc_shared([h_per_block, i_block], dtype)
                 # Q is dead once the last QK^T gemm has been issued, so the
                 # output staging reuses its shared buffer.

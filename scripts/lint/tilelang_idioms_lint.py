@@ -18,6 +18,10 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   autotuner folds free variables into its cache key and accepts only ``int``,
   ``float``, ``str``, ``bool`` and ``None``. Assignments and parameter
   annotations classify enclosing bindings.
+- ``and`` / ``or`` with a non-bool constant operand inside a ``@T.prim_func`` or
+  ``@T.macro`` body (``[h, tail or 16]``). TileLang turns the expression into a TIR
+  logical op, so it yields a bool, not the operand Python would pick: the example
+  allocates a buffer one column wide. Select the value before the kernel body.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
 - An environment read (``os.environ``, ``os.getenv``, or either imported from ``os``) in
@@ -372,6 +376,28 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
     return sorted(out)
 
 
+def _value_selecting_boolops(path: Path, tree: ast.Module, aliases, bare) -> list[str]:
+    """``and`` / ``or`` with a non-bool constant operand inside a kernel or macro body."""
+    out = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decorators = (d.func if isinstance(d, ast.Call) else d for d in func.decorator_list)
+        if not any(_member(d, aliases, bare) in ("prim_func", "macro") for d in decorators):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.BoolOp) and any(
+                isinstance(v, ast.Constant) and not isinstance(v.value, bool) for v in node.values
+            ):
+                op = "or" if isinstance(node.op, ast.Or) else "and"
+                out.append(
+                    f"{path}:{node.lineno}: `{op}` inside a TileLang kernel or macro builds a "
+                    "TIR logical op, not the operand Python would pick — select the value "
+                    "before the kernel body"
+                )
+    return out
+
+
 def _in_trees(path: Path, trees: tuple[tuple[str, ...], ...]) -> bool:
     """Whether *path*, read relative to the repository, sits under one of *trees*."""
     try:
@@ -433,6 +459,7 @@ def check(path: Path) -> list[str]:
     out += _environment_uses(path, tree)
 
     aliases, bare = _tilelang_names(tree)
+    out += _value_selecting_boolops(path, tree, aliases, bare)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and _member(node, aliases, bare) == "Buffer":

@@ -1,21 +1,18 @@
-Rules a reader has to apply by hand. The deprecated `T.Buffer` annotation, a dtype-first
-`T.reinterpret`, a literal cast to a narrow float, a `@tilelang.jit` builder closing over a
-non-scalar, and a file-level `noqa` are checked by `scripts/lint/tilelang_idioms_lint.py`;
-that file states why each one is wrong. A module-level constant's spelling is checked by
-`scripts/lint/module_constant_lint.py`, and the names a `src/tileops/csrc/` header defines by
-`scripts/lint/csrc_names_lint.py`.
+Rules a reader has to apply by hand. A rule that can be checked mechanically lives in
+`scripts/lint/`, the ruff configuration or `.pre-commit-config.yaml`, which state why each
+one holds.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
 
-- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`; pre-include a header with `tileops._csrc.csrc_include("<file>", ...)`. Call a csrc function as `tileops::<name>`.
-
-- Import absolutely (`from tileops.x import y`); never use a relative import.
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
 
 - Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.
 
+- A value only one kernel reads — a tile size, a thread count, a register budget, a barrier id, a mask value — is a local of the function that reads it, with its reason beside it. A module-level constant is reserved for a value several functions in the module must agree on, and its comment states that reason.
+
 - Promote overflow-prone fp16/bf16 math (cubic, division, `exp`, softmax accumulators) to fp32; cast back to storage dtype at the boundary.
 
-- Decorate each `_<op>_kernel` builder (the `@tilelang.jit`-wrapping `Callable`) with `@functools.lru_cache(maxsize=<N>)`; every parameter must be hashable. `maxsize=32` needs no comment; `64` and `None` state above the decorator what makes the config space that wide or bounded.
+- Memoize each `_<op>_kernel` builder with `functools.lru_cache`; every parameter must be hashable.
 
 - Tag code degraded by something outside its own scope — a contract stub that cannot be made abstract until every op migrates, a benchmark that must skip a manifest workload no kernel can run — with `FIXME(staged-rollout)`. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
@@ -27,14 +24,12 @@ that file states why each one is wrong. A module-level constant's spelling is ch
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-- Abbreviation spellings have one source of truth: `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`. The same table applies to manifest entry names and all classes under `src/tileops/` and `workloads/`; add or change spellings there instead of duplicating them in prose.
+- Abbreviation spellings have one source of truth, `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`; manifest entry names and classes follow it.
 
-- Filenames: lowercase with underscores, abbreviations included (`rms_norm.py`, `ssd_decode.py`). Never contract a norm name (`rms_norm`, not `rmsnorm`).
+- Filenames are lowercase with underscores and spell an abbreviation out as a word (`rms_norm.py`, not `rmsnorm.py`).
 
-- An `optional: true` input defaults to `None` in `forward`, and presence is read from the call, not settled at construction. Where the presence changes what the kernel build produces, it goes in that kernel's cache key.
+- Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Never mix Sphinx or NumPy headers in one file.
 
-- Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`, `#:`) or NumPy headers in one file; comment an attribute with `#` above its assignment.
-
-- The docs site renders the class, `__init__` and `forward` docstrings of the `src/tileops/ops/` classes `docs/api/*.md` collects, and nothing else. A guarantee a caller acts on — an accuracy bound, a deviation from torch — goes in the op's class docstring; a kernel comment does not reach them.
+- A guarantee a caller acts on — an accuracy bound, a deviation from torch — goes in the op's class docstring, which the docs site renders; a kernel comment does not reach the caller.
 
 - Expand domain abbreviations on first use in a docstring: `State Space Model (SSM)`, `State-Space Dual (SSD)`. Later uses may abbreviate.
