@@ -278,6 +278,7 @@ def _gqa_paged_varlen_kernel(
     max_position: int,
     rotary_dim: int,
     rope_layout: str,
+    has_sinks: bool,
     sm90: bool,
     producer_warpgroup: bool,
 ):
@@ -339,6 +340,7 @@ def _gqa_paged_varlen_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
             rope_cos: T.Tensor(rope_shape, dtype),
             rope_sin: T.Tensor(rope_shape, dtype),
+            Sinks: T.Tensor([heads], "float32"),
             Output: T.Tensor(shape_q, dtype),
         ):
             with T.Kernel(tiling.tile_upper_bound(total_q * group), heads_kv, threads=threads) as (
@@ -475,6 +477,15 @@ def _gqa_paged_varlen_kernel(
                     # One reciprocal a row: a per-element divide by a row scalar is not.
                     for i in T.Parallel(block_M):
                         row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
+                        if has_sinks:
+                            sink = Sinks[by * group + (row0 + i) % group] * LOG2E
+                            maximum = T.max(scores_max[i] * softmax_scale, sink)
+                            weight = T.exp2(scores_max[i] * softmax_scale - maximum)
+                            row_scale[i] = T.if_then_else(
+                                (logsum[i] > 0) & (sink < T.infinity(accum_dtype)),
+                                weight / (logsum[i] * weight + T.exp2(sink - maximum)),
+                                0,
+                            )
                     for i, d in T.Parallel(block_M, dim):
                         if row0 + i < rows:
                             r = row0 + i
@@ -505,6 +516,7 @@ def _gqa_paged_varlen_split_kernel(
     max_position: int,
     rotary_dim: int,
     rope_layout: str,
+    has_sinks: bool,
     sm90: bool,
 ):
     """The same scan with the key range cut into ``num_split`` chunks, combined afterwards.
@@ -717,6 +729,7 @@ def _gqa_paged_varlen_split_kernel(
 
         @T.macro
         def combine(
+            Sinks: T.Tensor([heads], "float32"),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
@@ -746,11 +759,19 @@ def _gqa_paged_varlen_split_kernel(
                                 lse[k] = glse[bx, by, k, i]
                             T.fill(lse_max, -T.infinity(accum_dtype))
                             T.reduce_max(lse, lse_max, dim=0, clear=False)
+                            if has_sinks:
+                                lse_max[0] = T.max(
+                                    lse_max[0], Sinks[by * group + (row0 + i) % group] * LOG2E
+                                )
                             # Weights relative to the max keep the normalization term from
                             # rounding away.
                             total[0] = 0
                             for k in T.serial(num_split):
                                 total[0] += T.exp2(lse[k] - lse_max[0])
+                            if has_sinks:
+                                total[0] += T.exp2(
+                                    Sinks[by * group + (row0 + i) % group] * LOG2E - lse_max[0]
+                                )
                             total[0] = T.log2(total[0]) + lse_max[0]
                             T.clear(o_accum)
                             for k in T.serial(num_split):
@@ -761,7 +782,10 @@ def _gqa_paged_varlen_split_kernel(
                             for d in T.Parallel(dim):
                                 Output[q_start + r // group, by * group + r % group, d] = (
                                     T.if_then_else(
-                                        lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
+                                        (lse_max[0] < T.cast(no_key_lse, accum_dtype))
+                                        | (lse_max[0] == T.infinity(accum_dtype)),
+                                        0,
+                                        o_accum[d],
                                     )
                                 )
 
@@ -775,6 +799,7 @@ def _gqa_paged_varlen_split_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
             rope_cos: T.Tensor(rope_shape, dtype),
             rope_sin: T.Tensor(rope_shape, dtype),
+            Sinks: T.Tensor([heads], "float32"),
             glse: T.Tensor(shape_lse, accum_dtype),
             partial: T.Tensor(shape_partial, dtype),
             Output: T.Tensor(shape_q, dtype),
@@ -782,7 +807,7 @@ def _gqa_paged_varlen_split_kernel(
             scan(
                 Q, K, V, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin, glse, partial
             )
-            combine(cu_seqlens_q, glse, partial, Output)
+            combine(Sinks, cu_seqlens_q, glse, partial, Output)
 
         return gqa_paged_varlen_split
 
@@ -846,6 +871,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 call.fuse_rope
                 and call.max_seqlen_q * call.heads // call.heads_kv >= 128 * call.batch
             ),
+            has_sinks=call.has_sinks,
             **call.rope_args,
         )
         return (*args.values(), index), lambda: cls(**args, device_index=index)
@@ -865,6 +891,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         rows_fill_tile: bool = False,
+        has_sinks: bool = False,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
@@ -893,6 +920,10 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.rows_fill_tile = rows_fill_tile
+        self.has_sinks = has_sinks
+        self._unused_sinks = torch.empty(
+            heads, dtype=torch.float32, device=torch.device("cuda", self.device_index)
+        )
         self.fuse_rope = fuse_rope
         self.max_position = max_position
         self.rotary_dim = rotary_dim or dim
@@ -919,6 +950,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             max_position,
             self.rotary_dim,
             rope_layout,
+            has_sinks,
             # A producer warpgroup specializes the scan on SM90 only, which decides how the
             # key tile the cache end cuts drops its stale rows.
             get_sm_version(device_index) >= 90,
@@ -1090,6 +1122,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 torch.zeros((self.max_position, self.rotary_dim // 2), dtype=dtype, device=device)
                 if self.fuse_rope
                 else self._unused_rope,
+                torch.zeros(heads, dtype=torch.float32, device=device),
             ]
 
         return supply_prog
@@ -1145,7 +1178,9 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        sinks = sinks if self.has_sinks else self._unused_sinks
         rope_cos = rope_cos if self.fuse_rope else self._unused_rope
         rope_sin = rope_sin if self.fuse_rope else self._unused_rope
         c = self.config
@@ -1156,7 +1191,15 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         if splits == 1:
             program = self.kernel(c["block_M"], c["block_N"], c["num_stages"], c["threads"])
             return program(
-                q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q, rope_cos, rope_sin
+                q,
+                k_pool,
+                v_pool,
+                cache_seqlens,
+                page_table,
+                cu_seqlens_q,
+                rope_cos,
+                rope_sin,
+                sinks,
             )
         program = _gqa_paged_varlen_split_kernel(*self._builder_args)(
             c["block_M"], c["block_N"], splits, c["num_stages"], c["threads"]
@@ -1178,6 +1221,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             cu_seqlens_q,
             rope_cos,
             rope_sin,
+            sinks,
             glse,
             partial,
         )

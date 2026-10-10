@@ -66,6 +66,7 @@ class AttentionCall(CallSpec):
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
     cache_dtype: Optional[torch.dtype] = None
+    has_sinks: bool = False
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
@@ -122,6 +123,8 @@ class AttentionCall(CallSpec):
             return "does not serve FP8"
         if self.uses_sliding_window:
             return "does not serve sliding windows"
+        if self.has_sinks:
+            return "does not serve attention sinks"
         if self.fuse_rope:
             return "does not serve RoPE"
         return None
@@ -301,12 +304,14 @@ class GQAPagedFwdInterface(KernelInterface):
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries, aligned to the end of its cache.
 
         Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
         Args:
+            sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
             q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
             k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
                 a page.

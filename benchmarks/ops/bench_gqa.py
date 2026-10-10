@@ -545,6 +545,8 @@ def _fa3_gqa_paged(workload):
     It takes the packed queries directly through ``cu_seqlens_q``, so one call serves a
     uniform and a ragged row alike, and it reads a page table of any page size.
     """
+    if workload.has_sinks:
+        return None
     try:
         from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
@@ -602,7 +604,7 @@ def _fa3_gqa_paged_rope(workload, inputs):
     scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=q.dtype)
     scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=q.dtype)
 
-    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin):
+    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin, sinks=None):
         k = k_pages[key_pages, key_offsets]
         v = v_pages[key_pages, key_offsets]
         rotary_cache = torch.cat((cos, sin), -1).float()
@@ -654,9 +656,22 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
     indptr = torch.tensor([0, *accumulate(pages_per_request)], dtype=torch.int32, device=q.device)
     indices = torch.cat([page_table[b, :n] for b, n in enumerate(pages_per_request)])
     workspace = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = flashinfer_op("prefill.BatchPrefillWithPagedKVCacheWrapper")(
-        workspace, kv_layout="NHD"
-    )
+    if workload.has_sinks:
+        if workload.softcap:
+            return None  # The dedicated sink variant does not implement softcap.
+        wrapper = flashinfer_op("attention.BatchAttentionWithAttentionSinkWrapper")(
+            workspace,
+            kv_layout="NHD",
+            q_data_type=workload.dtype,
+            kv_data_type=workload.dtype,
+            head_dim_qk=workload.dim,
+            head_dim_vo=workload.dim,
+            window_left=workload.window_size_left,
+        )
+    else:
+        wrapper = flashinfer_op("prefill.BatchPrefillWithPagedKVCacheWrapper")(
+            workspace, kv_layout="NHD"
+        )
     wrapper.plan(
         qo_indptr=cu_seqlens_q,
         paged_kv_indptr=indptr,
@@ -674,6 +689,9 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
     )
 
     def run_fn(q, k_pages, v_pages, *_unused):
+        if workload.has_sinks:
+            scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+            return wrapper.run(q, (k_pages, v_pages), _unused[8], scale)
         return wrapper.run(q, (k_pages, v_pages))
 
     return run_fn
@@ -683,6 +701,8 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     """FlashInfer paged decode planned with the row's window, scale and softcap, or None where
     it cannot serve the row: its decode kernel takes one query token per request, a
     query-to-KV head ratio up to 8, and no right window."""
+    if workload.has_sinks:
+        return None  # The prefill sink wrapper also serves single-token requests.
     if workload.heads // workload.heads_kv > 8 or set(workload.q_lens) != {1}:
         return None
     if workload.window_size_right >= 0:
@@ -729,7 +749,8 @@ def test_gqa_paged_fwd_bench(case) -> None:
     op = GQAPagedFwdOp(**case.arguments)
     implementations = {"torch-ref": case.reference}
     if workload.pos_encoding_mode == "rope":
-        implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
+        if not workload.has_sinks:
+            implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
         bench.Runner(op, case).compare(implementations)
         return
     fa3_fn = _fa3_gqa_paged(workload)
