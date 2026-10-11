@@ -1067,7 +1067,11 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
     def autotune_configs(self) -> list[dict]:
         # Four warps: with eight, or a 16-key tile, the score and output GEMMs split the
         # head rows differently and the row statistics have no common layout.
+        budget = get_shared_memory_optin(self.device_index)
+        # Query tiles and staged KV tiles coexist; reject only when these alone overflow.
+        row_bytes = (self.dim + self.pe_dim) * self.dtype.itemsize
         return [
             {"block_H": h, "block_N": n, "num_split": s, "num_stages": st, "threads": 128}
             for h, n, s, st in itertools.product([16, 32], [32, 64], [1, 2, 4, 8, 16], [1, 2])
+            if (h + n * st) * row_bytes <= budget
         ]
