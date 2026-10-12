@@ -362,7 +362,6 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         )
 
 
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -373,11 +372,19 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         pytest.param(142, 2, id="group-over-a-block-two-kv-heads"),
     ],
 )
+@pytest.mark.parametrize(
+    "dim,dtype",
+    [
+        pytest.param(64, torch.bfloat16, marks=pytest.mark.sm90),
+        pytest.param(256, torch.float16, marks=pytest.mark.sm89),
+        pytest.param(256, torch.bfloat16, marks=pytest.mark.sm89),
+    ],
+)
 def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
-    heads: int, heads_kv: int
+    heads: int, heads_kv: int, *, dim: int, dtype: torch.dtype
 ) -> None:
     """Every output head is written when the group needs more than one head block of 64."""
-    dim, seq_len_kv, dtype = 64, 2048, torch.bfloat16
+    seq_len_kv = 2048
     q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
     k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
     v = torch.randn_like(k)

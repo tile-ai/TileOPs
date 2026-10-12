@@ -522,17 +522,17 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return "does not serve this call"
         if call.fuse_rope and call.arch != 90:
             return "fuses RoPE on SM90 only"
-        return cls._limit_refusal(call.dim, call.seqlen_kv)
+        return cls._limit_refusal(call.dim, call.seqlen_kv, call.arch)
 
     @staticmethod
-    def _limit_refusal(dim: int, seq_len_kv: int) -> Optional[str]:
+    def _limit_refusal(dim: int, seq_len_kv: int, arch: int) -> Optional[str]:
         """Why the program cannot build this shape; read by the region and the constructor,
-        which a caller can reach directly. Past 128 the split-KV tile has no register layout.
+        which a caller can reach directly. D256 uses a separately validated SM89 tile.
         """
         if seq_len_kv <= 0:
             return "requires a non-empty KV cache"
-        # A 256-wide head is a real decode shape that no program here serves: Gemma-2B puts
-        # 8 query heads over one KV head at 256. The paged prefill kernels serve that width.
+        if dim == 256 and arch == 89:
+            return None
         if dim % 16 != 0 or not 16 <= dim <= 128:
             return "requires head dimension a multiple of 16 in [16, 128]"
         return None
@@ -608,7 +608,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        reason = self._limit_refusal(dim, seq_len_kv)
+        reason = self._limit_refusal(dim, seq_len_kv, arch)
         if reason is not None:
             raise ValueError(f"{type(self).__name__} {reason}")
         self._use_batched_config = (
@@ -670,6 +670,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        if self.dim == 256:
+            return {"block_H": 64, "block_N": 64, "num_split": 16, "num_stages": 1, "threads": 128}
         if self._use_batched_config:
             head_ctas = self.batch * self.groups
             splits = max(1, (256 + head_ctas - 1) // head_ctas)
@@ -718,6 +720,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             }
             for c in _configs
             if c[2] <= max(1, self.seqlen_kv // c[0])
+            and (self.dim != 256 or (c[0] == 64 and c[3] == 1))
         ]
         return configs
 
