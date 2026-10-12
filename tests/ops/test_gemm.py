@@ -3,6 +3,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
+from tileops.kernels.gemm import GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
@@ -603,6 +604,23 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16FwdOp()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n, k", [(64, 64, 128), (128, 256, 256)])
+def test_gemm_w4a16_k_tile_no_wider_than_k(m: int, n: int, k: int) -> None:
+    """A short K takes a K tile and a ring no wider than it.
+
+    The padding past K would be staged and multiplied for nothing.
+    """
+    test = GemmW4A16Test(m, n, k, torch.float16)
+    config = GemmW4A16Kernel(m, n, k, torch.float16).config
+    assert config["block_k"] <= k
+    # The shallowest ring the kernel builds is two stages, whatever K.
+    assert config["num_stages"] <= max(2, -(-k // config["block_k"]))
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.smoke

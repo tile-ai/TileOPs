@@ -184,8 +184,14 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                 if block_n == 64 and threads > 128:
                     continue
                 for block_k in _CONFIG_SPACE.block_ks:
+                    # A K tile wider than K, or a ring deeper than K's tiles, only stages
+                    # padding.
+                    if block_k > max(k, _CONFIG_SPACE.block_ks[0]):
+                        continue
                     k_iters = -(-k // block_k)
                     for num_stages in _CONFIG_SPACE.stages:
+                        if num_stages > max(k_iters, _CONFIG_SPACE.stages[0]):
+                            continue
                         if (
                             _smem_bytes(
                                 block_m,
