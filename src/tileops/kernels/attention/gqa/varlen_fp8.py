@@ -1011,6 +1011,27 @@ def _gqa_varlen_fp8_ws_kernel(
     return func
 
 
+def fp8_prefill_shared_bytes(config: dict, *, batch: int, dim: int, element: int) -> int:
+    """Shared memory a *config* allocates, buffer by buffer as TileLang does."""
+    block_m, block_n = config["block_m"], config["block_n"]
+    stages = config["num_stages"]
+    tile = block_n * dim
+    buffers = [
+        block_m * dim,
+        stages * tile,
+        stages * tile,
+        block_m * block_n,
+        block_m * dim * element,
+        4 * (batch + 1),
+    ]
+    # TileLang stages the score tile through shared memory when a warpgroup
+    # holds fewer than one WGMMA atom's rows.
+    if block_m // (config["threads"] // WARPGROUP_THREADS) < WGMMA_ROWS:
+        buffers += [4 * config["threads"], 4 * config["threads"]]
+    align = SHARED_BUFFER_ALIGN_BYTES
+    return sum(-(-b // align) * align for b in buffers)
+
+
 class GQAVarlenFP8FwdKernel(VarlenKernel):
     """Packed prefill over FP8 Q/K/V with one dequantization scale per request and KV head."""
 
@@ -1157,24 +1178,9 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         return next((c for c in candidates if self._shared_bytes(c) <= cap), candidates[-1])
 
     def _shared_bytes(self, config: dict) -> int:
-        """Shared memory a *config* allocates, buffer by buffer as TileLang does."""
-        block_m, block_n = config["block_m"], config["block_n"]
-        stages = config["num_stages"]
-        tile = block_n * self.dim
-        buffers = [
-            block_m * self.dim,
-            stages * tile,
-            stages * tile,
-            block_m * block_n,
-            block_m * self.dim * self.dtype.itemsize,
-            4 * (self.batch + 1),
-        ]
-        # TileLang stages the score tile through shared memory when a warpgroup
-        # holds fewer than one WGMMA atom's rows.
-        if block_m // (config["threads"] // WARPGROUP_THREADS) < WGMMA_ROWS:
-            buffers += [4 * config["threads"], 4 * config["threads"]]
-        align = SHARED_BUFFER_ALIGN_BYTES
-        return sum(-(-b // align) * align for b in buffers)
+        return fp8_prefill_shared_bytes(
+            config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:

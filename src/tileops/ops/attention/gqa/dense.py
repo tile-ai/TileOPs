@@ -16,6 +16,7 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQADenseFwdInterface,
 )
+from tileops.kernels.attention.gqa.dense_prefill import GQADensePrefillFwdKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.attention.gqa.parameters import _rope_rotary_dim, _score_softcap
 from tileops.ops.op_base import Op
@@ -150,6 +151,7 @@ class GQADenseFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gqa_dense_prefill": GQADensePrefillFwdKernel,
         "gqa_dense": GQADenseWSKernel,
         "gqa_dense_decode": GQADecodeKernel,
         "gqa_dense_decode_bs1": GQADecodeBs1Kernel,

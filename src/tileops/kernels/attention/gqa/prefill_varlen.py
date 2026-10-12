@@ -324,6 +324,33 @@ def _gqa_prefill_varlen_fwd_kernel(
     return _gqa_prefill_varlen_fwd_func
 
 
+def prefill_shared_bytes(config: dict, *, batch: int, dim: int, element: int) -> int:
+    """Count the one-stage program's shared buffers with allocation alignment."""
+    block_m, block_n = config["block_m"], config["block_n"]
+    tile = block_n * dim * element
+    buffers = [block_m * dim * element, tile, tile, 4 * (batch + 1)]
+    if _stages_score_tile(block_m, config["threads"]):
+        buffers += [block_m * block_n * element, 4 * config["threads"], 4 * config["threads"]]
+    align = SHARED_BUFFER_ALIGN_BYTES
+    return sum(-(-size // align) * align for size in buffers)
+
+
+def prefill_default_config(*, batch: int, dim: int, element: int, budget: int):
+    """Select the existing one-stage plan, or report that no candidate fits."""
+    narrow = {"block_m": 64, "block_n": 64 if dim <= 128 else 32, "num_stages": 1, "threads": 128}
+    candidates = [narrow, {**narrow, "block_m": 32}, {**narrow, "block_m": 32, "block_n": 16}]
+    if 256 < dim <= 512:
+        candidates.insert(0, {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256})
+    return next(
+        (
+            config
+            for config in candidates
+            if prefill_shared_bytes(config, batch=batch, dim=dim, element=element) <= budget
+        ),
+        None,
+    )
+
+
 class GQAPrefillVarlenFwdKernel(VarlenKernel):
     """Packed prefill over per-request ranges of any length, with or without a sliding window."""
 
@@ -358,28 +385,24 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     @property
     def default_config(self) -> dict:
         """The first candidate the device's shared memory holds."""
-        narrow = {
+        plan = prefill_default_config(
+            batch=self.batch,
+            dim=self.dim,
+            element=self.dtype.itemsize,
+            budget=get_shared_memory_optin(self.device_index),
+        )
+        return plan or {
             "block_m": 64,
             "block_n": 64 if self.dim <= 128 else 32,
             "num_stages": 1,
             "threads": 128,
         }
-        candidates = [narrow, {**narrow, "block_m": 32}, {**narrow, "block_m": 32, "block_n": 16}]
-        if 256 < self.dim <= 512:
-            candidates.insert(0, {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256})
-        cap = get_shared_memory_optin(self.device_index)
-        return next((c for c in candidates if self._shared_bytes(c) <= cap), narrow)
 
     def _shared_bytes(self, config: dict) -> int:
         """Shared memory a one-stage *config* allocates, buffer by buffer as TileLang does."""
-        elem = self.dtype.itemsize
-        block_m, block_n = config["block_m"], config["block_n"]
-        tile = block_n * self.dim * elem
-        buffers = [block_m * self.dim * elem, tile, tile, 4 * (self.batch + 1)]
-        if _stages_score_tile(block_m, config["threads"]):
-            buffers += [block_m * block_n * elem, 4 * config["threads"], 4 * config["threads"]]
-        align = SHARED_BUFFER_ALIGN_BYTES
-        return sum(-(-b // align) * align for b in buffers)
+        return prefill_shared_bytes(
+            config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
