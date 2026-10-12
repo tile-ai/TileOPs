@@ -40,7 +40,8 @@ __all__ = [
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
-# Fixed by the two-consumer split and by the block128 scale grid; not tunable.
+# Row tile of two consumer warpgroups, and the 64 rows one consumer covers alone; the K
+# tile is fixed by the block128 scale grid.
 _FP8_WS_BLOCK_M = 128
 _FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
 _FP8_WS_BLOCK_K = 128

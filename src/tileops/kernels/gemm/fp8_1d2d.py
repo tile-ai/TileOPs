@@ -4,7 +4,7 @@ A persistent grid of one producer and one or two consumer warp-groups: the
 producer fills a shared-memory ring through TMA, each consumer runs WGMMA over 64
 of the tile's rows and folds every K-step's partial in under its scales. Two
 builders share that plan: ``_gemm_fp8_1d2d_kernel`` holds 64- or 128-row tiles
-under 128x128 ``scale_b`` blocks, and ``_gemm_fp8_1d2d_wave_kernel`` holds tiles of
+under 128x128 ``scale_b`` blocks, and ``_gemm_fp8_block128_wave_kernel`` holds tiles of
 one or two 128-row waves whose K-step products all go through one partial
 accumulator, under either ``scale_b`` grid.
 """
@@ -22,7 +22,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 from tileops._csrc import csrc_include
 from tileops.kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
-    MBARRIER_BYTES,
+    SHARED_BUFFER_ALIGN_BYTES,
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
     TMA_INTERLEAVE_NONE,
@@ -34,7 +34,7 @@ from tileops.kernels.gemm.call_spec import GemmFP8Call, GemmFP8FwdInterface
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
-__all__ = ["GemmFP81D2DFwdKernel", "GemmFP81D2DWaveFwdKernel"]
+__all__ = ["GemmFP8Block128WaveFwdKernel", "GemmFP81D2DFwdKernel"]
 
 # K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
 # of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
@@ -79,7 +79,7 @@ _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
     },
 }
 
-# Wave schedules measured per (m, n, k), by calibrated board; ``GemmFP81D2DWaveFwdKernel``
+# Wave schedules measured per (m, n, k), by calibrated board; ``GemmFP8Block128WaveFwdKernel``
 # serves exactly these shapes under 128x128 ``scale_b`` blocks.
 _FP8_1D2D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
     "h200": {
@@ -553,7 +553,7 @@ def _gemm_fp8_1d2d_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_fp8_1d2d_wave_kernel(
+def _gemm_fp8_block128_wave_kernel(
     m: int, n: int, k: int, *, sm_count: int, scale_b_per_row: bool = False
 ) -> Callable:
     """Persistent block-scaled FP8 GEMM whose output tile is ``waves`` x 128 rows by ``block_n``.
@@ -630,7 +630,7 @@ def _gemm_fp8_1d2d_wave_kernel(
         pass_configs={"tl.disable_warp_specialized": True},
         compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("fp8_1d2d_helper.h")],
     )
-    def _gemm_fp8_1d2d_wave_func(
+    def _gemm_fp8_block128_wave_func(
         block_n: int = 128,
         num_stages: int = 3,
         group_size_m: int = 8,
@@ -782,7 +782,7 @@ def _gemm_fp8_1d2d_wave_kernel(
                         final[i, j] += partial[i, j] * row_scale[i]
 
         @T.prim_func
-        def _gemm_fp8_1d2d_wave_main(
+        def _gemm_fp8_block128_wave_main(
             a: T.Tensor((m, k), "float8_e4m3fn"),  # type: ignore
             b: T.Tensor((n, k), "float8_e4m3fn"),  # type: ignore
             scale_a: T.Tensor((m, k_blocks), "float32"),  # type: ignore
@@ -1060,9 +1060,9 @@ def _gemm_fp8_1d2d_wave_kernel(
                     # Drain the last tile's store before the CTA's shared memory goes.
                     T.tma_store_wait(0)
 
-        return _gemm_fp8_1d2d_wave_main
+        return _gemm_fp8_block128_wave_main
 
-    return _gemm_fp8_1d2d_wave_func
+    return _gemm_fp8_block128_wave_func
 
 
 class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
@@ -1247,20 +1247,25 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         """The most K-steps in flight the shared-memory budget holds, at most one tile's K-steps.
 
         A stage holds a ``block_m``x128 ``A`` tile and a ``block_n``x128 ``B`` tile, both
-        fp8, and its full and empty mbarriers. Beside the ring live the two ``scale_a``
-        buffers with their mbarriers, the ``scale_b`` staging (one row of K-steps at most) and, on the shared
-        epilogue, the bf16 output tile. The uncalibrated shapes this serves wait on
-        memory, and a deeper ring keeps more of each SM's loads in flight.
+        fp8. Beside the ring live the two ``scale_a`` buffers, the ``scale_b`` staging (one
+        row of K-steps at most) and, on the shared epilogue, the bf16 output tile. TileLang
+        starts each of these buffers on a ``SHARED_BUFFER_ALIGN_BYTES`` boundary, and
+        places them after the mbarriers, which are static shared memory and fit in one
+        such unit. The uncalibrated shapes this serves wait on memory, and a deeper ring
+        keeps more of each SM's loads in flight.
         """
         block_k = 128
+        align = SHARED_BUFFER_ALIGN_BYTES
         scale_k = -(-self.k // block_k)
         scale_a_group = next(g for g in _SCALE_A_GROUPS if scale_k % g == 0)
-        per_stage = (block_m + block_n) * block_k + 2 * MBARRIER_BYTES
-        # The two ``scale_a`` buffers, their full and empty mbarriers, and the ``scale_b`` row.
-        fixed = (_SCALE_A_BUFFERS * block_m * scale_a_group + scale_k) * 4
-        fixed += 2 * _SCALE_A_BUFFERS * MBARRIER_BYTES
+        per_stage = (block_m + block_n) * block_k
+        # The mbarriers' unit, the two ``scale_a`` buffers and the ``scale_b`` row, each
+        # rounded up to whole units.
+        fixed = align
+        fixed += -(-_SCALE_A_BUFFERS * block_m * scale_a_group * 4 // align) * align
+        fixed += -(-scale_k * 4 // align) * align
         if self.shared_epilogue:
-            fixed += block_m * block_n * 2
+            fixed += -(-block_m * block_n * 2 // align) * align
         return max(1, min(scale_k, (BLOCK_SHARED_BYTES_OPT_IN[90] - fixed) // per_stage))
 
     def forward(
@@ -1276,7 +1281,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         return self.kernel(**self.config)(a, b, scale_a, scale_b)
 
 
-class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
+class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
     """FP8 NT GEMM for block128 scales on calibrated shapes, in tiles of 128-row waves.
 
     ``scale_a`` is ``[M, ceil(K/128)]``; ``scale_b`` is per 128x128 block,
@@ -1365,7 +1370,7 @@ class GemmFP81D2DWaveFwdKernel(Kernel, GemmFP8FwdInterface):
                 f"{type(self).__name__} has no schedule for m={m} n={n} k={k} on {calibration!r}"
             )
         self.sm_count = int(self._calibrated["sm_count"])
-        self.kernel = _gemm_fp8_1d2d_wave_kernel(
+        self.kernel = _gemm_fp8_block128_wave_kernel(
             m, n, k, sm_count=self.sm_count, scale_b_per_row=scale_b_per_row
         )
         self.init_config(config)

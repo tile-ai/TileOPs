@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MBARRIER_BYTES
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.utils import calibration_key
 
 __all__ = [
@@ -553,8 +553,10 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         Each consumer's epilogue staging tile is live alongside the ring, and exists
         only for ``m`` over one consumer's rows.
         """
+        # A stage's full and empty mbarriers, 8 bytes each, come out of the same budget.
+        mbarrier_bytes = 8
         per_stage = (
-            (block_m + block_n) * 128 + block_scaled * (block_m + block_n) * 4 + 2 * MBARRIER_BYTES
+            (block_m + block_n) * 128 + block_scaled * (block_m + block_n) * 4 + 2 * mbarrier_bytes
         )
         epilogue = block_m * block_n * 2 if m > half_m else 0
         return (_SMEM_BUDGET - epilogue) // per_stage
