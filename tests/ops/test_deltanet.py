@@ -235,7 +235,6 @@ def test_deltanet_fwd_reaches_target_with_optional_inputs() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
@@ -252,7 +251,6 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
     """``use_qk_l2norm_in_kernel`` takes Q and K unnormalized and matches FLA."""
@@ -263,7 +261,6 @@ def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_deltanet_prefill_packs_ragged_sequences() -> None:
     """Lengths below, across and on a chunk boundary in one packed call."""
@@ -273,7 +270,6 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
@@ -319,7 +315,6 @@ def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)

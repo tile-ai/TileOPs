@@ -27,7 +27,6 @@ def isolated_registry():
     registry.restore(state)
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_gdn_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
     torch.manual_seed(42)
@@ -49,14 +48,12 @@ def test_gdn_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
             compare_outputs(tuple(faulty), reference, evidence)
 
 
-@pytest.mark.sm90
 def test_gdn_dense_prefill_continues_an_initial_state() -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 def test_gdn_dense_prefill_carries_a_value_major_state() -> None:
     """The caller's state is ``[N, HV, V, K]`` at both ends of the recurrence."""
     torch.manual_seed(42)
@@ -76,14 +73,12 @@ def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
 
 
-@pytest.mark.sm90
 def test_gdn_dense_prefill_runs_a_64_wide_state() -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 64, torch.bfloat16)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads() -> None:
     """Lengths below, across and on a chunk boundary, with four value heads per key head."""
     torch.manual_seed(42)
@@ -100,7 +95,6 @@ def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 def test_gdn_prefill_reads_offsets_rewritten_in_place() -> None:
     """The same tensors, with the boundary between two sequences moved, compute the new split."""
     torch.manual_seed(42)
@@ -116,7 +110,6 @@ def test_gdn_prefill_reads_offsets_rewritten_in_place() -> None:
     test.check(op, *inputs)
 
 
-@pytest.mark.sm90
 def test_gdn_prefill_inverts_a_chunk_of_correlated_keys() -> None:
     """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
     lower matrix reaches the inverse, and every off-diagonal block depends on another."""
@@ -129,14 +122,12 @@ def test_gdn_prefill_inverts_a_chunk_of_correlated_keys() -> None:
     test.check(GDNFwdOp(), q, k, v, g, beta)
 
 
-@pytest.mark.sm90
 def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(2, 100, 2, 64, torch.bfloat16)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     ("l2norm", "raw_gate", "beta_sigmoid", "allow_neg_eigval", "dtype"),
     [
