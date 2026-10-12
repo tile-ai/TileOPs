@@ -1,8 +1,9 @@
 """Routed Mixture-of-Experts (MoE) FFN operators.
 
 ``FusedMoEFwdOp`` is routing + expert FFN. Passing ``correction_bias`` adds the
-per-expert bias during top-k selection (Kimi K2 style); withholding it selects
-straight from the gating scores (Qwen3 / DeepSeek-V3 style).
+per-expert bias during top-k selection (Kimi K2 / DeepSeek-V3 style); withholding it
+selects straight from the gating scores (Qwen3 style). ``num_expert_group`` /
+``topk_group`` restrict the selection to the best expert groups (DeepSeek-V3).
 
 The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
@@ -71,13 +72,19 @@ class FusedMoE(Op):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize],
         experts: Optional[FusedMoEExpertsModular],
     ) -> None:
-        """Hold the routing sub-op, the prepare/finalize stage and the experts."""
+        """Hold the routing sub-op, the prepare/finalize stage and the experts.
+
+        The routing keeps its own ``routed_scaling_factor`` at 1: the experts' epilogue
+        applies the op's factor, once.
+        """
         self._fused_topk = self.delegate_for(
             "route_select",
             None,
             top_k=self.top_k,
             scoring_func=self.scoring_func,
             renormalize=self.renormalize,
+            num_expert_group=self.num_expert_group,
+            topk_group=self.topk_group,
         )
         self._prepare: FusedMoEPrepareAndFinalize = (
             prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
@@ -128,11 +135,16 @@ class FusedMoE(Op):
 class FusedMoEFwdOp(FusedMoE):
     """Routed Mixture-of-Experts (MoE) FFN.
 
-    Covers Qwen3 (softmax) and DeepSeek-V3 (sigmoid) style configurations where
-    top-k comes straight from the gating scores, and Kimi K2 style ones where a
-    per-expert ``correction_bias`` is passed: top-k is then selected from
+    Covers Qwen3 (softmax) style configurations where top-k comes straight from
+    the gating scores, and Kimi K2 / DeepSeek-V3 style ones where a per-expert
+    ``correction_bias`` is passed: top-k is then selected from
     ``sigmoid(score) + correction_bias`` while the final weights use the
     original (unbiased) scores, renormalized.
+
+    ``num_expert_group > 1`` routes as DeepSeek-V3 does (``FusedTopKFwdOp`` states
+    the rule): the experts split into ``num_expert_group`` groups of consecutive
+    experts and top-k is selected inside the ``topk_group`` best groups. The output
+    is multiplied by ``routed_scaling_factor`` once, in the experts' epilogue.
     """
 
     def __init__(
@@ -141,6 +153,8 @@ class FusedMoEFwdOp(FusedMoE):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
+        num_expert_group: int = 1,
+        topk_group: int = 1,
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
@@ -153,7 +167,12 @@ class FusedMoEFwdOp(FusedMoE):
             top_k: K -- experts selected per token.
             scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
             renormalize: Renormalize top-k weights to sum to 1.
-            routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
+            routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827,
+                DeepSeek-V3: 2.5).
+            num_expert_group: Groups of consecutive experts the routing is restricted
+                by; must divide E. 1 selects over all experts. DeepSeek-V3: 8.
+            topk_group: Groups kept per token, holding at least ``top_k`` experts.
+                DeepSeek-V3: 4.
             activation: Gated activation applied to gate_up.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
@@ -165,6 +184,8 @@ class FusedMoEFwdOp(FusedMoE):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
+        self.num_expert_group = num_expert_group
+        self.topk_group = topk_group
         self.activation = activation
         self._settle_activation(experts)
         super().__init__(target=target)

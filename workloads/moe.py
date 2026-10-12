@@ -11,10 +11,18 @@ class FusedTopKWorkload(CallWorkload):
     def ref_program(
         self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+        """Score, select ``top_k`` (on the biased scores when a bias is passed) inside the best
+        expert groups, renormalize, scale."""
         p = self.call.params
         return ref_fused_topk(
-            gating_output, correction_bias, p["top_k"], p["scoring_func"], p["renormalize"]
+            gating_output,
+            correction_bias,
+            p["top_k"],
+            p["scoring_func"],
+            p["renormalize"],
+            p["num_expert_group"],
+            p["topk_group"],
+            p["routed_scaling_factor"],
         )
 
     def verification(self, *inputs):
@@ -22,10 +30,10 @@ class FusedTopKWorkload(CallWorkload):
 
         gating_output, *bias = inputs
         correction_bias = bias[0] if bias else None
-        scoring_func, renormalize = (
-            self.call.params["scoring_func"],
-            self.call.params["renormalize"],
-        )
+        p = self.call.params
+        scoring_func, renormalize = p["scoring_func"], p["renormalize"]
+        num_groups, topk_group = p["num_expert_group"], p["topk_group"]
+        scale = p["routed_scaling_factor"]
 
         def validate(got, expected):
             weights, ids = got[:2]
@@ -38,19 +46,36 @@ class FusedTopKWorkload(CallWorkload):
             logits = gating_output.float()
             scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
             selection = scores if correction_bias is None else scores + correction_bias
+            rows = torch.ones(ids.shape[0], dtype=torch.bool, device=ids.device)
+            if num_groups > 1:
+                # A group may be kept when it scores within rounding of the last kept one; a
+                # row whose boundary is that close has more than one valid group set, so its
+                # selection is only held to the groups it may keep.
+                group_scores = ref_group_scores(selection, num_groups, correction_bias is not None)
+                ranked = group_scores.sort(-1, descending=True).values
+                last = ranked[:, topk_group - 1 : topk_group]
+                slack = 1e-5 * last.abs() + 1e-6
+                allowed = group_scores >= last - slack
+                group_size = selection.shape[-1] // num_groups
+                assert allowed.gather(1, ids.long() // group_size).all(), "expert in dropped group"
+                if topk_group < num_groups:
+                    rows = (last - ranked[:, topk_group : topk_group + 1] > slack).squeeze(-1)
             # Validate selected scores and per-expert weights independently of tie order.
             torch.testing.assert_close(
-                selection.gather(1, ids.long()).sort(-1).values,
-                selection.gather(1, ref_ids.long()).sort(-1).values,
+                selection.gather(1, ids.long()).sort(-1).values[rows],
+                selection.gather(1, ref_ids.long()).sort(-1).values[rows],
                 rtol=1e-5,
                 atol=0,
             )
             selected = scores.gather(1, ids.long())
             if renormalize:
                 selected = selected / selected.sum(-1, keepdim=True)
-            torch.testing.assert_close(weights, selected, rtol=1e-4, atol=0)
+            torch.testing.assert_close(weights, selected * scale, rtol=1e-4, atol=0)
 
-        return Custom(validate, "expert selection and weights independent of tie order")
+        return Custom(
+            validate,
+            "expert selection inside the kept groups and weights independent of tie order",
+        )
 
 
 class MoEPermuteAlignWorkload(CallWorkload):
@@ -394,21 +419,48 @@ class IndexedExpertMLPWorkload(MoEExpertsWorkload):
     """One ``IndexedExpertMLPFwdOp`` call: the same inputs and reference as the expert MLP."""
 
 
+def ref_group_scores(select: torch.Tensor, num_groups: int, biased: bool) -> torch.Tensor:
+    """``[T, num_groups]`` scores of consecutive expert groups: the sum of each group's two best
+    selection scores when the selection carries a bias, else its best one (vLLM
+    ``grouped_topk``)."""
+    grouped = select.view(select.shape[0], num_groups, -1)
+    if biased:
+        return grouped.topk(2, dim=-1).values.sum(dim=-1)
+    return grouped.max(dim=-1).values
+
+
 def ref_fused_topk(
     gating_output: torch.Tensor,
     correction_bias: torch.Tensor | None,
     top_k: int,
     scoring_func: str,
     renormalize: bool,
+    num_expert_group: int = 1,
+    topk_group: int = 1,
+    routed_scaling_factor: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+    """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize, scale.
+
+    With ``num_expert_group > 1`` the selection is restricted to the ``topk_group`` best groups
+    of :func:`ref_group_scores`, ties to the lower group index, as vLLM's ``grouped_topk``
+    torch fallback computes it in float32.
+    """
     logits = gating_output.float()
     scores = torch.softmax(logits, dim=-1) if scoring_func == "softmax" else logits.sigmoid()
     select = scores if correction_bias is None else scores + correction_bias
+    if num_expert_group > 1:
+        group_scores = ref_group_scores(select, num_expert_group, correction_bias is not None)
+        # A stable descending sort keeps equal groups in index order: the lower one is kept.
+        kept = group_scores.sort(dim=-1, descending=True, stable=True).indices[:, :topk_group]
+        group_mask = torch.zeros_like(group_scores, dtype=torch.bool).scatter_(1, kept, True)
+        expert_mask = group_mask.repeat_interleave(select.shape[-1] // num_expert_group, dim=-1)
+        select = select.masked_fill(~expert_mask, float("-inf"))
     topk_ids = torch.topk(select, top_k, dim=-1, sorted=False).indices
     topk_weights = scores.gather(1, topk_ids)
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    if routed_scaling_factor != 1.0:
+        topk_weights = topk_weights * routed_scaling_factor
     return topk_weights, topk_ids.int()
 
 
@@ -429,7 +481,16 @@ class FusedMoEWorkload(CallWorkload):
 
     def ref_routed(self, hidden, gating, w_gate_up, w_down, bias) -> torch.Tensor:
         p = self.call.params
-        weights, ids = ref_fused_topk(gating, bias, p["top_k"], p["scoring_func"], p["renormalize"])
+        # The routing returns unscaled weights: the experts apply the factor, once.
+        weights, ids = ref_fused_topk(
+            gating,
+            bias,
+            p["top_k"],
+            p["scoring_func"],
+            p["renormalize"],
+            p["num_expert_group"],
+            p["topk_group"],
+        )
         return ref_routed_experts(
             hidden, w_gate_up, w_down, weights, ids, p["activation"], p["routed_scaling_factor"]
         )

@@ -14,7 +14,21 @@ it also makes the row-sum reduction unnecessary, because
 selection only; ``topk_weights`` still carries the original unbiased sigmoid
 score. Used by Kimi K2 and DeepSeek-V3-variant models.
 
-Ties in the argmax go to the lower expert index.
+``num_expert_group > 1`` is DeepSeek grouped routing. The E experts split into
+groups of ``E // num_expert_group`` consecutive experts; a group scores the sum of
+its two best selection scores when a bias is passed, else its best score. Each
+lane reduces its own slots per group, then the lanes merge: for a power-of-two group
+count as a ``shfl_xor`` transpose, each step halving the groups a lane holds, followed
+by one ``shfl_sync`` gather per group; otherwise as a butterfly per group. Every lane
+then holds all group scores; the ``topk_group`` best groups are kept by a serial
+argmax over those replicated scores, and every slot outside them is set to -inf; the
+ungrouped kernel's top-k loop then selects from the rest. ``num_expert_group == 1``
+builds the ungrouped kernel, with no grouped code.
+
+``routed_scaling_factor`` other than 1 is folded into the weight writeback.
+
+Ties in the argmax go to the lower expert index, and among groups to the lower
+group index.
 
 Scoring functions: ``softmax`` (Qwen3, Qwen2, Qwen3.5) and ``sigmoid``
 (DeepSeek-V3, GLM-4, Kimi K2).
@@ -41,6 +55,8 @@ __all__ = ["FusedTopKKernel"]
 _SCORING_FUNCS = ("softmax", "sigmoid")
 
 
+# 64: one build per token count, and a process routes several models' shapes, each with
+# and without a bias, over the decode-to-prefill token range.
 @functools.lru_cache(maxsize=64)
 def _fused_topk_kernel(
     num_tokens,
@@ -50,6 +66,9 @@ def _fused_topk_kernel(
     input_dtype,
     with_correction_bias=False,
     renormalize=False,
+    num_expert_group=1,
+    topk_group=1,
+    routed_scaling_factor=1.0,
 ):
     """Build a fused TileLang kernel: scoring + top-k, zero __syncthreads().
 
@@ -64,6 +83,10 @@ def _fused_topk_kernel(
         renormalize: If True, divide the K selected weights by their own sum
             inside the kernel (compile-time constant), so the caller needs no
             follow-up reduction over topk_weights.
+        num_expert_group: G -- groups of E // G consecutive experts; 1 builds the
+            ungrouped kernel.
+        topk_group: Groups kept per token when G > 1.
+        routed_scaling_factor: Multiplier folded into the weight writeback when not 1.
 
     Returns:
         JIT factory _func(TOKENS_PER_BLOCK) → callable.
@@ -79,6 +102,121 @@ def _fused_topk_kernel(
         LOG_WARP = int(math.log2(WARP_SIZE))  # = 5 for WARP_SIZE=32
         HALF_WARP = WARP_SIZE // 2  # = 16
         num_blocks = -(-num_tokens // TOKENS_PER_BLOCK)  # ceildiv(T, TPB)
+        grouped = num_expert_group > 1
+        scaled = routed_scaling_factor != 1.0
+        GROUP_SIZE = num_experts // num_expert_group
+
+        def group_of(j, lane_id):
+            """The group of slot ``j``'s expert, ``j * 32 + lane_id``."""
+            if GROUP_SIZE % WARP_SIZE == 0:
+                # The group spans whole warp rows: slot j of every lane is in one group.
+                return (j * WARP_SIZE) // GROUP_SIZE
+            return (j * WARP_SIZE + lane_id) // GROUP_SIZE
+
+        # A power-of-two group count reduces the per-group partials as a transpose: each
+        # xor step halves the groups a lane holds, so the transpose exchanges G - 1 partials
+        # in all instead of G at each of the five steps, and a lane ends with one group's
+        # partial; the remaining steps and the gather exchange one each.
+        LOG_GROUPS = int(math.log2(num_expert_group))
+        TRANSPOSE = num_expert_group == 1 << LOG_GROUPS and num_expert_group <= WARP_SIZE
+
+        @T.macro
+        def merge_partials(best1, best2, dst, keep1, keep2, other1, other2):
+            """Merge the partner's partial into slot ``dst``: a max, or with a bias the two
+            best of two sorted pairs."""
+            if with_correction_bias:
+                best2[dst] = T.max(T.min(keep1, other1), T.max(keep2, other2))
+            best1[dst] = T.max(keep1, other1)
+
+        @T.macro
+        def transpose_step(best1, best2, lane_id, half, mask):
+            """Lanes with the ``mask`` bit keep the upper ``half`` of their groups, the others
+            the lower; either way the kept partial lands in the lower slots."""
+            for g in T.unroll(half):
+                upper = (lane_id & mask) != 0
+                keep1 = T.alloc_var(T.float32)
+                keep1 = T.if_then_else(upper, best1[g + half], best1[g])
+                other1 = T.shfl_xor(T.if_then_else(upper, best1[g], best1[g + half]), mask)
+                keep2 = T.alloc_var(T.float32)
+                other2 = T.alloc_var(T.float32)
+                if with_correction_bias:
+                    keep2 = T.if_then_else(upper, best2[g + half], best2[g])
+                    other2 = T.shfl_xor(T.if_then_else(upper, best2[g], best2[g + half]), mask)
+                merge_partials(best1, best2, g, keep1, keep2, other1, other2)
+
+        @T.macro
+        def keep_top_groups(sel, lane_id):
+            """Set ``sel`` to -inf outside the ``topk_group`` best groups."""
+            # Per group: the best and, with a bias, second-best selection score.
+            best1 = T.alloc_local([num_expert_group], "float32")
+            best2 = T.alloc_local([num_expert_group], "float32")
+            kept = T.alloc_local([num_expert_group], "int32")
+            for g in T.unroll(num_expert_group):
+                best1[g] = -T.infinity("float32")
+                best2[g] = -T.infinity("float32")
+                kept[g] = 0
+            for j in T.unroll(ELEMS_PER_THREAD):
+                for g in T.unroll(num_expert_group):
+                    if group_of(j, lane_id) == g:
+                        if with_correction_bias:
+                            best2[g] = T.max(best2[g], T.min(best1[g], sel[j]))
+                        best1[g] = T.max(best1[g], sel[j])
+            if TRANSPOSE:
+                # Step s halves the groups held, on lane bit 4 - s; after LOG_GROUPS steps
+                # lane l holds group l >> (5 - LOG_GROUPS) in slot 0.
+                if LOG_GROUPS >= 1:
+                    transpose_step(best1, best2, lane_id, num_expert_group // 2, HALF_WARP)
+                if LOG_GROUPS >= 2:
+                    transpose_step(best1, best2, lane_id, num_expert_group // 4, HALF_WARP // 2)
+                if LOG_GROUPS >= 3:
+                    transpose_step(best1, best2, lane_id, num_expert_group // 8, HALF_WARP // 4)
+                if LOG_GROUPS >= 4:
+                    transpose_step(best1, best2, lane_id, num_expert_group // 16, HALF_WARP // 8)
+                if LOG_GROUPS >= 5:
+                    transpose_step(best1, best2, lane_id, num_expert_group // 32, HALF_WARP // 16)
+                for i in T.unroll(LOG_WARP - LOG_GROUPS):
+                    other1 = T.alloc_var(T.float32)
+                    other2 = T.alloc_var(T.float32)
+                    other1 = T.shfl_xor(best1[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
+                    if with_correction_bias:
+                        other2 = T.shfl_xor(best2[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
+                    merge_partials(best1, best2, 0, best1[0], best2[0], other1, other2)
+                if with_correction_bias:
+                    best1[0] = best1[0] + best2[0]
+                # Gather every group's score into every lane.
+                for g in T.unroll(num_expert_group):
+                    best2[g] = T.shfl_sync(best1[0], g << (LOG_WARP - LOG_GROUPS))
+                for g in T.unroll(num_expert_group):
+                    best1[g] = best2[g]
+            else:
+                for i in T.unroll(LOG_WARP):
+                    for g in T.unroll(num_expert_group):
+                        other1 = T.shfl_xor(best1[g], T.int32(HALF_WARP) >> i)
+                        if with_correction_bias:
+                            other2 = T.shfl_xor(best2[g], T.int32(HALF_WARP) >> i)
+                            # Merge two sorted pairs; reads best1 before it is updated.
+                            best2[g] = T.max(T.min(best1[g], other1), T.max(best2[g], other2))
+                        best1[g] = T.max(best1[g], other1)
+                if with_correction_bias:
+                    for g in T.unroll(num_expert_group):
+                        best1[g] = best1[g] + best2[g]
+            # Every lane holds every group score: pick the best groups without shuffles.
+            pick = T.alloc_var(T.int32)
+            pick_val = T.alloc_var(T.float32)
+            for _ in T.unroll(topk_group):
+                pick = T.int32(-1)
+                pick_val = -T.infinity("float32")
+                for g in T.unroll(num_expert_group):
+                    if kept[g] == 0 and best1[g] > pick_val:
+                        pick = g
+                        pick_val = best1[g]
+                for g in T.unroll(num_expert_group):
+                    if g == pick:
+                        kept[g] = 1
+            for j in T.unroll(ELEMS_PER_THREAD):
+                for g in T.unroll(num_expert_group):
+                    if group_of(j, lane_id) == g and kept[g] == 0:
+                        sel[j] = -T.infinity("float32")
 
         if with_correction_bias:
 
@@ -117,6 +255,9 @@ def _fused_topk_kernel(
                             else:
                                 my_scores[j] = -T.infinity("float32")
                                 my_biased[j] = -T.infinity("float32")
+
+                        if grouped:
+                            keep_top_groups(my_biased, lane_id)
 
                         l_best_val = T.alloc_var(T.float32)  # biased (for selection)
                         l_best_orig = T.alloc_var(T.float32)  # original sigmoid (for output)
@@ -174,7 +315,12 @@ def _fused_topk_kernel(
                                     topk_ids[token_id, k] = l_best_idx
                             else:
                                 if lane_id == 0:
-                                    topk_weights[token_id, k] = l_best_orig
+                                    if scaled:
+                                        topk_weights[token_id, k] = l_best_orig * T.float32(
+                                            routed_scaling_factor
+                                        )
+                                    else:
+                                        topk_weights[token_id, k] = l_best_orig
                                     topk_ids[token_id, k] = l_best_idx
 
                             for j in T.serial(ELEMS_PER_THREAD):
@@ -184,7 +330,10 @@ def _fused_topk_kernel(
 
                         if renormalize:
                             inv_sel_sum = T.alloc_var(T.float32)
-                            inv_sel_sum = T.float32(1) / sel_sum
+                            if scaled:
+                                inv_sel_sum = T.float32(routed_scaling_factor) / sel_sum
+                            else:
+                                inv_sel_sum = T.float32(1) / sel_sum
                             if lane_id == 0:
                                 for k in T.serial(top_k):
                                     topk_weights[token_id, k] = sel_vals[k] * inv_sel_sum
@@ -213,7 +362,10 @@ def _fused_topk_kernel(
 
                         if not renormalize:
                             inv_row_sum = T.alloc_var(T.float32)
-                            inv_row_sum = T.float32(1)  # default (sigmoid / no renorm)
+                            if scaled:
+                                inv_row_sum = T.float32(routed_scaling_factor)
+                            else:
+                                inv_row_sum = T.float32(1)  # default (sigmoid / no renorm)
 
                         if scoring_func == "softmax":
                             l_max = T.alloc_var(T.float32)
@@ -238,7 +390,10 @@ def _fused_topk_kernel(
                                     l_sum = l_sum + val
                                 for i in T.serial(LOG_WARP):
                                     l_sum = l_sum + T.shfl_xor(l_sum, T.int32(HALF_WARP) >> i)
-                                inv_row_sum = T.float32(1) / l_sum
+                                if scaled:
+                                    inv_row_sum = T.float32(routed_scaling_factor) / l_sum
+                                else:
+                                    inv_row_sum = T.float32(1) / l_sum
 
                         else:  # sigmoid: element-wise, no row reduction
                             for j in T.serial(ELEMS_PER_THREAD):
@@ -247,6 +402,10 @@ def _fused_topk_kernel(
                                     val = my_scores[j]
                                     my_scores[j] = T.float32(1) / (T.float32(1) + T.exp(-val))
                                 # Padding already -inf; sigmoid(-inf)≈0, keep -inf for argmax.
+
+                        if grouped:
+                            # After the row sum: softmax normalizes over every expert.
+                            keep_top_groups(my_scores, lane_id)
 
                         l_best_val = T.alloc_var(T.float32)
                         l_best_idx = T.alloc_var(T.int32)
@@ -297,7 +456,10 @@ def _fused_topk_kernel(
 
                         if renormalize:
                             inv_sel_sum = T.alloc_var(T.float32)
-                            inv_sel_sum = T.float32(1) / sel_sum
+                            if scaled:
+                                inv_sel_sum = T.float32(routed_scaling_factor) / sel_sum
+                            else:
+                                inv_sel_sum = T.float32(1) / sel_sum
                             if lane_id == 0:
                                 for k in T.serial(top_k):
                                     topk_weights[token_id, k] = sel_vals[k] * inv_sel_sum
@@ -327,6 +489,10 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         with_correction_bias: If True, accept a per-expert correction_bias tensor in
             forward(). Adds bias to sigmoid scores for expert selection while writing
             unbiased sigmoid scores to topk_weights. Requires scoring_func="sigmoid".
+        num_expert_group: Groups of E / num_expert_group consecutive experts the
+            selection is restricted by; 1 selects over all experts.
+        topk_group: Groups kept per token, best group score first.
+        routed_scaling_factor: Multiplier on the written weights.
         dtype: Input logits dtype; routing arithmetic remains float32.
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
 
@@ -336,7 +502,8 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
 
     @classmethod
     def entry_for(cls, call: FusedTopKCall) -> Entry:
-        """One build per routing shape, scoring semantics, bias presence, dtype and device."""
+        """One build per routing shape, scoring and grouping semantics, bias presence, dtype
+        and device."""
         index = call.device.index if call.device is not None else None
         identity = (
             call.num_tokens,
@@ -345,6 +512,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             call.scoring_func,
             call.renormalize,
             call.with_correction_bias,
+            call.num_expert_group,
+            call.topk_group,
+            call.routed_scaling_factor,
             call.dtype,
             index,
         )
@@ -355,6 +525,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             scoring_func=call.scoring_func,
             renormalize=call.renormalize,
             with_correction_bias=call.with_correction_bias,
+            num_expert_group=call.num_expert_group,
+            topk_group=call.topk_group,
+            routed_scaling_factor=call.routed_scaling_factor,
             dtype=call.dtype,
             device_index=index,
         )
@@ -367,6 +540,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         with_correction_bias: bool = False,
+        num_expert_group: int = 1,
+        topk_group: int = 1,
+        routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
@@ -383,6 +559,19 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
                 "with_correction_bias=True requires scoring_func='sigmoid'. "
                 f"Got scoring_func='{scoring_func}'."
             )
+        if num_expert_group < 1 or num_experts % num_expert_group != 0:
+            raise ValueError(
+                f"num_expert_group ({num_expert_group}) must be >= 1 and divide "
+                f"num_experts ({num_experts})"
+            )
+        group_size = num_experts // num_expert_group
+        if not 1 <= topk_group <= num_expert_group or top_k > topk_group * group_size:
+            raise ValueError(
+                f"topk_group ({topk_group}) must lie in [1, {num_expert_group}] and keep "
+                f"at least top_k ({top_k}) experts"
+            )
+        if num_expert_group > 1 and with_correction_bias and group_size < 2:
+            raise ValueError("a biased group score sums two experts; each group needs two")
 
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -390,6 +579,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.with_correction_bias = with_correction_bias
+        self.num_expert_group = num_expert_group
+        self.topk_group = topk_group
+        self.routed_scaling_factor = float(routed_scaling_factor)
         self.dtype = dtype
 
         self._kernel_fn = _fused_topk_kernel(
@@ -400,6 +592,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             self.dtype_str,
             with_correction_bias,
             renormalize,
+            num_expert_group,
+            topk_group,
+            self.routed_scaling_factor,
         )
         self.init_config(config)
 

@@ -6,6 +6,7 @@ Verifies:
   - routed_output matches FusedMoE output
   - Without the shared weights, shared_output is None
   - TP sharding: partial outputs sum to float32 math reference
+  - DeepSeek-V3 grouped routing on the routed half, scaled once
 """
 
 import pytest
@@ -18,7 +19,12 @@ from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import SharedExpertMLPWorkload, moe_verification, ref_shared_expert
+from workloads.moe import (
+    FusedMoESharedExpertWorkload,
+    SharedExpertMLPWorkload,
+    moe_verification,
+    ref_shared_expert,
+)
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -299,3 +305,29 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
         shared_w_down=torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02,
     )
     assert built, "the replacement was never constructed"
+
+
+@pytest.mark.smoke
+def test_grouped_routing_with_the_shared_expert() -> None:
+    """DeepSeek-V3 grouped routing (8 groups, the best 4 kept) on the routed half, with the
+    shared expert enabled: both outputs match the workload reference, the routed one scaled
+    by 2.5 once."""
+    call = manifest_call(
+        "FusedMoESharedExpertFwdOp",
+        {"D": "bfloat16"},
+        T=32,
+        E=256,
+        H=64,
+        F=32,
+        S=32,
+        top_k=8,
+        num_expert_group=8,
+        topk_group=4,
+        scoring_func="sigmoid",
+        renormalize=True,
+        routed_scaling_factor=2.5,
+        some=["correction_bias", "shared_w_gate_up"],
+    )
+    workload = FusedMoESharedExpertWorkload(call)
+    op = FusedMoESharedExpertFwdOp(**call.arguments({}))
+    TestBase.check(workload, op, *workload.gen_inputs())
