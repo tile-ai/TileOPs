@@ -31,6 +31,9 @@ BLOCK_SHARED_BYTES_OPT_IN: dict[int, int] = {
     90: 227 * 1024,
 }
 
+# Shared memory one mbarrier takes; a kernel's barriers come out of the block's budget.
+MBARRIER_BYTES: int = 8
+
 # Threads one block may hold.
 MAX_BLOCK_THREADS: int = 1024
 

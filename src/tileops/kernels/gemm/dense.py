@@ -627,25 +627,27 @@ def _fp8_ws_stage(
     block_n: int,
     block_scaled: bool,
     b_scale_rows: int,
+    block_m: int = _FP8_WS_BLOCK_M,
 ):
-    """One K-step of the producer: the step's three TMA boxes and its two scale vectors.
+    """One K-step of the producer: the step's A boxes, its B box and its two scale vectors.
 
+    ``block_m`` is one or two consumers' 64 rows; ``a_bot`` is loaded only for the second.
     ``b_scale_rows`` is how many rows of ``b`` one ``scale_b`` row covers: 1 for a
     per-row grid, 128 for a per-128x128-block grid.
     """
     half_m = _FP8_WS_HALF_M
-    block_m = _FP8_WS_BLOCK_M
     ks = kb * _FP8_WS_BLOCK_K
     T.tma_copy(
         a[m_start : m_start + half_m, ks : ks + _FP8_WS_BLOCK_K],
         a_top[slot, :, :],
         barrier=ab_full[slot],
     )
-    T.tma_copy(
-        a[m_start + half_m : m_start + block_m, ks : ks + _FP8_WS_BLOCK_K],
-        a_bot[slot, :, :],
-        barrier=ab_full[slot],
-    )
+    if block_m > half_m:
+        T.tma_copy(
+            a[m_start + half_m : m_start + block_m, ks : ks + _FP8_WS_BLOCK_K],
+            a_bot[slot, :, :],
+            barrier=ab_full[slot],
+        )
     T.tma_copy(
         b[n_start : n_start + block_n, ks : ks + _FP8_WS_BLOCK_K],
         b_smem[slot, :, :],
@@ -746,12 +748,12 @@ def _gemm_fp8_ws_kernel(
     sm_count: int,
     b_scale_rows: int = 1,
 ) -> Callable:
-    """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 2 consumer warpgroups.
+    """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 1 or 2 consumer warpgroups.
 
     Same split-A / shared-B layout as :func:`_gemm_coop2_kernel`: a producer
-    warpgroup issues the TMA loads, two consumer warpgroups each own 64 of the
-    tile's 128 rows and run their own WGMMA over a shared ``B`` ring, and the
-    persistent grid sweeps a grouped tile order for L2 reuse.
+    warpgroup issues the TMA loads, one consumer warpgroup per 64 of the tile's
+    ``block_m`` rows (64 or 128) runs its own WGMMA over a shared ``B`` ring, and
+    the persistent grid sweeps a grouped tile order for L2 reuse.
 
     Under block128 scaling the producer also stages the K-step's ``A`` row
     scales and ``B`` column scales into that step's ring slot, and the consumer
@@ -786,7 +788,6 @@ def _gemm_fp8_ws_kernel(
         group_size_m)`` returns the compiled ``prim_func``.
     """
     accum_dtype = "float"
-    block_m = _FP8_WS_BLOCK_M
     block_k = _FP8_WS_BLOCK_K
     scale_k = (k + 127) // 128
 
@@ -799,7 +800,13 @@ def _gemm_fp8_ws_kernel(
         block_n: int = 128,
         num_stages: int = 4,
         group_size_m: int = 8,
+        block_m: int = _FP8_WS_BLOCK_M,
     ) -> Callable:
+        if block_m not in (_FP8_WS_HALF_M, _FP8_WS_BLOCK_M):
+            raise ValueError(
+                f"block_m must be {_FP8_WS_HALF_M} or {_FP8_WS_BLOCK_M}, got {block_m}"
+            )
+
         @T.macro
         def _fp8_ws_epilogue(
             c,
@@ -846,7 +853,9 @@ def _gemm_fp8_ws_kernel(
                     if i < rows and j < cols:
                         c[m_start + i, n_start + j] = out[i, j]
 
-        half_m = block_m // 2
+        half_m = _FP8_WS_HALF_M
+        # One consumer warpgroup per 64 rows of the tile, beside the producer warpgroup.
+        consumers = block_m // half_m
         nr = (half_m * block_n) // 128
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
@@ -870,12 +879,18 @@ def _gemm_fp8_ws_kernel(
             bias: T.Tensor(bias_shape, out_dtype),  # type: ignore
             c: T.Tensor((m, n), out_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(grid, threads=384) as (pid,):
+            with T.Kernel(grid, threads=128 * (1 + consumers)) as (pid,):
                 a_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
-                a_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                if consumers == 2:
+                    a_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                else:
+                    # Nothing loads or reads a second consumer's rows when there is none.
+                    a_bot = a_top
                 b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
                 c_smem_0 = T.alloc_shared((store_rows, block_n), out_dtype)
-                c_smem_1 = T.alloc_shared((store_rows, block_n), out_dtype)
+                c_smem_1 = (
+                    T.alloc_shared((store_rows, block_n), out_dtype) if consumers == 2 else c_smem_0
+                )
                 sa_stage = T.alloc_shared((stage_rows, block_m), accum_dtype)
                 sb_stage = T.alloc_shared((stage_rows, block_n), accum_dtype)
                 acc_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
@@ -900,7 +915,7 @@ def _gemm_fp8_ws_kernel(
                 T.annotate_layout(layouts)
 
                 ab_full = T.alloc_barrier([128] * num_stages)
-                ab_empty = T.alloc_barrier([256] * num_stages)
+                ab_empty = T.alloc_barrier([128 * consumers] * num_stages)
 
                 gi_prod = T.alloc_var("int32", init=0)
                 gi_cons_0 = T.alloc_var("int32", init=0)
@@ -950,6 +965,7 @@ def _gemm_fp8_ws_kernel(
                                     block_n=block_n,
                                     block_scaled=block_scaled,
                                     b_scale_rows=b_scale_rows,
+                                    block_m=block_m,
                                 )
                                 gi_prod = gi_prod + 1
 
@@ -1033,7 +1049,7 @@ def _gemm_fp8_ws_kernel(
                                 stage_store=stage_store,
                             )
 
-                else:
+                elif consumers == 2:
                     T.inc_max_nreg(232)
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid

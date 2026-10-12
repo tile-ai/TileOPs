@@ -3,7 +3,13 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmW4A16Kernel
+from tileops.kernels.gemm import (
+    GemmFP8Call,
+    GemmFP8TensorScaleKernel,
+    GemmFP81D2DFwdKernel,
+    GemmFP81D2DWaveFwdKernel,
+    GemmW4A16Kernel,
+)
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
@@ -27,6 +33,23 @@ class GemmFP8Test(GemmFP8Workload, TestBase):
 
 class GemmW4A16Test(GemmW4A16Workload, TestBase):
     pass
+
+
+def _fp8_call(
+    a: torch.Tensor, b: torch.Tensor, scale_a: torch.Tensor, scale_b: torch.Tensor
+) -> GemmFP8Call:
+    """The call spec ``GemmFP8FwdOp`` dispatches on for these bf16-output inputs."""
+    return GemmFP8Call(
+        m=a.shape[0],
+        n=b.shape[0],
+        k=a.shape[1],
+        dtype=a.dtype,
+        scale_a_shape=tuple(scale_a.shape),
+        scale_b_shape=tuple(scale_b.shape),
+        out_dtype=torch.bfloat16,
+        has_bias=False,
+        device=a.device,
+    )
 
 
 class GemmFixture(FixtureBase):
@@ -416,7 +439,7 @@ class GemmFP8Fixture(FixtureBase):
                     id="full-fp8-e4m3-per-tensor-gemv",
                 ),
                 pytest.param(
-                    128,
+                    256,
                     256,
                     6144,
                     torch.float8_e4m3fn,
@@ -427,7 +450,7 @@ class GemmFP8Fixture(FixtureBase):
                     id="full-fp8-e4m3-block128-split-k",
                 ),
                 pytest.param(
-                    128,
+                    256,
                     256,
                     6144,
                     torch.float8_e4m3fn,
@@ -436,6 +459,17 @@ class GemmFP8Fixture(FixtureBase):
                     True,
                     marks=pytest.mark.full,
                     id="full-fp8-e4m3-per-tensor-split-k-bias",
+                ),
+                pytest.param(
+                    1280,
+                    2112,
+                    256,
+                    torch.float8_e4m3fn,
+                    "per_tensor",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-per-tensor-192-wide-tile",
                 ),
                 pytest.param(
                     200,
@@ -676,6 +710,49 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     this decode shape takes it."""
     test = GemmFP8Test(128, 2112, 7168, torch.float8_e4m3fn, "block128x128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_1d1d_wave_matches_reference() -> None:
+    """A 1x128 ``scale_b`` stages per-column scales in the wave kernel's ring and folds them
+    through the per-column helper; the calibrated schedule for this shape takes 192 columns."""
+    test = GemmFP8Test(4096, 576, 7168, torch.float8_e4m3fn, "block128")
+    op = GemmFP8FwdOp(target=BUILTIN)
+    inputs = test.gen_inputs()
+    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
+    assert isinstance(kernel, GemmFP81D2DWaveFwdKernel)
+    assert kernel.scale_b_per_row and kernel.config["block_n"] == 192
+    test.check(op, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, n, k, scale_mode, kernel_type, block_m, block_n",
+    [
+        pytest.param(
+            128, 2112, 7168, "per_tensor", GemmFP8TensorScaleKernel, 64, 32, id="one-row-tile"
+        ),
+        pytest.param(
+            1280, 2112, 256, "per_tensor", GemmFP8TensorScaleKernel, 128, 192, id="192-wide"
+        ),
+        pytest.param(
+            128, 576, 7168, "block128x128", GemmFP81D2DFwdKernel, 64, 16, id="1d2d-one-row-tile"
+        ),
+    ],
+)
+def test_gemm_fp8_default_tile(
+    m: int, n: int, k: int, scale_mode: str, kernel_type: type, block_m: int, block_n: int
+) -> None:
+    """The default schedule's tile: 64 rows on a single 128-row tile, 192 columns where
+    whole waves of them cover fewer columns than 128's."""
+    inputs = GemmFP8Test(m, n, k, torch.float8_e4m3fn, scale_mode).gen_inputs()
+    kernel = GemmFP8FwdOp(target=BUILTIN).kernel_for("gemm_fp8", _fp8_call(*inputs))
+    assert isinstance(kernel, kernel_type)
+    assert (kernel.config["block_m"], kernel.config["block_n"]) == (block_m, block_n)
 
 
 @GemvBoundaryFixture
