@@ -37,6 +37,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import (
+    _SHIFT_READ_WIDTH,
     NARROW_ROW,
     make_row_reduce,
     make_shifted_row_reduce,
@@ -48,11 +49,6 @@ from tileops.kernels.norm._config import (
 from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
-
-# Width from which a row held in registers takes the two-pass reduction. TileLang fails to
-# compile the one-pass reduction's shift read at row strides from 32768 to 65535
-# (tile-ai/tilelang#3453); the two passes run within 3% of it there and 8% faster at 65536.
-_SHIFT_READ_WIDTH = 32768
 
 
 class _RowNormKernel(Kernel):
