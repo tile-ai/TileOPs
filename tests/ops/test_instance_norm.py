@@ -267,11 +267,23 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("n, spatial", [(20, (33,)), (3, (5000,))])
-def test_instance_norm_updates_running_statistics_across_blocks(n, spatial) -> None:
-    """Several blocks per channel update the running statistics as torch does, for a
-    register-held row and a shared-memory-staged one."""
-    c, dtype = 3, torch.float16
+@pytest.mark.parametrize(
+    "n, spatial, dtype",
+    [
+        (20, (33,), torch.float16),
+        (3, (5000,), torch.float16),
+        (1, (192, 192), torch.float16),
+        (3, (192, 192), torch.float16),
+        (1, (192, 192), torch.bfloat16),
+        (3, (192, 192), torch.bfloat16),
+        (1, (192, 192), torch.float32),
+        (3, (192, 192), torch.float32),
+    ],
+)
+def test_instance_norm_updates_running_statistics_across_blocks(n, spatial, dtype) -> None:
+    """Single and multiple blocks preserve output and running statistics, including
+    wide register rows whose reduction must avoid scalar shift loads."""
+    c = 3
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device()) * 3 + 1
     stats = (torch.randn(c, device=run_device()), torch.rand(c, device=run_device()) + 0.5)
     mine, ref = [s.clone() for s in stats], [s.clone() for s in stats]
