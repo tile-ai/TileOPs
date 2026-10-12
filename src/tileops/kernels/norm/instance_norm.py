@@ -31,7 +31,11 @@ from tileops.kernels.norm.call_spec import (
     InstanceNormFwdInterface,
     InstanceNormTrainFwdInterface,
 )
-from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.group_norm import (
+    _SHIFT_READ_WIDTH,
+    GroupNormKernel,
+    GroupNormNoAffineKernel,
+)
 
 __all__ = [
     "InstanceNormFwdTrainKernel",
@@ -131,7 +135,8 @@ def _instance_norm_train_kernel(
             forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
             forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
         )
-        if register_direct:
+        shifted = register_direct and D_padded < _SHIFT_READ_WIDTH
+        if shifted:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:
             row_reduce = make_row_reduce(block_m, D, D_padded, eps)
@@ -150,8 +155,9 @@ def _instance_norm_train_kernel(
                 if register_direct:
                     centered_row = T.alloc_fragment((block_m, D_padded), accum_dtype)
                     squares = T.alloc_fragment((block_m, D_padded), accum_dtype)
-                    shift = T.alloc_fragment((block_m,), accum_dtype)
-                    acc_squares = T.alloc_fragment((block_m,), accum_dtype)
+                    if shifted:
+                        shift = T.alloc_fragment((block_m,), accum_dtype)
+                        acc_squares = T.alloc_fragment((block_m,), accum_dtype)
                     T.annotate_layout({centered_row: row_layout, squares: row_layout})
                 else:
                     shared_buf = T.alloc_shared((block_m, D_padded), dtype)
@@ -173,23 +179,30 @@ def _instance_norm_train_kernel(
                 if register_direct:
                     # The shift the one-pass reduction needs; a row past the last
                     # sample reads the last one.
-                    for i in T.Parallel(block_m):
-                        shift[i] = T.cast(x[T.min(s * block_m + i, N - 1), c, 0], accum_dtype)
+                    if shifted:
+                        for i in T.Parallel(block_m):
+                            shift[i] = T.cast(x[T.min(s * block_m + i, N - 1), c, 0], accum_dtype)
                     if guarded:
                         for i, j in T.Parallel(block_m, D_padded):
                             v = T.if_then_else(
                                 T.And(s * block_m + i < N, j < D),
-                                T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i],
+                                T.cast(x[s * block_m + i, c, j], accum_dtype)
+                                - (shift[i] if shifted else 0.0),
                                 T.cast(0.0, accum_dtype),
                             )
                             centered_row[i, j] = v
-                            squares[i, j] = v * v
+                            squares[i, j] = v * v if shifted else v
                     else:
                         for i, j in T.Parallel(block_m, D_padded):
-                            v = T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i]
+                            v = T.cast(x[s * block_m + i, c, j], accum_dtype) - (
+                                shift[i] if shifted else 0.0
+                            )
                             centered_row[i, j] = v
-                            squares[i, j] = v * v
-                    row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
+                            squares[i, j] = v * v if shifted else v
+                    if shifted:
+                        row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
+                    else:
+                        row_reduce(squares, acc, mean_val, rstd)
                 else:
                     for i, j in T.Parallel(block_m, D_padded):
                         shared_buf[i, j] = T.if_then_else(
@@ -218,7 +231,7 @@ def _instance_norm_train_kernel(
                         )
 
                 for i in T.Parallel(block_m):
-                    if register_direct:
+                    if shifted:
                         mean_i = shift[i] + mean_val[i]
                         var_i = acc_squares[i] / float(D) - mean_val[i] * mean_val[i]
                     else:
