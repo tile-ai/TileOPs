@@ -16,7 +16,7 @@ __all__ = ["KDAFusedPrefillFwdKernel"]
 
 
 class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
-    """SM90 prefill that keeps a chunk's whole step inside one CTA.
+    """Prefill that keeps a chunk's whole step inside one CTA.
 
     The chunk-local work and the recurrence share a block, so the WY vectors,
     the gated query and key and the intra-chunk attention never reach global
@@ -25,7 +25,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     that the chunk-parallel split serves the same call.
     """
 
-    supported_archs = [90]
+    supported_archs = [89, 90]
     preferred_over = frozenset({"kda_chunk_prefill"})
 
     @classmethod
@@ -39,7 +39,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         # Measured on H200: the fused shape wins from about three quarters of
         # the SMs covered and loses badly below half.
         blocks = call.sequences * call.value_heads
-        wanted = call.sm_count * 3 // 4
+        # Compact 128-wide SM89 calls need enough blocks to cover the device.
+        # The half-device short calls only showed marginal full-call gains.
+        wanted = call.sm_count if call.arch == 89 and call.dim_k == 128 else call.sm_count * 3 // 4
         if blocks < wanted:
             return f"fuses the scan into {blocks} blocks, fewer than the {wanted} it needs"
         return None
@@ -47,6 +49,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     @classmethod
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
+        compact = call.arch == 89 and call.dim_k == 128
         identity = (
             call.batch,
             call.seq_len,
@@ -59,6 +62,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.l2norm,
             call.dtype,
             index,
+            compact,
         )
         return identity, lambda: cls(
             heads=call.heads,
@@ -69,6 +73,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             l2norm=call.l2norm,
             dtype=call.dtype,
             device_index=index,
+            compact=compact,
         )
 
     def __init__(
@@ -82,9 +87,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dtype: torch.dtype,
         *,
         device_index: Optional[int] = None,
+        compact: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
+        self.compact = compact
         self.heads = heads
         self.value_heads = value_heads
         self.dim_k = dim_k
@@ -137,6 +144,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             self.l2norm,
             total,
             num_seqs,
+            compact=self.compact,
         )
         o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state
