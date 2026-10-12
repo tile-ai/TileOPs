@@ -21,6 +21,7 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, vector_aligned
 from tileops.kernels.norm._config import (
+    _SHIFT_READ_WIDTH,
     make_row_reduce,
     make_shifted_row_reduce,
     row_padding,
@@ -32,7 +33,6 @@ from tileops.kernels.norm.call_spec import (
     InstanceNormTrainFwdInterface,
 )
 from tileops.kernels.norm.group_norm import (
-    _SHIFT_READ_WIDTH,
     GroupNormKernel,
     GroupNormNoAffineKernel,
 )
