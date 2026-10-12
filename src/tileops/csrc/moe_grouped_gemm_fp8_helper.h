@@ -1,8 +1,9 @@
 #pragma once
 
-// WGMMA, promotion and epilogue helpers of the masked FP8 M-grouped GEMM,
-// copied from the dense FP8 1D2D kernel's fp8_1d2d_helper.h (the parts this
-// kernel calls), so that header can change without moving this kernel.
+// WGMMA, promotion and epilogue helpers of the masked FP8 M-grouped GEMM. The
+// WGMMA and epilogue helpers are copied from the dense FP8 1D2D kernel's
+// fp8_1d2d_helper.h, so that header can change without moving this kernel; the
+// promotion here also serves tiles whose columns span several ``b`` scale rows.
 
 #include <cuda.h>
 #include <tl_templates/cuda/common.h>
@@ -42,93 +43,42 @@ __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128xN_lo(
 }
 
 // final += partial * scale_a * scale_b, the two scales multiplied first, the
-// order DeepGEMM's promotion uses, so the two agree bit for bit. The scales
-// arrive by value: the stage is released, so nothing here may read it.
-template <int BlockN>
+// order DeepGEMM's promotion uses, so the two agree bit for bit. The tile's
+// columns run in sizeof...(scale_b) sub-blocks of equal width, each inside one
+// ``b`` scale row, and ``scale_b`` holds one scale per sub-block. Eight-column
+// fragment ``i`` lies in sub-block ``i / (sub-block width / 8)``, a constant,
+// so no fragment selects a scale. The scales arrive by value: the stage is
+// released, so nothing here may read it.
+template <int BlockN, typename... ScaleB>
 __device__ __forceinline__ void moe_fp8_promote(float* partial,
                                                 float* final_accum,
                                                 float scale_a_row0,
                                                 float scale_a_row1,
-                                                float scale_b) {
-  float const scale0 = scale_a_row0 * scale_b;
-  float const scale1 = scale_a_row1 * scale_b;
+                                                ScaleB... scale_b) {
+  constexpr int kSubBlocks = sizeof...(ScaleB);
+  static_assert(kSubBlocks > 0 && BlockN % kSubBlocks == 0,
+                "the sub-blocks split the tile evenly");
+  constexpr int kSubBlockN = BlockN / kSubBlocks;
+  static_assert(kSubBlockN % 8 == 0 && 128 % kSubBlockN == 0,
+                "a sub-block is whole fragments and lies inside one 128-column "
+                "b scale row at any multiple of its width");
+  constexpr int kFragmentsPerSubBlock = kSubBlockN / 8;
+  float const scale_b_values[kSubBlocks] = {static_cast<float>(scale_b)...};
+  float scale0[kSubBlocks];
+  float scale1[kSubBlocks];
+#pragma unroll
+  for (int j = 0; j < kSubBlocks; ++j) {
+    scale0[j] = scale_a_row0 * scale_b_values[j];
+    scale1[j] = scale_a_row1 * scale_b_values[j];
+  }
 #pragma unroll
   for (int i = 0; i < BlockN / 8; ++i) {
-    final_accum[i * 4 + 0] += scale0 * partial[i * 4 + 0];
-    final_accum[i * 4 + 1] += scale0 * partial[i * 4 + 1];
-    final_accum[i * 4 + 2] += scale1 * partial[i * 4 + 2];
-    final_accum[i * 4 + 3] += scale1 * partial[i * 4 + 3];
+    int const j = i / kFragmentsPerSubBlock;
+    final_accum[i * 4 + 0] += scale0[j] * partial[i * 4 + 0];
+    final_accum[i * 4 + 1] += scale0[j] * partial[i * 4 + 1];
+    final_accum[i * 4 + 2] += scale1[j] * partial[i * 4 + 2];
+    final_accum[i * 4 + 3] += scale1[j] * partial[i * 4 + 3];
   }
-}
-
-// A constexpr gcd, for the split points a tile width admits.
-__host__ __device__ constexpr int moe_fp8_gcd(int a, int b) {
-  return b == 0 ? a : moe_fp8_gcd(b, a % b);
-}
-
-// The promotion of a tile spanning two ``b`` scale rows: its first
-// ``FirstIters`` eight-column fragments take ``scale_b_0``, the rest
-// ``scale_b_1``. The four scale products are folded once, before the
-// fragment loop, and the split is a constant, so no fragment selects a scale.
-template <int BlockN, int FirstIters>
-__device__ __forceinline__ void moe_fp8_promote_two_b_scales_split(
-    float* partial, float* final_accum, float scale_a_row0, float scale_a_row1,
-    float scale_b_0, float scale_b_1) {
-  float const scale_0_0 = scale_a_row0 * scale_b_0;
-  float const scale_1_0 = scale_a_row1 * scale_b_0;
-  float const scale_0_1 = scale_a_row0 * scale_b_1;
-  float const scale_1_1 = scale_a_row1 * scale_b_1;
-#pragma unroll
-  for (int i = 0; i < FirstIters; ++i) {
-    final_accum[i * 4 + 0] += scale_0_0 * partial[i * 4 + 0];
-    final_accum[i * 4 + 1] += scale_0_0 * partial[i * 4 + 1];
-    final_accum[i * 4 + 2] += scale_1_0 * partial[i * 4 + 2];
-    final_accum[i * 4 + 3] += scale_1_0 * partial[i * 4 + 3];
-  }
-#pragma unroll
-  for (int i = FirstIters; i < BlockN / 8; ++i) {
-    final_accum[i * 4 + 0] += scale_0_1 * partial[i * 4 + 0];
-    final_accum[i * 4 + 1] += scale_0_1 * partial[i * 4 + 1];
-    final_accum[i * 4 + 2] += scale_1_1 * partial[i * 4 + 2];
-    final_accum[i * 4 + 3] += scale_1_1 * partial[i * 4 + 3];
-  }
-}
-
-// ``first_iters`` is ``(128 - n0 % 128) / 8`` for a tile starting at ``n0``, a
-// multiple of BlockN, so it is a multiple of ``gcd(128, BlockN) / 8`` up to 16:
-// 4, 8, 12 or 16 for BlockN 160, 8 or 16 for 192. Each value gets its own
-// constant-split body; the branch is warp-uniform and taken once per K step.
-template <int BlockN, int Split>
-__device__ __forceinline__ void moe_fp8_promote_two_b_scales_dispatch(
-    float* partial, float* final_accum, float scale_a_row0, float scale_a_row1,
-    float scale_b_0, float scale_b_1, int first_iters) {
-  constexpr int kGap = moe_fp8_gcd(128, BlockN) / 8;
-  if constexpr (Split + kGap <= 128 / 8) {
-    if (first_iters == Split) {
-      moe_fp8_promote_two_b_scales_split<BlockN, Split>(
-          partial, final_accum, scale_a_row0, scale_a_row1, scale_b_0,
-          scale_b_1);
-      return;
-    }
-    moe_fp8_promote_two_b_scales_dispatch<BlockN, Split + kGap>(
-        partial, final_accum, scale_a_row0, scale_a_row1, scale_b_0, scale_b_1,
-        first_iters);
-  } else {
-    moe_fp8_promote_two_b_scales_split<BlockN, Split>(
-        partial, final_accum, scale_a_row0, scale_a_row1, scale_b_0, scale_b_1);
-  }
-}
-
-template <int BlockN>
-__device__ __forceinline__ void moe_fp8_promote_two_b_scales(
-    float* partial, float* final_accum, float scale_a_row0, float scale_a_row1,
-    float scale_b_0, float scale_b_1, int first_iters) {
-  static_assert(128 % BlockN != 0 && BlockN > 128 && BlockN <= 256,
-                "two b scale rows span a tile wider than 128 that 128 does "
-                "not divide");
-  moe_fp8_promote_two_b_scales_dispatch<BlockN, moe_fp8_gcd(128, BlockN) / 8>(
-      partial, final_accum, scale_a_row0, scale_a_row1, scale_b_0, scale_b_1,
-      first_iters);
 }
 
 // The warp-group's 64 x BlockN accumulator, in bfloat16, into the swizzled
@@ -188,12 +138,17 @@ TL_DEVICE void moe_fp8_tma_store_3d_issue(const CUtensorMap& descriptor,
       : "memory");
 }
 
-// The block_n widths the builder can name: the WGMMA and the staging store of
-// every width, and the promotion that reads one or two ``b`` scale rows.
+// The block_n widths the builder can name: the WGMMA, the promotion and the
+// staging store of every width.
 #define TILEOPS_DEFINE_MOE_FP8_HELPERS(N)                                  \
   __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128x##N##_lo(    \
       float* acc, uint32_t a_lo, uint32_t b_lo) {                          \
     moe_fp8_wgmma_64x128_by_128xN_lo<N>(acc, a_lo, b_lo);                  \
+  }                                                                        \
+  template <typename... ScaleB>                                            \
+  __device__ __forceinline__ void moe_fp8_promote_64x##N(                  \
+      float* p, float* f, float sa0, float sa1, ScaleB... sb) {            \
+    moe_fp8_promote<N>(p, f, sa0, sa1, sb...);                             \
   }                                                                        \
   __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm64_64x##N(  \
       float* acc, bfloat16_t* out, int m_offset) {                         \
@@ -204,30 +159,11 @@ TL_DEVICE void moe_fp8_tma_store_3d_issue(const CUtensorMap& descriptor,
     moe_fp8_stsm_bf16_swizzled<128, N>(acc, out, m_offset);                \
   }
 
-#define TILEOPS_DEFINE_MOE_FP8_ONE_B_SCALE_PROMOTE(N)       \
-  __device__ __forceinline__ void moe_fp8_promote_64x##N(   \
-      float* p, float* f, float sa0, float sa1, float sb) { \
-    moe_fp8_promote<N>(p, f, sa0, sa1, sb);                 \
-  }
-
-#define TILEOPS_DEFINE_MOE_FP8_TWO_B_SCALE_PROMOTE(N)                       \
-  __device__ __forceinline__ void moe_fp8_promote_two_b_scales_64x##N(      \
-      float* p, float* f, float sa0, float sa1, float sb0, float sb1,       \
-      int first_iters) {                                                    \
-    moe_fp8_promote_two_b_scales<N>(p, f, sa0, sa1, sb0, sb1, first_iters); \
-  }
-
 TILEOPS_DEFINE_MOE_FP8_HELPERS(64)
 TILEOPS_DEFINE_MOE_FP8_HELPERS(128)
 TILEOPS_DEFINE_MOE_FP8_HELPERS(160)
 TILEOPS_DEFINE_MOE_FP8_HELPERS(192)
-TILEOPS_DEFINE_MOE_FP8_ONE_B_SCALE_PROMOTE(64)
-TILEOPS_DEFINE_MOE_FP8_ONE_B_SCALE_PROMOTE(128)
-TILEOPS_DEFINE_MOE_FP8_TWO_B_SCALE_PROMOTE(160)
-TILEOPS_DEFINE_MOE_FP8_TWO_B_SCALE_PROMOTE(192)
 
 #undef TILEOPS_DEFINE_MOE_FP8_HELPERS
-#undef TILEOPS_DEFINE_MOE_FP8_ONE_B_SCALE_PROMOTE
-#undef TILEOPS_DEFINE_MOE_FP8_TWO_B_SCALE_PROMOTE
 
 }  // namespace tileops

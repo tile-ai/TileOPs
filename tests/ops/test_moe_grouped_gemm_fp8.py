@@ -138,18 +138,26 @@ def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("block_n", "num_stages"),
+    ("block_n", "num_stages", "n"),
     [
-        # Feature: a 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each split
-        # of its two b scale rows runs; the last tile holds 32 of its columns. Four stages divide
-        # the four K steps: the constant-slot ring.
-        pytest.param(160, 4, id="bn160-static-ring"),
+        # Feature: a 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
+        # its column sub-blocks reads its own b scale row; the last tile holds 32 of its
+        # columns. Four stages divide the four K steps: the constant-slot ring.
+        pytest.param(160, 4, 512, id="bn160-static-ring"),
         # Feature: a 192-wide tile, the last holding 128 of its columns. Three stages do not
         # divide the K steps: the ring position carries across a block's tasks.
-        pytest.param(192, 3, id="bn192-index-ring"),
+        pytest.param(192, 3, 512, id="bn192-index-ring"),
+        # Shape: two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
+        # b scale row 0, the second tile's first in row 1.
+        pytest.param(192, 4, 384, id="bn192-two-tiles-n384"),
+        # Shape: two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
+        # clamp to the last b scale row.
+        pytest.param(192, 4, 256, id="bn192-two-tiles-n256"),
+        # Shape: two 160-wide N tiles, the last holding 96 columns.
+        pytest.param(160, 4, 256, id="bn160-two-tiles-n256"),
     ],
 )
-def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int) -> None:
+def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n: int) -> None:
     """Tiles past N, over a slab whose last 128-row tile runs past max_m = 192.
 
     Three blocks run every tile, so each reuses its staged tile. The rows of the empty expert
@@ -157,7 +165,7 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int) ->
     runs for a tile with no valid row.
     """
     counts = [192, 0, 70]
-    workload = _workload(192, E=len(counts), N=512, K=512)
+    workload = _workload(192, E=len(counts), N=n, K=512)
     config = {"block_m": 128, "block_n": block_n, "num_stages": num_stages, "num_sms": 3}
     op = _forced_op(192, config)
     out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))

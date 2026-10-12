@@ -6,12 +6,13 @@ persistent grid walks the ``block_m x block_n`` output tiles of every expert's s
 warp fills a shared-memory ring of A and B tiles through TMA across tiles, each math warp-group
 contracts its 64 rows of every 128-wide K step into a partial and folds it into the float32
 result under that step's two scales, and the tile leaves through shared memory and a TMA
-store. A tile wider than 128 columns spans two ``b`` scale rows, and the last N tile may run
-past N: its loads read zeros there and its stores are clipped.
+store. A tile's columns run in sub-blocks that each lie inside one ``b`` scale row, and the last
+N tile may run past N: its loads read zeros there and its stores are clipped.
 """
 
 import functools
 import itertools
+import math
 from typing import Callable, ClassVar, Mapping, Optional
 
 import tilelang
@@ -54,16 +55,19 @@ _CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
 _SMEM_HEADROOM = 1024
 
 
-def _scale_b_rows(block_n: int) -> int:
-    """The ``b`` scale rows one tile reads: two when 128 does not divide its width."""
-    return 1 if _SCALE_BLOCK % block_n == 0 else 2
+def _b_scale_sub_blocks(block_n: int) -> int:
+    """The column sub-blocks of a tile, each ``gcd(128, block_n)`` wide: a tile starts at a
+    multiple of that width, which divides 128, so each sub-block lies inside one ``b`` scale row.
+    """
+    return block_n // math.gcd(_SCALE_BLOCK, block_n)
 
 
 def _smem_bytes(block_m: int, block_n: int, num_stages: int) -> int:
     """Shared memory one block takes: the A/B ring (one byte per element), the bfloat16 tile
-    the TMA store reads, and per stage its B scales and a ``full`` and an ``empty`` barrier."""
+    the TMA store reads, and per stage a B scale per column sub-block and a ``full`` and an
+    ``empty`` barrier."""
     ring = num_stages * (block_m + block_n) * _SCALE_BLOCK
-    return ring + block_m * block_n * 2 + num_stages * (4 * _scale_b_rows(block_n) + 16)
+    return ring + block_m * block_n * 2 + num_stages * (4 * _b_scale_sub_blocks(block_n) + 16)
 
 
 @functools.lru_cache(maxsize=32)
@@ -78,9 +82,10 @@ def _moe_grouped_gemm_fp8_kernel(
     ``_SWIZZLE_M_TILES`` M tiles with the M tile fastest, so the blocks that read one weight tile
     run side by side. Each role walks the sequence itself, reading the counts and carrying its
     expert cursor across its tasks; a task past the sequence's end is skipped by both roles and
-    touches no barrier. A ``block_n`` dividing 128 reads one ``b_scale`` row; a wider one two,
-    the second clamped to the last row, and its first ``(128 - n0 % 128) / 8`` eight-column
-    fragments take the first. N need not be a multiple of ``block_n``.
+    touches no barrier. A tile's columns run in sub-blocks ``gcd(128, block_n)`` wide, each
+    inside one ``b_scale`` row wherever the tile starts: the producer stages one scale per
+    sub-block, a sub-block past N reading the last row, and each eight-column fragment takes
+    its sub-block's scale by a constant index. N need not be a multiple of ``block_n``.
 
     ``sm_count`` and ``smem_limit`` are the device's, which bound ``num_sms`` and the block's
     shared memory; every config is checked by ``MoEGroupedGemmFP8Kernel.config_refusal``
@@ -114,7 +119,9 @@ def _moe_grouped_gemm_fp8_kernel(
         n_tiles = tilelang.cdiv(n, block_n)
         # The last N tile runs past N: its loads read zeros and its stores are clipped.
         ragged_n = n % block_n != 0
-        scale_b_rows = _scale_b_rows(block_n)
+        # A tile's columns run in sub-blocks of sub_block_n, each inside one b scale row.
+        sub_blocks = _b_scale_sub_blocks(block_n)
+        sub_block_n = block_n // sub_blocks
         last_scale_b_row = n // _SCALE_BLOCK - 1
         # The sequence is never longer than every tile of every slab.
         max_tasks = num_groups * tiles_per_slab * n_tiles
@@ -132,10 +139,7 @@ def _moe_grouped_gemm_fp8_kernel(
         rings_per_task = scale_k // num_stages
         k_unroll = num_stages if static_ring else 1
         wgmma_helper = f"tileops::moe_fp8_wgmma_64x128_by_128x{block_n}_lo"
-        if scale_b_rows == 1:
-            promote_helper = f"tileops::moe_fp8_promote_64x{block_n}"
-        else:
-            promote_helper = f"tileops::moe_fp8_promote_two_b_scales_64x{block_n}"
+        promote_helper = f"tileops::moe_fp8_promote_64x{block_n}"
         stsm_helper = f"tileops::moe_fp8_stsm_bf16_swizzled_bm{block_m}_64x{block_n}"
         # The staged tile is boxes of 64 bfloat16 columns under a 128B swizzle, or 32 under
         # a 64B one when the row is no multiple of 128 bytes (160), one TMA store each.
@@ -150,6 +154,15 @@ def _moe_grouped_gemm_fp8_kernel(
             if static_ring:
                 return kk % num_stages, (ring_index * rings_per_task + kk // num_stages) & 1
             return ring_index % num_stages, (ring_index // num_stages) & 1
+
+        def promote(partial, final, scales):
+            """final += partial under this step's scales: the two A scales and one B scale per
+            column sub-block, all by value. Built in Python, as the argument count follows
+            ``sub_blocks``."""
+            b_scales = [scales[4 + j] for j in range(sub_blocks)]
+            return T.call_extern(
+                "handle", promote_helper, partial.data, final.data, scales[0], scales[1], *b_scales
+            )
 
         @T.macro
         def walk_to(layout, task_id, cursor):
@@ -205,13 +218,14 @@ def _moe_grouped_gemm_fp8_kernel(
                 # scope="shared": a shared.dyn store here makes TileLang fence it against the TMA
                 # writes with a barrier one warp cannot complete.
                 b_scale_shared = T.alloc_shared(
-                    (num_stages, scale_b_rows), accum_dtype, scope="shared"
+                    (num_stages, sub_blocks), accum_dtype, scope="shared"
                 )
                 shared_c = T.alloc_shared((block_m * block_n,), cd_dtype)
                 partial = T.alloc_local((fragment_regs,), accum_dtype)
                 final = T.alloc_local((fragment_regs,), accum_dtype)
-                # This step's A scales (two rows), the next step's, and this step's B scales.
-                scales = T.alloc_local((4 + scale_b_rows,), accum_dtype)
+                # This step's A scales (two rows), the next step's, and this step's B scales,
+                # one per column sub-block.
+                scales = T.alloc_local((4 + sub_blocks,), accum_dtype)
                 T.annotate_layout(
                     {
                         a_shared: tilelang.layout.make_swizzled_layout(a_shared),
@@ -347,10 +361,13 @@ def _moe_grouped_gemm_fp8_kernel(
                                 # After the TMAs are in flight, lane 0 stores the stage's B scales
                                 # and then arrives on ``full``, so its release covers them.
                                 if producer_tx == 0:
-                                    for row in T.unroll(scale_b_rows):
-                                        b_scale_shared[slot, row] = B_scale[
+                                    for j in T.unroll(sub_blocks):
+                                        b_scale_shared[slot, j] = B_scale[
                                             g,
-                                            T.min(n_start // _SCALE_BLOCK + row, last_scale_b_row),
+                                            T.min(
+                                                (n_start + j * sub_block_n) // _SCALE_BLOCK,
+                                                last_scale_b_row,
+                                            ),
                                             kk,
                                         ]
                                     T.barrier_arrive(full[slot])
@@ -392,9 +409,6 @@ def _moe_grouped_gemm_fp8_kernel(
                             else:
                                 scale_row0 = T.meta_var(m_start + acc_row0)
                                 scale_row1 = T.meta_var(scale_row0 + 8)
-                            if scale_b_rows == 2:
-                                # The fragments the first B scale row covers.
-                                first_scale_iters = (_SCALE_BLOCK - n_start % _SCALE_BLOCK) // 8
                             T.clear(final)
                             scales[0] = A_scale[g, scale_row0, 0]
                             scales[1] = A_scale[g, scale_row1, 0]
@@ -405,8 +419,8 @@ def _moe_grouped_gemm_fp8_kernel(
                                 scales[2] = A_scale[g, scale_row0, next_kk]
                                 scales[3] = A_scale[g, scale_row1, next_kk]
                                 T.barrier_wait(full[slot], phase)
-                                for row in T.unroll(scale_b_rows):
-                                    scales[4 + row] = b_scale_shared[slot, row]
+                                for j in T.unroll(sub_blocks):
+                                    scales[4 + j] = b_scale_shared[slot, j]
                                 T.call_extern(
                                     "handle",
                                     wgmma_helper,
@@ -417,28 +431,7 @@ def _moe_grouped_gemm_fp8_kernel(
                                 T.wait_wgmma(0)
                                 if tx % 32 == 0:
                                     T.barrier_arrive(empty[slot])
-                                if scale_b_rows == 1:
-                                    T.call_extern(
-                                        "handle",
-                                        promote_helper,
-                                        partial.data,
-                                        final.data,
-                                        scales[0],
-                                        scales[1],
-                                        scales[4],
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        promote_helper,
-                                        partial.data,
-                                        final.data,
-                                        scales[0],
-                                        scales[1],
-                                        scales[4],
-                                        scales[5],
-                                        first_scale_iters,
-                                    )
+                                promote(partial, final, scales)
                                 scales[0] = scales[2]
                                 scales[1] = scales[3]
                                 if not static_ring:
@@ -502,7 +495,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
     # Tile heights: one or two 64-row math warp-groups.
     _BLOCK_M: ClassVar[tuple[int, ...]] = (64, 128)
     # Tile widths the helper header instantiates; 160 and 192, which 128 does not divide, span
-    # two ``b`` scale rows.
+    # two ``b`` scale rows, so their columns run in 32- and 64-wide sub-blocks.
     _BLOCK_N: ClassVar[tuple[int, ...]] = (64, 128, 160, 192)
     # Ring depths. A depth that divides the K steps runs the constant-slot ring.
     _NUM_STAGES: ClassVar[range] = range(3, 9)
@@ -669,11 +662,13 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
 
     @property
     def autotune_supply_prog(self) -> Callable:
-        """Supply autotuning operands of the call's shapes and the manifest generator's masked
-        counts, ``max_m`` and ``max_m // 2`` alternating.
+        """Supply autotuning operands of the call's shapes and a dense fill of masked counts,
+        ``max_m`` and ``max_m // 2`` alternating.
 
-        The call carries no counts, since reading them would synchronise, so the candidates
-        are timed on that fill whatever the counts of the calls that follow.
+        The fill is ``moe_layout_metadata``'s, not the routed counts this op's manifest rows
+        generate (``moe.masked_routed_metadata``): the call carries no token count to route,
+        and reading the counts would synchronise, so the candidates are timed on that fill
+        whatever the counts of the calls that follow.
         """
         from tilelang.utils.device import get_current_device
 
