@@ -100,6 +100,7 @@ def gla_varlen_state_kernel(
     num_k_partitions: int,
     num_v_partitions: int,
     num_stages: int,
+    has_initial_state: bool = True,
 ):
     """Walk one sequence's chunks in order, publishing the state each chunk starts from.
 
@@ -123,12 +124,14 @@ def gla_varlen_state_kernel(
 
     @tilelang.jit(out_idx=[-2, -1], pass_configs=_PASS_CONFIGS)
     def _fn(threads: int = 128):
+        initial_shape = [num_seqs, heads, dim_k, dim_v] if has_initial_state else [1]
+
         @T.prim_func
         def _main(
             k: T.Tensor([1, total_tokens, heads, dim_k], dtype),
             v: T.Tensor([1, total_tokens, heads, dim_v], dtype),
             g_cumsum: T.Tensor([1, total_tokens, heads, dim_k], "float32"),
-            initial_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
+            initial_state: T.Tensor(initial_shape, "float32"),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             chunk_state: T.Tensor([num_chunks, heads, dim_k, dim_v], dtype),
             final_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
@@ -158,8 +161,11 @@ def gla_varlen_state_kernel(
                 end = T.cast(cu_seqlens[seq + 1], "int32")
                 base = tile_cum[seq]
 
-                for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                    state[i_k, i_v] = initial_state[seq, i_h, k_offset + i_k, v_offset + i_v]
+                if has_initial_state:
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        state[i_k, i_v] = initial_state[seq, i_h, k_offset + i_k, v_offset + i_v]
+                else:
+                    T.clear(state)
 
                 # The chunks that lie whole inside the sequence are the pipelined walk, and
                 # the body holds no branch, which is what lets the loads for the chunks ahead
@@ -551,6 +557,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
             heads=call.heads,
             dim_k=call.dim_k,
             dim_v=call.dim_v,
+            has_initial_state=call.has_initial_state,
             k_partitions=k_partitions,
             v_partitions=v_partitions,
         )
@@ -567,8 +574,10 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         v_partitions: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
+        self.has_initial_state = has_initial_state
         super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
@@ -592,6 +601,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
             k_partitions,
             v_partitions,
             self._state_stages,
+            has_initial_state=self.has_initial_state,
         )(self._state_threads)
         self._causal = gla_varlen_causal_kernel(total, num_sequences, heads, dim_k, scale, name)(
             self._state_threads
@@ -599,6 +609,10 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         self._output = gla_varlen_output_kernel(
             total, num_sequences, heads, dim_k, dim_v, scale, name
         )(self._wide_threads)
+
+        self._unread_state = torch.empty(
+            1, dtype=torch.float32, device=torch.device("cuda", device_index)
+        )
 
     def forward(
         self,
@@ -624,18 +638,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
                 device=q.device,
             )
         packed = (1, self.batch * self.seq_len, self.heads, -1)
-        state = (
-            torch.zeros(
-                self.num_sequences,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                dtype=torch.float32,
-                device=q.device,
-            )
-            if initial_state is None
-            else initial_state
-        )
+        state = initial_state if self.has_initial_state else self._unread_state
         gate = self._cumsum(g.view(packed), cu_seqlens)
         chunk_state, final_state = self._state(
             k.view(packed), v.view(packed), gate, state, cu_seqlens

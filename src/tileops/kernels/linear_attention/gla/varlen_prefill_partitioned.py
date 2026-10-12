@@ -279,6 +279,7 @@ def gla_varlen_scan_kernel(
     block_k: int,
     block_v: int,
     num_stages: int,
+    has_initial_state: bool = True,
 ):
     """Compose one sequence's partition summaries into the state each partition starts from.
 
@@ -297,11 +298,13 @@ def gla_varlen_scan_kernel(
 
     @tilelang.jit(out_idx=[-2, -1], pass_configs=_PASS_CONFIGS)
     def _fn(threads: int = 128):
+        initial_shape = [num_seqs, heads, dim_k, dim_v] if has_initial_state else [1]
+
         @T.prim_func
         def _main(
             summary_state: T.Tensor([num_partitions, heads, dim_k, dim_v], "float32"),
             summary_reach: T.Tensor([num_partitions, heads, dim_k], "float32"),
-            initial_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
+            initial_state: T.Tensor(initial_shape, "float32"),
             cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
             start_state: T.Tensor([num_partitions, heads, dim_k, dim_v], "float32"),
             final_state: T.Tensor([num_seqs, heads, dim_k, dim_v], "float32"),
@@ -324,12 +327,15 @@ def gla_varlen_scan_kernel(
                 # in a loop extent.
                 count = (end - start + partition_tokens - 1) // partition_tokens
 
-                T.copy(
-                    initial_state[
-                        seq, i_h, k_offset : k_offset + block_k, v_offset : v_offset + block_v
-                    ],
-                    state,
-                )
+                if has_initial_state:
+                    T.copy(
+                        initial_state[
+                            seq, i_h, k_offset : k_offset + block_k, v_offset : v_offset + block_v
+                        ],
+                        state,
+                    )
+                else:
+                    T.clear(state)
                 # Only the running state carries between partitions, so the summaries ahead
                 # load while this one is composed.
                 for i_p in T.Pipelined(count, num_stages=num_stages):
@@ -583,6 +589,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
             heads=call.heads,
             dim_k=call.dim_k,
             dim_v=call.dim_v,
+            has_initial_state=call.has_initial_state,
             k_partitions=k_partitions,
             v_partitions=v_partitions,
             partition_chunks=partition_chunks,
@@ -601,8 +608,10 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         partition_chunks: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
+        self.has_initial_state = has_initial_state
         super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
@@ -638,6 +647,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
             self._scan_tile_k,
             self._scan_tile_v,
             self._scan_stages,
+            has_initial_state=self.has_initial_state,
         )(self._state_threads)
         self._causal = gla_varlen_causal_kernel(total, num_sequences, heads, dim_k, scale, name)(
             self._causal_threads
@@ -645,6 +655,10 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         self._output = gla_varlen_partitioned_output_kernel(
             total, num_sequences, heads, dim_k, dim_v, scale, name, partition_chunks
         )(self._wide_threads)
+
+        self._unread_state = torch.empty(
+            1, dtype=torch.float32, device=torch.device("cuda", device_index)
+        )
 
     def forward(
         self,
@@ -670,18 +684,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
                 device=q.device,
             )
         packed = (1, self.batch * self.seq_len, self.heads, -1)
-        state = (
-            torch.zeros(
-                self.num_sequences,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                dtype=torch.float32,
-                device=q.device,
-            )
-            if initial_state is None
-            else initial_state
-        )
+        state = initial_state if self.has_initial_state else self._unread_state
         gate = self._cumsum(g.view(packed), cu_seqlens)
         chunk_state, chunk_reach, summary_state, summary_reach = self._local(
             k.view(packed), v.view(packed), gate, cu_seqlens
