@@ -740,6 +740,22 @@ class ErfRoundingWorkload(ElementwiseWorkload):
         return Custom(validate, "one storage step over the 16-bit domain; exact special values")
 
 
+class Exhaustive16BitWorkload(ElementwiseWorkload):
+    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit."""
+
+    def __init__(self, op_name, dtype):
+        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+        super().__init__(op_name, (codes.view(dtype),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
+
+        return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
+
+
 class LerpCancellationWorkload(ElementwiseWorkload):
     """A representable nonzero midpoint is lost if end-start is narrowed early."""
 

@@ -12,6 +12,7 @@ from tileops.ops.elementwise import ReluFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
+    Exhaustive16BitWorkload,
     GeluTailWorkload,
     ReluWorkload,
     UnaryActivationCase,
@@ -175,6 +176,20 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
         return x
 
     _make_activation_test(n_total, dtype, _extreme, SigmoidFwdOp)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
+    """Sigmoid gives torch's result bit for bit at every 16-bit input.
+
+    A two-ulp float32 divide moves two float16 results by one ulp, so float16 keeps
+    the IEEE divide; bfloat16 rounds the fast one to torch's value everywhere.
+    """
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    workload = Exhaustive16BitWorkload("SigmoidFwdOp", dtype)
+    TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
 
 
 @ActivationEdgeFixture

@@ -4,6 +4,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._base import FloatUnaryKernel, TorchFallbackKernel
+from tileops.kernels.elementwise._division import float32_quotient
 from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.elementwise.call_spec import (
@@ -120,7 +121,12 @@ class ReciprocalFwdKernel(FloatUnaryKernel, ReciprocalFwdInterface):
 
     @staticmethod
     def op_func(x):
-        return T.cast(1.0, "float32") / x
+        """1 / x in float32, divided as exactly as the stored dtype needs.
+
+        ``float32_quotient`` rounds to torch's value at every 16-bit input and keeps
+        the IEEE divide for float32.
+        """
+        return float32_quotient(str(x.dtype), T.cast(1.0, "float32"), T.cast(x, "float32"))
 
     def forward(self, x):
         if x.dtype != self.dtype:
