@@ -98,14 +98,9 @@ def _bwd_parallel_tl(
                 do_c = T.alloc_shared([block_C, dim_v], dtype)
                 h_c = T.alloc_shared([dim_k, dim_v], dtype)
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
-                o_part = T.alloc_shared([block_C, dim_v], dtype)
                 attn = T.alloc_shared([block_C, block_C], dtype)
-                d_q_c = T.alloc_shared([block_C, dim_k], dtype)
-                d_k_c = T.alloc_shared([block_C, dim_k], dtype)
-                d_w_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 d_attn = T.alloc_shared([block_C, block_C], dtype)
-                dP = T.alloc_shared([block_C, dim_k], dtype)
                 ws_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_v_new_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
@@ -117,12 +112,15 @@ def _bwd_parallel_tl(
 
                 T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
                 T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
+                T.clear(attn_frag)
+                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
+                for i, j in T.Parallel(block_C, block_C):
+                    attn[i, j] = T.if_then_else(i >= j, attn_frag[i, j], T.float32(0.0))
+
                 T.copy(w[bid, hid, tid * block_C : (tid + 1) * block_C, :], w_c, disable_tma=True)
                 T.copy(u[bid, hid, tid * block_C : (tid + 1) * block_C, :], u_c, disable_tma=True)
-                T.copy(do[bid, hid, tid * block_C : (tid + 1) * block_C, :], do_c, disable_tma=True)
                 T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
-
-                # Recompute forward: v_new_c, o_part, attn (no exp(g) scaling)
+                # Recompute the values consumed by the backward recurrence.
                 T.clear(ws_frag)
                 T.gemm(w_c, h_c, ws_frag)
                 for i, j in T.Parallel(block_C, dim_v):
@@ -135,18 +133,7 @@ def _bwd_parallel_tl(
                     disable_tma=True,
                 )
 
-                T.clear(ws_frag)
-                T.gemm(q_c, h_c, ws_frag)
-                for i, j in T.Parallel(block_C, dim_v):
-                    o_part[i, j] = ws_frag[i, j]
-
-                T.clear(attn_frag)
-                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, block_C):
-                    attn[i, j] = T.if_then_else(i >= j, attn_frag[i, j], T.float32(0.0))
-
-                T.clear(dh_frag)
-
+                T.copy(do[bid, hid, tid * block_C : (tid + 1) * block_C, :], do_c, disable_tma=True)
                 # Step 2: d_v_new_c = attn^T @ do_c (partial du)
                 T.clear(d_v_new_frag)
                 T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
@@ -158,46 +145,50 @@ def _bwd_parallel_tl(
                 for i, j in T.Parallel(block_C, block_C):
                     d_attn[i, j] = T.if_then_else(i >= j, d_attn_frag[i, j], T.float32(0.0))
 
-                # Step 3: dq from h, dh from q (no exp(g) scaling, no dg)
                 T.clear(d_q_c_frag)
                 # dq from inter-chunk: do * q @ h -> dq += do @ h^T
                 T.gemm(do_c, h_c, d_q_c_frag, transpose_B=True)
-                # dh from q: q^T @ do
-                T.gemm(q_c, do_c, dh_frag, transpose_A=True)
-
-                # Step 4: dq/dk from d_attn (no Gamma weighting)
-                T.gemm(d_attn, k_c, d_q_c_frag)
-                T.copy(d_q_c_frag, d_q_c)
-
-                T.clear(d_k_c_frag)
-                T.gemm(d_attn, q_c, d_k_c_frag, transpose_A=True)
-                T.copy(d_k_c_frag, d_k_c)
-
-                # Step 5: dh from w/v_new, dw (no exp scaling)
                 T.clear(dP_frag)
                 T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
-                    dP[i, j] = -dP_frag[i, j]
-                dh_sub_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
-                T.clear(dh_sub_frag)
-                T.gemm(w_c, d_v_new_c, dh_sub_frag, transpose_A=True)
-                for i, j in T.Parallel(dim_k, dim_v):
-                    dh_frag[i, j] -= dh_sub_frag[i, j]
-                # dw = -dP (since v_new = u - w @ h, dw = -(dv_new @ h^T))
-                for i, j in T.Parallel(block_C, dim_k):
-                    d_w_c[i, j] = dP[i, j]
-
+                    dw[bid, hid, tid * block_C + i, j] = -dP_frag[i, j]
+                q_late = T.alloc_shared([block_C, dim_k], dtype)
                 T.copy(
-                    d_q_c, dq[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
+                    q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_late, disable_tma=True
                 )
+                k_late = T.alloc_shared([block_C, dim_k], dtype)
                 T.copy(
-                    d_k_c,
+                    k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_late, disable_tma=True
+                )
+                # Step 4: dq/dk from d_attn (no Gamma weighting)
+                T.gemm(d_attn, k_late, d_q_c_frag)
+                T.copy(
+                    d_q_c_frag,
+                    dq[bid, hid, tid * block_C : (tid + 1) * block_C, :],
+                    disable_tma=True,
+                )
+
+                T.clear(d_k_c_frag)
+                T.gemm(d_attn, q_late, d_k_c_frag, transpose_A=True)
+                T.copy(
+                    d_k_c_frag,
                     dk_partial[bid, hid, tid * block_C : (tid + 1) * block_C, :],
                     disable_tma=True,
                 )
+
+                T.clear(dh_frag)
+                # dh from q: q^T @ do
+                T.gemm(q_late, do_c, dh_frag, transpose_A=True)
+
+                w_late = T.alloc_shared([block_C, dim_k], dtype)
                 T.copy(
-                    d_w_c, dw[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
+                    w[bid, hid, tid * block_C : (tid + 1) * block_C, :], w_late, disable_tma=True
                 )
+                dh_sub_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
+                T.clear(dh_sub_frag)
+                T.gemm(w_late, d_v_new_c, dh_sub_frag, transpose_A=True)
+                for i, j in T.Parallel(dim_k, dim_v):
+                    dh_frag[i, j] -= dh_sub_frag[i, j]
                 T.copy(
                     d_v_new_c,
                     du_partial[bid, hid, tid * block_C : (tid + 1) * block_C, :],
@@ -235,7 +226,7 @@ def _dh_recurrence_bwd_tl(
     because h_{c+1} = h_c + k^T @ v_new and v_new = u - w @ h_c,
     so dh_{c+1}/dh_c = I - k^T @ w (not I).
 
-    dw_corr is computed outside this kernel as a batched matmul for efficiency.
+    The w/u program computes dw_corr after this recurrence.
 
     Outputs: dk_correction, du_correction
     """
@@ -271,7 +262,6 @@ def _dh_recurrence_bwd_tl(
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 w_c = T.alloc_shared([block_C, dim_k], dtype)
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
-                dh_loc = T.alloc_shared([dim_k, dim_v], accum_dtype)
                 dh_buf = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_fp32 = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
@@ -289,17 +279,6 @@ def _dh_recurrence_bwd_tl(
                         k_c,
                         disable_tma=True,
                     )
-                    T.copy(
-                        w[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        w_c,
-                        disable_tma=True,
-                    )
-                    T.copy(
-                        v_new[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        v_new_c,
-                        disable_tma=True,
-                    )
-                    T.copy(dh_local[bid, hid, t_bwd, :, :], dh_loc, disable_tma=True)
 
                     T.copy(dh_fp32, dh_buf)
 
@@ -313,6 +292,12 @@ def _dh_recurrence_bwd_tl(
                     )
                     T.copy(du_corr_frag, k_dh_shared)
 
+                    T.copy(
+                        v_new[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
+                        v_new_c,
+                        disable_tma=True,
+                    )
+
                     # dk_corr = v_new @ dh_buf^T
                     T.clear(dP_frag)
                     T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
@@ -324,10 +309,19 @@ def _dh_recurrence_bwd_tl(
 
                     # dh = dh_local + (I - W^T @ K) @ dh_future
                     #    = dh_local + dh_future - W^T @ (K @ dh_future)
+                    T.copy(
+                        w[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
+                        w_c,
+                        disable_tma=True,
+                    )
+
                     T.clear(wk_dh_frag)
                     T.gemm(w_c, k_dh_shared, wk_dh_frag, transpose_A=True)
+
                     for i, j in T.Parallel(dim_k, dim_v):
-                        dh_fp32[i, j] = dh_fp32[i, j] + dh_loc[i, j] - wk_dh_frag[i, j]
+                        dh_fp32[i, j] = (
+                            dh_fp32[i, j] + dh_local[bid, hid, t_bwd, i, j] - wk_dh_frag[i, j]
+                        )
 
         return dh_recurrence_bwd_kernel
 
@@ -525,36 +519,40 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
     @staticmethod
     def _recurrence_shared_bytes(c: int, k: int, v: int, elem: int, num_stages: int) -> int:
-        """Upper bound on the dh recurrence's shared memory: every buffer it allocates, k, w,
-        v_new and the fp32 dh_local tile per stage, then dh_buf and k_dh. TileLang may place
-        buffers whose lifetimes do not overlap in one space, so the compiled size can be
-        smaller."""
-        per_stage = (2 * c * k + c * v) * elem + k * v * 4
+        """Allocated shared buffers: k, w and v_new per pipeline stage, then dh_buf and
+        k_dh. FP32 dh_local is read directly where the recurrence consumes it."""
+        per_stage = (2 * c * k + c * v) * elem
         return num_stages * per_stage + (k * v + c * v) * elem
 
     @staticmethod
     def _parallel_live_bytes(c: int, k: int, v: int, elem: int) -> int:
-        """Lower bound on the per-chunk backward's shared memory: q, k, w, h and d_v_new are
-        live with do and v_new at the d_attn product, or with do and d_attn at the dq one;
-        w, d_v_new, dq and dk are live with dP once it is written."""
-        return max(3 * c * k + 2 * c * v + k * v + max(c * v, c * c), 4 * c * k + c * v) * elem
+        """Live operands after the early q/k/w loads end and before their later reloads."""
+        return (
+            max(
+                c * k + c * v + k * v + c * c,
+                3 * c * v + k * v,
+                2 * c * v + k * v + c * c,
+                2 * c * k + 2 * c * v + c * c,
+            )
+            * elem
+        )
 
     @staticmethod
     def _recurrence_live_bytes(c: int, k: int, v: int, elem: int) -> int:
-        """Lower bound on the one-stage dh recurrence's shared memory: at either GEMM of a
-        chunk, w, v_new, dh_buf and the fp32 dh_local are live with k (the first) or k_dh
-        (the second)."""
-        return (c * k + c * v + k * v + max(c * k, c * v)) * elem + k * v * 4
+        """The GEMM operands and saved k_dh; local FP32 state is not staged in shared."""
+        return max(k * v + c * k, k * v + 2 * c * v, c * k + c * v) * elem
 
     @staticmethod
     def _wu_live_bytes(c: int, k: int, v: int) -> int:
-        """Lower bound on the w/u backward's shared memory, every buffer fp32: the largest
-        set live at once at one of its GEMMs."""
+        """FP32 live operands with delayed matrix loads and one reused key buffer."""
         return 4 * max(
-            c * c + 3 * c * v + c,  # dAu: Au, du, du_corr, v_beta, beta
-            c * v + k * v + c * k + 2 * c,  # dw correction: du_corr, S, dw, beta, dbeta_v
-            c * c + 3 * c * k + 2 * c,  # dAw: Aw, dw, k, k_beta, beta, dbeta_v
-            2 * c * c + 2 * c * k + 2 * c,  # A_inv backward: Aw, dA_inv, k, k_beta, beta, dbeta
+            2 * c * v + c,  # du merge or dAu
+            c * c + c * v + c,  # Au product
+            c * v + k * v + 2 * c,  # dw correction
+            2 * c * k + 2 * c,  # dAw
+            c * c + c * k + 2 * c,  # Aw product
+            2 * c * c + 2 * c,  # inverse derivative
+            2 * c * c + c * k + 2 * c,  # key Gram and beta product
         )
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:

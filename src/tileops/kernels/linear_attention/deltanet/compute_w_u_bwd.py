@@ -38,11 +38,9 @@ def compute_w_u_bwd_tl(
 ):
     """TileLang: fused wu_bwd + A_inv backward + dw_corr + dk merge.
 
-    The w side's inputs (S, dw, k, Aw) are loaded only after the u side's products, and v,
-    dk_partial and dk_corr are read from global where they are used, so less is live in
-    shared memory at once; du_corr stays from the u side to the w side's dw correction. v is
-    read twice, for v_beta and for dbeta's v term: that extra global traffic is what the
-    ordering costs.
+    Delay matrix loads until their products, rereading du_corr for the state correction.
+    After the inverse derivative, the key buffer holds raw k until its Gram product and
+    beta gradient finish, then becomes beta*k for the final key-gradient contribution.
     """
     accum_dtype = "float32"
     block_C = chunk_size
@@ -82,11 +80,10 @@ def compute_w_u_bwd_tl(
                 # u side
                 Au_s = T.alloc_shared([block_C, block_C], accum_dtype)
                 du_s = T.alloc_shared([block_C, dim_v], accum_dtype)
-                du_corr_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                du_input_s = T.alloc_shared([block_C, dim_v], accum_dtype)
                 v_beta_s = T.alloc_shared([block_C, dim_v], accum_dtype)
                 dAu_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_v_beta_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
-                T.copy(Au[bid, hid, by * block_C : (by + 1) * block_C, :], Au_s, disable_tma=True)
                 T.copy(
                     du_partial[bid, hid, by * block_C : (by + 1) * block_C, :],
                     du_s,
@@ -94,17 +91,18 @@ def compute_w_u_bwd_tl(
                 )
                 T.copy(
                     du_corr[bid, hid, by * block_C : (by + 1) * block_C, :],
-                    du_corr_s,
+                    du_input_s,
                     disable_tma=True,
                 )
                 for i, j in T.Parallel(block_C, dim_v):
-                    du_s[i, j] = du_s[i, j] + du_corr_s[i, j]
+                    du_s[i, j] = du_s[i, j] + du_input_s[i, j]
                 for i, j in T.Parallel(block_C, dim_v):
                     v_beta_s[i, j] = (
                         T.cast(v[bid, hid, by * block_C + i, j], accum_dtype) * beta_s[i]
                     )
                 T.clear(dAu_frag)
                 T.gemm(du_s, v_beta_s, dAu_frag, transpose_B=True)
+                T.copy(Au[bid, hid, by * block_C : (by + 1) * block_C, :], Au_s, disable_tma=True)
                 T.clear(d_v_beta_frag)
                 T.gemm(Au_s, du_s, d_v_beta_frag, transpose_A=True)
                 for i, j in T.Parallel(block_C, dim_v):
@@ -122,29 +120,38 @@ def compute_w_u_bwd_tl(
                 S_s = T.alloc_shared([dim_k, dim_v], accum_dtype)
                 dw_s = T.alloc_shared([block_C, dim_k], accum_dtype)
                 dw_corr_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
+                du_corr_s = T.alloc_shared([block_C, dim_v], accum_dtype)
+                T.copy(
+                    du_corr[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    du_corr_s,
+                    disable_tma=True,
+                )
                 T.copy(S[bid, hid, by, :, :], S_s, disable_tma=True)
-                T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)
                 T.clear(dw_corr_frag)
                 T.gemm(du_corr_s, S_s, dw_corr_frag, transpose_B=True)
+                T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dw_s[i, j] = dw_s[i, j] - dw_corr_frag[i, j]
-                k_s = T.alloc_shared([block_C, dim_k], accum_dtype)
                 k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
-                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_s, disable_tma=True)
+                k_s = k_beta_s
                 for i, j in T.Parallel(block_C, dim_k):
-                    k_beta_s[i, j] = k_s[i, j] * beta_s[i]
+                    k_beta_s[i, j] = (
+                        T.cast(k[bid, hid, by * block_C + i, j], accum_dtype) * beta_s[i]
+                    )
                 Aw_s = T.alloc_shared([block_C, block_C], accum_dtype)
-                T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
                 dAw_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 T.clear(dAw_frag)
                 T.gemm(dw_s, k_beta_s, dAw_frag, transpose_B=True)
                 d_k_beta_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
+                T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
                 T.clear(d_k_beta_frag)
                 T.gemm(Aw_s, dw_s, d_k_beta_frag, transpose_A=True)
                 d_k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
                 T.copy(d_k_beta_frag, d_k_beta_s)
                 for i, j in T.Parallel(block_C, dim_k):
-                    d_k_beta_s[i, j] = d_k_beta_s[i, j] * k_s[i, j]
+                    d_k_beta_s[i, j] = d_k_beta_s[i, j] * T.cast(
+                        k[bid, hid, by * block_C + i, j], accum_dtype
+                    )
                 T.reduce_sum(d_k_beta_s, dbeta_s, dim=1)
                 for i in T.Parallel(block_C):
                     dbeta_s[i] = dbeta_s[i] + dbeta_v_tmp[i]
@@ -168,12 +175,29 @@ def compute_w_u_bwd_tl(
                 for i, j in T.Parallel(block_C, block_C):
                     dP_s[i, j] = T.if_then_else(i > j, -dA_frag2[i, j], T.float32(0.0))
 
+                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_s, disable_tma=True)
+
                 # dk_A = beta * (dP @ k) + dP^T @ k_beta
                 T.clear(dk_A_frag)
                 T.gemm(dP_s, k_s, dk_A_frag)
                 dk_A_frag2 = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 for i, j in T.Parallel(block_C, dim_k):
                     dk_A_frag2[i, j] = dk_A_frag[i, j] * beta_s[i]
+                # dbeta_A = (dP * KK^T).sum(-1)
+                kkt_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
+                T.clear(kkt_frag)
+                T.gemm(k_s, k_s, kkt_frag, transpose_B=True)
+                beta_product = T.alloc_shared([block_C, block_C], accum_dtype)
+                for i, j in T.Parallel(block_C, block_C):
+                    beta_product[i, j] = dP_s[i, j] * kkt_frag[i, j]
+                dbeta_A_tmp = T.alloc_shared([block_C], accum_dtype)
+                T.reduce_sum(beta_product, dbeta_A_tmp, dim=1)
+                for i in T.Parallel(block_C):
+                    dbeta[bid, hid, by * block_C + i] = dbeta_s[i] + dbeta_A_tmp[i]
+
+                for i, j in T.Parallel(block_C, dim_k):
+                    k_beta_s[i, j] = k_s[i, j] * beta_s[i]
+
                 T.clear(dk_A_frag)
                 T.gemm(dP_s, k_beta_s, dk_A_frag, transpose_A=True)
                 for i, j in T.Parallel(block_C, dim_k):
@@ -187,17 +211,6 @@ def compute_w_u_bwd_tl(
                         + d_k_beta_frag[i, j] * beta_s[i]
                         + dk_A_frag2[i, j]
                     )
-
-                # dbeta_A = (dP * KK^T).sum(-1)
-                kkt_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
-                T.clear(kkt_frag)
-                T.gemm(k_s, k_s, kkt_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, block_C):
-                    dP_s[i, j] = dP_s[i, j] * kkt_frag[i, j]
-                dbeta_A_tmp = T.alloc_shared([block_C], accum_dtype)
-                T.reduce_sum(dP_s, dbeta_A_tmp, dim=1)
-                for i in T.Parallel(block_C):
-                    dbeta[bid, hid, by * block_C + i] = dbeta_s[i] + dbeta_A_tmp[i]
 
         return compute_w_u_bwd
 
