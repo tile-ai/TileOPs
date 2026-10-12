@@ -417,15 +417,18 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-def test_grouped_gemm_tight_per_row_matches_the_psum_layout():
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_grouped_gemm_tight_per_row_matches_the_psum_layout(dtype):
     """Per-row ids on tight rows, an empty group included: the psum layout's exact output."""
-    if get_sm_version(torch.device(run_device()).index) != 90:
-        pytest.skip("only the SM90 template serves a tight per-row layout")
+    if get_sm_version(torch.device(run_device()).index) not in (89, 90):
+        pytest.skip("tight per-row grouped GEMM requires SM89 or SM90")
     sizes = [100, 0, 300, 128, 7, 64]
     tight_per_row = {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}}
-    call = _gemm_call(torch.bfloat16, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
+    call = _gemm_call(dtype, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
     workload = MoEGroupedGemmWorkload(call)
     a, b, _ = workload.gen_inputs()
+    # Unit-scale operands distinguish wrong expert selection under the shared policy.
+    a, b = torch.randn_like(a), torch.randn_like(b)
     counts = torch.tensor(sizes, device=a.device)
     ids = torch.repeat_interleave(torch.arange(len(sizes), device=a.device), counts).int()
     op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())

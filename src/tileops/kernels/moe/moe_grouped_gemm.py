@@ -16,7 +16,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, MGroupedGemmFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel"]
+__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel", "MoEGroupedGemmTightRowMMAKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -42,7 +42,8 @@ def _moe_grouped_gemm_mma_kernel(
     gtype = GemmType(gemm_type)
     masked = gtype is GemmType.M_GROUPED_MASKED
     per_row = gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW
-    tight = gtype is GemmType.M_GROUPED_TIGHT_PSUM
+    tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
+    tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
     fused = activation != "none"
     c_cols = n // 2 if fused else n
 
@@ -58,7 +59,7 @@ def _moe_grouped_gemm_mma_kernel(
         m = T.dynamic("m")
         a_shape = (num_groups, max_m, k) if masked else (m, k)
         c_shape = (num_groups, max_m, c_cols) if masked else (m, c_cols)
-        layout_shape = (m,) if per_row else (num_groups,)
+        layout_shape = (m,) if per_row or tight_per_row else (num_groups,)
         tile_n = block_n // 2 if fused else block_n
         tiles_per_slab = tilelang.cdiv(max_m, block_m) if masked else 0
         if masked:
@@ -88,14 +89,28 @@ def _moe_grouped_gemm_mma_kernel(
                 seen[0] = 0
                 prev_end[0] = 0
                 for g in T.serial(num_groups):
+                    if tight_per_row:
+                        end = T.alloc_var("int32", init=0)
+                        lo = T.alloc_var("int32", init=0)
+                        hi = T.alloc_var("int32", init=m)
+                        for _ in T.serial(32):
+                            if lo < hi:
+                                mid = (lo + hi) >> T.int32(1)
+                                if layout[mid] <= g:
+                                    lo = mid + T.int32(1)
+                                else:
+                                    hi = mid
+                        end = lo
                     start = prev_end[0] if tight else T.ceildiv(prev_end[0], alignment) * alignment
-                    tiles = T.ceildiv(T.max(layout[g] - start, 0), block_m)
+                    tiles = T.ceildiv(
+                        T.max((end if tight_per_row else layout[g]) - start, 0), block_m
+                    )
                     if (group[0] < 0) & (bx < seen[0] + tiles):
                         group[0] = g
                         row0[0] = start + (bx - seen[0]) * block_m
-                        row_end[0] = layout[g]
+                        row_end[0] = end if tight_per_row else layout[g]
                     seen[0] += tiles
-                    prev_end[0] = layout[g]
+                    prev_end[0] = end if tight_per_row else layout[g]
 
         def activate(gate, up):
             """act(gate) * up in float32, as the SM90 template's epilogue computes it."""
@@ -317,3 +332,12 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
             return out
         self.kernel(**self.config)(a, b, layout_metadata, out)
         return out
+
+
+class MoEGroupedGemmTightRowMMAKernel(MoEGroupedGemmMMAKernel):
+    """Recover tight per-row segment bounds for the shared MMA program on SM89."""
+
+    supported_archs: list[int] = [89]
+    _TYPES = {
+        ("contiguous", "tight", "per_row"): GemmType.M_GROUPED_TIGHT_PER_ROW,
+    }
