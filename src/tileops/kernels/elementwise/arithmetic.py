@@ -167,8 +167,6 @@ def _floored_quotient(num, den, limit, fast_body):
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
 _NUDGED_QUOTIENT = {"float16": float(1 << 8), "bfloat16": float(1 << 11)}
-# Twice the relative error of ``approx_fdiv``.
-_NUDGE = 2.0**-21
 
 
 def _nudged_floor(num, den, dtype, fast_body):
@@ -185,6 +183,8 @@ def _nudged_floor(num, den, dtype, fast_body):
     ``T.fast_rcp`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
+    # Twice the relative error of ``approx_fdiv``.
+    nudge = 2.0**-21
     # One reciprocal serves every element that shares b. ``T.fast_rcp`` is one MUFU.RCP,
     # two ulp for a normal b whose reciprocal is normal; it reads a subnormal b as a zero
     # and returns an infinity, and returns a zero for a reciprocal that would be
@@ -192,7 +192,7 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient = num * T.fast_rcp(den)
 
     def value(q):
-        nudged = T.ieee_fmaf(T.abs(q), T.cast(_NUDGE, "float32"), q)
+        nudged = T.ieee_fmaf(T.abs(q), T.cast(nudge, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
     holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
@@ -313,12 +313,6 @@ class PowFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return T.Cast(a.dtype, T.if_then_else(expo == zero, one, out))
 
 
-# Below this quotient ``a - fmod(a, b)`` is a whole multiple of b exact in float32,
-# so torch's divide returns the whole quotient itself: its significand and b's fit
-# 24 bits together.
-_EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
-
-
 class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise floor division: y = floor(a / b), as torch defines it.
 
@@ -373,7 +367,11 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
             # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.
             return T.copysign(k, q)
 
-        limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
+        # Below this quotient ``a - fmod(a, b)`` is a whole multiple of b exact in float32,
+        # so torch's divide returns the whole quotient itself: its significand and b's fit
+        # 24 bits together.
+        exact_multiple_quotient = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
+        limit = exact_multiple_quotient.get(str(dtype), _FAST_QUOTIENT)
         return _floored_tiers(num, den, dtype, limit, whole), slow()
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
