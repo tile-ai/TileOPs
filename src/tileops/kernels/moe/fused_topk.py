@@ -48,7 +48,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import FusedTopKCall, FusedTopKFwdInterface
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = ["FusedTopKKernel"]
 
@@ -596,11 +596,30 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             topk_group,
             self.routed_scaling_factor,
         )
+        self.sm_count = get_sm_count(device_index)
         self.init_config(config)
 
     @property
     def default_config(self) -> dict:
-        return {"TOKENS_PER_BLOCK": min(16, max(1, math.ceil(self.num_tokens / 16)))}
+        """Tokens per block that leave the fewest warps on the busiest SM sub-partition.
+
+        Each token is one warp running a long dependent chain, so the kernel ends when the
+        sub-partition holding the most warps does. Blocks spread evenly over the SMs: with
+        ``TOKENS_PER_BLOCK`` = t the busiest SM holds ``ceil(ceil(T / t) / SMs) * t`` warps,
+        shared by its four sub-partitions. Of the powers of two up to ``ceil(T / 16)`` (at
+        most 16), the largest t that minimizes that count wins, since a larger block means
+        fewer block launches.
+        """
+        bound = min(16, max(1, math.ceil(self.num_tokens / 16)))
+        sub_partitions = 4  # Warp schedulers per SM on every architecture in supported_archs.
+
+        def busiest_sub_partition_warps(tpb: int) -> int:
+            blocks_per_sm = math.ceil(math.ceil(self.num_tokens / tpb) / self.sm_count)
+            return math.ceil(blocks_per_sm * tpb / sub_partitions)
+
+        candidates = [t for t in (1, 2, 4, 8, 16) if t <= bound]
+        tpb = min(candidates, key=lambda t: (busiest_sub_partition_warps(t), -t))
+        return {"TOKENS_PER_BLOCK": tpb}
 
     def forward(
         self,
