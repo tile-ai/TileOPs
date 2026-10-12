@@ -56,7 +56,8 @@ def _gla_decode_tl(
     # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
     #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
     #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
     load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
@@ -320,7 +321,8 @@ def _gla_decode_fp32_tl(
     # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
     #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
     #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
     load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
