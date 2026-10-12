@@ -89,6 +89,7 @@ def gla_fwd_h_kernel(
     dtype: str,
     num_v_partitions: int = 1,
     num_k_partitions: int = 1,
+    has_initial_state: bool = True,
 ) -> Callable:
     """Compute per-chunk hidden states h in forward order.
 
@@ -132,7 +133,7 @@ def gla_fwd_h_kernel(
         k_shape = [batch, seq_len, heads, dim_k]
         v_shape = [batch, seq_len, heads, dim_v]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
-        init_state_shape = [batch, heads, dim_k, dim_v]
+        init_state_shape = [batch, heads, dim_k, dim_v] if has_initial_state else [1]
         h_out_shape = [batch, num_chunks + 1, heads, dim_k, dim_v]
 
         @T.prim_func
@@ -157,8 +158,11 @@ def gla_fwd_h_kernel(
                 v_s = T.alloc_shared([chunk_size, dim_v_part], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k_part], accum_dtype)
 
-                for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
-                    h_s[i_k, i_v] = initial_state[i_b, i_h, k_offset + i_k, v_offset + i_v]
+                if has_initial_state:
+                    for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                        h_s[i_k, i_v] = initial_state[i_b, i_h, k_offset + i_k, v_offset + i_v]
+                else:
+                    T.clear(h_s)
 
                 for i_c in T.Pipelined(num_chunks, num_stages=num_stages):
                     T.copy(
@@ -528,6 +532,9 @@ class GLAChunkedFwdKernel(Kernel):
         k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
         v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
         g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype_torch).abs()
+        # State-reading specializations need a real input while tuning. Zero-state
+        # specializations ignore it; prepare it once, outside the timed calls.
+        initial_state = torch.zeros(B, H, K, V, device=q.device, dtype=torch.float32)
 
         best_lat = float("inf")
         best_cfg = None
@@ -536,11 +543,11 @@ class GLAChunkedFwdKernel(Kernel):
             try:
                 self._build_kernels(cfg)
 
-                self.forward(q, k, v, g)
+                self.forward(q, k, v, g, initial_state)
                 torch.cuda.synchronize()
 
                 lat = do_bench(
-                    lambda: self.forward(q, k, v, g),
+                    lambda: self.forward(q, k, v, g, initial_state),
                     warmup=warmup,
                     rep=rep,
                 )
