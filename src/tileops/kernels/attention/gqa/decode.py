@@ -276,12 +276,15 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
         )
         rescale = make_rescale(block_H, dim)
 
+        # Each split's log-sum-exp is stored in float32: bfloat16 steps by 0.5 between 64
+        # and 128, which misweighs the split in the combine. The partial outputs keep the
+        # storage dtype; float32 ones measured up to 5% slower on H200.
         @T.macro
         def _gqa_decode_split(
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
         ):
             with T.Kernel(batch, groups * blocks_per_kv, num_split, threads=threads) as (
@@ -405,13 +408,13 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
 
         @T.macro
         def combine(
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 #
-                glse_vec = T.alloc_fragment([num_split], dtype)
+                glse_vec = T.alloc_fragment([num_split], accum_dtype)
                 for k in T.Parallel(num_split):
                     glse_vec[k] = glse[bz, by, k]
                 lse_max = T.alloc_fragment([1], accum_dtype)
@@ -440,7 +443,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
@@ -510,7 +513,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
         The tuned or default ``num_split`` is only a ceiling: it shrinks until every split
         keeps at least one full KV tile, then to a candidate. ``1`` means the sequence is too
-        short to fill two tiles; D256 forward keeps two splits to fit shared memory.
+        short to fill two tiles.
         """
         limit = max(1, min(num_split, real_seqlen_kv // block_N))
         return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
@@ -601,6 +604,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
         arch = get_sm_version(device_index)
         self._is_sm90 = arch == 90
+        self._shared_memory_optin = get_shared_memory_optin(device_index)
         if fuse_rope and arch != 90:
             raise ValueError("fused RoPE decode currently requires SM90")
         self.use_ws_rope = fuse_rope
@@ -671,7 +675,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     @property
     def default_config(self) -> dict:
         if self.dim == 256:
-            # Two or more splits let TileLang reuse Q_shared for O_shared (98304 bytes).
+            # The split program's query rows and one K and V tile of 64 keys: 98304 bytes.
+            # The no-split program also holds the output rows, so forward runs two splits.
             return {"block_H": 64, "block_N": 64, "num_split": 16, "num_stages": 1, "threads": 128}
         if self._use_batched_config:
             head_ctas = self.batch * self.groups
@@ -686,18 +691,36 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         wide = {"block_H": 64, "block_N": 128, "num_split": 16, "num_stages": 2, "threads": 128}
         # One stage of 64 keys where shared memory cannot hold two of 128 (SM89 holds 99 KB).
         narrow = {**wide, "block_N": 64, "num_stages": 1}
-        fits = self._shared_bytes(wide) <= get_shared_memory_optin(self.device_index)
-        return wide if fits else narrow
+        return wide if self._fits(wide, split=False) else narrow
 
-    def _shared_bytes(self, config: dict) -> int:
-        """Shared memory the no-split program, the larger of the two, allocates for *config*:
-        the query rows, a K and a V tile per stage, and the output rows."""
-        rows = (
-            config["block_H"]
-            + 2 * config["num_stages"] * config["block_N"]
-            + min(config["block_H"], self.heads // self.groups)
-        )
+    def _shared_bytes(self, config: dict, *, split: bool) -> int:
+        """Shared memory one program allocates for *config*: the query rows, a K and a V
+        tile per stage and, in the no-split program, the output rows.
+
+        Both programs stage their output rows. TileLang 0.1.12 places them in the query
+        rows' space, which the loop no longer reads, in the split program with two or more
+        splits and, for SM90, in the no-split program too; forward launches the split
+        program only with two or more.
+        """
+        rows = config["block_H"] + 2 * config["num_stages"] * config["block_N"]
+        if not split:
+            rows += min(config["block_H"], self.heads // self.groups)
         return rows * self.dim * getattr(torch, self.dtype_str).itemsize
+
+    def _fits(self, config: dict, *, split: bool) -> bool:
+        return self._shared_bytes(config, split=split) <= self._shared_memory_optin
+
+    def _launch_split(self, config: dict, seqlen_kv: int) -> int:
+        """The split count forward launches for *config* over *seqlen_kv* keys; ``1`` runs
+        the no-split program.
+
+        Where the no-split program's output rows do not fit, two splits run instead, the
+        second possibly empty.
+        """
+        num_split = self.effective_num_split(config["num_split"], config["block_N"], seqlen_kv)
+        if num_split == 1 and not self._fits(config, split=False):
+            return 2
+        return num_split
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -708,8 +731,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
-        # D256 needs at least two splits for shared-memory reuse, even with an empty
-        # second tile. Other dimensions keep one full tile per split, or use no-split.
+        # Every split keeps at least one full KV tile, and every candidate fits the
+        # shared memory of the program forward launches for it.
         configs = [
             {
                 "block_N": c[0],
@@ -719,10 +742,52 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 "threads": c[4],
             }
             for c in _configs
-            if c[2] <= max(2 if self.dim == 256 else 1, self.seqlen_kv // c[0])
-            and (self.dim != 256 or (c[0] == 64 and c[2] >= 2 and c[3] == 1))
+            if c[2] <= max(1, self.seqlen_kv // c[0])
         ]
-        return configs
+        return [
+            config
+            for config in configs
+            if self._fits(config, split=self._launch_split(config, self.seqlen_kv) > 1)
+        ]
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        """Time each candidate on the program forward launches for it, and keep the fastest.
+
+        A candidate whose split count falls to one runs the no-split program, which takes
+        no split count; every other candidate runs the split program at the split count
+        forward launches. Fused RoPE forward launches other programs, which this does not
+        time.
+        """
+        print(f"Start autotuning {self.__class__.__name__}...")
+        programs: dict[bool, list[dict]] = {True: [], False: []}
+        for config in self.tuning_candidates(self.autotune_configs):
+            num_split = self._launch_split(config, self.seqlen_kv)
+            split = num_split > 1
+            launched = (
+                {**config, "num_split": num_split}
+                if split
+                else {key: value for key, value in config.items() if key != "num_split"}
+            )
+            if launched not in programs[split]:
+                programs[split].append(launched)
+
+        best_latency, best_config = float("inf"), None
+        for split, configs in programs.items():
+            if not configs:
+                continue
+            tuned = self.tune_jit_kernel(
+                self.split_jit if split else self.no_split_jit,
+                configs,
+                warmup=warmup,
+                rep=rep,
+                seed_config=configs[0],
+            )
+            if tuned.latency < best_latency:
+                best_latency = tuned.latency
+                best_config = {**tuned.config, **({} if split else {"num_split": 1})}
+        if best_config is not None:
+            self.config = best_config
+        print(f"Best config: {self.config}")
 
     def forward(
         self,
@@ -747,10 +812,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         block_N = self.config["block_N"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
-        num_split = self.effective_num_split(self.config["num_split"], block_N, real_seqlen_kv)
-
-        if self.dim == 256:
-            num_split = max(2, num_split)
+        num_split = self._launch_split(self.config, real_seqlen_kv)
 
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
@@ -817,7 +879,9 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return output.unsqueeze(1)
 
         # Split path: the kernel partitions KV tiles from the runtime extent
-        glse = torch.empty((self.batch, self.heads, num_split), dtype=self.dtype, device=Q.device)
+        glse = torch.empty(
+            (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
+        )
         Output_partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )

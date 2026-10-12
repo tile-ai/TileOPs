@@ -30,6 +30,7 @@ from tileops.kernels.linear_attention.call_spec import (
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetChunkBwdKernel,
     DeltaNetChunkFwdKernel,
+    DeltaNetChunkPrefillFwdKernel,
     DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
 )
@@ -39,6 +40,7 @@ from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.kernels.linear_attention.gdn import (
+    GDNChunkPrefillFwdKernel,
     GDNDenseDecodeFwdKernel,
     GDNDensePrefillFwdKernel,
 )
@@ -62,6 +64,7 @@ __all__ = [
     "DeltaNetChunkCall",
     "DeltaNetChunkFwdInterface",
     "DeltaNetChunkFwdKernel",
+    "DeltaNetChunkPrefillFwdKernel",
     "DeltaNetDecodeCall",
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeFwdInterface",
@@ -71,6 +74,7 @@ __all__ = [
     "DeltaNetDensePrefillFwdKernel",
     "DeltaNetFwdInterface",
     "GDNCall",
+    "GDNChunkPrefillFwdKernel",
     "GDNDenseDecodeFwdKernel",
     "GDNDensePrefillFwdKernel",
     "GDNFwdInterface",

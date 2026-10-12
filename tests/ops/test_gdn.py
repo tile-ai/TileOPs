@@ -10,6 +10,13 @@ from workloads.numerics import compare_outputs
 
 pytestmark = pytest.mark.smoke
 
+# SM89 and SM90 prefill run different implementations. Each architecture's copy
+# carries its marker, so ``-m sm89`` selects the SM89 copies.
+PREFILL_ARCHITECTURES = pytest.mark.parametrize(
+    "_architecture",
+    [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
+)
+
 
 class GDNFwdTest(GDNFwdWorkload, TestBase):
     pass
@@ -28,7 +35,8 @@ def isolated_registry():
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-def test_gdn_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_dense_prefill_matches_reference(_architecture: int, dtype: torch.dtype) -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, dtype)
     inputs = test.gen_inputs()
@@ -48,13 +56,15 @@ def test_gdn_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
             compare_outputs(tuple(faulty), reference, evidence)
 
 
-def test_gdn_dense_prefill_continues_an_initial_state() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_dense_prefill_continues_an_initial_state(_architecture: int) -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-def test_gdn_dense_prefill_carries_a_value_major_state() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_dense_prefill_carries_a_value_major_state(_architecture: int) -> None:
     """The caller's state is ``[N, HV, V, K]`` at both ends of the recurrence."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True)
@@ -73,13 +83,15 @@ def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
 
 
-def test_gdn_dense_prefill_runs_a_64_wide_state() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_dense_prefill_runs_a_64_wide_state(_architecture: int) -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 64, torch.bfloat16)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads(_architecture: int) -> None:
     """Lengths below, across and on a chunk boundary, with four value heads per key head."""
     torch.manual_seed(42)
     test = GDNFwdTest(
@@ -95,7 +107,8 @@ def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
-def test_gdn_prefill_reads_offsets_rewritten_in_place() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> None:
     """The same tensors, with the boundary between two sequences moved, compute the new split."""
     torch.manual_seed(42)
     test = GDNFwdTest(
@@ -110,7 +123,8 @@ def test_gdn_prefill_reads_offsets_rewritten_in_place() -> None:
     test.check(op, *inputs)
 
 
-def test_gdn_prefill_inverts_a_chunk_of_correlated_keys() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> None:
     """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
     lower matrix reaches the inverse, and every off-diagonal block depends on another."""
     test = GDNFwdTest(1, 64, 1, 128, torch.float16)
@@ -122,7 +136,8 @@ def test_gdn_prefill_inverts_a_chunk_of_correlated_keys() -> None:
     test.check(GDNFwdOp(), q, k, v, g, beta)
 
 
-def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
+@PREFILL_ARCHITECTURES
+def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk(_architecture: int) -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(2, 100, 2, 64, torch.bfloat16)
     test.check(GDNFwdOp(), *test.gen_inputs())
@@ -147,8 +162,14 @@ def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
         "every-transform-fp16",
     ],
 )
+@PREFILL_ARCHITECTURES
 def test_gdn_prefill_takes_each_input_transform(
-    l2norm: bool, raw_gate: bool, beta_sigmoid: bool, allow_neg_eigval: bool, dtype: torch.dtype
+    _architecture: int,
+    l2norm: bool,
+    raw_gate: bool,
+    beta_sigmoid: bool,
+    allow_neg_eigval: bool,
+    dtype: torch.dtype,
 ) -> None:
     """Each transform the op may leave to the kernel, alone and all together."""
     torch.manual_seed(42)
