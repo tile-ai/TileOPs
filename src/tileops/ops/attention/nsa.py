@@ -5,6 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.attention import (
     NSACompressedFwdVarlenKernel,
+    NSACompressedFwdVarlenTMAKernel,
     NSAFwdVarlenKernel,
     NSAFwdVarlenTMAKernel,
     NSATopKVarlenKernel,
@@ -270,7 +271,8 @@ class NSACompressedVarlenFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdVarlenKernel
+        "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdVarlenKernel,
+        "nsa_compressed_fwd_varlen_tma_kernel": NSACompressedFwdVarlenTMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "nsa_compressed_fwd_varlen_kernel": NSACompressedFwdInterface
