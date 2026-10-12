@@ -7,6 +7,7 @@ from tileops.ops.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithKVCacheFwdOp,
 )
 from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
+from tileops.ops.attention.merge_states import MergeAttentionStatesFwdOp
 from tileops.ops.attention.mha import MHADecodePagedWithKVCacheFwdOp
 from tileops.ops.attention.mla import (
     MLADecodeWithKVCacheFwdOp,
@@ -32,6 +33,7 @@ __all__ = [
     "MHADecodePagedWithKVCacheFwdOp",
     "MLADecodeWithKVCacheFwdOp",
     "MLAVarlenFwdOp",
+    "MergeAttentionStatesFwdOp",
     "NSACompressedVarlenFwdOp",
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",

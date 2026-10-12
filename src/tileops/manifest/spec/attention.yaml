@@ -716,8 +716,9 @@ MergeAttentionStatesFwdOp:
   # against max(s_a, s_b) (FlashInfer merge_state). A -inf state contributes nothing; two
   # merge to s = -inf and v = 0.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flashinfer.cascade.merge_state
+  # Unlike FlashInfer merge_state's log2 LSE, this contract uses natural logarithms.
   signature:
     forall: {T_q: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
@@ -732,6 +733,7 @@ MergeAttentionStatesFwdOp:
   - {T_q: 8192, H: 128, D: 128, dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-chunked-prefill}
   - {T_q: 4096, H: 64, D: 128, dtype_cases: [{T: bfloat16}], label: llama-70b-cascade}
   - {T_q: 256, H: 64, D: 128, dtype_cases: [{T: bfloat16}], label: qwen3-235b-dcp}
+  - {T_q: 1007, H: 64, D: 128, dtype_cases: [{T: float16}], label: qwen3-235b-dcp-ragged}
   roofline:
     # Per row: the max, two subtracts, two exps, the sum, log and add, and the two weights'
     # divides; per element: two multiplies and an add.
