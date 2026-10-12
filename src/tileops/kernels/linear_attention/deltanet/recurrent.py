@@ -157,6 +157,14 @@ def _deltanet_decode_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    load_state_without_tma = k_tile == dim_k
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -193,7 +201,11 @@ def _deltanet_decode_tl(
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0],
+                        h_tile_o,
+                        disable_tma=load_state_without_tma,
+                    )
                     for kk in T.Serial(k_tile):
                         k_val = T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
                         q_val = T.cast(q[bid, hid, kt * k_tile + kk], accum_dtype)
@@ -221,7 +233,9 @@ def _deltanet_decode_tl(
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.cast(h_tile[kk, j], accum_dtype)
@@ -544,6 +558,14 @@ def _deltanet_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    load_state_without_tma = k_tile == dim_k
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -600,7 +622,9 @@ def _deltanet_decode_fp32_tl(
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             h_tile[kk, j] + k[bid, hid, kt * k_tile + kk] * v_new[j]

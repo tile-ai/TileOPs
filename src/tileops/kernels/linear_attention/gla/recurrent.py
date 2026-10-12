@@ -50,6 +50,14 @@ def _gla_decode_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
         scale = dim_k**-0.5
@@ -101,7 +109,11 @@ def _gla_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0],
+                        h_tile_o,
+                        disable_tma=load_state_without_tma,
+                    )
                     for kk in T.Serial(k_tile):
                         gk_val = gk_shared[kt * k_tile + kk]
                         alpha_i = T.exp2(gk_val * LOG2E)
@@ -126,7 +138,9 @@ def _gla_decode_tl(
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E)
@@ -300,6 +314,14 @@ def _gla_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileLang's 1D bulk copy arrives at its barrier.
+    load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
         scale = dim_k**-0.5
@@ -365,7 +387,9 @@ def _gla_decode_fp32_tl(
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E) * h_tile[kk, j]
