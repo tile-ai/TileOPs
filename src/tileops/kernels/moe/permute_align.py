@@ -34,14 +34,6 @@ from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInter
 
 __all__ = ["MoEPermuteAlignKernel"]
 
-_THREADS = 1024
-_SCATTER_THREADS = 256
-_SMALL_NUMEL_THRESHOLD = 1024
-# Keep <= 32: the small-batch kernel's (worker_threads+1)*num_experts int32s of
-# shared memory hang the TileLang JIT at num_experts=64.
-_SMALL_EXPERTS_THRESHOLD = 32
-_FILL_THREADS = 256
-
 
 @functools.lru_cache(maxsize=32)
 def _make_align_kernel(numel: int, num_experts: int, block_size: int):
@@ -172,8 +164,10 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     Reference: count_and_sort_expert_tokens_kernel in sgl-kernel.
     """
     max_padded = numel + (num_experts + 1) * (block_size - 1)
-    scatter_blocks = min(math.ceil(numel / _SCATTER_THREADS), 65535)
-    total_scatter_threads = scatter_blocks * _SCATTER_THREADS
+    # Threads per scatter block; the grid covers numel with these, capped at 65535 blocks.
+    scatter_threads = 256
+    scatter_blocks = min(math.ceil(numel / scatter_threads), 65535)
+    total_scatter_threads = scatter_blocks * scatter_threads
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scatter():
@@ -183,9 +177,9 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
             sorted_token_ids: T.Tensor([max_padded], "int32"),
             cumsum: T.Tensor([num_experts + 1], "int32"),
         ):
-            with T.Kernel(scatter_blocks, threads=_SCATTER_THREADS) as (bid,):
+            with T.Kernel(scatter_blocks, threads=scatter_threads) as (bid,):
                 tx = T.get_thread_binding()
-                gid = bid * _SCATTER_THREADS + tx
+                gid = bid * scatter_threads + tx
                 slot_buf = T.alloc_local([1], "int32")
                 for i in T.serial(T.ceildiv(numel, total_scatter_threads)):
                     idx = gid + i * total_scatter_threads
@@ -218,7 +212,9 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
     worker_threads = max(num_experts, 32)
-    total_threads = _FILL_THREADS + worker_threads
+    # Threads that write the sentinel fill while the workers count and scatter.
+    fill_threads = 256
+    total_threads = fill_threads + worker_threads
     # tokens_cnts: row k+1 is worker k's private counts, row 0 the accumulator.
     cnts_size = (worker_threads + 1) * num_experts
 
@@ -237,14 +233,14 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                 cumsum_s = T.alloc_shared([num_experts + 1], "int32")
                 tokens_cnts = T.alloc_shared([cnts_size], "int32")
 
-                if tx < _FILL_THREADS:
-                    for i in T.serial(T.ceildiv(max_padded, _FILL_THREADS)):
-                        idx = i * _FILL_THREADS + tx
+                if tx < fill_threads:
+                    for i in T.serial(T.ceildiv(max_padded, fill_threads)):
+                        idx = i * fill_threads + tx
                         if idx < max_padded:
                             sorted_token_ids[idx] = numel
 
-                if tx >= _FILL_THREADS:
-                    wid = tx - _FILL_THREADS  # 0-indexed worker id
+                if tx >= fill_threads:
+                    wid = tx - fill_threads  # 0-indexed worker id
                     for i in T.serial(num_experts):
                         tokens_cnts[(wid + 1) * num_experts + i] = T.int32(0)
                     for i in T.serial(T.ceildiv(numel, worker_threads)):
@@ -257,8 +253,8 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 1
 
-                if tx >= _FILL_THREADS:
-                    wid = tx - _FILL_THREADS
+                if tx >= fill_threads:
+                    wid = tx - fill_threads
                     if wid < num_experts:
                         tokens_cnts[wid] = T.int32(0)  # init row 0 accumulator
                         for k in T.serial(worker_threads):
@@ -269,8 +265,8 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 2
 
-                if tx >= _FILL_THREADS:
-                    wid = tx - _FILL_THREADS
+                if tx >= fill_threads:
+                    wid = tx - fill_threads
                     if wid == 0:
                         cumsum_s[0] = T.int32(0)
                         for e in T.serial(num_experts):
@@ -280,8 +276,8 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 3
 
-                if tx >= _FILL_THREADS:
-                    wid = tx - _FILL_THREADS
+                if tx >= fill_threads:
+                    wid = tx - fill_threads
                     if wid < num_experts:
                         e_start = cumsum_s[wid] // block_size
                         e_end = cumsum_s[wid + 1] // block_size
@@ -331,6 +327,13 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # Threads of the single-block align kernel, fixed by its cumulative-count algorithm.
+    _THREADS = 1024
+    # Below both bounds the call takes the one fused small-batch kernel.
+    _SMALL_NUMEL_THRESHOLD = 1024
+    # Keep <= 32: the small-batch kernel's (worker_threads+1)*num_experts int32s of
+    # shared memory hang the TileLang JIT at num_experts=64.
+    _SMALL_EXPERTS_THRESHOLD = 32
 
     @classmethod
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
@@ -357,7 +360,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
 
         self._small_batch_fn = (
             _make_small_batch_kernel(numel, num_experts, block_size)
-            if numel < _SMALL_NUMEL_THRESHOLD and num_experts <= _SMALL_EXPERTS_THRESHOLD
+            if numel < self._SMALL_NUMEL_THRESHOLD and num_experts <= self._SMALL_EXPERTS_THRESHOLD
             else None
         )
         if self._small_batch_fn is None:
@@ -371,7 +374,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": _THREADS}
+        return {"threads": self._THREADS}
 
     def forward(self, topk_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the alignment kernel.

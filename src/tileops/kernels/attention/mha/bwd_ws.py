@@ -17,13 +17,6 @@ from tileops.utils import get_sm_count
 
 __all__ = ["MHABwdWSKernel"]
 
-# Key rows one CTA owns, 64 per consumer warpgroup.
-_BLOCK_M = 128
-# Query rows per step.
-_BLOCK_N = 64
-# f32 per row of the dQ half tile a consumer warpgroup owns.
-_DQ_ROW = 128
-
 
 @functools.lru_cache(maxsize=32)
 def _mha_bwd_ws_kernel(
@@ -34,15 +27,17 @@ def _mha_bwd_ws_kernel(
     is_causal: bool,
     group: int,
     num_ctas: int,
+    block_m: int,
+    block_n: int,
+    dq_row: int,
     dtype: str,
 ) -> Callable:
     sm_scale = dim**-0.5
     scale = sm_scale * LOG2E
     accum_dtype = "float"
-    block_m, block_n = _BLOCK_M, _BLOCK_N
     half_m, half_d = block_m // 2, dim // 2
     kv_blocks = seq_len // block_m
-    dq_rows = block_n * half_d // _DQ_ROW
+    dq_rows = block_n * half_d // dq_row
     n_tiles = batch * heads * kv_blocks
     n_ed = seq_len // block_n
     # Every tile runs an even number of steps, so the global step count starts each
@@ -58,12 +53,12 @@ def _mha_bwd_ws_kernel(
     )
     def _mha_bwd_ws_func() -> Callable:
         def _dq_slot(i, j):
-            """Where element ``(i, j)`` of a warpgroup's ``[_BLOCK_N, dim // 2]`` dQ half sits in
+            """Where element ``(i, j)`` of a warpgroup's ``[block_n, dim // 2]`` dQ half sits in
             its f32 accumulator tile.
 
             Each warp stores four consecutive f32 of the WGMMA accumulator per thread, 512
             contiguous bytes per instruction, so the store to shared memory is free of bank
-            conflicts. Returns ``(row, col)`` of a ``[_BLOCK_N * dim // 2 // _DQ_ROW, _DQ_ROW]``
+            conflicts. Returns ``(row, col)`` of a ``[block_n * dim // 2 // dq_row, dq_row]``
             tile.
             """
             lane = (i % 8) * 4 + (j % 8) // 2
@@ -96,7 +91,7 @@ def _mha_bwd_ws_kernel(
                                 "tl::tma_store_add",
                                 T.access_ptr(dq_s[slot, w, 0, 0], "r"),
                                 T.access_ptr(dq[bh, n, w, 0, 0], "w"),
-                                dq_rows * _DQ_ROW * 4,
+                                dq_rows * dq_row * 4,
                             )
                             T.tma_store_arrive()
                             T.tma_store_wait(0)
@@ -265,7 +260,7 @@ def _mha_bwd_ws_kernel(
             do: T.Tensor(shape, dtype),  # type: ignore
             lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-            dq: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, _DQ_ROW], accum_dtype),  # type: ignore
+            dq: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, dq_row], accum_dtype),  # type: ignore
             dk: T.Tensor(shape, dtype),  # type: ignore
             dv: T.Tensor(shape, dtype),  # type: ignore
             sched: T.Tensor([2], "int32"),  # type: ignore
@@ -279,7 +274,7 @@ def _mha_bwd_ws_kernel(
                 dl_s = T.alloc_shared([2, block_n], accum_dtype)
                 # dS by slot * 2 + warpgroup.
                 ds_s = T.alloc_shared([4, half_m, block_n], dtype)
-                dq_s = T.alloc_shared([2, 2, dq_rows, _DQ_ROW], accum_dtype)
+                dq_s = T.alloc_shared([2, 2, dq_rows, dq_row], accum_dtype)
                 tile_s = T.alloc_shared([2], "int32")
 
                 # The claimed tile goes to the two consumer warpgroups and the two dQ
@@ -396,17 +391,18 @@ def _mha_bwd_ws_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _mha_bwd_ws_post_kernel(batch: int, heads: int, seq_len: int, dim: int, dtype: str) -> Callable:
-    block_n = _BLOCK_N
+def _mha_bwd_ws_post_kernel(
+    batch: int, heads: int, seq_len: int, dim: int, block_n: int, dq_row: int, dtype: str
+) -> Callable:
     half_d = dim // 2
-    dq_rows = block_n * half_d // _DQ_ROW
+    dq_rows = block_n * half_d // dq_row
     sm_scale = dim**-0.5
 
     @tilelang.jit
     def _mha_bwd_ws_post_func() -> Callable:
         @T.prim_func
         def _mha_bwd_ws_post(
-            dq_accum: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, _DQ_ROW], "float"),  # type: ignore
+            dq_accum: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, dq_row], "float"),  # type: ignore
             dq: T.Tensor([batch, seq_len, heads, dim], dtype),  # type: ignore
         ) -> None:
             with T.Kernel(heads, seq_len // block_n, batch, threads=256) as (h, m, b):
@@ -443,6 +439,12 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
     supported_archs: list[int] = [90]
     # The head dim the WGMMA tiles and the dQ layout are written for.
     _HEAD_DIM = 128
+    # Key rows one CTA owns, 64 per consumer warpgroup.
+    _BLOCK_M = 128
+    # Query rows per step.
+    _BLOCK_N = 64
+    # f32 per row of the dQ half tile a consumer warpgroup owns.
+    _DQ_ROW = 128
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> "str | None":
@@ -452,8 +454,8 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
             return "requires one query head per KV head"
         if call.dim != cls._HEAD_DIM:
             return f"requires head dim {cls._HEAD_DIM}, got {call.dim}"
-        if call.max_seqlen_q <= 0 or call.max_seqlen_q % _BLOCK_M != 0:
-            return f"requires a positive multiple of {_BLOCK_M} rows, got {call.max_seqlen_q}"
+        if call.max_seqlen_q <= 0 or call.max_seqlen_q % cls._BLOCK_M != 0:
+            return f"requires a positive multiple of {cls._BLOCK_M} rows, got {call.max_seqlen_q}"
         if call.dtype not in ATTENTION_DTYPES or call.is_fp8:
             return f"requires float16 or bfloat16, got {call.dtype}"
         if call.softcap != 0.0:
@@ -492,10 +494,20 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
         num_sms = get_sm_count(device_index)
         # Heads launched together: the largest divisor of ``batch * heads`` whose key blocks
         # fit in one wave of ``num_sms`` CTAs.
-        fit = max(1, num_sms // (seq_len // _BLOCK_M))
+        fit = max(1, num_sms // (seq_len // self._BLOCK_M))
         group = max(g for g in range(1, min(fit, batch * heads) + 1) if batch * heads % g == 0)
         self.kernel = _mha_bwd_ws_kernel(
-            batch, heads, seq_len, dim, is_causal, group, num_sms, self.dtype_str
+            batch,
+            heads,
+            seq_len,
+            dim,
+            is_causal,
+            group,
+            num_sms,
+            self._BLOCK_M,
+            self._BLOCK_N,
+            self._DQ_ROW,
+            self.dtype_str,
         )
         # [next tile, CTAs retired]; the kernel returns both to zero.
         self.sched = torch.zeros(
@@ -507,7 +519,9 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
         )
         self.init_config(config)
         self.main_kernel = self.kernel()
-        self.post_kernel = _mha_bwd_ws_post_kernel(batch, heads, seq_len, dim, self.dtype_str)()
+        self.post_kernel = _mha_bwd_ws_post_kernel(
+            batch, heads, seq_len, dim, self._BLOCK_N, self._DQ_ROW, self.dtype_str
+        )()
 
     def forward(
         self,
@@ -522,10 +536,10 @@ class MHABwdWSKernel(Kernel, GQABwdInterface):
         """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` arrives zero-filled."""
         dq_accum = dq_accum.view(
             self.batch * self.heads,
-            self.seq_len // _BLOCK_N,
+            self.seq_len // self._BLOCK_N,
             2,
-            _BLOCK_N * self.dim // 2 // _DQ_ROW,
-            _DQ_ROW,
+            self._BLOCK_N * self.dim // 2 // self._DQ_ROW,
+            self._DQ_ROW,
         )
         dk, dv = torch.empty_like(k), torch.empty_like(v)
         self.main_kernel(q, k, v, do, lse, delta, dq_accum, dk, dv, self.sched)

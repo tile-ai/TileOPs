@@ -388,19 +388,18 @@ class _PartitionFit(NamedTuple):
     min_ctas: int
 
 
-# A partition creates enough independent CTAs only for long calls. A board without an
-# entry keeps the serial-state kernel.
-_PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
-
-
 class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]
 
+    # A partition creates enough independent CTAs only for long calls. A board without an
+    # entry keeps the serial-state kernel.
+    _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
+
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        fit = _PARTITION_FITS.get(call.calibration)
+        fit = cls._PARTITION_FITS.get(call.calibration)
         if fit is None:
             return "has no partition fit for this board"
         reason = dense_refusal(call)

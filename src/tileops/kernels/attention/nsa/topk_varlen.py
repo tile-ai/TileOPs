@@ -9,16 +9,13 @@ from tilelang import language as T
 from tileops.kernels.attention.call_spec import NSACall, NSATopKFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-
-# One warpgroup's WGMMA rows: a CTA's (token, query head) rows are a multiple of this.
-_TILE_ROWS = 64
-_WARP = 32
+from tileops.utils import WARP_LANES
 
 
 def _sort_widths(chunks: int) -> list[int]:
     """Slots per lane of each sort width, 32 lanes times a power of two, up to ``chunks``."""
     widths = [1]
-    while _WARP * widths[-1] < chunks:
+    while WARP_LANES * widths[-1] < chunks:
         widths.append(widths[-1] * 2)
     return widths
 
@@ -35,6 +32,7 @@ def _nsa_topk_varlen_kernel(
     selected_block_num: int,
     block_n: int,
     bs: int,
+    tile_rows: int,
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
@@ -51,11 +49,11 @@ def _nsa_topk_varlen_kernel(
     """
     head_kv = heads // group
     # The fewest tokens whose rows fill whole WGMMA row tiles.
-    block_t = _TILE_ROWS // math.gcd(group, _TILE_ROWS)
+    block_t = tile_rows // math.gcd(group, tile_rows)
     rows = block_t * group
     split = (bs + block_t - 1) // block_t
     threads = 128
-    warps = threads // _WARP
+    warps = threads // WARP_LANES
     # A warp takes whole rows; with fewer rows than warps the spare warps take none.
     rows_per_warp = max(1, block_t // warps)
     # The deepest candidate window: every chunk of the longest request.
@@ -74,7 +72,7 @@ def _nsa_topk_varlen_kernel(
         widths = _sort_widths(n_max)
         slots = widths[-1]
         # (exclusive floor, slots per lane) of the sort width each candidate count selects.
-        bands = [(0 if i == 0 else _WARP * widths[i - 1], w) for i, w in enumerate(widths)]
+        bands = [(0 if i == 0 else WARP_LANES * widths[i - 1], w) for i, w in enumerate(widths)]
         neg_inf = -T.infinity(accum_dtype)
 
         def bitonic(slots_per_lane, vals, keys, lane, tv, tk, flag):
@@ -86,7 +84,7 @@ def _nsa_topk_varlen_kernel(
             slot is overwritten. Plain Python, so the per-stride slot pattern unrolls while the
             stage loops stay loops.
             """
-            levels = (_WARP * slots_per_lane).bit_length() - 1
+            levels = (WARP_LANES * slots_per_lane).bit_length() - 1
             with T.serial(levels) as level:
                 k = 2 << level
                 with T.serial(level + 1) as down:
@@ -95,7 +93,7 @@ def _nsa_topk_varlen_kernel(
                         with T.Then():
                             j = 1 << stride_log
                             for e in range(slots_per_lane):
-                                descending = ((e * _WARP + lane) & k) == 0
+                                descending = ((e * WARP_LANES + lane) & k) == 0
                                 T.buffer_store(tv, T.shfl_xor(vals[e], j), [0])
                                 T.buffer_store(tk, T.shfl_xor(keys[e], j), [0])
                                 other_better = T.Or(
@@ -121,7 +119,7 @@ def _nsa_topk_varlen_kernel(
                                         if e & slot_stride:
                                             continue
                                         f = e | slot_stride
-                                        descending = ((e * _WARP + lane) & k) == 0
+                                        descending = ((e * WARP_LANES + lane) & k) == 0
                                         T.buffer_store(tv, vals[e], [0])
                                         T.buffer_store(tk, keys[e], [0])
                                         T.buffer_store(tv, vals[f], [1])
@@ -148,15 +146,15 @@ def _nsa_topk_varlen_kernel(
         def select_row(t, n_cand, tok0, h, imp_s, vals, keys, lane, tv, tk, flag, block_indices):
             """Sort row t at the narrowest width holding n_cand and write its first ids."""
             for floor, width in bands:
-                with T.If(T.And(n_cand > floor, n_cand <= _WARP * width)), T.Then():
+                with T.If(T.And(n_cand > floor, n_cand <= WARP_LANES * width)), T.Then():
                     for e in range(width):
-                        i = e * _WARP + lane
+                        i = e * WARP_LANES + lane
                         T.buffer_store(vals, T.if_then_else(i < n_cand, imp_s[t, i], neg_inf), [e])
                         T.buffer_store(keys, i, [e])
                     bitonic(width, vals, keys, lane, tv, tk, flag)
                     for e in range(width):
-                        if e * _WARP < selected_block_num:
-                            p = e * _WARP + lane
+                        if e * WARP_LANES < selected_block_num:
+                            p = e * WARP_LANES + lane
                             with T.If(p < selected_block_num), T.Then():
                                 T.buffer_store(
                                     block_indices,
@@ -197,8 +195,8 @@ def _nsa_topk_varlen_kernel(
                     }
                 )
                 tx = T.get_thread_binding()
-                lane = tx % _WARP
-                warp = tx // _WARP
+                lane = tx % WARP_LANES
+                warp = tx // WARP_LANES
 
                 chunk = bx // split
                 sub = bx % split
@@ -541,6 +539,8 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     # Chunks one key tile holds: the WGMMA n of each score tile.
     _BLOCK_N = 64
+    # One warpgroup's WGMMA rows: a CTA's (token, query head) rows are a multiple of this.
+    _TILE_ROWS = 64
 
     @classmethod
     def entry_for(cls, call: NSACall) -> Entry:
@@ -603,7 +603,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
     @property
     def _tiled(self) -> bool:
         """Whether whole tokens fill the tiled kernel's WGMMA row tiles."""
-        return _TILE_ROWS % self.group == 0 or self.group % _TILE_ROWS == 0
+        return self._TILE_ROWS % self.group == 0 or self.group % self._TILE_ROWS == 0
 
     def forward(
         self,
@@ -646,6 +646,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             self.selected_block_num,
             self.block_n,
             self.bs,
+            self._TILE_ROWS,
             self.dtype_str,
             self.accum_dtype_str,
         )(*tensors)

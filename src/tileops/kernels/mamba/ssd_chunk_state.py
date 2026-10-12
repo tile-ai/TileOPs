@@ -77,8 +77,6 @@ from tileops.kernels.mamba.call_spec import SSDChunkStateCall, SSDChunkStateFwdI
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
-_GEMM_N_STEP = 16
-
 
 @functools.lru_cache(maxsize=32)
 def _ssd_chunk_state_fwd_kernel(
@@ -284,6 +282,8 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # The GEMM's N extent (block_n) splits across warps in steps of this many columns.
+    _GEMM_N_STEP = 16
 
     # ``seq_idx`` masks contributions; the trip count comes from the chunk
     # length.
@@ -380,7 +380,7 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
         # The GEMM's N extent splits across warps in 16-column steps; a d_state
         # that is not a whole number of them rounds up, and the tail is masked.
         return {
-            "block_n": min(128, -(-self.d_state // _GEMM_N_STEP) * _GEMM_N_STEP),
+            "block_n": min(128, -(-self.d_state // self._GEMM_N_STEP) * self._GEMM_N_STEP),
             "block_p": 64,
             "block_l": 32,
             "threads": 128,

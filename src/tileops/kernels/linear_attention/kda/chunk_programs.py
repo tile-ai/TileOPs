@@ -26,8 +26,11 @@ from tileops.kernels.linear_attention.gdn.prefill_common import step_size
 __all__ = ["chunk_prepare_program", "chunk_scan_program"]
 
 # One gate reference per this many rows keeps every exponent this kernel takes
-# inside float32, whatever the gate magnitude the caller supplies.
+# inside float32, whatever the gate magnitude the caller supplies. The fused program
+# takes its gate references at the same stride, so it imports this value.
 REFERENCE_BLOCK = 16
+# Added under the square root of each row norm before taking its reciprocal. The
+# fused program normalizes the same rows, so it imports this value.
 L2_EPS = 1e-6
 
 

@@ -43,13 +43,6 @@ from tileops.utils import get_shared_memory_optin
 
 __all__ = ["MLAVarlenPrefillFwdKernel"]
 
-_CANDIDATES = (
-    {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256},
-    {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256},
-    {"block_m": 64, "block_n": 64, "num_stages": 2, "threads": 128},
-)
-_NARROW = _CANDIDATES[-1]
-
 
 def _stages_score_tile(block_m: int, threads: int) -> bool:
     """Whether the score tile goes through shared memory.
@@ -295,6 +288,14 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
 
     supported_archs: list[int] = [80, 89, 90]
     general: bool = True
+    # Default configs, tried in order against the shared-memory budget.
+    _CANDIDATES = (
+        {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256},
+        {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256},
+        {"block_m": 64, "block_n": 64, "num_stages": 2, "threads": 128},
+    )
+    # The narrowest tile: the refusal and the last-resort default.
+    _NARROW = _CANDIDATES[-1]
 
     @classmethod
     def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
@@ -305,7 +306,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
                 f"{call.dim_nope}, {call.dim_pe}, {call.dim_v}"
             )
         need = cls._shared_bytes(
-            call.batch, call.dim_nope, call.dim_pe, call.dim_v, call.dtype.itemsize, _NARROW
+            call.batch, call.dim_nope, call.dim_pe, call.dim_v, call.dtype.itemsize, cls._NARROW
         )
         if call.smem_budget and need > call.smem_budget:
             return (
@@ -461,10 +462,10 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
         return next(
             (
                 c
-                for c in _CANDIDATES
+                for c in cls._CANDIDATES
                 if cls._shared_bytes(batch, dim_nope, dim_pe, dim_v, itemsize, c) <= budget
             ),
-            _NARROW,
+            cls._NARROW,
         ).copy()
 
     @property

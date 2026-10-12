@@ -71,10 +71,6 @@ class _HeuristicPolicy:
         return self.max_stages * 8 * 2
 
 
-#: One instance for the process: nothing varies it per call.
-_POLICY = _HeuristicPolicy()
-
-
 @dataclasses.dataclass(frozen=True)
 class _CalibratedBands:
     """Selection bands fitted on one calibrated board; refit them as `_HeuristicPolicy` describes."""
@@ -90,11 +86,6 @@ class _CalibratedBands:
     short_group_min_k: int = 1024
     short_group_unfused_max_n: int = 5120
     short_group_tile: tuple[int, int, int] = (64, 128, 128)
-
-
-#: The bands by calibrated board (``tileops.utils.calibration_key``). A board without an
-#: entry is served by the cost function alone.
-_CALIBRATED_BANDS = {"h200": _CalibratedBands()}
 
 
 class GemmType(str, enum.Enum):
@@ -285,16 +276,23 @@ class GemmDesc:
     activation: str = "none"
     device_name: str = ""
 
+    # Unannotated, so neither is a dataclass field.
+    # One instance for the process: nothing varies it per call.
+    _POLICY = _HeuristicPolicy()
+    # The bands by calibrated board (``tileops.utils.calibration_key``). A board without an
+    # entry is served by the cost function alone.
+    _CALIBRATED_BANDS = {"h200": _CalibratedBands()}
+
     @property
     def policy(self) -> _HeuristicPolicy:
-        """The selector's constants. A module singleton, not per-descriptor state.
+        """The selector's constants. A class attribute, not per-descriptor state.
 
         A field would join this frozen dataclass's equality, and so the key of
         ``get_best_config``'s cache and of anything comparing two descriptors --
         which silently makes descriptors from two builds of the selector
         incomparable.
         """
-        return _POLICY
+        return self._POLICY
 
     @property
     def fused(self) -> bool:
@@ -303,7 +301,7 @@ class GemmDesc:
     @property
     def bands(self) -> "_CalibratedBands | None":
         """The bands fitted on this device's calibrated board, or ``None`` without one."""
-        return _CALIBRATED_BANDS.get(calibration_key(self.device_name))
+        return self._CALIBRATED_BANDS.get(calibration_key(self.device_name))
 
     @property
     def c_cols(self) -> int:

@@ -17,10 +17,6 @@ from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
-# Accumulators one thread holds for its output tile: the band row plus the row
-# maxima the column pass consumes.
-_MAX_TILE_REGISTERS = 64
-
 
 def _axis_inside(
     size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
@@ -440,6 +436,9 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # Accumulators one thread holds for its output tile: the band row plus the row
+        # maxima the column pass consumes.
+        max_tile_registers = 64
         space = itertools.product(
             (64, 128, 256, 512), (64, 128, 256), self._tiles("h"), self._tiles("w")
         )
@@ -454,7 +453,7 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
             if threads <= block_m
             and self._band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
             + self._band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
-            <= _MAX_TILE_REGISTERS
+            <= max_tile_registers
         ]
         return configs or [self.default_config]
 

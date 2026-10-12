@@ -44,20 +44,14 @@ _SHIFT_READ_WIDTH = 32768
 # at 1024 threads.
 _CANDIDATE_THREADS = (128, 256, 512, 1024)
 
-# The widths a short row may also use. Separate from :data:`_CANDIDATE_THREADS`
-# so a block narrower than one warp reaches only the kernels that ask for it.
-_CANDIDATE_THREADS_BY_WIDTH = (32, 64) + _CANDIDATE_THREADS
-
 # Row width at or below which a block narrower than 128 is offered. Above it a
 # narrow block hands one thread hundreds of columns, which layout inference
 # answers with the replicated layout this module's docstring describes.
 NARROW_ROW = 2048
 
-_CANDIDATE_BLOCK_M = (1, 2, 4, 8)  # rows per block offered to autotune
-_DEFAULT_THREADS = 128  # divides every row padded to a multiple of ALIGNMENT
+# What row_padding pads a row to and what select_row_configs fits block_m rows into:
+# both must agree on one shared-memory budget.
 _ROW_SMEM_BUDGET_BYTES = STATIC_SHARED_BYTES
-
-_TARGET_ELEMENTS_PER_THREAD = 32  # what select_row_config_by_width aims for
 
 
 def row_padding(n: int, elem_bytes: int) -> int:
@@ -76,7 +70,10 @@ def row_padding(n: int, elem_bytes: int) -> int:
 
 def widths_for_row(n_padded: int) -> tuple:
     """Block widths a row of *n_padded* columns may be split across."""
-    return _CANDIDATE_THREADS_BY_WIDTH if n_padded <= NARROW_ROW else _CANDIDATE_THREADS
+    # The widths a short row may also use. Separate from :data:`_CANDIDATE_THREADS`
+    # so a block narrower than one warp reaches only the kernels that ask for it.
+    candidate_threads_by_width = (32, 64) + _CANDIDATE_THREADS
+    return candidate_threads_by_width if n_padded <= NARROW_ROW else _CANDIDATE_THREADS
 
 
 def select_row_config() -> dict:
@@ -85,7 +82,8 @@ def select_row_config() -> dict:
     Takes no width: a row is padded to a multiple of the 256-element alignment,
     which 128 threads always divide.
     """
-    return {"block_m": 1, "threads": _DEFAULT_THREADS}
+    default_threads = 128  # divides every row padded to a multiple of ALIGNMENT
+    return {"block_m": 1, "threads": default_threads}
 
 
 def select_row_config_by_width(n_padded: int, widths: Optional[tuple] = None) -> dict:
@@ -102,7 +100,8 @@ def select_row_config_by_width(n_padded: int, widths: Optional[tuple] = None) ->
     if widths is None:
         widths = widths_for_row(n_padded)
     usable = sorted(t for t in widths if n_padded % t == 0)
-    target = n_padded // _TARGET_ELEMENTS_PER_THREAD
+    target_elements_per_thread = 32  # elements per thread the chosen width aims for
+    target = n_padded // target_elements_per_thread
     for candidate in reversed(usable):
         if candidate <= target:
             return {"block_m": 1, "threads": candidate}
@@ -116,7 +115,7 @@ def select_row_configs(
     dtype: torch.dtype = torch.float16,
     num_buffers: int = 1,
     widths: tuple = _CANDIDATE_THREADS,
-    block_ms: tuple = _CANDIDATE_BLOCK_M,
+    block_ms: tuple = (1, 2, 4, 8),  # rows per block offered to autotune
     every_width_past_budget: bool = False,
 ) -> list[dict]:
     """Autotune space: *block_ms* x the thread counts *widths* admits.

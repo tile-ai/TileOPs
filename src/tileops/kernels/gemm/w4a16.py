@@ -78,6 +78,8 @@ W4A16_LAYOUT = W4A16Layout()
 # entry is warned.
 _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
+# One space for the enumeration, the cost model, the builder's register split and the
+# kernel's stream-K reduce, so the configs ranked are the configs built.
 _CONFIG_SPACE = _ConfigSpace()
 
 __all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MMAKernel", "W4A16Layout"]

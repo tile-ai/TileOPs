@@ -23,7 +23,8 @@ _ACCUM_DTYPE = "float"
 _JIT_FLAGS = ["-O3", "-DENABLE_BF16"]
 
 # Taps one row-reduce block may hold. It bounds the two f32 fragments together: 8192
-# taps is 64 KB over a 256-thread block, or 64 registers a thread.
+# taps is 64 KB over a 256-thread block, or 64 registers a thread. _plan admits a row
+# reduce and _block_rows sizes its block by it, so the two must agree.
 _MAX_FRAGMENT_TAPS = 8192
 
 

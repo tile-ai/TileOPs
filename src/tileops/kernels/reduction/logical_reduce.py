@@ -54,13 +54,6 @@ _SCALAR_VIEWS = {
     torch.complex128: (torch.float64, 2),
 }
 
-
-# A lane folds one vector access per step, and a block is sized so each lane folds at
-# least this many of them across a row: fewer leaves lanes that load nothing while the
-# block still pays for its reduction.
-_FOLD_VECTORS_PER_LANE = 2
-_FOLD_MIN_THREADS = WARP_LANES
-_FOLD_MAX_THREADS = 1024
 # Bytes a 32-bit word packs, and the per-byte masks its byte tests use.
 _WORD_BYTES = 4
 _BYTE_ONES = 0x01010101
@@ -83,9 +76,14 @@ def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int 
 
 def _fold_threads(row_units: int, vec: int) -> int:
     """The block width the fold runs a row of *row_units* units at."""
-    lanes = max(ceildiv_int(row_units, vec) // _FOLD_VECTORS_PER_LANE, 1)
+    # A lane folds one vector access per step, and a block is sized so each lane folds at
+    # least this many of them across a row: fewer leaves lanes that load nothing while the
+    # block still pays for its reduction.
+    fold_vectors_per_lane = 2
+    fold_max_threads = 1024  # CUDA's cap on threads per block
+    lanes = max(ceildiv_int(row_units, vec) // fold_vectors_per_lane, 1)
     lanes = 1 << (lanes.bit_length() - 1)
-    return max(_FOLD_MIN_THREADS, min(lanes, _FOLD_MAX_THREADS))
+    return max(WARP_LANES, min(lanes, fold_max_threads))
 
 
 @functools.lru_cache(maxsize=32)

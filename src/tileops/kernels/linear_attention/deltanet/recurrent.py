@@ -36,7 +36,8 @@ __all__ = [
 ]
 
 # The key-dimension tile the decode programs below fall back to when no tuned candidate
-# divides the key dim, so it is what decides which key dims are served.
+# divides the key dim, so it is what decides which key dims are served. Both decode
+# kernels share `_k_tile_refusal`, so their defaults must agree with it.
 _DEFAULT_K_TILE = 16
 
 

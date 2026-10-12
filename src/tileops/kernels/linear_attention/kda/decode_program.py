@@ -17,8 +17,6 @@ from tileops.kernels.constants import LOG2E
 
 __all__ = ["decode_program"]
 
-L2_EPS = 1e-6
-
 
 @functools.lru_cache(maxsize=32)
 def decode_program(
@@ -35,6 +33,8 @@ def decode_program(
 ):
     """Build the decode program for one static packed shape."""
     H, HV, K, V = heads, value_heads, dim_k, dim_v
+    # Added under the square root of each row norm before taking its reciprocal.
+    l2_eps = 1e-6
     BV = min(value_tile, V)
     tiles = V // BV
     group = HV // H
@@ -85,11 +85,11 @@ def decode_program(
                 for _i, j in T.Parallel(1, K):
                     q_s[j] = (
                         T.cast(q[0, iseq, ih, j], accum)
-                        * (T.rsqrt(qsum[0] + L2_EPS) if l2norm else 1.0)
+                        * (T.rsqrt(qsum[0] + l2_eps) if l2norm else 1.0)
                         * scale
                     )
                     k_s[j] = T.cast(k[0, iseq, ih, j], accum) * (
-                        T.rsqrt(ksum[0] + L2_EPS) if l2norm else 1.0
+                        T.rsqrt(ksum[0] + l2_eps) if l2norm else 1.0
                     )
                     d_s[j] = T.exp2(T.cast(g[0, iseq, ihv, j], accum) * LOG2E)
                 T.sync_threads()

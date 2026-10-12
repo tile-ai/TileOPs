@@ -754,12 +754,6 @@ class _PersistentBand(NamedTuple):
     min_wave_denom: int
 
 
-# Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
-# reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py whenever the tile or
-# the epilogue changes. A board without an entry keeps BmmKernel.
-_PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
-
-
 class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
 
@@ -769,6 +763,10 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """
 
     supported_archs: list[int] = [90]
+    # Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
+    # reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py whenever the tile or
+    # the epilogue changes. A board without an entry keeps BmmKernel.
+    _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
 
     @staticmethod
     def _tiles(band: _PersistentBand, batch: int, m: int, n: int) -> int:
@@ -781,7 +779,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
     @classmethod
     def _region_refusal(cls, call: BmmCall) -> Optional[str]:
-        band = _PERSISTENT_BANDS.get(call.calibration)
+        band = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None:
             return "has no persistent band for this board"
         # TMA addresses the K-contiguous operands and the output row in 16-byte steps.
@@ -822,7 +820,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     ) -> None:
         super().__init__(device_index=device_index)
         physical_sms = get_sm_count(device_index)
-        band = _PERSISTENT_BANDS.get(device_calibration(device_index))
+        band = self._PERSISTENT_BANDS.get(device_calibration(device_index))
         persistent_sms = (
             physical_sms if band is None else self._persistent_grid(band, batch, m, n, physical_sms)
         )
