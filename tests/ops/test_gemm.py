@@ -789,12 +789,17 @@ def test_gemm_fp8_default_tile(
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
     """The 64-row ring depth counts the mbarriers' static unit and each buffer's alignment.
-    Counted without them, 14 stages of the 64x64 tile this shape takes on 132 SMs pass the
-    estimate and exceed the shared memory a block may opt in to; 13 fit."""
-    test = GemmFP8Test(128, 4096, 2560, torch.float8_e4m3fn, "block128x128")
+    Counted without them, 14 stages of a 64x64 tile over 20 K-steps pass the estimate and
+    exceed the shared memory a block may opt in to; 13 fit."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    # Two 64-row tiles over 32 columns an SM put 64 columns on each SM: the 64-wide tile.
+    test = GemmFP8Test(128, 32 * sm_count, 2560, torch.float8_e4m3fn, "block128x128")
     op = GemmFP8FwdOp(target=BUILTIN)
     inputs = test.gen_inputs()
-    assert isinstance(op.kernel_for("gemm_fp8", _fp8_call(*inputs)), GemmFP81D2DFwdKernel)
+    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
+    assert isinstance(kernel, GemmFP81D2DFwdKernel)
+    assert (kernel.config["block_m"], kernel.config["block_n"]) == (64, 64)
+    assert kernel.config["num_stages"] == 13
     test.check(op, *inputs)
 
 
