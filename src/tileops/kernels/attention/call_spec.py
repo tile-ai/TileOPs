@@ -32,6 +32,8 @@ __all__ = [
     "NSACompressedFwdInterface",
     "NSAFwdInterface",
     "NSATopKFwdInterface",
+    "PagedKVCacheWriteCall",
+    "PagedKVCacheWriteFwdInterface",
     "SparseMLADecodeFwdInterface",
 ]
 
@@ -635,4 +637,79 @@ class NSACompressedFwdInterface(KernelInterface):
 
         Returns:
             New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class PagedKVCacheWriteCall(CallSpec):
+    """The cache geometry and dtypes of one write; the token count arrives with the tensors.
+
+    The token count is deliberately absent. A serving process writes one token per decode
+    step, so keying a build on it would compile a kernel per step; the rows are a dynamic
+    extent of the tensors the call passes instead.
+    """
+
+    heads_kv: int = 0
+    dim: int = 0
+    num_pages: int = 0
+    page_size: int = 0
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+    @property
+    def row_width(self) -> int:
+        """Elements in one token's K or V row: ``heads_kv * dim``."""
+        return self.heads_kv * self.dim
+
+    @property
+    def physical_tokens(self) -> int:
+        """Rows in the page pool: ``num_pages * page_size``."""
+        return self.num_pages * self.page_size
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes the scales."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+class PagedKVCacheWriteFwdInterface(KernelInterface):
+    """Scatter each token's K and V rows into the page-pool row its slot names."""
+
+    request = PagedKVCacheWriteCall
+
+    @abstractmethod
+    def forward(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
+
+        ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the page
+        pool flattened to ``call.physical_tokens`` rows; a negative slot skips that token.
+        The caller owes distinct non-negative slots, and a slot outside the pool the op was
+        handed an error rather than a clamped write. Every row the call names is written in
+        place and nothing else is: a row no token names keeps whatever it held.
+
+        Args:
+            k: ``(tokens, call.heads_kv, call.dim)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+            v: The same rows of values.
+            k_pages: ``(call.num_pages, call.page_size, call.heads_kv, call.dim)`` in
+                ``call.cache_dtype``, contiguous, written in place. Of the tokens with a
+                slot, it stores ``k / k_scale`` rounded to nearest, ties to even, with saturation
+                when ``call.quantized``, and ``k`` unchanged otherwise.
+            v_pages: The same page pool, holding ``v`` under ``v_scale``.
+            slot_mapping: ``int64`` ``(tokens,)``, the flattened row each token writes.
+            k_scale: ``float32`` ``(1,)`` divisor of the stored keys, present exactly when
+                ``call.quantized``. A non-positive value is the caller's error.
+            v_scale: The same divisor for the stored values.
+
+        Returns:
+            ``None``; the two page pools are mutated and no other tensor is touched.
         """

@@ -18,6 +18,10 @@ from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
 from workloads.attention.mha import MHADecodePagedCall
 from workloads.attention.mla import MLADecodeCall
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
+from workloads.attention.paged_cache_write import (
+    PagedKVCacheWriteCall,
+    paged_cache_write_result,
+)
 from workloads.attention.topk_select import TopKSelectCall
 
 
@@ -44,6 +48,11 @@ def _gqa_paged_append_binder(op: Any, case: Any) -> Implementation:
     return private_inputs(lambda *args: paged_prefill_result(op, *args), case.inputs, 3, 4)
 
 
+def _paged_cache_write_binder(op: Any, case: Any) -> Implementation:
+    """The op on private pages it scatters k and v into, returning both caches."""
+    return private_inputs(lambda *args: paged_cache_write_result(op, *args), case.inputs, 2, 3)
+
+
 ENTRIES = {
     "GQABwdOp": Entry(GQABwdCall),
     "GQADenseFwdOp": Entry(_gqa_dense_workload, count_copies=True),
@@ -52,6 +61,7 @@ ENTRIES = {
         GQAPrefillPagedWithKVCacheFwdCall, binder=_gqa_paged_append_binder
     ),
     "GQAPagedFwdOp": Entry(GQAPagedCall),
+    "PagedKVCacheWriteFwdOp": Entry(PagedKVCacheWriteCall, binder=_paged_cache_write_binder),
     "MHADecodePagedWithKVCacheFwdOp": Entry(MHADecodePagedCall),
     "MLADecodeWithKVCacheFwdOp": Entry(MLADecodeCall, count_copies=True),
     "DSADecodeWithKVCacheFwdOp": Entry(DSADecodeCall),
