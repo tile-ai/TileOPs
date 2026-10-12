@@ -372,7 +372,6 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         )
 
 
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -383,22 +382,44 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         pytest.param(142, 2, id="group-over-a-block-two-kv-heads"),
     ],
 )
+@pytest.mark.parametrize(
+    "dim,dtype",
+    [
+        pytest.param(64, torch.bfloat16, marks=pytest.mark.sm90),
+        pytest.param(256, torch.float16, marks=pytest.mark.sm89),
+        pytest.param(256, torch.bfloat16, marks=pytest.mark.sm89),
+    ],
+)
 def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
-    heads: int, heads_kv: int
+    heads: int, heads_kv: int, *, dim: int, dtype: torch.dtype
 ) -> None:
     """Every output head is written when the group needs more than one head block of 64."""
-    dim, seq_len_kv, dtype = 64, 2048, torch.bfloat16
-    q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
-    k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
-    v = torch.randn_like(k)
-
-    output = GQADenseFwdOp(target=BUILTIN)(q, k, v)
-
-    compare_outputs(
-        output,
-        dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
-        dense_gqa_verification(q.dtype),
-    )
+    lengths = (1, 63, 2048) if dim == 256 else (2048,)
+    for seq_len_kv in lengths:
+        q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
+        k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+        v = torch.randn_like(k)
+        reference = dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True)
+        compare_outputs(
+            GQADenseFwdOp(target=BUILTIN)(q, k, v), reference, dense_gqa_verification(dtype)
+        )
+        if dim == 256:
+            kernel = GQADecodeKernel(
+                batch=2,
+                heads=heads,
+                heads_kv=heads_kv,
+                seq_len_kv=seq_len_kv,
+                dim=dim,
+                dtype=dtype,
+                config={
+                    "block_H": 64,
+                    "block_N": 64,
+                    "num_split": 1,
+                    "num_stages": 1,
+                    "threads": 128,
+                },
+            )
+            compare_outputs(kernel(q, k, v), reference, dense_gqa_verification(dtype))
 
 
 @pytest.mark.sm90
