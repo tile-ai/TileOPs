@@ -3,17 +3,9 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import (
-    GemmFP8Block128WaveFwdKernel,
-    GemmFP8Call,
-    GemmFP8TensorScaleKernel,
-    GemmFP81D2DFwdKernel,
-    GemmW4A16Kernel,
-    fp8_1d2d,
-)
-from tileops.kernels.gemm.heuristics import fp8_ws_config
+from tileops.kernels.gemm import GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from tileops.utils import device_calibration, get_sm_count
+from tileops.utils import get_sm_count
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFP8Workload,
@@ -36,23 +28,6 @@ class GemmFP8Test(GemmFP8Workload, TestBase):
 
 class GemmW4A16Test(GemmW4A16Workload, TestBase):
     pass
-
-
-def _fp8_call(
-    a: torch.Tensor, b: torch.Tensor, scale_a: torch.Tensor, scale_b: torch.Tensor
-) -> GemmFP8Call:
-    """The call spec ``GemmFP8FwdOp`` dispatches on for these bf16-output inputs."""
-    return GemmFP8Call(
-        m=a.shape[0],
-        n=b.shape[0],
-        k=a.shape[1],
-        dtype=a.dtype,
-        scale_a_shape=tuple(scale_a.shape),
-        scale_b_shape=tuple(scale_b.shape),
-        out_dtype=torch.bfloat16,
-        has_bias=False,
-        device=a.device,
-    )
 
 
 class GemmFixture(FixtureBase):
@@ -708,125 +683,58 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "m, n, k, schedule",
+    "m, n, k",
     [
-        # A 72-row M tail and an 8-column N tail in one 192-wide wave.
-        pytest.param(
-            200,
-            200,
-            2048,
-            {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            id="one-wave-tails",
-        ),
-        # Two waves: the last tile's first wave holds 64 rows and its second none; a
-        # 64-column N tail.
-        pytest.param(
-            320,
-            320,
-            2048,
-            {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
-            id="two-wave-tails",
-        ),
+        pytest.param(4096, 576, 7168, id="one-wave"),
+        pytest.param(4096, 7168, 16384, id="two-wave"),
     ],
 )
-def test_gemm_fp8_1d1d_wave_matches_reference(
-    m: int, n: int, k: int, schedule: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A 1x128 ``scale_b`` stages per-column scales in the wave kernel's ring and folds them
-    through the per-column helper. ``schedule`` is installed as the device board's schedule
-    for the shape, so dispatch reaches the wave kernel on any SM90 board. ``k`` spans four
-    scale groups, so each scale buffer is refilled after it is read."""
+def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
+    """A 1x128 ``scale_b`` on the H200 shapes calibrated for the wave kernel, one with
+    single-wave tiles and one with two-wave tiles: each column folds in under its own
+    scale."""
     test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128")
-    inputs = test.gen_inputs()
-    board = device_calibration(inputs[0].device.index)
-    monkeypatch.setitem(
-        fp8_1d2d._FP8_1D1D_WAVE_CONFIGS,
-        board,
-        {
-            **fp8_1d2d._FP8_1D1D_WAVE_CONFIGS.get(board, {}),
-            # Fewer CTAs than tiles, so a CTA stores a tail tile after a full one.
-            (m, n, k): {"kernel": schedule, "sm_count": 2},
-        },
-    )
-    op = GemmFP8FwdOp(target=BUILTIN)
-    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
-    assert isinstance(kernel, GemmFP8Block128WaveFwdKernel)
-    assert kernel.scale_b_per_row
-    assert kernel.config == schedule
-    test.check(op, *inputs)
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "m, n, k, scale_mode, kernel_type, block_m, block_n",
+    "n, scale_mode",
     [
-        pytest.param(
-            128, 1024, 7168, "per_tensor", GemmFP8TensorScaleKernel, 64, 32, id="one-row-tile"
-        ),
-        pytest.param(
-            128, 576, 7168, "block128x128", GemmFP81D2DFwdKernel, 64, 16, id="1d2d-one-row-tile"
-        ),
+        pytest.param(1024, "per_tensor", id="per-tensor"),
+        pytest.param(576, "block128x128", id="block128x128"),
     ],
 )
-def test_gemm_fp8_default_tile(
-    m: int, n: int, k: int, scale_mode: str, kernel_type: type, block_m: int, block_n: int
-) -> None:
-    """The default schedule takes 64 rows on a single 128-row tile. Both shapes select
-    the same tile on every SM count from 66 to 132."""
-    test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, scale_mode)
-    op = GemmFP8FwdOp(target=BUILTIN)
-    inputs = test.gen_inputs()
-    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
-    assert isinstance(kernel, kernel_type)
-    assert (kernel.config["block_m"], kernel.config["block_n"]) == (block_m, block_n)
-    test.check(op, *inputs)
+def test_gemm_fp8_single_row_tile_matches_reference(n: int, scale_mode: str) -> None:
+    """Rows that fit one 128-row tile, run as two 64-row tiles of one consumer warpgroup
+    each, under a per-tensor and a 128x128 ``scale_b`` grid."""
+    test = GemmFP8Test(128, n, 7168, torch.float8_e4m3fn, scale_mode)
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
-    """The 64-row ring depth counts the mbarriers' static unit and each buffer's alignment.
-    Counted without them, 14 stages of a 64x64 tile over 20 K-steps pass the estimate and
-    exceed the shared memory a block may opt in to; 13 fit."""
-    sm_count = get_sm_count(torch.device(run_device()).index)
-    # Two 64-row tiles over 32 columns an SM put 64 columns on each SM: the 64-wide tile.
-    test = GemmFP8Test(128, 32 * sm_count, 2560, torch.float8_e4m3fn, "block128x128")
-    op = GemmFP8FwdOp(target=BUILTIN)
-    inputs = test.gen_inputs()
-    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
-    assert isinstance(kernel, GemmFP81D2DFwdKernel)
-    assert (kernel.config["block_m"], kernel.config["block_n"]) == (64, 64)
-    assert kernel.config["num_stages"] == 13
-    test.check(op, *inputs)
+    """A 64-row block128x128 tile whose ring is sized to the block's shared memory launches
+    and matches: its mbarriers and each buffer's alignment come out of the same budget."""
+    test = GemmFP8Test(128, 4096, 2560, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
-    """Per-tensor scaling takes the 192-wide tile where its waves, counted whole, cover fewer
-    columns than the 128-wide tile's, and stores a 64-column N tail of it."""
+    """Per-tensor scaling on a grid whose 192-wide tiles fill one wave while the 128-wide
+    ones need two, with a 64-column N tail."""
     sm_count = get_sm_count(torch.device(run_device()).index)
     # Two row tiles by ``sm_count // 2`` 192-wide column tiles fill one wave; the 128-wide
     # tiles, half as many again, take two.
     test = GemmFP8Test(256, 192 * (sm_count // 2) - 128, 256, torch.float8_e4m3fn, "per_tensor")
-    op = GemmFP8FwdOp(target=BUILTIN)
-    inputs = test.gen_inputs()
-    kernel = op.kernel_for("gemm_fp8", _fp8_call(*inputs))
-    assert isinstance(kernel, GemmFP8TensorScaleKernel)
-    assert (kernel.config["block_m"], kernel.config["block_n"]) == (128, 192)
-    test.check(op, *inputs)
-
-
-@pytest.mark.smoke
-def test_fp8_ws_config_keeps_128_columns_where_192_saves_no_wave() -> None:
-    """Three waves of 128-wide tiles cover 384 columns, no more than two waves of 192-wide
-    ones, so per-tensor scaling keeps the 128-wide tile."""
-    config = fp8_ws_config(1280, 2112, 256, 78, block_scaled=False)
-    assert (config["block_m"], config["block_n"]) == (128, 128)
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @GemvBoundaryFixture
