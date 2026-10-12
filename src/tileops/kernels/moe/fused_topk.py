@@ -20,10 +20,13 @@ its two best selection scores when a bias is passed, else its best score. Each
 lane reduces its own slots per group, then the lanes merge: for a power-of-two group
 count as a ``shfl_xor`` transpose, each step halving the groups a lane holds, followed
 by one ``shfl_sync`` gather per group; otherwise as a butterfly per group. Every lane
-then holds all group scores; the ``topk_group`` best groups are kept by a serial
-argmax over those replicated scores, and every slot outside them is set to -inf; the
-ungrouped kernel's top-k loop then selects from the rest. ``num_expert_group == 1``
-builds the ungrouped kernel, with no grouped code.
+then holds all group scores. After the transpose each lane also holds one group as its
+own: it counts the groups that beat it, and a ballot of ``rank < topk_group`` gives
+every lane the kept groups at once. The butterfly leaves no lane owning a group, so
+there the ``topk_group`` best groups are kept by a serial argmax over the replicated
+scores. Every slot outside the kept groups is set to -inf, and the ungrouped kernel's
+top-k loop then selects from the rest. ``num_expert_group == 1`` builds the ungrouped
+kernel, with no grouped code.
 
 ``routed_scaling_factor`` other than 1 is folded into the weight writeback.
 
@@ -150,11 +153,9 @@ def _fused_topk_kernel(
             # Per group: the best and, with a bias, second-best selection score.
             best1 = T.alloc_local([num_expert_group], "float32")
             best2 = T.alloc_local([num_expert_group], "float32")
-            kept = T.alloc_local([num_expert_group], "int32")
             for g in T.unroll(num_expert_group):
                 best1[g] = -T.infinity("float32")
                 best2[g] = -T.infinity("float32")
-                kept[g] = 0
             for j in T.unroll(ELEMS_PER_THREAD):
                 for g in T.unroll(num_expert_group):
                     if group_of(j, lane_id) == g:
@@ -183,11 +184,23 @@ def _fused_topk_kernel(
                     merge_partials(best1, best2, 0, best1[0], best2[0], other1, other2)
                 if with_correction_bias:
                     best1[0] = best1[0] + best2[0]
-                # Gather every group's score into every lane.
+                # Gather every group's score into every lane, then rank the lane's own
+                # group: the groups that beat it score higher, or equal with a lower index.
                 for g in T.unroll(num_expert_group):
                     best2[g] = T.shfl_sync(best1[0], g << (LOG_WARP - LOG_GROUPS))
+                own_group = lane_id >> (LOG_WARP - LOG_GROUPS)
+                rank = T.alloc_var(T.int32)
+                rank = T.int32(0)
                 for g in T.unroll(num_expert_group):
-                    best1[g] = best2[g]
+                    beats = T.if_then_else(g < own_group, best2[g] >= best1[0], best2[g] > best1[0])
+                    rank = rank + T.if_then_else(beats, 1, 0)
+                # Group g is kept when bit g << (5 - LOG_GROUPS), its first lane, is set.
+                kept_lanes = T.alloc_var(T.uint32)
+                kept_lanes = T.cast(T.ballot(rank < topk_group), "uint32")
+                for j in T.unroll(ELEMS_PER_THREAD):
+                    first_lane = group_of(j, lane_id) << (LOG_WARP - LOG_GROUPS)
+                    if ((kept_lanes >> first_lane) & T.uint32(1)) == T.uint32(0):
+                        sel[j] = -T.infinity("float32")
             else:
                 for i in T.unroll(LOG_WARP):
                     for g in T.unroll(num_expert_group):
@@ -200,23 +213,27 @@ def _fused_topk_kernel(
                 if with_correction_bias:
                     for g in T.unroll(num_expert_group):
                         best1[g] = best1[g] + best2[g]
-            # Every lane holds every group score: pick the best groups without shuffles.
-            pick = T.alloc_var(T.int32)
-            pick_val = T.alloc_var(T.float32)
-            for _ in T.unroll(topk_group):
-                pick = T.int32(-1)
-                pick_val = -T.infinity("float32")
+                # Every lane holds every group score, but no lane owns one group: pick the
+                # best groups by a serial argmax over the replicated scores.
+                kept = T.alloc_local([num_expert_group], "int32")
                 for g in T.unroll(num_expert_group):
-                    if kept[g] == 0 and best1[g] > pick_val:
-                        pick = g
-                        pick_val = best1[g]
-                for g in T.unroll(num_expert_group):
-                    if g == pick:
-                        kept[g] = 1
-            for j in T.unroll(ELEMS_PER_THREAD):
-                for g in T.unroll(num_expert_group):
-                    if group_of(j, lane_id) == g and kept[g] == 0:
-                        sel[j] = -T.infinity("float32")
+                    kept[g] = 0
+                pick = T.alloc_var(T.int32)
+                pick_val = T.alloc_var(T.float32)
+                for _ in T.unroll(topk_group):
+                    pick = T.int32(-1)
+                    pick_val = -T.infinity("float32")
+                    for g in T.unroll(num_expert_group):
+                        if kept[g] == 0 and best1[g] > pick_val:
+                            pick = g
+                            pick_val = best1[g]
+                    for g in T.unroll(num_expert_group):
+                        if g == pick:
+                            kept[g] = 1
+                for j in T.unroll(ELEMS_PER_THREAD):
+                    for g in T.unroll(num_expert_group):
+                        if group_of(j, lane_id) == g and kept[g] == 0:
+                            sel[j] = -T.infinity("float32")
 
         if with_correction_bias:
 
