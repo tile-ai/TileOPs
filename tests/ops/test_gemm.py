@@ -757,6 +757,15 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
+    """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile."""
+    test = GemmW4A16Test(128, 5120, 25600, torch.float16)
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
 def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
     inputs = test.gen_inputs()
