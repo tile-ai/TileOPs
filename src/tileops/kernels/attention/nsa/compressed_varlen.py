@@ -248,18 +248,6 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
         )
 
 
-# Rows one m64 WGMMA computes: the query rows of a tile, tile_t tokens of one KV head.
-_TILE_ROWS = 64
-# Columns of one 128-byte swizzle block of 16-bit elements: Q, K, V and O move in halves.
-_HALF = 64
-# Keys one n=16 QK WGMMA scores; a chunk block is two of them.
-_KEY_HALF = 16
-# Query tiles in flight per CTA.
-_STAGES = 2
-# CTAs resident per SM: 48 KB of shared memory and 128 threads each.
-_CTAS_PER_SM = 4
-
-
 @functools.lru_cache(maxsize=32)
 def _nsa_compressed_fwd_varlen_tma_kernel(
     seq_num: int,
@@ -271,7 +259,10 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
     group: int,
     scale: float,
     bs: int,
+    bc: int,
     workers: int,
+    tile_rows: int,
+    half: int,
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
@@ -291,12 +282,12 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
     """
     scale_log2 = scale * LOG2E
     head_kv = heads // group
-    tile_t = _TILE_ROWS // group
-    m = _TILE_ROWS
-    half = _HALF
-    kh = _KEY_HALF
-    bc = 2 * kh
-    stages = _STAGES
+    tile_t = tile_rows // group
+    m = tile_rows
+    # A chunk block is two key halves, each scored by one n=16 QK WGMMA.
+    kh = bc // 2
+    # Query tiles in flight per CTA.
+    stages = 2
     n_tiles = (c_seq_len + tile_t - 1) // tile_t
     per_worker = (n_tiles + workers - 1) // workers
     # A finite start: a fully masked block then weighs exp2(-inf) = 0, never NaN.
@@ -547,24 +538,32 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
 
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"nsa_compressed_fwd_varlen_kernel"})
+    # Rows one m64 WGMMA computes: the query rows of a tile, tile_t tokens of one KV head.
+    _TILE_ROWS = 64
+    # Columns of one 128-byte swizzle block of 16-bit elements: Q, K, V and O move in halves.
+    _HALF = 64
+    # Keys one n=16 QK WGMMA scores; a chunk block is two of them.
+    _KEY_HALF = 16
 
     @classmethod
     def refusal(cls, call: NSACall) -> Optional[str]:
         """Two 64-column halves per head and one m64 row block per tile."""
-        if call.dim != 2 * _HALF or call.dim_v != 2 * _HALF:
-            return f"head dims ({call.dim}, {call.dim_v}) are not two {_HALF}-column halves"
+        if call.dim != 2 * cls._HALF or call.dim_v != 2 * cls._HALF:
+            return f"head dims ({call.dim}, {call.dim_v}) are not two {cls._HALF}-column halves"
         group = call.heads // call.heads_kv
-        if _TILE_ROWS % group != 0:
-            return f"a group of {group} heads does not tile the {_TILE_ROWS}-row WGMMA block"
+        if cls._TILE_ROWS % group != 0:
+            return f"a group of {group} heads does not tile the {cls._TILE_ROWS}-row WGMMA block"
         return None
 
     @classmethod
     def entry_for(cls, call: NSACall) -> Entry:
         group = call.heads // call.heads_kv
-        tile_t = _TILE_ROWS // group
+        tile_t = cls._TILE_ROWS // group
         n_tiles = -(-call.c_seq_len // tile_t)
+        # CTAs resident per SM: 48 KB of shared memory and 128 threads each.
+        ctas_per_sm = 4
         # Spread the tiles over the CTAs one wave holds, with equal runs per worker.
-        most = max(1, call.sm_count * _CTAS_PER_SM // call.heads_kv)
+        most = max(1, call.sm_count * ctas_per_sm // call.heads_kv)
         per_worker = -(-n_tiles // most)
         workers = -(-n_tiles // per_worker)
         return call, lambda: cls(
@@ -576,7 +575,7 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
             chunk_num=call.chunk_num,
             group=group,
             scale=call.scale,
-            bc=2 * _KEY_HALF,
+            bc=2 * cls._KEY_HALF,
             bs=call.block_size,
             dtype=call.dtype,
             accum_dtype=torch.float32,
@@ -615,7 +614,10 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
             self.group,
             self.scale,
             self.bs,
+            self.bc,
             self.workers,
+            self._TILE_ROWS,
+            self._HALF,
             self.dtype_str,
             self.accum_dtype_str,
         )(self.config["threads"])(
