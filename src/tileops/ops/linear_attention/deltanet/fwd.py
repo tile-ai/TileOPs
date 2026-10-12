@@ -12,6 +12,7 @@ from tileops.kernels.linear_attention import (
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdInterface,
 )
+from tileops.kernels.linear_attention.deltanet.chunk_prefill import DeltaNetChunkPrefillFwdKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -41,6 +42,7 @@ class DeltaNetFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_dense_decode": DeltaNetDenseDecodeFwdKernel,
         "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel,
+        "deltanet_chunk_prefill": DeltaNetChunkPrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"deltanet": DeltaNetFwdInterface}
 

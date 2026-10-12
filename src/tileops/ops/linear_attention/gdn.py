@@ -10,6 +10,7 @@ from tileops.kernels.linear_attention import (
     GDNDensePrefillFwdKernel,
     GDNFwdInterface,
 )
+from tileops.kernels.linear_attention.gdn.chunk_prefill import GDNChunkPrefillFwdKernel
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -54,6 +55,7 @@ class GDNFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gdn_dense_decode": GDNDenseDecodeFwdKernel,
         "gdn_dense_prefill": GDNDensePrefillFwdKernel,
+        "gdn_chunk_prefill": GDNChunkPrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gdn": GDNFwdInterface}
 

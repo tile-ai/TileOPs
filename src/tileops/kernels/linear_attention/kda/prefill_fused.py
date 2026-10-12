@@ -9,8 +9,8 @@ from tileops.kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
 )
+from tileops.kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
-from tileops.kernels.linear_attention.kda.prefill import CHUNK_SIZE, packed_offsets
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
 
