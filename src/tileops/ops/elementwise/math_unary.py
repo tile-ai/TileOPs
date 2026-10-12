@@ -79,7 +79,8 @@ class ReciprocalFwdOp(UnaryOp):
 
     Mirrors ``torch.reciprocal`` int-input promotion: an integral input gives a
     float32 output, and ``ReciprocalFwdKernel.specialize`` names float32 as the
-    compute type for it. Floating inputs keep their dtype.
+    compute type for it. Floating inputs keep their dtype. A float16 or bfloat16 result
+    equals ``torch.reciprocal``'s bit for bit at every input.
     """
 
     kernel_types = {"reciprocal": ReciprocalFwdKernel}

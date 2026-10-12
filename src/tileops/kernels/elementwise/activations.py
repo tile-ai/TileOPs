@@ -13,6 +13,7 @@ from tileops.kernels.elementwise._base import (
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
+from tileops.kernels.elementwise._division import full_range_fdiv
 from tileops.kernels.elementwise._dtype import log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.elementwise._nan import nan_max, nan_min
@@ -132,10 +133,16 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
+        bfloat16 divides with ``full_range_fdiv``, which rounds to torch's value at
+        every bfloat16 input. float16 keeps the IEEE divide: ``approx_fdiv``'s two ulp
+        move two of the 65536 float16 results by one ulp.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
-        return one / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
+        den = one + T.exp2(-wide * T.cast(LOG2E, "float32"))
+        if str(x.dtype) == "bfloat16":
+            return full_range_fdiv(one, den)
+        return one / den
 
 
 class TanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):

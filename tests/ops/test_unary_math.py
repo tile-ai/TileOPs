@@ -31,7 +31,12 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
 )
 from workloads.device import run_device
-from workloads.elementwise import ElementwiseWorkload, ErfRoundingWorkload, UnaryMathCase
+from workloads.elementwise import (
+    ElementwiseWorkload,
+    ErfRoundingWorkload,
+    Exhaustive16BitWorkload,
+    UnaryMathCase,
+)
 from workloads.numerics import compare_outputs
 
 
@@ -414,6 +419,18 @@ def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
         lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
         ReciprocalFwdOp,
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
+    """The fast 16-bit divide gives torch's reciprocal bit for bit, at every input.
+
+    Every bit pattern of the dtype puts divisors past ``2**126`` and below ``2**-126``,
+    where a reciprocal instruction answers a zero or an infinity, among ordinary ones.
+    """
+    workload = Exhaustive16BitWorkload("ReciprocalFwdOp", dtype)
+    TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
 
 @MathEdgeFixture

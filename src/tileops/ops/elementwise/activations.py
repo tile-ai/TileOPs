@@ -93,7 +93,10 @@ class SiluFwdOp(_ParamFreeActivationOp):
 
 
 class SigmoidFwdOp(UnaryOp):
-    """Element-wise sigmoid(x)."""
+    """Element-wise sigmoid(x).
+
+    A float16 or bfloat16 result equals ``torch.sigmoid``'s bit for bit at every input.
+    """
 
     kernel_types = {"sigmoid": SigmoidFwdKernel}
 
