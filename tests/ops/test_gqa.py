@@ -28,7 +28,10 @@ class GQABwdTest(GQABwdWorkload, TestBase):
     pass
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "_architecture",
+    [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
+)
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal, rope_layout, rotary_dim, dtype",
@@ -42,7 +45,8 @@ class GQABwdTest(GQABwdWorkload, TestBase):
     ],
 )
 @pytest.mark.smoke
-def test_gqa_dense_sm90_main_kernel_matches_reference(
+def test_gqa_dense_prefill_matches_reference(
+    _architecture: int,
     is_causal: bool,
     rope_layout: Optional[str],
     rotary_dim: Optional[int],
@@ -95,11 +99,11 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     )
 
 
-@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     (
+        "_architecture",
         "seq_len_q",
         "seq_len_kv",
         "sm_scale",
@@ -109,14 +113,20 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         "out_dtype",
     ),
     [
-        (1, 2049, 0.125, 50.0, None, None, torch.bfloat16),
-        (256, 1792, 0.125, 0.0, None, None, torch.float16),
-        (255, 1793, 0.0625, 50.0, None, None, torch.float16),
-        (256, 1792, 0.125, 0.0, "neox", 64, torch.float16),
-        (255, 1793, 0.0625, 50.0, "interleaved", 128, torch.bfloat16),
+        pytest.param(arch, *case, marks=pytest.mark.sm89 if arch == 89 else pytest.mark.sm90)
+        for case in [
+            (1, 2049, 0.125, 50.0, None, None, torch.bfloat16),
+            (256, 1792, 0.125, 0.0, None, None, torch.float16),
+            (255, 1793, 0.0625, 50.0, None, None, torch.float16),
+            (256, 1792, 0.125, 0.0, "neox", 64, torch.float16),
+            (255, 1793, 0.0625, 50.0, "interleaved", 128, torch.bfloat16),
+        ]
+        for arch in (89, 90)
+        if arch == 90 or case[0] != 1
     ],
 )
 def test_gqa_dense_fp8_causal_rectangular_matches_reference(
+    _architecture: int,
     seq_len_q: int,
     seq_len_kv: int,
     sm_scale: float,
@@ -409,7 +419,10 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "_architecture",
+    [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
+)
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal,use_rope",
@@ -421,8 +434,8 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     ],
 )
 @pytest.mark.smoke
-def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
-    is_causal: bool, use_rope: bool
+def test_gqa_dense_sliding_window_matches_reference(
+    _architecture: int, is_causal: bool, use_rope: bool
 ) -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 270, 8, 2, 128
     window_size_left = 64
