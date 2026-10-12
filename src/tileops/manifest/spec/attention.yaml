@@ -172,6 +172,7 @@ GQAPagedFwdOp:
       v_scale: {dtype: float32, shape: "[*SK]", optional: "present(k_scale)"}
       rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      sinks: {dtype: float32, shape: '[H]', optional: true}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
     let:
@@ -216,6 +217,8 @@ GQAPagedFwdOp:
   - {T_q: 8, NP: 512, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-decode, P: 4096, pos_encoding_mode: rope}
   - {T_q: 2048, NP: 256, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-prefill, P: 4096, pos_encoding_mode: rope}
   - {T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: qwen-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
+  - {T_q: 288, NP: 68, PS: 64, W: 17, H: 64, H_kv: 8, D: 64, q_lens: [256, 1, 0, 31], cache_lens: [1025, 513, 0, 127], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-mixed, window_size_left: 128}
+  - {T_q: 8, NP: 256, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-decode, window_size_left: -1}
   roofline:
     func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 

@@ -345,6 +345,7 @@ class TestBytesOracle:
             v_scale=None,
             rope_cos=None,
             rope_sin=None,
+            sinks=None,
             o=((indices["T_q"], heads, dim), torch.float16),
         )
         assert gqa_paged_fwd_roofline(call)[1] == oracle
