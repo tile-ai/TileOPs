@@ -230,16 +230,28 @@ __device__ __forceinline__ void fp8_acc_to_fa3_p_regs_64x224_no_cute(
     p_regs[r] = fp8_pack4_fa3_p_bytes(acc_s, r * 4);
   }
 }
+// Independent partial sums shorten the dependency chain in long causal calls.
+// The default preserves the reduction order used by the other FP8 kernels.
+template <int NumAccumulators = 1>
 __device__ __forceinline__ void fp8_partial_row_sum_raw_acc_64x224(
     float* acc_s, float* row_sum) {
+  static_assert(NumAccumulators == 1 || NumAccumulators == 4);
 #pragma unroll
   for (int i = 0; i < 2; ++i) {
-    float sum = 0.0f;
+    float sums[NumAccumulators] = {};
 #pragma unroll
     for (int rv = 0; rv < 56; ++rv) {
-      sum += acc_s[((rv % 28) * 4) + (i * 2) + (rv / 28)];
+      sums[rv % NumAccumulators] +=
+          acc_s[((rv % 28) * 4) + (i * 2) + (rv / 28)];
     }
-    row_sum[i] = sum;
+#pragma unroll
+    for (int stride = NumAccumulators / 2; stride > 0; stride /= 2) {
+#pragma unroll
+      for (int j = 0; j < stride; ++j) {
+        sums[j] += sums[j + stride];
+      }
+    }
+    row_sum[i] = sums[0];
   }
 }
 __device__ __forceinline__ float fp8_tanh_approx(float value) {
@@ -327,7 +339,8 @@ template <typename FP8T>
 __device__ __forceinline__ void
 fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
                                                     FP8T* v_tc_smem,
-                                                    float* acc_o) {
+                                                    float* acc_o,
+                                                    bool clear_accum = false) {
   using namespace cute;
   using Element = cutlass::float_e4m3_t;
   using ElementAccum = float;
@@ -356,9 +369,16 @@ fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
     tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
                  tl::DataType::kFloat32, 64, 128, 32, false, false>(
         p_regs + ki * 4, uint64_t(desc_b), reinterpret_cast<uint32_t*>(acc_o),
-        true);
+        !clear_accum || ki > 0);
   }
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+__device__ __forceinline__ void fp8_fa3_raw_acc_promote_64x128(
+    float* acc_o, const float* tile) {
+#pragma unroll
+  for (int i = 0; i < 64; ++i) {
+    acc_o[i] += tile[i];
+  }
 }
 __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
     float* acc_o, float* ss) {
@@ -663,4 +683,46 @@ __device__ __forceinline__ void fp8_fa3_o_smem_store_global_packed_64x128_tail(
     }
   }
 }
+
+// The caller owns P across iterations. Keep packing separate from issue so QK
+// can overwrite its score fragment while the preceding PV still reads P.
+template <typename FP8T>
+__device__ __forceinline__ void fp8_pv_from_p_regs_64x128x224(
+    const uint32_t* p_regs, FP8T* v_tc_smem, float* acc_o,
+    bool clear_accum = false) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using MmaPV =
+      decltype(GMMA::rs_op_selector<Element, Element, float, TileShapePV,
+                                    GMMA::Major::K, GMMA::Major::K>());
+  using TiledMmaPV =
+      decltype(make_tiled_mma(MmaPV{}, Layout<Shape<_1, _1, _1>>{}));
+  using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
+  auto thr_mma = TiledMmaPV{}.get_slice(static_cast<int>(threadIdx.x) & 127);
+  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem),
+                          typename VConfig::SmemLayoutVtMma{});
+  Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+#pragma unroll
+  for (int ki = 0; ki < 7; ++ki) {
+    cute::GmmaDescriptor desc_b = tOrV(_, _, ki)(0);
+    tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
+                 tl::DataType::kFloat32, 64, 128, 32, false, false>(
+        const_cast<uint32_t*>(p_regs) + ki * 4, uint64_t(desc_b),
+        reinterpret_cast<uint32_t*>(acc_o), !clear_accum || ki > 0);
+  }
+  asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+// An RS-WGMMA source remains live until its group completes, even though the
+// inline issue asm only names it as an input. Call this after wait<0>, before
+// packing the next P, to make that lifetime visible to the CUDA compiler.
+__device__ __forceinline__ void fp8_fence_p_regs_64x224(uint32_t* p_regs) {
+#pragma unroll
+  for (int i = 0; i < 28; ++i) {
+    asm volatile("" : "+r"(p_regs[i])::"memory");
+  }
+}
+
 }  // namespace tileops
