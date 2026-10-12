@@ -355,7 +355,7 @@ def _fa3_gqa_varlen(
     An FP8 call hands it the same ``[batch, heads_kv]`` descales the op takes, which its
     varlen entry dequantizes with.
     """
-    if workload.dim > 256:
+    if workload.dim > 256 or workload.has_sinks:
         return None
     try:
         from flash_attn_interface import flash_attn_varlen_func
@@ -394,9 +394,11 @@ def _flashinfer_gqa_varlen(
     *inputs: torch.Tensor,
     rotate=None,
 ):
-    """FlashInfer ragged prefill over the same packed layout; it has no right window."""
-    if window_size_right >= 0:
+    """FlashInfer ragged prefill; no right window or supported D=512 configuration."""
+    if window_size_right >= 0 or workload.dim > 256:
         return None
+    if workload.has_sinks:
+        return _flashinfer_varlen_sinks(workload, inputs, rotate)
     q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs[:5]
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = flashinfer_op("prefill.BatchPrefillWithRaggedKVCacheWrapper")(
@@ -421,6 +423,49 @@ def _flashinfer_gqa_varlen(
     return _run
 
 
+def _flashinfer_varlen_sinks(workload, inputs, rotate):
+    """The dedicated sink API takes pages: view packed rows as one-token pages.
+
+    No KV data is copied. The ragged API and FA3 have no sink argument; the FP8
+    per-request descales cannot be expressed by this wrapper either.
+    """
+    if workload.softcap or workload.dtype == torch.float8_e4m3fn:
+        return None
+    q, k, _v, cu_q, cu_kv = inputs[:5]
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = flashinfer_op("attention.BatchAttentionWithAttentionSinkWrapper")(
+        workspace,
+        kv_layout="NHD",
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+        head_dim_qk=workload.dim,
+        head_dim_vo=workload.dim,
+        window_left=workload.wl,
+    )
+    wrapper.plan(
+        qo_indptr=cu_q,
+        paged_kv_indptr=cu_kv,
+        paged_kv_indices=torch.arange(k.shape[0], dtype=torch.int32, device=q.device),
+        paged_kv_last_page_len=(cu_kv[1:] > cu_kv[:-1]).to(torch.int32),
+        num_qo_heads=workload.heads,
+        num_kv_heads=workload.heads_kv,
+        head_dim_qk=workload.dim,
+        page_size=1,
+        causal=workload.is_causal,
+        window_left=workload.wl,
+        sm_scale=workload.sm_scale,
+        q_data_type=q.dtype,
+    )
+
+    def run(q, k, v, _cu_q, _cu_kv, _qs, _ks, _vs, _cos, _sin, sinks):
+        if rotate is not None:
+            q, k = rotate(q, k)
+        scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+        return wrapper.run(q, (k.unsqueeze(1), v.unsqueeze(1)), sinks, scale)
+
+    return run
+
+
 @pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
 def test_gqa_varlen_fwd_bench(case) -> None:
     """Packed varlen GQA, including FP8 Q/K/V dequantized by one scale per request and KV head.
@@ -437,6 +482,7 @@ def test_gqa_varlen_fwd_bench(case) -> None:
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = case.inputs
     implementations = {"torch-ref": case.reference}
+    rotate = None
     if scaled:
         fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
         if fa3_fn is not None:
@@ -450,7 +496,8 @@ def test_gqa_varlen_fwd_bench(case) -> None:
             workload, workload.wl, workload.wr, *inputs, rotate=rotate
         )
         if flashinfer_fn is not None:
-            implementations[FLASHINFER_TAG] = flashinfer_fn
+            tag = "flashinfer-paged-sink" if workload.has_sinks else FLASHINFER_TAG
+            implementations[tag] = flashinfer_fn
     op = GQAVarlenFwdOp(**case.arguments)
     bench.Runner(op, case).compare(implementations)
 

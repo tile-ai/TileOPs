@@ -349,6 +349,23 @@ class TestBytesOracle:
         )
         assert gqa_paged_fwd_roofline(call)[1] == oracle
 
+    def test_gqa_varlen_sink_adds_no_key_or_value_contraction(self):
+        row = {
+            "T_q": 3,
+            "T_kv": 4,
+            "H": 8,
+            "H_kv": 2,
+            "D": 64,
+            "q_lens": [2, 1],
+            "kv_lens": [4, 0],
+            "is_causal": True,
+        }
+        plain, _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
+        sink, _ = _evaluated("GQAVarlenFwdOp", {**row, "some": ["sinks"]}, {"T": "float16"})
+        # Two nonempty rows per head each add subtract/exp/add, and one FP32 logit
+        # per head is read. The last request stays zero regardless of its sink.
+        assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
+
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
