@@ -50,6 +50,9 @@ GemmFwdOp:
   - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
   - {M: 32, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-b32}
   - {M: 128, N: 4096, K: 12288, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-down-prefill}
+  # ViT-L/16's ImageNet-21k classifier over a 256-image batch: 21843 classes, an N that is not a
+  # multiple of 8.
+  - {M: 256, N: 21843, K: 1024, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: vit-l16-in21k-head}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
