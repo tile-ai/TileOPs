@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lint the spelling of module-level constants in ``src/tileops/``.
+"""Lint module-level constants in ``src/tileops/``: their spelling and their readers.
 
 A name bound once at module scope to a value written out in the source is ``UPPER_SNAKE``,
 with or without a leading underscore. A lowercase name reads as state a reader may rebind,
@@ -10,13 +10,31 @@ Written out means a literal, a dotted name, or a tuple, list, set or dict of tho
 call produces is not, so a logger or a device object is left alone. A name any function
 declares ``global``, binds twice, or annotates ``TypeAlias`` is not a constant either.
 
-Usage: ``module_constant_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/``.
-Exits 1 on a finding.
+A constant is also judged by its readers (``.claude/rules/code-style.md``). A value one
+function reads is a local of that function, beside its reason; a module constant is for a
+value several readers must agree on, and the comment above it, or above the run of
+constants it opens, says why they share it. A reader is a top-level function or class, or
+the module's own top-level code, that loads the name: in the defining module, or in another
+module that imports the name or reaches it as an attribute of the defining module. Every
+tracked ``.py`` file in the repository is searched. A name some ``__all__`` lists is public
+API, read by callers outside the repository, and is not judged by its readers.
+
+Usage: ``module_constant_lint.py [--base REF] [FILE ...]``. With no files, scans
+``src/tileops/``. The reader rule judges a constant a diff adds, so it runs only with
+``--base``, over the constants whose binding line is added since the merge base of REF and
+HEAD (``lint_diff.py``); the hook passes ``--base origin/main``. Exits 1 on a finding and 2
+when the base has no merge base with HEAD.
 """
 
+import argparse
 import ast
+import io
+import subprocess
 import sys
+import tokenize
 from pathlib import Path
+
+from lint_diff import NoMergeBaseError, added_lines, relative
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNED = "src/tileops"
@@ -141,11 +159,197 @@ def findings(path: Path) -> list[str]:
     ]
 
 
+def _is_constant_name(name: str) -> bool:
+    bare = name.lstrip("_")
+    return bool(bare) and not _is_dunder(name) and bare == bare.upper() and bare[0].isalpha()
+
+
+def _owners(tree: ast.Module) -> dict[int, str]:
+    """Each node's reader: the top-level function or class holding it, else ``<module>``."""
+    owner = {}
+    for statement in tree.body:
+        name = (
+            statement.name
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            else "<module>"
+        )
+        for node in ast.walk(statement):
+            owner[id(node)] = name
+    return owner
+
+
+def _module_name(path: Path, root: Path) -> str | None:
+    try:
+        rel = path.resolve().relative_to((root / "src").resolve())
+    except ValueError:
+        return None
+    parts = list(rel.with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _exports(tree: ast.Module, name: str) -> bool:
+    """Whether an ``__all__`` binding in *tree* lists *name*."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        if node.value is not None and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in targets
+        ):
+            listed = ast.walk(node.value)
+            if any(isinstance(c, ast.Constant) and c.value == name for c in listed):
+                return True
+    return False
+
+
+def _readers_in(tree: ast.Module, name: str, module: str | None, own: bool) -> set[str]:
+    """The readers of *name* in one module; *own* is whether that module defines it."""
+    owner = _owners(tree)
+    local = {name} if own else set()
+    modules = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == name:
+                    local.add(alias.asname or name)
+                elif module and f"{node.module}.{alias.name}" == module:
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import) and module:
+            for alias in node.names:
+                if alias.name == module:
+                    modules.add(alias.asname or alias.name)
+
+    def reads(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return isinstance(node.ctx, ast.Load) and node.id in local
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == name
+            and isinstance(node.ctx, ast.Load)
+            and ast.unparse(node.value) in modules
+        )
+
+    return {owner.get(id(node), "<module>") for node in ast.walk(tree) if reads(node)}
+
+
+def _explained(source: str, tree: ast.Module, line: int) -> bool:
+    """Whether a comment sits on *line*, above it, or above the run of constants it is in."""
+    commented = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                commented.add(token.start[0])
+    except (tokenize.TokenError, SyntaxError):
+        return False
+    lines = source.splitlines()
+    spans = {
+        node.end_lineno: node
+        for node in _module_statements(tree.body)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+    }
+    statement = next((n for n in spans.values() if n.lineno <= line <= n.end_lineno), None)
+    first, last = (statement.lineno, statement.end_lineno) if statement else (line, line)
+    if commented & set(range(first, last + 1)):
+        return True
+    above = first - 1
+    while above >= 1:
+        if above in commented and lines[above - 1].lstrip().startswith("#"):
+            return True
+        previous = spans.get(above)
+        targets = [] if previous is None else _targets(previous)
+        if not targets or not all(_is_constant_name(n.id) for n in targets):
+            return False
+        above = previous.lineno - 1
+    return False
+
+
+def _targets(node: ast.Assign | ast.AnnAssign) -> list[ast.Name]:
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return [name for target in targets for name in _bound_names(target)]
+
+
+def _grep(name: str, root: Path) -> list[Path]:
+    done = subprocess.run(
+        ["git", "grep", "-l", "-w", "-F", name, "--", "*.py"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return [root / p for p in done.stdout.splitlines()]
+
+
+def reader_findings(path: Path, added: set[int] | None = None, root: Path = REPO_ROOT) -> list[str]:
+    """Reader-rule findings for the constants of *path* bound on *added* lines (None: all)."""
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    module = _module_name(path, root)
+    rel = path.relative_to(root) if path.is_relative_to(root) else path
+    out = []
+    for name, line in _candidates(tree):
+        if not _is_constant_name(name) or (added is not None and line not in added):
+            continue
+        if _exports(tree, name):
+            continue
+        readers = _readers_in(tree, name, module, own=True)
+        exported = False
+        for other in _grep(name, root):
+            if other.resolve() == path.resolve():
+                continue
+            try:
+                other_tree = ast.parse(other.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError, OSError):
+                continue
+            if _exports(other_tree, name):
+                exported = True
+                break
+            readers |= {
+                f"{other.relative_to(root)}:{r}"
+                for r in _readers_in(other_tree, name, module, own=False)
+            }
+        if exported:
+            continue
+        if not readers:
+            out.append(f"{rel}:{line}: module constant {name} has no reader — delete it")
+        elif len(readers) == 1:
+            (reader,) = readers
+            out.append(
+                f"{rel}:{line}: module constant {name} has one reader, {reader} — "
+                f"make it a local of {reader}"
+            )
+        elif not _explained(source, tree, line):
+            out.append(
+                f"{rel}:{line}: module constant {name} is shared by {len(readers)} readers "
+                "and no comment above it says why they share it"
+            )
+    return out
+
+
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] or sorted((REPO_ROOT / SCANNED).rglob("*.py"))
-    errors = [
-        e for p in paths if p.suffix == ".py" and "__pycache__" not in p.parts for e in findings(p)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", help="judge the constants added since the merge base")
+    parser.add_argument("files", nargs="*", type=Path)
+    args = parser.parse_args(argv)
+    paths = [
+        p
+        for p in (args.files or sorted((REPO_ROOT / SCANNED).rglob("*.py")))
+        if p.suffix == ".py" and "__pycache__" not in p.parts
     ]
+    errors = [e for p in paths for e in findings(p)]
+    if args.base:
+        try:
+            added = added_lines(paths, args.base, REPO_ROOT)
+        except NoMergeBaseError as exc:
+            print(f"module_constant_lint: {exc}", file=sys.stderr)
+            return 2
+        for path in paths:
+            lines = added.get(relative(path, REPO_ROOT))
+            if lines != set():
+                errors += reader_findings(path, lines)
     for error in errors:
         print(error)
     return 1 if errors else 0
