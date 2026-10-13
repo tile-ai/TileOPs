@@ -516,37 +516,59 @@ def small_m_splitk_config(
 def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> dict:
     """Tile, ring depth and K split for the warp-specialized FP8 GEMM.
 
-    ``block_m`` is fixed at 128 by the two-consumer split, so the tile freedom
-    is ``block_n``, over ``{64, 128}``. 256 spills: its accumulator and scaled
-    partial together want 256 registers per thread.
+    ``block_m`` is one or two consumer warpgroups of 64 rows. ``block_n`` 256
+    spills: its accumulator and scaled partial together want 256 registers per
+    thread.
 
     - ``block_n``: 128, except where that grid does not fill one wave, which
       leaves SMs idle for the whole launch. The narrow tile doubles the grid,
       and the re-read of ``A`` it costs stays in L2. At ``m <= 8`` the ``A``
       tile is mostly padding and the ``B`` re-read decides instead, so the wide
-      tile wins even under a short grid.
+      tile wins even under a short grid. Per-tensor, with no scaled
+      partial beside the accumulator, 192 also fits; it is taken where its waves,
+      counted whole, cover fewer columns than 128's, since a partial last wave
+      costs a full one.
     - ring depth: the deepest the budget allows, except in block128, where a
       K-step ends in a promotion the next WGMMA cannot start under. There the
       ring covers nothing beyond the fill, and 4 stages is enough — 3 over a
       long K axis, 5 over a short one or a weight stream.
     - split-K: only where the sliced grid still fits one wave and every slice
       keeps enough K-tiles to amortize the fill and the fp32 workspace.
+    - one row tile (``m <= 128``): 64 rows and one consumer instead, where that
+      grid, unsplit, holds at least as many CTAs as the 128-row one with its K
+      split. It reads half the ``A`` rows a CTA, needs no fp32 workspace or
+      reduction, and takes the narrowest ``block_n`` of 32, 64 and 128 whose grid
+      fits one wave, under the deepest ring the budget holds. Under block128 the
+      128-row grid keeps its split: each K-step's promotion runs in series with
+      the next WGMMA, so a CTA's time follows its K-steps, and an unsplit grid
+      would run four times as many of them.
     """
+    half_m = 64
 
-    def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
+    def _fp8_ws_stages(block_m: int, block_n: int) -> int:
         """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
 
-        A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
-        block128 scale vectors when staged. The epilogue's two staging tiles are
-        live alongside the ring, and exist only for ``m`` over one consumer's half.
+        A stage holds the ``A`` rows of every consumer, one ``block_n`` ``B`` tile,
+        the block128 scale vectors when staged, and its full and empty mbarriers.
+        Each consumer's epilogue staging tile is live alongside the ring, and exists
+        only for ``m`` over one consumer's rows.
         """
-        per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
-        epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
+        # A stage's full and empty mbarriers, 8 bytes each, come out of the same budget.
+        mbarrier_bytes = 8
+        per_stage = (
+            (block_m + block_n) * 128 + block_scaled * (block_m + block_n) * 4 + 2 * mbarrier_bytes
+        )
+        epilogue = block_m * block_n * 2 if m > half_m else 0
         return (_SMEM_BUDGET - epilogue) // per_stage
 
-    block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
+    def _waved_columns(block_n: int) -> int:
+        return -(-(-(-m // 128) * -(-n // block_n)) // sm_count) * block_n
+
     k_iters = -(-k // 128)
-    deepest = _fp8_ws_stages(m, block_n, block_scaled)
+    block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
+    if not block_scaled and block_n == 128 and _waved_columns(192) < _waved_columns(128):
+        block_n = 192
+    deepest = _fp8_ws_stages(2 * half_m, block_n)
     if not block_scaled or m <= 8:
         num_stages = deepest
     elif block_n == 64 or k_iters <= 12:
@@ -565,9 +587,23 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         ):
             split_k = candidate
             break
+
+    if m <= 2 * half_m:
+        m_tiles = -(-m // half_m)
+        narrow_n = next((bn for bn in (32, 64) if m_tiles * -(-n // bn) <= sm_count), 128)
+        unsplit_ctas = min(m_tiles * -(-n // narrow_n), sm_count)
+        if unsplit_ctas >= tiles * split_k and (not block_scaled or split_k == 1):
+            return {
+                "block_n": narrow_n,
+                "num_stages": min(k_iters, _fp8_ws_stages(half_m, narrow_n)),
+                "group_size_m": 8,
+                "split_k": 1,
+                "block_m": half_m,
+            }
     return {
         "block_n": block_n,
         "num_stages": num_stages,
         "group_size_m": 8,
         "split_k": split_k,
+        "block_m": 2 * half_m,
     }
