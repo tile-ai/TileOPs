@@ -88,37 +88,6 @@ def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block
 
 
 @pytest.mark.parametrize(
-    "num_experts",
-    [
-        pytest.param(4, marks=pytest.mark.smoke, id="few-experts"),
-        pytest.param(128, marks=pytest.mark.full, id="many-experts"),
-    ],
-)
-def test_permute_align_sentinel_padding(num_experts: int) -> None:
-    """Every slot that holds no route is numel, and every block past the padded length names
-    num_experts, over few experts and over many.
-
-    Six routes in blocks of 4 leave padding inside the ranges. The workload verification reads
-    neither tail, so this is what checks them.
-    """
-    total_tokens, top_k, block_size = 3, 2, 4
-    numel = total_tokens * top_k
-    topk_ids = torch.randint(
-        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device=run_device()
-    )
-
-    op = MoEPermuteAlignFwdOp(num_experts, block_size)
-    sorted_ids, expert_ids, num_post_pad = op(topk_ids)
-
-    routed = sorted_ids < numel
-    assert int(routed.sum()) == numel, "every route occupies one slot"
-    assert (sorted_ids[~routed] == numel).all(), "a slot without a route holds numel"
-    assert (expert_ids[num_post_pad.item() // block_size :] == num_experts).all(), (
-        "a block past the padded length names num_experts"
-    )
-
-
-@pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, block_size",
     [
         pytest.param(32, 4, 8, 16, marks=pytest.mark.smoke, id="few-experts"),

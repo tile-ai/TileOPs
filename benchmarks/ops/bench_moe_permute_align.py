@@ -157,10 +157,13 @@ def test_permute_align_bench(case) -> None:
         )
         return sorted_ids, expert_ids, num_post_pad
 
-    # The kernel writes only the routed slots; every other slot must read as padding.
-    implementations = {
-        "triton": bench.Implementation(run=_triton_fn, reset=lambda: sorted_ids.fill_(numel))
-    }
+    def _triton_reset():
+        # The port writes only the routed slots and the blocks they fill; the rest must read
+        # as padding and as no expert.
+        sorted_ids.fill_(numel)
+        expert_ids.fill_(num_experts)
+
+    implementations = {"triton": bench.Implementation(run=_triton_fn, reset=_triton_reset)}
     # vLLM (csrc/moe/moe_align_sum_kernels.cu) refuses an expert count that, rounded up to a
     # warp, reaches 1024, and sgl-kernel (csrc/moe/moe_align_kernel.cu) leaves the experts past
     # 1024 uncounted; past 64 experts, both fail on a call with no routes.
@@ -196,8 +199,11 @@ def test_permute_align_bench(case) -> None:
             )
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
-        implementations["sgl-kernel"] = bench.Implementation(
-            run=_sgl_fn, reset=lambda: sorted_ids_sgl.fill_(numel)
-        )
+        def _sgl_reset():
+            # Like the Triton port, it writes only the routed slots and the blocks they fill.
+            sorted_ids_sgl.fill_(numel)
+            expert_ids_sgl.fill_(num_experts)
+
+        implementations["sgl-kernel"] = bench.Implementation(run=_sgl_fn, reset=_sgl_reset)
 
     bench.Runner(op, case).compare(implementations)
