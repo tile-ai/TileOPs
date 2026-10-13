@@ -1,0 +1,5 @@
+# Requirements a package declares that the image overrides. Lock compile and image installs both
+# read this file; constraints.txt still sets the version.
+# vllm pins tilelang==0.1.12 in every release through 0.31.0; TileOPs runs a newer release. A bare
+# name drops that pin, so constraints.txt's tilelang wins and vllm keeps its other dependencies.
+tilelang
