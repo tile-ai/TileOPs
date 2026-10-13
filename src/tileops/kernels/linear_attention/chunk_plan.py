@@ -15,7 +15,7 @@ def packed_offsets(batch, seq_len, cu_seqlens, device):
 
 def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     minimum_tokens = 4096
-    sparse_heads = 8
+    sparse_heads = 16
     narrow_value_tile = 16
     if (
         num_seqs == 1
