@@ -2,15 +2,21 @@
 
 Every routed baseline routes with vLLM: `fused_topk`, `fused_topk_bias` with a correction
 bias, and the fused CUDA `grouped_topk` for DeepSeek-V3 grouped routing
-(`num_expert_group > 1`), which requires a bias. Each routes unscaled and scales the
-expert output once, as the op does.
+(`num_expert_group > 1`), which requires a bias, so a grouped baseline is sigmoid with a
+bias. Each routes unscaled and scales the expert output once, as the op does.
 """
 
 import pytest
 import torch.nn.functional as F
 
 from benchmarks import api as bench
-from benchmarks.baselines import QUACK_TAG, VLLM_TAG, quack_op, vllm_op
+from benchmarks.baselines import (
+    QUACK_TAG,
+    VLLM_GROUPED_TOPK_SIGMOID,
+    VLLM_TAG,
+    quack_op,
+    vllm_op,
+)
 from benchmarks.moe_baselines import flashinfer_experts
 from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 
@@ -24,18 +30,15 @@ def _routed_moe(op, experts):
 
     def run(hidden, gating, w1, w2, correction_bias):
         if op.num_expert_group > 1:
-            # As vLLM's fused_grouped_topk: the kernel applies a sigmoid itself (1), and is
-            # handed softmax scores already computed (0).
-            sigmoid = op.scoring_func == "sigmoid"
             weights, ids = grouped_topk(
-                gating if sigmoid else gating.softmax(-1),
+                gating,
                 op.num_expert_group,
                 op.topk_group,
                 op.top_k,
                 op.renormalize,
                 1.0,
                 correction_bias,
-                1 if sigmoid else 0,
+                VLLM_GROUPED_TOPK_SIGMOID,
             )
         elif correction_bias is None:
             weights, ids, _ = topk(

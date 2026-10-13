@@ -93,6 +93,10 @@ def _fused_topk_kernel(
 
     Returns:
         JIT factory _func(TOKENS_PER_BLOCK) → callable.
+
+    Raises:
+        ValueError: From ``_func``, when ``TOKENS_PER_BLOCK`` is outside
+            ``[1, 1024 // 32]``: a block is one warp per token, at most 1024 threads.
     """
 
     @tilelang.jit(
@@ -101,6 +105,12 @@ def _fused_topk_kernel(
     )
     def _func(TOKENS_PER_BLOCK):
         WARP_SIZE = WARP_LANES
+        max_block_threads = 1024  # CUDA's limit on threads per block.
+        if not 1 <= TOKENS_PER_BLOCK <= max_block_threads // WARP_SIZE:
+            raise ValueError(
+                f"TOKENS_PER_BLOCK ({TOKENS_PER_BLOCK}) must lie in "
+                f"[1, {max_block_threads // WARP_SIZE}]: a block holds one warp per token"
+            )
         ELEMS_PER_THREAD = -(-num_experts // WARP_SIZE)  # ceildiv(E, 32)
         LOG_WARP = int(math.log2(WARP_SIZE))  # = 5 for WARP_SIZE=32
         HALF_WARP = WARP_SIZE // 2  # = 16
@@ -114,21 +124,24 @@ def _fused_topk_kernel(
             if GROUP_SIZE % WARP_SIZE == 0:
                 # The group spans whole warp rows: slot j of every lane is in one group.
                 return (j * WARP_SIZE) // GROUP_SIZE
-            return (j * WARP_SIZE + lane_id) // GROUP_SIZE
+            group = (j * WARP_SIZE + lane_id) // GROUP_SIZE
+            if num_experts % WARP_SIZE != 0:
+                # A padded slot is loaded as -inf (the ``expert_idx >= num_experts`` branch of
+                # each load loop) and loses to every expert, so the clamp only keeps the shift
+                # in range.
+                return T.min(group, num_expert_group - 1)
+            return group
 
-        # A power-of-two group count reduces the per-group partials as a transpose: each
-        # xor step halves the groups a lane holds, so the transpose exchanges G - 1 partials
-        # in all instead of G at each of the five steps, and a lane ends with one group's
-        # partial; the remaining steps and the gather exchange one each.
+        # A power-of-two group count merges the per-group partials as an xor transpose: each
+        # step halves the groups a lane holds, until a lane holds one group's partial.
         LOG_GROUPS = int(math.log2(num_expert_group))
         TRANSPOSE = num_expert_group == 1 << LOG_GROUPS and num_expert_group <= WARP_SIZE
 
         @T.macro
         def merge_partials(best1, best2, dst, keep1, keep2, other1, other2):
-            """Merge the partner's partial into slot ``dst``: a max, or with a bias the two
-            best of two sorted pairs."""
-            if with_correction_bias:
-                best2[dst] = T.max(T.min(keep1, other1), T.max(keep2, other2))
+            """Merge the partner's biased partial into slot ``dst``: the two best of two
+            sorted pairs."""
+            best2[dst] = T.max(T.min(keep1, other1), T.max(keep2, other2))
             best1[dst] = T.max(keep1, other1)
 
         @T.macro
@@ -140,12 +153,14 @@ def _fused_topk_kernel(
                 keep1 = T.alloc_var(T.float32)
                 keep1 = T.if_then_else(upper, best1[g + half], best1[g])
                 other1 = T.shfl_xor(T.if_then_else(upper, best1[g], best1[g + half]), mask)
-                keep2 = T.alloc_var(T.float32)
-                other2 = T.alloc_var(T.float32)
                 if with_correction_bias:
+                    keep2 = T.alloc_var(T.float32)
+                    other2 = T.alloc_var(T.float32)
                     keep2 = T.if_then_else(upper, best2[g + half], best2[g])
                     other2 = T.shfl_xor(T.if_then_else(upper, best2[g], best2[g + half]), mask)
-                merge_partials(best1, best2, g, keep1, keep2, other1, other2)
+                    merge_partials(best1, best2, g, keep1, keep2, other1, other2)
+                else:
+                    best1[g] = T.max(keep1, other1)
 
         @T.macro
         def keep_top_groups(sel, lane_id):
@@ -177,11 +192,13 @@ def _fused_topk_kernel(
                     transpose_step(best1, best2, lane_id, num_expert_group // 32, HALF_WARP // 16)
                 for i in T.unroll(LOG_WARP - LOG_GROUPS):
                     other1 = T.alloc_var(T.float32)
-                    other2 = T.alloc_var(T.float32)
                     other1 = T.shfl_xor(best1[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
                     if with_correction_bias:
+                        other2 = T.alloc_var(T.float32)
                         other2 = T.shfl_xor(best2[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
-                    merge_partials(best1, best2, 0, best1[0], best2[0], other1, other2)
+                        merge_partials(best1, best2, 0, best1[0], best2[0], other1, other2)
+                    else:
+                        best1[0] = T.max(best1[0], other1)
                 if with_correction_bias:
                     best1[0] = best1[0] + best2[0]
                 # Gather every group's score into every lane, then rank the lane's own

@@ -15,11 +15,14 @@ Test cases cover:
   - routed_scaling_factor with and without grouping
 """
 
+import re
+
 import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.ops.moe import FusedTopKFwdOp
+from workloads.device import run_device
 from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import manifest_call
 
@@ -80,6 +83,17 @@ class FusedTopKFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="smoke-e33-pad",
+                ),
+                # top_k = E: every expert is selected, the weights renormalize to one.
+                pytest.param(
+                    32,
+                    64,
+                    64,
+                    "softmax",
+                    True,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="top-k-equals-e",
                 ),
                 # softmax, no renorm (Qwen3-MoE style)
                 pytest.param(
@@ -243,7 +257,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-sigmoid-nobias-fp16",
                 ),
-                # E = 100 is off the warp width: padding slots belong to no group.
+                # E = 100 is off the warp width: padding slots clamp into the last group.
                 pytest.param(
                     32,
                     100,
@@ -287,6 +301,99 @@ class GroupedTopKFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="smoke-ungrouped-scaled",
+                ),
+                # Every group kept: topk_group == num_expert_group leaves no slot masked.
+                pytest.param(
+                    32,
+                    64,
+                    8,
+                    4,
+                    4,
+                    "sigmoid",
+                    True,
+                    True,
+                    1.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-all-groups-kept",
+                ),
+                # The kept group holds exactly top_k experts, at the transpose's largest group
+                # count (32) and the smallest biased group (two experts).
+                pytest.param(
+                    32,
+                    64,
+                    2,
+                    32,
+                    1,
+                    "sigmoid",
+                    True,
+                    True,
+                    1.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-g32-kept-holds-top-k",
+                ),
+                # A power-of-two group count above the warp width takes the butterfly.
+                pytest.param(
+                    32,
+                    128,
+                    8,
+                    64,
+                    8,
+                    "sigmoid",
+                    True,
+                    True,
+                    1.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-g64-butterfly",
+                ),
+                # Two groups: the transpose is one step, then four lane merges. One token:
+                # the smallest launch, one block of one warp.
+                pytest.param(
+                    1,
+                    64,
+                    4,
+                    2,
+                    1,
+                    "sigmoid",
+                    False,
+                    True,
+                    1.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-two-groups-nobias",
+                ),
+                # Groups of one expert without a bias (num_expert_group == E).
+                pytest.param(
+                    32,
+                    64,
+                    8,
+                    64,
+                    8,
+                    "softmax",
+                    False,
+                    False,
+                    1.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-groups-of-one-softmax",
+                ),
+                # A tail block: T = 201 is one past a multiple of 8, so blocks of 2, 4 or 8
+                # tokens end with a block holding one.
+                pytest.param(
+                    201,
+                    256,
+                    8,
+                    8,
+                    4,
+                    "sigmoid",
+                    True,
+                    True,
+                    2.5,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-ds-v3-tail-block",
                 ),
                 pytest.param(
                     4096,
@@ -334,6 +441,51 @@ def test_grouped_topk(
         some=["correction_bias"] if with_bias else [],
     )
     _check(FusedTopKWorkload(call))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "num_experts, num_expert_group, topk_group, top_k, scale, rule",
+    [
+        pytest.param(
+            256, 3, 1, 8, 1.0, "E % num_expert_group == 0", id="group-count-not-dividing-e"
+        ),
+        pytest.param(256, 0, 1, 8, 1.0, "1 <= num_expert_group", id="no-groups"),
+        pytest.param(256, 8, 0, 8, 1.0, "1 <= topk_group", id="no-group-kept"),
+        pytest.param(
+            256, 8, 9, 8, 1.0, "topk_group <= num_expert_group", id="more-kept-than-groups"
+        ),
+        pytest.param(
+            64,
+            32,
+            1,
+            4,
+            1.0,
+            "top_k <= topk_group * (E // num_expert_group)",
+            id="kept-under-top-k",
+        ),
+        pytest.param(64, 64, 8, 8, 1.0, "E // num_expert_group >= 2", id="biased-group-of-one"),
+        pytest.param(64, 1, 1, 0, 1.0, "0 < top_k", id="no-expert-selected"),
+        pytest.param(64, 1, 1, 65, 1.0, "top_k <= E", id="top-k-over-e"),
+        pytest.param(256, 8, 4, 8, 0.0, "routed_scaling_factor > 0", id="zero-scale"),
+    ],
+)
+def test_grouped_topk_rejects_an_invalid_configuration(
+    num_experts, num_expert_group, topk_group, top_k, scale, rule
+) -> None:
+    """Each configuration the kernel cannot route is refused, at construction or at the
+    call, naming its rule."""
+    gating = torch.randn(4, num_experts, dtype=torch.bfloat16, device=run_device())
+    bias = torch.randn(num_experts, dtype=torch.float32, device=run_device())
+    with pytest.raises(ValueError, match=re.escape(rule)):
+        FusedTopKFwdOp(
+            top_k,
+            "sigmoid",
+            True,
+            num_expert_group=num_expert_group,
+            topk_group=topk_group,
+            routed_scaling_factor=scale,
+        )(gating, bias)
 
 
 @pytest.mark.smoke

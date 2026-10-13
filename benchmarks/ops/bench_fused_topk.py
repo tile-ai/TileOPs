@@ -6,9 +6,8 @@ bias, so a biased row goes to `fused_topk_bias` instead. A grouped row
 (`num_expert_group > 1`) goes to vLLM's fused CUDA `grouped_topk`, which applies the
 sigmoid, the group selection, renormalization and the scaling factor itself and takes the
 logits in their own dtype; it requires a correction bias, so a grouped row without one has
-no vLLM comparator. vLLM's torch fallback for grouped routing is not a comparator: it
-diverts to the same fused kernel unless `VLLM_USE_FUSED_MOE_GROUPED_TOPK=0` is set before
-vLLM is imported, which one process running several benchmark files cannot guarantee.
+no vLLM comparator. vLLM's torch fallback is not a comparator: it diverts to the fused
+kernel unless `VLLM_USE_FUSED_MOE_GROUPED_TOPK=0` is set before vLLM is imported.
 SGLang's `biased_grouped_topk_gpu` and TensorRT-LLM's `noaux_tc_op` are not in the runner
 image (`.github/runner/Dockerfile`), so they are not compared.
 
@@ -27,11 +26,8 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
 )
 
 from benchmarks import api as bench
-from benchmarks.baselines import VLLM_TAG, vllm_op
+from benchmarks.baselines import VLLM_GROUPED_TOPK_SIGMOID, VLLM_TAG, vllm_op
 from tileops.ops.moe import FusedTopKFwdOp
-
-# vLLM's grouped_topk scoring_func argument: 1 applies the sigmoid to the logits.
-_VLLM_SIGMOID = 1
 
 
 @pytest.mark.parametrize("case", bench.cases(FusedTopKFwdOp), ids=lambda case: case.id)
@@ -58,7 +54,7 @@ def test_fused_topk_bench(case) -> None:
                 renormalize,
                 op.routed_scaling_factor,
                 correction_bias,
-                _VLLM_SIGMOID,
+                VLLM_GROUPED_TOPK_SIGMOID,
             )
 
         bench.Runner(op, case).compare({VLLM_TAG: _vllm_grouped})
