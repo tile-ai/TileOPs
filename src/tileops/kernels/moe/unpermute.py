@@ -175,15 +175,13 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        vector = 8
-        vector_threads = min(1024, self.hidden_size // vector)
-        while vector_threads > 0 and self.hidden_size % vector_threads != 0:
-            vector_threads -= 1
-        if self.num_tokens <= self.sm_count:
-            return {"threads": max(vector_threads, 1)}
-        threads = min(256, self.hidden_size // vector)
-        if threads > 0:
-            threads = 1 << (threads.bit_length() - 1)
+        # The largest width that divides the row, whose fragment is laid out over the
+        # threads, at one 16-byte vector a thread: up to 1024 threads with no more tokens
+        # than SMs, up to 256 otherwise so several blocks share an SM.
+        cap = 1024 if self.num_tokens <= self.sm_count else 256
+        threads = min(cap, self.hidden_size // (16 // self.dtype.itemsize))
+        while threads > 0 and self.hidden_size % threads != 0:
+            threads -= 1
         return {"threads": max(threads, 1)}
 
     def forward(

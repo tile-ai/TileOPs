@@ -24,7 +24,12 @@ from tileops.ops.moe import (
     RoutingEpilogueSpec,
 )
 from workloads.device import run_device, run_device_available
-from workloads.moe import MoEExpertMLPWorkload, MoEGroupedGemmWorkload, post_permute_verification
+from workloads.moe import (
+    MoEExpertMLPWorkload,
+    MoEGroupedGemmWorkload,
+    MoEPostPermuteWorkload,
+    post_permute_verification,
+)
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -587,3 +592,32 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
     op = MoEGroupedGemmFwdOp(spec, **({"activation": activation} if activation else {}))
     with pytest.raises(ValueError, match=reason):
         op.key_for("grouped_gemm", _grouped_call(**facts))
+
+
+# Unpermute at a hidden size no power of two divides.
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
+def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
+    """Regression: with more tokens than SMs at gpt-oss's H = 2880, the unpermute kernel took
+    a power-of-two launch width that does not divide the row, so its row fragment had no layout
+    and the kernel failed to compile."""
+    tokens, top_k, hidden = 512, 4, 2880
+    routes = tokens * top_k
+    call = manifest_call(
+        "MoEPostPermuteFwdOp",
+        {"D": "bfloat16"},
+        T=tokens,
+        K=top_k,
+        H=hidden,
+        P=routes,
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+    )
+    workload = MoEPostPermuteWorkload(call)
+    expert_output = torch.randn(routes, hidden, dtype=torch.bfloat16, device=run_device())
+    inverse = torch.randperm(routes, device=run_device()).int()
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
+    inputs = (expert_output, weights, inverse)
+    output = MoEPostPermuteFwdOp(_TIGHT)(*inputs)
+    compare_outputs(output, workload.ref_program(*inputs), workload.verification(*inputs))
