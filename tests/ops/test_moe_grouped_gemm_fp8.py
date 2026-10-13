@@ -1,10 +1,13 @@
 """Tests for the block-scaled FP8 masked M-grouped GEMM op."""
 
+import itertools
+
 import pytest
 import torch
 
 from tileops.backend import register_kernel_type, registry
 from tileops.kernels.moe import MGroupedGemmFP8Call, MoEGroupedGemmFP8Kernel
+from tileops.kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
 from workloads.moe import MoEGroupedGemmFP8Workload
@@ -198,6 +201,25 @@ def test_fp8_grouped_gemm_refuses_a_config_it_cannot_build(change: dict, reason:
         op(*workload.gen_inputs())
 
 
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
+    """Compile-free: over the whole product of tile widths and stage counts a config is accepted
+    exactly when its ring fits the block's shared memory, and every calibrated entry fits H200."""
+    kernel = MoEGroupedGemmFP8Kernel
+    sm_count, smem_limit = 132, 232448 - 1024
+    verdicts = []
+    for block_m, block_n, stages in itertools.product(
+        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES
+    ):
+        config = {"block_m": block_m, "block_n": block_n, "num_stages": stages, "num_sms": sm_count}
+        accepted = kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
+        assert accepted == (_smem_bytes(block_m, block_n, stages) <= smem_limit), config
+        verdicts.append(accepted)
+    assert any(verdicts) and not all(verdicts)
+    for config in kernel._CONFIGS["h200"].values():
+        assert kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
+
+
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_tune_picks_a_correct_config() -> None:
@@ -207,6 +229,11 @@ def test_fp8_grouped_gemm_tune_picks_a_correct_config() -> None:
     inputs = _with_counts(workload, [128, 0, 33, 100])
     op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=128))
     op.request_tune()
+    out = op(*inputs)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    # A second call after the sweep runs the chosen config on other counts, with no state
+    # left over from tuning.
+    inputs = _with_counts(workload, [7, 128, 0, 64])
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 

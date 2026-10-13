@@ -575,9 +575,8 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         self.call = call
         self.scale_k = call.k // _SCALE_BLOCK
         self.sm_count = get_sm_count(self.device_index)
-        # Kept free below the device's opt-in shared-memory limit, as the on-chip RMSNorm kernel
-        # does, for allocator padding ``_smem_bytes`` does not model; no legal config's footprint
-        # lies in it.
+        # Kept free below the device's opt-in shared-memory limit for allocator padding
+        # ``_smem_bytes`` does not model; no legal config's footprint lies in it.
         smem_headroom = 1024
         self.smem_limit = get_shared_memory_optin(self.device_index) - smem_headroom
         calibration = device_calibration(self.device_index)

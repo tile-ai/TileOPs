@@ -538,14 +538,15 @@ def moe_masked_routed_metadata(layout, experts, tokens):
             f"moe.masked_routed_metadata needs E > 0 and T >= 0, got E={experts}, T={tokens}"
         )
     idle = round(experts * math.exp(-tokens / experts))
-    # The stride experts / idle is at least 1, so the positions are distinct.
     idle_positions = {(k * experts + experts // 2) // idle for k in range(idle)}
+    # The stride experts / idle is at least 1, so the positions are distinct.
+    assert len(idle_positions) == idle
     busy = [i for i in range(experts) if i not in idle_positions]
     weights = [2 if j % 2 == 0 else 1 for j in range(len(busy))]
     total = sum(weights)
     counts = [0] * experts
-    # Every expert is idle only when tokens == 0: for tokens >= 1 the model leaves at least
-    # experts * (1 - exp(-1 / experts)) >= 0.63 experts busy, which rounds to one or more.
+    # For tokens >= 1, experts * exp(-tokens / experts) < experts - 0.5, so idle < experts and
+    # some expert is busy; only tokens == 0 leaves busy empty and every count zero.
     if busy:
         shares = [tokens * w // total for w in weights]
         order = sorted(range(len(busy)), key=lambda j: (-(tokens * weights[j] % total), j))

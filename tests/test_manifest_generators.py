@@ -127,6 +127,9 @@ def test_masked_routed_metadata_leaves_the_experts_uniform_routing_leaves_empty(
     # 16 * exp(-4) = 0.29 rounds to no idle expert: the counts are the plain 2:1 split.
     assert routed(_masked(64), 16, 64) == [5, 3] * 8
     assert routed(_masked(1), 5, 0) == [0] * 5
+    # One expert: idle only without tokens; one token is the smallest busy split.
+    assert routed(_masked(1), 1, 0) == [0]
+    assert routed(_masked(1), 1, 1) == [1]
 
 
 def test_sample_indices_draws_distinct_values_in_range():
