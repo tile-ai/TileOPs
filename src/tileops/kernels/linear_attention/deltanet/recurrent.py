@@ -35,16 +35,11 @@ __all__ = [
     "DeltaNetDecodeRawCudaFlaStyleKernel",
 ]
 
-# The key-dimension tile the decode programs below fall back to when no tuned candidate
-# divides the key dim, so it is what decides which key dims are served. Both decode
-# kernels share `_k_tile_refusal`, so their defaults must agree with it.
-_DEFAULT_K_TILE = 16
 
-
-def _k_tile_refusal(dim_k: int) -> Optional[str]:
-    """Why no decode program here can split this key dim into tiles, or ``None``."""
-    if dim_k % _DEFAULT_K_TILE != 0:
-        return f"requires dim_k a multiple of {_DEFAULT_K_TILE}, got {dim_k}"
+def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
+    """Why a decode program with this default key tile cannot split this key dim, or ``None``."""
+    if dim_k % k_tile != 0:
+        return f"requires dim_k a multiple of {k_tile}, got {dim_k}"
     return None
 
 
@@ -152,7 +147,7 @@ def _deltanet_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     dtype: str = "float32",
 ):
     accum_dtype = "float32"
@@ -284,11 +279,14 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into, so it is
+    # what decides which key dims this kernel serves.
+    _DEFAULT_K_TILE = 16
     general = True
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
+        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -379,7 +377,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(
@@ -547,7 +545,7 @@ def _deltanet_decode_fp32_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
 
@@ -647,12 +645,15 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into, so it is
+    # what decides which key dims this kernel serves.
+    _DEFAULT_K_TILE = 16
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         if call.dtype != torch.float32:
             return "requires float32"
-        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
+        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -737,7 +738,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(
