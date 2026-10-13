@@ -380,6 +380,8 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
+    # (2048, 14336) bfloat16 on H200: 43.06 us with default loads, 41.86 evict-last.
+    EVICT_LAST_LOADS = True
 
     @staticmethod
     def activation_func(x):
