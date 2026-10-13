@@ -783,7 +783,11 @@ def _gqa_paged_varlen_split_kernel(
                                 Output[q_start + r // group, by * group + r % group, d] = (
                                     T.if_then_else(
                                         (lse_max[0] < T.cast(no_key_lse, accum_dtype))
-                                        | (lse_max[0] == T.infinity(accum_dtype)),
+                                        | (
+                                            (lse_max[0] == T.infinity(accum_dtype))
+                                            if has_sinks
+                                            else False
+                                        ),
                                         0,
                                         o_accum[d],
                                     )

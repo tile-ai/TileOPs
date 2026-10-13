@@ -65,8 +65,8 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
-    cache_dtype: Optional[torch.dtype] = None
     has_sinks: bool = False
+    cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
@@ -311,7 +311,6 @@ class GQAPagedFwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
         Args:
-            sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
             q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
             k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
                 a page.
@@ -325,6 +324,7 @@ class GQAPagedFwdInterface(KernelInterface):
                 exactly when ``call.fuse_rope``. Query positions are cache length minus
                 query length plus the query index; key positions are logical cache indices.
             rope_sin: The same layout as *rope_cos*. Cached keys are never rewritten.
+            sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
 
         Returns:
             A new output shaped like *q*, in ``call.dtype``.

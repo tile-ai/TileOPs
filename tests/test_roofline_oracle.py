@@ -754,6 +754,23 @@ class TestSpecOnlyRecounts:
         scores = sum(i + 1 for n in row["seq_lens"] for i in range(n))
         assert flops == _attention_flops(2, 6, 3, scores, 7)
 
+    def test_gqa_paged_sink_adds_only_normalization_work(self):
+        row = {
+            "T_q": 3,
+            "NP": 4,
+            "PS": 16,
+            "W": 2,
+            "H": 8,
+            "H_kv": 2,
+            "D": 64,
+            "q_lens": [2, 1],
+            "cache_lens": [4, 1],
+        }
+        dtypes = {"T": "float16", "KV": "float16"}
+        plain, _ = _evaluated("GQAPagedFwdOp", row, dtypes)
+        sink, _ = _evaluated("GQAPagedFwdOp", {**row, "some": ["sinks"]}, dtypes)
+        assert sink == (plain[0] + 8 * 3 * 3, plain[1] + 8 * 4)
+
 
 # Coverage levels. Every op, implemented or spec-only, sits at
 # exactly one, and the level says what an independent recount rests on.

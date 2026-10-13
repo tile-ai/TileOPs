@@ -117,7 +117,8 @@ def _gqa_paged_ws_kernel(
             if sm[i] != smp[i]:
                 alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
         for i, j in T.Parallel(half, block_n):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+            maximum = T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i]) if has_window else sm[i]
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
         T.reduce_sum(acc_s, ss, dim=1, batch=2)
 
     @T.macro
@@ -179,12 +180,14 @@ def _gqa_paged_ws_kernel(
         if window_right >= 0:
             last_q = T.min(meta[3] - 1, meta[5] + span - 1) + meta[4] - meta[3]
             key_end = T.min(key_end, last_q + window_right + 1)
-        first_key = T.alloc_var("int32", init=0)
-        if window_left >= 0:
-            first_key = T.max(0, meta[5] + meta[4] - meta[3] - window_left)
         if has_window:
+            first_key = T.alloc_var("int32", init=0)
+            if window_left >= 0:
+                first_key = T.max(0, meta[5] + meta[4] - meta[3] - window_left)
             meta[7] = first_key // block_n
-        meta[6] = T.max(1, T.ceildiv(key_end, block_n) - first_key // block_n)
+            meta[6] = T.max(1, T.ceildiv(key_end, block_n) - meta[7])
+        else:
+            meta[6] = T.max(1, T.ceildiv(key_end, block_n))
 
     @T.macro
     def fetch(Sched, lane, work):
@@ -319,6 +322,8 @@ def _gqa_paged_ws_kernel(
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
         full = T.alloc_var("int32", init=0)
+        if has_window:
+            first_full = T.alloc_var("int32", init=0)
         # Finished key tiles and items: they carry the barrier phases.
         done = T.alloc_var("int32", init=0)
         served = T.alloc_var("int32", init=0)
@@ -362,25 +367,45 @@ def _gqa_paged_ws_kernel(
                 full = T.min(eff, T.max(0, (first_q + 1) // block_n - first_tile))
             else:
                 full = T.min(eff, kv_len // block_n - first_tile)
-            if window_left >= 0 or window_right >= 0:
-                full = 0
-            if full < 1:
+            if has_window:
+                first_full = 0
+                if window_left >= 0:
+                    # Every row must see the entire tile, including the latest query.
+                    last_q = q0 + T.min(span - 1, (wg * half) % span + half - 1) + align
+                    first_full = T.min(
+                        eff, T.max(0, T.ceildiv(last_q - window_left, block_n) - first_tile)
+                    )
+                if window_right >= 0:
+                    first_q = q0 + (wg * half) % span + align
+                    full = T.min(
+                        full, T.max(0, (first_q + window_right + 1) // block_n - first_tile)
+                    )
+                # When no tile is fully visible, keep the masked ranges disjoint.
+                full = T.max(first_full, full)
+            if full < 1 or (first_full > 0 if has_window else False):
                 mask(acc_s, first_tile * block_n, q0, wg, align, kv_len)
             if use_softcap:
                 apply_softcap(acc_s)
             T.reduce_max(acc_s, sm, dim=1, clear=False)
-            if window_left >= 0 or window_right >= 0:
-                for i in T.Parallel(half):
-                    sm[i] = T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i])
             for i, j in T.Parallel(half, block_n):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+                # Preserve -inf in the running max until a visible key arrives.
+                maximum = (
+                    T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i]) if has_window else sm[i]
+                )
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
             T.reduce_sum(acc_s, ss, dim=1, batch=2)
             for i in T.Parallel(half):
                 logsum[i] = ss[i]
             T.copy(acc_s, pcast)
 
             step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
-            for k in T.serial(1, T.max(1, full)):
+            if has_window:
+                for k in T.serial(1, T.max(1, first_full)):
+                    kv_step(
+                        Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                        k + first_tile, done + k, q0, wg, align, kv_len, True,
+                    )  # fmt: skip
+            for k in T.serial(T.max(1, first_full) if has_window else 1, T.max(1, full)):
                 kv_step(
                     Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                     k + first_tile, done + k, q0, wg, align, kv_len, False,
@@ -524,6 +549,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     # The per-request tile prefix shares shared memory with the Q, K and V buffers, which take
     # 192 of the 227 KB at dimension 128; 4096 requests take 16 KB of the rest.
     _MAX_BATCH: int = 4096
+    # The general kernel applies RoPE while reading the cache and needs no expanded KV.
+    _MAX_ROPE_SCRATCH_BYTES: int = 512 * 1024 * 1024
 
     @staticmethod
     def block_n_for(page_size: int) -> Optional[int]:
@@ -554,8 +581,23 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size) is None:
             return "requires a page size that is a multiple of 16 rows"
+        # Prefer the general kernel for narrow left windows, measured faster on H200
+        # window/sink mixed workloads. RoPE retains the separate preparation path.
+        if (
+            not call.fuse_rope
+            and 0 <= call.window_size_left <= cls.block_n_for(call.page_size)
+            and call.window_size_right <= 0
+        ):
+            return "narrow left windows without RoPE use the general kernel"
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
+        if call.fuse_rope:
+            kv_elements = (
+                2 * call.batch * call.max_pages_per_req * call.page_size * call.heads_kv * call.dim
+            )
+            q_elements = call.max_seqlen_q * call.heads * call.dim
+            if (kv_elements + q_elements) * 2 > cls._MAX_ROPE_SCRATCH_BYTES:
+                return "RoPE preparation exceeds the 512 MiB scratch budget"
         if call.batch > cls._MAX_BATCH:
             return f"serves at most {cls._MAX_BATCH} requests"
         return None

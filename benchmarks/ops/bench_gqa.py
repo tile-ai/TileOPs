@@ -689,10 +689,10 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
         q_data_type=workload.dtype,
     )
 
-    def run_fn(q, k_pages, v_pages, *_unused):
+    def run_fn(q, k_pages, v_pages, _table, _lengths, _cu_q, _qs, _ks, _vs, _cos, _sin, sinks):
         if workload.has_sinks:
             scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
-            return wrapper.run(q, (k_pages, v_pages), _unused[8], scale)
+            return wrapper.run(q, (k_pages, v_pages), sinks, scale)
         return wrapper.run(q, (k_pages, v_pages))
 
     return run_fn

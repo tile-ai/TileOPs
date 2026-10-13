@@ -612,9 +612,11 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
-    return attention_flops(
-        indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
-    ), moved
+    flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
+    if call.present("sinks"):
+        # Subtract max, exponentiate and add to the denominator for each visible row.
+        flops += 3 * indices["H"] * rows
+    return flops, moved
 
 
 def paged_decode_cache_rows(call: "CallView") -> int:
