@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -400,6 +401,48 @@ def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
         GQADenseFwdOp(target=BUILTIN)(q, k, v),
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
         dense_gqa_verification(q.dtype),
+    )
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tuned fused-RoPE decode times the programs forward launches, which read the RoPE
+    tables, rather than the plain split program. Each program's first candidate stands in
+    for its tuning result."""
+    timed_parameters = []
+
+    def record(self, jit_kernel, configs, **kwargs):
+        prim_func = jit_kernel.get_tir(**configs[0])
+        timed_parameters.append({buffer.name for buffer in prim_func.buffer_map.values()})
+        return SimpleNamespace(config=configs[0], latency=float(len(timed_parameters)))
+
+    monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
+    torch.manual_seed(0)
+    batch, heads, heads_kv, dim, seq_len_kv, dtype = 2, 8, 2, 128, 257, torch.bfloat16
+    op = GQADenseFwdOp(pos_encoding_mode="rope", rotary_dim=dim, target=BUILTIN)
+    op.request_tune()
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    angles = torch.randn(seq_len_kv, dim // 2, device="cuda") * 0.1
+    rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
+    output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+
+    assert timed_parameters
+    assert all("rope_cos" in parameters for parameters in timed_parameters)
+    q_ref, k_ref = (
+        apply_dense_rope(x, positions, rope_cos, rope_sin, rotary_dim=dim, layout="neox")
+        for x, positions in (
+            (q, torch.tensor([seq_len_kv - 1], device="cuda")),
+            (k, torch.arange(seq_len_kv, device="cuda")),
+        )
+    )
+    compare_outputs(
+        output,
+        dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        dense_gqa_verification(dtype),
     )
 
 

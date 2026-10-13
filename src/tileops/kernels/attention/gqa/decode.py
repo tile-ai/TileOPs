@@ -631,6 +631,10 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            fuse_rope,
+            max_position,
+            rotary_dim,
+            rope_layout,
         )
         self.split_jit = _gqa_decode_split_kernel(
             self.batch,
@@ -641,6 +645,24 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.softcap,
             self.dtype_str,
         )
+        self.ws_rope_jit = None
+        if self.use_ws_rope:
+            # decode_bs1 imports this module.
+            from tileops.kernels.attention.gqa.decode_bs1 import gqa_decode_bs1_ctx_kernel
+
+            self.ws_rope_jit = gqa_decode_bs1_ctx_kernel(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.dim,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                True,
+                max_position,
+                rotary_dim,
+                rope_layout,
+            )
         # autotune targets the split kernel; forward shrinks the tuned
         # num_split to the runtime KV extent instead of gating dispatch on it
         self.kernel = self.split_jit
@@ -722,6 +744,26 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return 2
         return num_split
 
+    def _launched_program(self, config: dict, num_split: int) -> tuple[str, dict]:
+        """The program forward launches for *config* at *num_split* splits, and the
+        parameters it takes."""
+        if num_split == 1:
+            return "no_split", {key: value for key, value in config.items() if key != "num_split"}
+        if self.use_ws_rope:
+            # The warp-specialized program runs one warpgroup of 64 head rows and a
+            # producer warp; it takes only the tile length and the split count.
+            params = {"block_M": 64, "block_N": config["block_N"], "ctx_splits": num_split}
+            return "ws_rope", {**params, "threads": 160}
+        return "split", {**config, "num_split": num_split}
+
+    def _config_of(self, program: str, params: dict) -> dict:
+        """The kernel config whose launch runs *program* with *params*."""
+        if program == "no_split":
+            return {**params, "num_split": 1}
+        if program == "ws_rope":
+            return {**self.config, "block_N": params["block_N"], "num_split": params["ctx_splits"]}
+        return params
+
     @property
     def autotune_configs(self) -> list[dict]:
         block_N = [64, 128]
@@ -753,38 +795,30 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Time each candidate on the program forward launches for it, and keep the fastest.
 
-        A candidate whose split count falls to one runs the no-split program, which takes
-        no split count; every other candidate runs the split program at the split count
-        forward launches. Fused RoPE forward launches other programs, which this does not
-        time.
+        A candidate whose split count falls to one runs the no-split program; every other
+        candidate runs the split program, or with fused RoPE the warp-specialized one, at
+        the split count forward launches.
         """
         print(f"Start autotuning {self.__class__.__name__}...")
-        programs: dict[bool, list[dict]] = {True: [], False: []}
+        jits = {"no_split": self.no_split_jit, "split": self.split_jit, "ws_rope": self.ws_rope_jit}
+        programs: dict[str, list[dict]] = {program: [] for program in jits}
         for config in self.tuning_candidates(self.autotune_configs):
-            num_split = self._launch_split(config, self.seqlen_kv)
-            split = num_split > 1
-            launched = (
-                {**config, "num_split": num_split}
-                if split
-                else {key: value for key, value in config.items() if key != "num_split"}
+            program, params = self._launched_program(
+                config, self._launch_split(config, self.seqlen_kv)
             )
-            if launched not in programs[split]:
-                programs[split].append(launched)
+            if params not in programs[program]:
+                programs[program].append(params)
 
         best_latency, best_config = float("inf"), None
-        for split, configs in programs.items():
-            if not configs:
+        for program, candidates in programs.items():
+            if not candidates:
                 continue
             tuned = self.tune_jit_kernel(
-                self.split_jit if split else self.no_split_jit,
-                configs,
-                warmup=warmup,
-                rep=rep,
-                seed_config=configs[0],
+                jits[program], candidates, warmup=warmup, rep=rep, seed_config=candidates[0]
             )
             if tuned.latency < best_latency:
                 best_latency = tuned.latency
-                best_config = {**tuned.config, **({} if split else {"num_split": 1})}
+                best_config = self._config_of(program, tuned.config)
         if best_config is not None:
             self.config = best_config
         print(f"Best config: {self.config}")
@@ -817,19 +851,9 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
             if self.fuse_rope:
-                output = gqa_decode_no_split_kernel(
-                    self.batch,
-                    self.heads,
-                    self.groups,
-                    self.dim,
-                    self.sm_scale,
-                    self.softcap,
-                    self.dtype_str,
-                    True,
-                    self.max_position,
-                    self.rotary_dim,
-                    self.rope_layout,
-                )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
+                output = self.no_split_jit(block_H, block_N, num_stages, threads)(
+                    Q, K, V, rope_cos, rope_sin
+                )
                 return output.unsqueeze(1)
             output = gqa_decode_no_split_run(
                 self.batch,
@@ -853,8 +877,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from tileops.kernels.attention.gqa.decode_bs1 import gqa_decode_bs1_ctx_kernel
-
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
             )
@@ -863,19 +885,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 dtype=torch.float32,
                 device=Q.device,
             )
-            output = gqa_decode_bs1_ctx_kernel(
-                self.batch,
-                self.heads,
-                self.groups,
-                self.dim,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-                True,
-                self.max_position,
-                self.rotary_dim,
-                self.rope_layout,
-            )(64, block_N, num_split, 160)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
+            _, params = self._launched_program(self.config, num_split)
+            output = self.ws_rope_jit(**params)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
             return output.unsqueeze(1)
 
         # Split path: the kernel partitions KV tiles from the runtime extent
