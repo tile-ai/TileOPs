@@ -623,6 +623,9 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             and not self.fuse_rope
         )
 
+        # Without RoPE, the arguments match gqa_decode_no_split_run's, so both share one
+        # cached builder.
+        rope = (True, max_position, rotary_dim, rope_layout) if fuse_rope else ()
         self.no_split_jit = gqa_decode_no_split_kernel(
             self.batch,
             self.heads,
@@ -631,10 +634,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            fuse_rope,
-            max_position,
-            rotary_dim,
-            rope_layout,
+            *rope,
         )
         self.split_jit = _gqa_decode_split_kernel(
             self.batch,
@@ -663,8 +663,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 rotary_dim,
                 rope_layout,
             )
-        # autotune targets the split kernel; forward shrinks the tuned
-        # num_split to the runtime KV extent instead of gating dispatch on it
+        # Forward shrinks the tuned num_split to the runtime KV extent instead of gating
+        # dispatch on it; autotune times each candidate on the program forward launches.
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config)
