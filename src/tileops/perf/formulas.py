@@ -232,39 +232,63 @@ def moe_layout_active_experts(call: "CallView") -> int:
     return sum(1 for start, end in zip(ends, ends[1:], strict=False) if end > -(-start // a) * a)
 
 
-def _active_weight_bytes(call: "CallView", *weights: str) -> int:
-    """Each tensor moved once, the per-expert *weights* only for the experts with valid rows."""
+def moe_slab_bytes(call: "CallView", name: str) -> int:
+    """Bytes the call moves of *name*, a tensor with one row per layout row.
+
+    A masked layout's ``[E, max_m, ...]`` slab moves only the rows ``layout_metadata`` marks
+    valid; a contiguous layout materializes every row, so the whole tensor moves. A slab with
+    no rows (``max_m = 0``) moves nothing.
+    """
+    layout = call.indices["layout"]
+    if layout.kind != "masked":
+        return call.bytes(name)
+    slab_rows = call.indices["E"] * layout.max_m
+    if slab_rows == 0:
+        return 0
+    return call.bytes(name) // slab_rows * moe_layout_rows(call)
+
+
+def _moe_layout_bytes(call: "CallView", rows: tuple[str, ...], weights: tuple[str, ...]) -> int:
+    """Each tensor moved once, the row-shaped *rows* by :func:`moe_slab_bytes`, and the
+    per-expert *weights* only for the experts with a valid row."""
     active, experts = moe_layout_active_experts(call), call.indices["E"]
     moved = _derived_bytes(call)
+    for name in rows:
+        moved += moe_slab_bytes(call, name) - call.bytes(name)
     for name in weights:
         moved += call.bytes(name) * active // experts - call.bytes(name)
     return moved
 
 
 def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
-    """Grouped expert GEMM over the valid rows, and the gated activation when fused; an expert
-    with no valid row reads no weight, every other tensor moves once."""
+    """Grouped expert GEMM over the valid rows, and the gated activation when fused; a masked
+    slab moves only its valid rows of ``a`` and ``output``, an expert with no valid row reads no
+    weight, and every other tensor moves once."""
     indices = call.indices
     rows, fused = moe_layout_rows(call), call.indices["activation"] is not None
     flops = 2 * rows * (2 * indices["N"] if fused else indices["N"]) * indices["K"]
     flops += _GATED_ACTIVATION * rows * indices["N"] if fused else 0
-    return flops, _active_weight_bytes(call, "b")
+    return flops, _moe_layout_bytes(call, rows=("a", "output"), weights=("b",))
 
 
 def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
-    """Grouped expert GEMM over the valid rows, with no fused activation; an expert with no
-    valid row reads neither its weight nor that weight's scale."""
+    """Grouped expert GEMM over the valid rows, with no fused activation; a masked slab moves
+    only its valid rows of ``a``, ``a_scale`` and ``output``, and an expert with no valid row
+    reads neither its weight nor that weight's scale."""
     indices = call.indices
     flops = 2 * moe_layout_rows(call) * indices["N"] * indices["K"]
-    return flops, _active_weight_bytes(call, "b", "b_scale")
+    return flops, _moe_layout_bytes(call, rows=("a", "a_scale", "output"), weights=("b", "b_scale"))
 
 
 def moe_expert_mlp_roofline(call: "CallView") -> tuple[int, int]:
-    """Expert MLP over the valid rows: the gate/up and down GEMMs and the gated activation; an
-    expert with no valid row reads no weight, every other tensor moves once."""
+    """Expert MLP over the valid rows: the gate/up and down GEMMs and the gated activation; a
+    masked slab moves only its valid rows of ``expert_input`` and ``output``, an expert with no
+    valid row reads no weight, and every other tensor moves once."""
     f, h = call.indices["F"], call.indices["H"]
     flops = moe_layout_rows(call) * (6 * f * h + _GATED_ACTIVATION * f)
-    return flops, _active_weight_bytes(call, "w_gate_up", "w_down")
+    return flops, _moe_layout_bytes(
+        call, rows=("expert_input", "output"), weights=("w_gate_up", "w_down")
+    )
 
 
 def hadamard_roofline(call: "CallView") -> tuple[int, int]:
