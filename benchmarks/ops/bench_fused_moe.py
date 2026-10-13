@@ -65,8 +65,10 @@ def _routed_moe(op, experts):
 
 
 def _expert_backends(op, hidden, w1, w2, correction_bias):
-    """The routed baselines, or none for a grouped row vLLM cannot route (an unbiased
-    or softmax one: its fused grouped_topk takes only a biased sigmoid)."""
+    """The routed baselines, or none for a grouped row vLLM cannot route.
+
+    vLLM's fused ``grouped_topk`` takes only a biased sigmoid.
+    """
     if op.num_expert_group > 1 and (correction_bias is None or op.scoring_func != "sigmoid"):
         return {}
     top_k = op.top_k

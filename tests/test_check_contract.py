@@ -496,9 +496,7 @@ def _verdicts_disagree(workload, inputs, selection, valid, group_size, candidate
 
 
 def _ds_v3_near_tied_candidates(selection, valid, group_size, topk_group):
-    """Each valid set's top-k, then that top-k with one expert traded for a weaker one of its
-    group, for the best of a group outside every valid set, or with the experts of a set that
-    skips a group every valid set keeps; and ids spread over ``topk_group + 1`` groups."""
+    """Candidate outputs around each valid DeepSeek-V3 top-k selection."""
     num_groups = selection.numel() // group_size
     grouped = selection.view(num_groups, group_size)
     kept_by_some = set().union(*(groups for groups, _, _ in valid))
@@ -588,9 +586,7 @@ def test_grouped_routing_accepts_exactly_the_selections_of_a_valid_group_set():
             candidates = itertools.combinations(range(num_experts), top_k)
             disagree += _verdicts_disagree(workload, inputs, selection[0], valid, 2, candidates)
 
-    # DeepSeek-V3 routing: 8 groups of 32, the best 4 kept, top 8, biased. Each row moves whole
-    # groups so that two or three sit within the slack of the boundary, one sometimes above it
-    # by twice the slack.
+    # Near-tied DeepSeek-V3 groups, including one clearly above the boundary.
     num_groups, group_size, topk_group, top_k = 8, 32, 4, 8
     workload = _grouped_topk_workload(256, num_groups, topk_group, top_k, True)
     for row in range(200):

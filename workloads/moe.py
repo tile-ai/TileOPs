@@ -49,14 +49,8 @@ class FusedTopKWorkload(CallWorkload):
             rows = torch.ones(ids.shape[0], dtype=torch.bool, device=ids.device)
             reference_selection = selection.gather(1, ref_ids.long())
             if num_groups > 1:
-                # A group may be kept when it scores within rounding of the last kept one; a
-                # row whose boundary is that close has more than one valid group set. Such a
-                # row passes when some valid set S of topk_group groups has the returned
-                # experts as its top-k. Every valid S holds the groups above the boundary by
-                # more than the slack, and S must hold each group an id lands in; the rest
-                # of S comes from the other groups within the slack. A fill group rejects S
-                # exactly when its best expert beats a returned one, so the fill with the
-                # lowest best experts finds S whenever one exists.
+                # A group within the slack of the last kept one may be kept in its place: such a
+                # row passes when the returned experts are the top-k of some valid group set.
                 group_scores = ref_group_scores(selection, num_groups, correction_bias is not None)
                 ranked = group_scores.sort(-1, descending=True).values
                 last = ranked[:, topk_group - 1 : topk_group]
@@ -73,6 +67,7 @@ class FusedTopKWorkload(CallWorkload):
                     assert (missing >= 0).all(), "experts span more groups than are kept"
                     best = selection.view(-1, num_groups, group_size).amax(-1)
                     candidates = allowed & ~forced
+                    # Filling with the groups of lowest best expert finds a valid set if any exists.
                     fill_rank = (
                         best.masked_fill(~candidates, float("inf"))
                         .argsort(dim=-1, stable=True)

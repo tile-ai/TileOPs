@@ -211,7 +211,7 @@ class GroupedTopKFixture(FixtureBase):
             "num_tokens, num_experts, top_k, num_expert_group, topk_group, scoring_func,"
             " with_bias, renormalize, routed_scaling_factor, dtype",
             [
-                # DeepSeek-V3: a group is one warp row of 32 experts, scored by its biased top-2.
+                # DeepSeek-V3: groups of 32 experts scored by their biased top-2.
                 pytest.param(
                     64,
                     256,
@@ -226,8 +226,8 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-ds-v3",
                 ),
-                # DeepSeek-V2: softmax without bias scores a group by its max; groups of 20
-                # straddle warp rows; the scale lands on the row-sum divide.
+                # DeepSeek-V2: softmax groups scored by their max, groups of 20 experts, a scale
+                # without renormalization.
                 pytest.param(
                     64,
                     160,
@@ -242,7 +242,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-ds-v2-softmax-max",
                 ),
-                # Sigmoid without bias: the max group score on the sigmoid path.
+                # Sigmoid groups scored by their max.
                 pytest.param(
                     64,
                     256,
@@ -257,7 +257,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-sigmoid-nobias-fp16",
                 ),
-                # E = 100 is off the warp width: padding slots clamp into the last group.
+                # E off a multiple of 32.
                 pytest.param(
                     32,
                     100,
@@ -272,7 +272,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-e100-pad-fp32",
                 ),
-                # Three groups: a group count off a power of two merges per group.
+                # A group count off a power of two.
                 pytest.param(
                     32,
                     96,
@@ -287,7 +287,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-three-groups",
                 ),
-                # The scale alone, on the ungrouped kernel.
+                # A scale without grouping.
                 pytest.param(
                     32,
                     128,
@@ -302,7 +302,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-ungrouped-scaled",
                 ),
-                # Every group kept: topk_group == num_expert_group leaves no slot masked.
+                # Every group kept.
                 pytest.param(
                     32,
                     64,
@@ -317,8 +317,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-all-groups-kept",
                 ),
-                # The kept group holds exactly top_k experts, at the transpose's largest group
-                # count (32) and the smallest biased group (two experts).
+                # 32 biased groups of two experts; the one kept group holds exactly top_k experts.
                 pytest.param(
                     32,
                     64,
@@ -333,7 +332,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-g32-kept-holds-top-k",
                 ),
-                # A power-of-two group count above the warp width takes the butterfly.
+                # A power-of-two group count above 32.
                 pytest.param(
                     32,
                     128,
@@ -348,8 +347,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-g64-butterfly",
                 ),
-                # Two groups: the transpose is one step, then four lane merges. One token:
-                # the smallest launch, one block of one warp.
+                # Two groups, one token.
                 pytest.param(
                     1,
                     64,
@@ -379,8 +377,7 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-groups-of-one-softmax",
                 ),
-                # A tail block: T = 201 is one past a multiple of 8, so blocks of 2, 4 or 8
-                # tokens end with a block holding one.
+                # An odd token count.
                 pytest.param(
                     201,
                     256,
@@ -473,8 +470,7 @@ def test_grouped_topk(
 def test_grouped_topk_rejects_an_invalid_configuration(
     num_experts, num_expert_group, topk_group, top_k, scale, rule
 ) -> None:
-    """Each configuration the kernel cannot route is refused, at construction or at the
-    call, naming its rule."""
+    """Each invalid grouping configuration is refused, naming the rule it breaks."""
     gating = torch.randn(4, num_experts, dtype=torch.bfloat16, device=run_device())
     bias = torch.randn(num_experts, dtype=torch.float32, device=run_device())
     with pytest.raises(ValueError, match=re.escape(rule)):
@@ -490,8 +486,7 @@ def test_grouped_topk_rejects_an_invalid_configuration(
 
 @pytest.mark.smoke
 def test_spelling_out_the_ungrouped_defaults_changes_nothing() -> None:
-    """Spelling out num_expert_group=1, topk_group=1 and a unit scale is the ungrouped call:
-    the same kernel build, so the same bits."""
+    """One group, one kept group and a unit scale return the ungrouped call's bits."""
     call = manifest_call(
         "FusedTopKFwdOp",
         {"G": "bfloat16"},

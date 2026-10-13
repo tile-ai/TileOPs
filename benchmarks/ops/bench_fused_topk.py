@@ -3,13 +3,8 @@
 vLLM is required, not optional: this file exists to compare against its routers, and a
 torch reference is not a comparison worth recording. `fused_topk` takes no correction
 bias, so a biased row goes to `fused_topk_bias` instead. A grouped row
-(`num_expert_group > 1`) goes to vLLM's fused CUDA `grouped_topk`, which applies the
-sigmoid, the group selection, renormalization and the scaling factor itself and takes the
-logits in their own dtype; it requires a correction bias, so a grouped row without one has
-no vLLM comparator. vLLM's torch fallback is not a comparator: it diverts to the fused
-kernel unless `VLLM_USE_FUSED_MOE_GROUPED_TOPK=0` is set before vLLM is imported.
-SGLang's `biased_grouped_topk_gpu` and TensorRT-LLM's `noaux_tc_op` are not in the runner
-image (`.github/runner/Dockerfile`), so they are not compared.
+(`num_expert_group > 1`) goes to vLLM's fused CUDA `grouped_topk`, which takes only a
+biased sigmoid, so a grouped row without a bias has no vLLM comparator.
 
 Real model configurations:
   Model              E    K  scoring   renorm  groups  kept  scale

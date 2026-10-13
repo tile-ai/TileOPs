@@ -14,21 +14,12 @@ it also makes the row-sum reduction unnecessary, because
 selection only; ``topk_weights`` still carries the original unbiased sigmoid
 score. Used by Kimi K2 and DeepSeek-V3-variant models.
 
-``num_expert_group > 1`` is DeepSeek grouped routing. The E experts split into
-groups of ``E // num_expert_group`` consecutive experts; a group scores the sum of
-its two best selection scores when a bias is passed, else its best score. Each
-lane reduces its own slots per group, then the lanes merge: for a power-of-two group
-count as a ``shfl_xor`` transpose, each step halving the groups a lane holds, followed
-by one ``shfl_sync`` gather per group; otherwise as a butterfly per group. Every lane
-then holds all group scores. After the transpose each lane also holds one group as its
-own: it counts the groups that beat it, and a ballot of ``rank < topk_group`` gives
-every lane the kept groups at once. The butterfly leaves no lane owning a group, so
-there the ``topk_group`` best groups are kept by a serial argmax over the replicated
-scores. Every slot outside the kept groups is set to -inf, and the ungrouped kernel's
-top-k loop then selects from the rest. ``num_expert_group == 1`` builds the ungrouped
-kernel, with no grouped code.
+``num_expert_group > 1`` is DeepSeek grouped routing: the E experts split into
+groups of ``E // num_expert_group`` consecutive experts, a group scores the sum of
+its two best selection scores when a bias is passed and its best score otherwise,
+and the top-k is selected inside the ``topk_group`` best groups.
 
-``routed_scaling_factor`` other than 1 is folded into the weight writeback.
+``routed_scaling_factor`` multiplies the written weights.
 
 Ties in the argmax go to the lower expert index, and among groups to the lower
 group index.
@@ -58,8 +49,6 @@ __all__ = ["FusedTopKKernel"]
 _SCORING_FUNCS = ("softmax", "sigmoid")
 
 
-# 64: one build per token count, and a process routes several models' shapes, each with
-# and without a bias, over the decode-to-prefill token range.
 @functools.lru_cache(maxsize=64)
 def _fused_topk_kernel(
     num_tokens,
@@ -126,14 +115,11 @@ def _fused_topk_kernel(
                 return (j * WARP_SIZE) // GROUP_SIZE
             group = (j * WARP_SIZE + lane_id) // GROUP_SIZE
             if num_experts % WARP_SIZE != 0:
-                # A padded slot is loaded as -inf (the ``expert_idx >= num_experts`` branch of
-                # each load loop) and loses to every expert, so the clamp only keeps the shift
+                # A padded slot holds -inf and loses to every expert; the clamp keeps the shift
                 # in range.
                 return T.min(group, num_expert_group - 1)
             return group
 
-        # A power-of-two group count merges the per-group partials as an xor transpose: each
-        # step halves the groups a lane holds, until a lane holds one group's partial.
         LOG_GROUPS = int(math.log2(num_expert_group))
         TRANSPOSE = num_expert_group == 1 << LOG_GROUPS and num_expert_group <= WARP_SIZE
 
@@ -178,8 +164,7 @@ def _fused_topk_kernel(
                             best2[g] = T.max(best2[g], T.min(best1[g], sel[j]))
                         best1[g] = T.max(best1[g], sel[j])
             if TRANSPOSE:
-                # Step s halves the groups held, on lane bit 4 - s; after LOG_GROUPS steps
-                # lane l holds group l >> (5 - LOG_GROUPS) in slot 0.
+                # After the transpose lane l holds group l >> (5 - LOG_GROUPS) in slot 0.
                 if LOG_GROUPS >= 1:
                     transpose_step(best1, best2, lane_id, num_expert_group // 2, HALF_WARP)
                 if LOG_GROUPS >= 2:
@@ -201,8 +186,7 @@ def _fused_topk_kernel(
                         best1[0] = T.max(best1[0], other1)
                 if with_correction_bias:
                     best1[0] = best1[0] + best2[0]
-                # Gather every group's score into every lane, then rank the lane's own
-                # group: the groups that beat it score higher, or equal with a lower index.
+                # A group ranks below every group scoring higher, or equal with a lower index.
                 for g in T.unroll(num_expert_group):
                     best2[g] = T.shfl_sync(best1[0], g << (LOG_WARP - LOG_GROUPS))
                 own_group = lane_id >> (LOG_WARP - LOG_GROUPS)
@@ -230,8 +214,7 @@ def _fused_topk_kernel(
                 if with_correction_bias:
                     for g in T.unroll(num_expert_group):
                         best1[g] = best1[g] + best2[g]
-                # Every lane holds every group score, but no lane owns one group: pick the
-                # best groups by a serial argmax over the replicated scores.
+                # No lane owns a group here, so a serial argmax picks the kept groups.
                 kept = T.alloc_local([num_expert_group], "int32")
                 for g in T.unroll(num_expert_group):
                     kept[g] = 0
@@ -635,14 +618,10 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """Tokens per block that leave the fewest warps on the busiest SM sub-partition.
+        """Tokens per block that leave the fewest warps on an SM's busiest sub-partition.
 
-        Each token is one warp running a long dependent chain, so the kernel ends when the
-        sub-partition holding the most warps does. Blocks spread evenly over the SMs: with
-        ``TOKENS_PER_BLOCK`` = t the busiest SM holds ``ceil(ceil(T / t) / SMs) * t`` warps,
-        shared by its four sub-partitions. Of the powers of two up to ``ceil(T / 16)`` (at
-        most 16), the largest t that minimizes that count wins, since a larger block means
-        fewer block launches.
+        The candidates are the powers of two up to ``min(16, ceil(T / 16))``; a tie takes
+        the largest.
         """
         bound = min(16, max(1, math.ceil(self.num_tokens / 16)))
         sub_partitions = 4  # Warp schedulers per SM on every architecture in supported_archs.

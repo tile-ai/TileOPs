@@ -141,10 +141,13 @@ class FusedMoEFwdOp(FusedMoE):
     ``sigmoid(score) + correction_bias`` while the final weights use the
     original (unbiased) scores, renormalized.
 
-    ``num_expert_group > 1`` routes as DeepSeek-V3 does (``FusedTopKFwdOp`` states
-    the rule): the experts split into ``num_expert_group`` groups of consecutive
-    experts and top-k is selected inside the ``topk_group`` best groups. The output
-    is multiplied by ``routed_scaling_factor`` once, in the experts' epilogue.
+    ``num_expert_group > 1`` routes as DeepSeek-V3 does: the experts split into
+    ``num_expert_group`` groups of consecutive experts, each scored by the sum of its
+    two best biased scores when ``correction_bias`` is passed and by its best score
+    otherwise, and top-k is selected inside the ``topk_group`` best groups. A group
+    within 1e-5 (relative; also 1e-6 absolute) of the last kept group score may be
+    kept in its place, as in ``FusedTopKFwdOp``. The output is multiplied by
+    ``routed_scaling_factor`` once.
     """
 
     def __init__(

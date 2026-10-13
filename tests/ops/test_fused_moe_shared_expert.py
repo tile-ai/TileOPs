@@ -309,9 +309,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
 
 @pytest.mark.smoke
 def test_grouped_routing_with_the_shared_expert() -> None:
-    """DeepSeek-V3 grouped routing (8 groups, the best 4 kept) on the routed half, with the
-    shared expert enabled: both outputs match the workload reference, the routed one scaled
-    by 2.5 once."""
+    """DeepSeek-V3 grouped routing with the shared expert scales only the routed output, once."""
     call = manifest_call(
         "FusedMoESharedExpertFwdOp",
         {"D": "bfloat16"},

@@ -437,9 +437,7 @@ def test_correction_bias_routing_precision() -> None:
 
 @pytest.mark.smoke
 def test_grouped_routing_scales_the_output_once() -> None:
-    """DeepSeek-V3 routing (8 groups, the best 4 kept, a bias, renormalized) against the
-    workload reference: the routing sub-op runs grouped, and the scaling factor 2.5 is
-    applied once, by the experts, never again by the routing."""
+    """DeepSeek-V3 grouped routing scales the routed output by the scaling factor once."""
     call = manifest_call(
         "FusedMoEFwdOp",
         {"D": "bfloat16"},
