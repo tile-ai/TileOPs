@@ -46,6 +46,11 @@ class MoEPermuteAlignFixture(FixtureBase):
                 pytest.param(512, 2, 8, 16, marks=pytest.mark.full, id="lb-boundary-1024"),
                 # More experts than the alignment block has threads.
                 pytest.param(64, 8, 1100, 64, marks=pytest.mark.full, id="experts-past-threads"),
+                # 1032 routes, which no power of two above 8 divides.
+                pytest.param(129, 8, 128, 64, marks=pytest.mark.full, id="routes-1032"),
+                # 512 experts, then 513.
+                pytest.param(64, 8, 512, 64, marks=pytest.mark.full, id="experts-512"),
+                pytest.param(64, 8, 513, 64, marks=pytest.mark.full, id="experts-513"),
             ],
         ),
     ]
@@ -111,16 +116,17 @@ def test_permute_align_expert_ids_range() -> None:
     )
 
 
-@pytest.mark.smoke
-def test_permute_align_skewed_distribution() -> None:
-    """All tokens routed to expert 0 — stress-tests Step 3 loop bound.
-
-    With a uniform loop bound of ceil(max_num_blocks / num_experts), expert 0
-    would only write the first few expert_ids entries and leave the rest
-    uninitialised. This test catches that regression.
-    """
-    total_tokens, top_k, num_experts, block_size = 32, 4, 8, 16
-    # All tokens go to expert 0
+@pytest.mark.parametrize(
+    "total_tokens, top_k, num_experts, block_size",
+    [
+        pytest.param(32, 4, 8, 16, marks=pytest.mark.smoke, id="few-experts"),
+        pytest.param(256, 8, 384, 64, marks=pytest.mark.full, id="many-experts"),
+    ],
+)
+def test_permute_align_skewed_distribution(
+    total_tokens: int, top_k: int, num_experts: int, block_size: int
+) -> None:
+    """Every route on expert 0, over few experts and over many."""
     topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device=run_device())
 
     op = MoEPermuteAlignFwdOp(num_experts, block_size)
