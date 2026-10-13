@@ -1898,8 +1898,8 @@ def _gemm_coop2_kernel(
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
     back to ``_gemm_kernel``. Where TMA addresses the output rows, every tile leaves
     through the TMA store, which drops what an M / N tail puts past the output;
-    otherwise whole tiles take a shared-memory staged store and tail tiles a
-    predicated one. K tails are TMA zero-filled. A
+    otherwise each tile is staged in shared memory and stored a row a warp,
+    predicated on the tails. K tails are TMA zero-filled. A
     ``block_n`` of 176 or 192 over 64-wide K steps, which TileLang 0.1.12 issues
     as narrower WGMMAs, runs one ``block_n``-wide WGMMA per 16 of K through
     ``dense_wgmma_helper.h``.
@@ -2014,19 +2014,24 @@ def _gemm_coop2_kernel(
                         c[row_start : row_start + half_m, n_start + c0 : n_start + c0 + sn],
                     )
             else:
-                cols = T.min(T.int32(block_n), T.int32(n) - n_start)
-                if rows >= T.int32(half_m) and cols == T.int32(block_n):
-                    for ch in range(n_chunks):
-                        c0 = ch * sn
-                        T.sync_threads(barrier_id=bar, arrive_count=128)
-                        T.copy(c_cast[:, c0 : c0 + sn], c_smem)
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=bar, arrive_count=128)
-                        T.copy(c_smem, c[row_start, n_start + c0])
-                else:
-                    for i, j in T.Parallel(half_m, block_n):
-                        if i < rows and j < cols:
-                            c[row_start + i, n_start + j] = c_cast[i, j]
+                # A warp stores one row at a time, its lanes on consecutive columns. The
+                # row loop stays rolled: unrolled, each thread holds every store address
+                # live and the consumer spills its accumulator.
+                lane = T.get_thread_binding() % 32
+                warp = T.get_thread_binding() % 128 // 32
+                for ch in range(n_chunks):
+                    c0 = ch * sn
+                    cols = T.min(T.int32(sn), T.int32(n) - n_start - c0)
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    T.copy(c_cast[:, c0 : c0 + sn], c_smem)
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    for r in T.serial(half_m // 4):
+                        i = r * 4 + warp
+                        if i < rows:
+                            for t in T.unroll(-(-sn // 32)):
+                                j = t * 32 + lane
+                                if j < cols:
+                                    c[row_start + i, n_start + c0 + j] = c_smem[i, j]
 
         @T.macro
         def decode(flat_id, mt, nt):
