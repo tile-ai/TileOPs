@@ -82,6 +82,17 @@ from workloads.attention.paged_cache_gather import (
             id="mixed-long-requests",
         ),
         pytest.param(
+            [0, 1, 3, 0] * 64,
+            (576,),
+            16,
+            torch.bfloat16,
+            None,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="large-batch-empty-and-short-requests",
+        ),
+        pytest.param(
             [31, 65],
             (320,),
             16,

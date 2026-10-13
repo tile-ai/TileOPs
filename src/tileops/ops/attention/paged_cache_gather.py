@@ -63,8 +63,6 @@ class PagedKVCacheGatherFwdOp(Op):
         Returns:
             None; every element of dst is written and the cache is unchanged.
         """
-        if dst.numel() == 0:
-            return None
         # The signature permits strided destinations. A write-only staging buffer avoids
         # reading their old contents; copying back preserves the caller's view and storage.
         output = (

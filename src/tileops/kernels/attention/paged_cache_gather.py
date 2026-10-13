@@ -10,7 +10,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
 __all__ = ["PagedKVCacheGatherCall", "PagedKVCacheGatherFwdInterface", "PagedKVCacheGatherKernel"]
@@ -50,15 +49,15 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _paged_cache_gather_kernel(
-    batch, num_pages, page_size, table_width, row_width, dtype, out_dtype, has_starts
-):
+def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_starts):
     quantized = dtype == "float8_e4m3fn"
 
     @tilelang.jit(out_idx=[])
     def _func(block_rows, block_cols, threads):
         total = T.dynamic("total")
-        tiling = GroupTiling(batch, block_rows)
+        batch = T.dynamic("batch")
+        num_pages = T.dynamic("num_pages")
+        table_width = T.dynamic("table_width")
         cache_shape = (num_pages * page_size, row_width)
 
         @T.prim_func
@@ -71,32 +70,35 @@ def _paged_cache_gather_kernel(
             Scale: T.Tensor((1,) if quantized else cache_shape, "float32" if quantized else dtype),
         ):
             with T.Kernel(
-                tiling.tile_upper_bound(total), T.ceildiv(row_width, block_cols), threads=threads
+                T.ceildiv(total, block_rows), T.ceildiv(row_width, block_cols), threads=threads
             ) as (bx, by):
-                tile_cum = T.alloc_shared((batch + 1,), "int32")
-                lo = T.alloc_local((1,), "int32")
-                hi = T.alloc_local((1,), "int32")
-                request = T.alloc_local((1,), "int32")
-                row0 = T.alloc_local((1,), "int32")
-                tiling.cumsum_offsets(Cu, tile_cum)
-                if bx < tile_cum[batch]:
-                    tiling.decode(bx, tile_cum, lo, hi, request, row0)
-                    b = request[0]
-                    begin = Cu[b]
-                    length = Cu[b + 1] - begin
-                    start = Starts[b] if has_starts else 0
-                    for r, c in T.Parallel(block_rows, block_cols):
-                        row = row0[0] + r
-                        col = by * block_cols + c
-                        if row < length and col < row_width:
-                            pos = start + row
-                            slot = Table[b, pos // page_size] * page_size + pos % page_size
-                            if quantized:
-                                Dst[begin + row, col] = (
-                                    T.cast(Cache[slot, col], "float32") * Scale[0]
-                                )
+                slots = T.alloc_shared((block_rows,), "int32")
+                # Search packed offsets directly: O(log batch) work per row, shared by
+                # every column. Repeated offsets naturally skip empty requests.
+                for r in T.Parallel(block_rows):
+                    row = bx * block_rows + r
+                    if row < total:
+                        lo = T.alloc_var("int32", init=0)
+                        hi = T.alloc_var("int32", init=batch)
+                        while lo < hi:
+                            mid = (lo + hi) // 2
+                            if Cu[mid + 1] <= row:
+                                lo = mid + 1
                             else:
-                                Dst[begin + row, col] = Cache[slot, col]
+                                hi = mid
+                        pos = row - Cu[lo] + (Starts[lo] if has_starts else 0)
+                        slots[r] = Table[lo, pos // page_size] * page_size + pos % page_size
+                T.sync_threads()
+                for r, c in T.Parallel(block_rows, block_cols):
+                    row = bx * block_rows + r
+                    col = by * block_cols + c
+                    if row < total and col < row_width:
+                        if quantized:
+                            Dst[bx * block_rows + r, by * block_cols + c] = (
+                                T.cast(Cache[slots[r], col], "float32") * Scale[0]
+                            )
+                        else:
+                            Dst[bx * block_rows + r, by * block_cols + c] = Cache[slots[r], col]
 
         return gather
 
@@ -104,7 +106,7 @@ def _paged_cache_gather_kernel(
 
 
 class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
-    """One gather and optional dequantization stage, tiled over each request's rows."""
+    """One gather and optional dequantization stage, tiled over packed output rows."""
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:
@@ -139,13 +141,10 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
         self.table_width, self.row_width = table_width, row_width
         self.dtype, self.out_dtype, self.has_starts = dtype, out_dtype, has_starts
         self.kernel = _paged_cache_gather_kernel(
-            batch,
-            num_pages,
             page_size,
-            table_width,
             row_width,
             self.dtype_str,
-            str(out_dtype).removeprefix("torch."),
+            self.dtype_to_str(out_dtype),
             has_starts,
         )
         self.init_config(config)
@@ -203,6 +202,7 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
         return supply
 
     def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
+        # Absent optional arguments reuse existing tensors as unread placeholders.
         self.kernel(**self.config)(
             dst,
             cache,
