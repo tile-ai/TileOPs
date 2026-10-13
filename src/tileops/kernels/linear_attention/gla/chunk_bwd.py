@@ -513,6 +513,32 @@ def _gla_bwd_fused_kernel(
                 for i_t, i_v in T.Parallel(BT, dim_v):
                     dv_out[i_b, chunk_start + i_t, i_h, i_v] = dv_frag[i_t, i_v]
 
+                # Finish both dh products before loading h on the lean path.
+                # dk_inter = v @ dh^T → write to shared to avoid layout conflict
+                if lean:
+                    v_b = T.alloc_shared([BT, dim_v], dtype)
+                    T.copy(v[i_b, chunk_start : chunk_start + BT, i_h, :], v_b, disable_tma=True)
+                dk_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
+                dk_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
+                T.fill(dk_inter_frag, 0.0)
+                T.gemm(
+                    v_b if lean else v_s,
+                    dh_cast_s,
+                    dk_inter_frag,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                )
+                for i_t, i_k in T.Parallel(BT, dim_k):
+                    dk_inter_s[i_t, i_k] = dk_inter_frag[i_t, i_k]
+
+                # dk = dk_intra + dk_inter * exp(g_last - g_cumsum)
+                for i_t, i_k in T.Parallel(BT, dim_k):
+                    dk_frag[i_t, i_k] = dk_frag[i_t, i_k] + dk_inter_s[i_t, i_k] * T.exp2(
+                        (g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E
+                    )
+                for i_t, i_k in T.Parallel(BT, dim_k):
+                    dk_out[i_b, chunk_start + i_t, i_h, i_k] = dk_frag[i_t, i_k]
+
                 # dq_inter = do @ h^T → write to shared to avoid layout conflict
                 if lean:
                     do_b = T.alloc_shared([BT, dim_v], dtype)
@@ -539,31 +565,6 @@ def _gla_bwd_fused_kernel(
                     )
                 for i_t, i_k in T.Parallel(BT, dim_k):
                     dq_out[i_b, chunk_start + i_t, i_h, i_k] = dq_frag[i_t, i_k]
-
-                # dk_inter = v @ dh^T → write to shared to avoid layout conflict
-                if lean:
-                    v_b = T.alloc_shared([BT, dim_v], dtype)
-                    T.copy(v[i_b, chunk_start : chunk_start + BT, i_h, :], v_b, disable_tma=True)
-                dk_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
-                dk_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
-                T.fill(dk_inter_frag, 0.0)
-                T.gemm(
-                    v_b if lean else v_s,
-                    dh_cast_s,
-                    dk_inter_frag,
-                    transpose_B=True,
-                    policy=T.GemmWarpPolicy.FullRow,
-                )
-                for i_t, i_k in T.Parallel(BT, dim_k):
-                    dk_inter_s[i_t, i_k] = dk_inter_frag[i_t, i_k]
-
-                # dk = dk_intra + dk_inter * exp(g_last - g_cumsum)
-                for i_t, i_k in T.Parallel(BT, dim_k):
-                    dk_frag[i_t, i_k] = dk_frag[i_t, i_k] + dk_inter_s[i_t, i_k] * T.exp2(
-                        (g_last[i_k] - g_cumsum_s[i_t, i_k]) * LOG2E
-                    )
-                for i_t, i_k in T.Parallel(BT, dim_k):
-                    dk_out[i_b, chunk_start + i_t, i_h, i_k] = dk_frag[i_t, i_k]
 
                 # ==== dg ====
                 if lean:
@@ -781,11 +782,15 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     @staticmethod
     def _fused_live_bytes(c: int, k: int, v: int, elem: int) -> int:
         """Lower bound on the lean fused pass's shared memory: the largest set of its buffers
-        live at once, the fp32 gate in all."""
+        live at once, the fp32 gate in all. At dq, h and do overlap with the
+        retained fp32 dk_inter tile, after dh is no longer live."""
         a, b, h, causal, f = c * k * elem, c * v * elem, k * v * elem, c * c * elem, c * k * 4
         sub = 16 * 16 * elem + 16 * k * elem
         dg = 2 * a + 2 * f + k * 4
-        return max(2 * a + 2 * b, 2 * a + b + causal, 2 * a + causal + sub, b + 2 * h, dg) + f
+        return (
+            max(2 * a + 2 * b, 2 * a + b + causal, 2 * a + causal + sub, 2 * a + h, b + h + f, dg)
+            + f
+        )
 
     @property
     def default_config(self) -> dict:
