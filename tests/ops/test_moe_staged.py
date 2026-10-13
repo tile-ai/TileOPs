@@ -23,7 +23,6 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
-from tileops.utils import get_sm_version
 from workloads.device import run_device, run_device_available
 from workloads.moe import MoEExpertMLPWorkload, MoEGroupedGemmWorkload, post_permute_verification
 from workloads.numerics import compare_outputs
@@ -415,13 +414,23 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
     )
 
 
+@pytest.mark.parametrize(
+    "_architecture",
+    [
+        pytest.param(80, marks=pytest.mark.sm80),
+        pytest.param(86, marks=pytest.mark.sm86),
+        pytest.param(89, marks=pytest.mark.sm89),
+        pytest.param(90, marks=pytest.mark.sm90),
+    ],
+)
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_grouped_gemm_tight_per_row_matches_the_psum_layout(dtype):
-    """Per-row ids on tight rows, an empty group included: the psum layout's exact output."""
-    if get_sm_version(torch.device(run_device()).index) not in (80, 86, 89, 90):
-        pytest.skip("tight per-row grouped GEMM runs on SM80, SM86, SM89 and SM90")
+def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype):
+    """Per-row ids on tight rows, an empty group included: the psum layout's exact output.
+
+    SM90 runs the WGMMA template; SM80, SM86 and SM89 have no WGMMA and run MMA tiles.
+    """
     sizes = [100, 0, 300, 128, 7, 64]
     tight_per_row = {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}}
     call = _gemm_call(dtype, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
@@ -525,17 +534,6 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     )
     op, out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize("arch", [80, 86, 89])
-def test_grouped_gemm_serves_tight_per_row_on_the_mma_kernel(arch):
-    """The MMA kernel finds each tight per-row group's end, so every arch it runs on takes
-    the layout."""
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())
-    call = _grouped_call(arch=arch, metadata_kind="per_row")
-    assert op.key_for("grouped_gemm", call) == "grouped_gemm_mma"
 
 
 def _grouped_call(**facts) -> MGroupedGemmCall:

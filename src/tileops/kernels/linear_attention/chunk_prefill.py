@@ -6,14 +6,9 @@ from tileops.kernels.linear_attention.chunk_plan import (
     packed_offsets,
     scan_value_tile,
 )
-from tileops.kernels.linear_attention.gdn.prefill_prepare import (
-    prefill_blocksolve_A_bthd,
-    prefill_chunk_local_cumsum_bthd_tl,
-)
-from tileops.kernels.linear_attention.kda.chunk_programs import (
-    chunk_prepare_program,
-    chunk_scan_program,
-)
+
+# The GDN and KDA packages export the kernels that run this driver, so the program
+# builders it takes from them are imported where they are called.
 
 
 def chunk_plan(call):
@@ -27,6 +22,10 @@ def chunk_refusal(call):
 
 
 def cumulative_gate(call, gate, offsets, *, a_log, dt_bias):
+    from tileops.kernels.linear_attention.gdn.prefill_prepare import (
+        prefill_chunk_local_cumsum_bthd_tl,
+    )
+
     program = prefill_chunk_local_cumsum_bthd_tl(
         call.batch * call.seq_len,
         call.num_sequences,
@@ -54,6 +53,11 @@ def prepare_gate(call, inputs, offsets, *, gate_mode):
 
 
 def build_programs(call, num_sequences, *, gate_mode):
+    from tileops.kernels.linear_attention.kda.chunk_programs import (
+        chunk_prepare_program,
+        chunk_scan_program,
+    )
+
     total = call.batch * call.seq_len
     plan = _plan(call.dim_k, call.dtype.itemsize, num_sequences, call.smem_budget, call.arch)
     if plan is None:
@@ -102,6 +106,8 @@ def prepare_inputs(call, tensors, *, program, gate_mode):
     q, k, v, gate, beta, offsets = tensors
     if gate_mode == "channel":
         return program(q, k, v, gate, beta, offsets)
+    from tileops.kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd
+
     inverse, _ = prefill_blocksolve_A_bthd(
         k,
         gate,

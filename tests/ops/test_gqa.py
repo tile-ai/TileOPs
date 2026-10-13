@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -17,7 +18,11 @@ from tileops.ops import (
     GQAVarlenFwdOp,
 )
 from workloads.attention.gqa.bwd import GQABwdWorkload
-from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
+from workloads.attention.gqa.dense import (
+    GQADensePrefillWorkload,
+    dense_gqa_ref,
+    dense_gqa_verification,
+)
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GQAVarlenScaledWorkload
 from workloads.device import run_device
@@ -135,19 +140,21 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     rotary_dim: Optional[int],
     out_dtype: torch.dtype,
 ) -> None:
-    fp8 = torch.float8_e4m3fn
-    batch = 1
-    heads, heads_kv, dim = 8, 2, 128
-    q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
-    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
-    rope_cos = rope_sin = None
-    if rope_layout is not None:
-        assert rotary_dim is not None
-        angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
-        rope_cos, rope_sin = angles.cos().to(out_dtype), angles.sin().to(out_dtype)
-
+    """Two batches with their own per-KV-head scales: each row reads its batch's scales."""
+    workload = GQADensePrefillWorkload(
+        2,
+        seq_len_q,
+        seq_len_kv,
+        8,
+        2,
+        128,
+        torch.float8_e4m3fn,
+        out_dtype=out_dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        rotary_dim=rotary_dim,
+        rope_layout="neox" if rope_layout is None else rope_layout,
+    )
     op = GQADenseFwdOp(
         is_causal=True,
         out_dtype=out_dtype,
@@ -158,49 +165,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         rope_layout="neox" if rope_layout is None else rope_layout,
         target=BUILTIN,
     )
-    output = op(
-        q,
-        k,
-        v,
-        scale,
-        scale,
-        scale,
-        rope_cos=rope_cos,
-        rope_sin=rope_sin,
-    )
-    q_ref = q.to(out_dtype)
-    k_ref = k.to(out_dtype)
-    if rope_layout is not None:
-        assert rope_cos is not None and rope_sin is not None and rotary_dim is not None
-        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
-        k_positions = torch.arange(seq_len_kv, device="cuda")
-        q_ref = apply_dense_rope(
-            q_ref,
-            q_positions,
-            rope_cos,
-            rope_sin,
-            rotary_dim=rotary_dim,
-            layout=rope_layout,
-        )
-        k_ref = apply_dense_rope(
-            k_ref,
-            k_positions,
-            rope_cos,
-            rope_sin,
-            rotary_dim=rotary_dim,
-            layout=rope_layout,
-        )
-    reference = dense_gqa_ref(
-        q_ref,
-        k_ref,
-        v.to(out_dtype),
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=True,
-        sm_scale=sm_scale,
-        softcap=softcap,
-    )
-    compare_outputs(output, reference, dense_gqa_verification(q.dtype))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -420,6 +385,70 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
                 },
             )
             compare_outputs(kernel(q, k, v), reference, dense_gqa_verification(dtype))
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
+    """Queries and keys scaled by 4 put each split's base-2 log-sum-exp between about 40
+    and 90, where bfloat16 steps by 0.25 or 0.5: the combine must read it in float32."""
+    torch.manual_seed(0)
+    batch, heads, heads_kv, dim, seq_len_kv = 2, 8, 2, 128, 2048
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.bfloat16) * 4
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.bfloat16) * 4
+    v = torch.randn_like(k)
+    compare_outputs(
+        GQADenseFwdOp(target=BUILTIN)(q, k, v),
+        dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        dense_gqa_verification(q.dtype),
+    )
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tuned fused-RoPE decode times the programs forward launches, which read the RoPE
+    tables, rather than the plain split program, and runs the warp-specialized program at
+    the tile length and split count it timed. Each program's last candidate stands in for
+    its tuning result, and the program timed last wins."""
+    timed_parameters, winner = [], {}
+
+    def record(self, jit_kernel, configs, **kwargs):
+        prim_func = jit_kernel.get_tir(**configs[-1])
+        timed_parameters.append({buffer.name for buffer in prim_func.buffer_map.values()})
+        winner.update(configs[-1])
+        return SimpleNamespace(config=configs[-1], latency=-float(len(timed_parameters)))
+
+    monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
+    torch.manual_seed(0)
+    batch, heads, heads_kv, dim, seq_len_kv, dtype = 2, 8, 2, 128, 257, torch.bfloat16
+    op = GQADenseFwdOp(pos_encoding_mode="rope", rotary_dim=dim, target=BUILTIN)
+    op.request_tune()
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    angles = torch.randn(seq_len_kv, dim // 2, device="cuda") * 0.1
+    rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
+    output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+
+    assert timed_parameters
+    assert all("rope_cos" in parameters for parameters in timed_parameters)
+    assert winner["ctx_splits"] > 1
+    tuned = op.kernel_config()
+    assert (tuned["block_N"], tuned["num_split"]) == (winner["block_N"], winner["ctx_splits"])
+    q_ref, k_ref = (
+        apply_dense_rope(x, positions, rope_cos, rope_sin, rotary_dim=dim, layout="neox")
+        for x, positions in (
+            (q, torch.tensor([seq_len_kv - 1], device="cuda")),
+            (k, torch.arange(seq_len_kv, device="cuda")),
+        )
+    )
+    compare_outputs(
+        output,
+        dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        dense_gqa_verification(dtype),
+    )
 
 
 @pytest.mark.sm90

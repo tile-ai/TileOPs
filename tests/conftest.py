@@ -111,6 +111,8 @@ def _without_dtype(params: dict) -> tuple[tuple[str, object], ...]:
 _ARCH_MARKERS = {
     "sm90": ("compute capability 9.x", lambda capability: capability[0] == 9),
     "sm89": ("compute capability 8.9", lambda capability: capability == (8, 9)),
+    "sm86": ("compute capability 8.6", lambda capability: capability == (8, 6)),
+    "sm80": ("compute capability 8.0", lambda capability: capability == (8, 0)),
 }
 
 

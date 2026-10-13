@@ -9,6 +9,7 @@ from tileops.kernels.attention import (
     GQADecodeLongContextKernel,
     GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
+    GQADensePrefillFwdKernel,
     GQADenseSlidingWindowKernel,
     GQADenseWSKernel,
 )
@@ -16,7 +17,6 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQADenseFwdInterface,
 )
-from tileops.kernels.attention.gqa.dense_prefill import GQADensePrefillFwdKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.attention.gqa.parameters import _rope_rotary_dim, _score_softcap
 from tileops.ops.op_base import Op

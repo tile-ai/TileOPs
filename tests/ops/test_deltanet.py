@@ -22,6 +22,13 @@ from workloads.linear_attention.deltanet import (
 )
 from workloads.numerics import compare_outputs
 
+# SM89 and SM90 prefill run different implementations. Each architecture's copy
+# carries its marker, so ``-m sm89`` selects the SM89 copies.
+PREFILL_ARCHITECTURES = pytest.mark.parametrize(
+    "_architecture",
+    [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
+)
+
 
 class DeltaNetChunkwiseTest(DeltaNetChunkwiseWorkload, TestBase):
     pass
@@ -237,7 +244,8 @@ def test_deltanet_fwd_reaches_target_with_optional_inputs() -> None:
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
+@PREFILL_ARCHITECTURES
+def test_deltanet_dense_prefill_matches_fla(_architecture: int, dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
     test = DeltaNetFwdTest(2, 128, 4, 64, dtype)
     inputs = test.gen_inputs()
@@ -252,7 +260,8 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.cuda_only
-def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
+@PREFILL_ARCHITECTURES
+def test_deltanet_dense_prefill_normalizes_q_and_k(_architecture: int) -> None:
     """``use_qk_l2norm_in_kernel`` takes Q and K unnormalized and matches FLA."""
     torch.manual_seed(2163)
     test = DeltaNetFwdTest(2, 128, 4, 64, torch.bfloat16, l2norm=True)
@@ -262,7 +271,8 @@ def test_deltanet_dense_prefill_normalizes_q_and_k() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.cuda_only
-def test_deltanet_prefill_packs_ragged_sequences() -> None:
+@PREFILL_ARCHITECTURES
+def test_deltanet_prefill_packs_ragged_sequences(_architecture: int) -> None:
     """Lengths below, across and on a chunk boundary in one packed call."""
     torch.manual_seed(42)
     test = DeltaNetFwdTest(1, 0, 4, 64, torch.bfloat16, sequence_lengths=(1, 63, 100, 192))
@@ -271,7 +281,8 @@ def test_deltanet_prefill_packs_ragged_sequences() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.cuda_only
-def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk() -> None:
+@PREFILL_ARCHITECTURES
+def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk(_architecture: int) -> None:
     torch.manual_seed(42)
     test = DeltaNetFwdTest(2, 100, 4, 64, torch.bfloat16)
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
@@ -316,7 +327,8 @@ def test_deltanet_wide_partitioned_prefill_matches_fla() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.cuda_only
-def test_deltanet_wide_prefill_matches_fla() -> None:
+@PREFILL_ARCHITECTURES
+def test_deltanet_wide_prefill_matches_fla(_architecture: int) -> None:
     torch.manual_seed(2163)
     test = DeltaNetFwdTest(1, 256, 4, 128, torch.bfloat16)
     test.check(DeltaNetFwdOp(), *test.gen_inputs())
