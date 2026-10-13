@@ -8,7 +8,7 @@ from tileops.kernels.linear_attention.chunk_plan import (
 )
 
 # The GDN and KDA packages export the kernels that run this driver, so the program
-# builders it borrows from them are imported where they are called.
+# builders it takes from them are imported where they are called.
 
 
 def chunk_plan(call):

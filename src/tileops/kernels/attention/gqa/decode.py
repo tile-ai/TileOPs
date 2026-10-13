@@ -276,9 +276,9 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
         )
         rescale = make_rescale(block_H, dim)
 
-        # Each split's log-sum-exp is stored in float32: bfloat16 steps by 0.5 between 64
-        # and 128, which misweighs the split in the combine. The partial outputs keep the
-        # storage dtype; float32 ones measured up to 5% slower on H200.
+        # Each split's log-sum-exp is float32: bfloat16 steps by 0.5 between 64 and 128,
+        # which would misweigh the split in the combine. The partial outputs keep the
+        # storage dtype, half the traffic of float32, and the combine sums them in float32.
         @T.macro
         def _gqa_decode_split(
             Q: T.Tensor(shape_q, dtype),
