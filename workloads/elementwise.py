@@ -712,6 +712,26 @@ class GeluTailWorkload(ElementwiseWorkload):
         return Exact(atol=0, rtol=0)
 
 
+class GeluSignWorkload(ElementwiseWorkload):
+    """Every 16-bit input; GELU of a negative input is never positive."""
+
+    def __init__(self, dtype):
+        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+        super().__init__("GeluFwdOp", (codes.view(dtype),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        x = inputs[0]
+
+        def validate(got, expected):
+            assert torch.equal(got.isnan(), expected.isnan())
+            # Not ``got <= 0``: -inf gives NaN, as in torch.
+            assert not (got[x < 0] > 0).any()
+
+        return Custom(validate, "no positive result for a negative input over the 16-bit domain")
+
+
 class ErfRoundingWorkload(ElementwiseWorkload):
     """Exhaust the 16-bit domain; the polynomial must stay within one storage step."""
 

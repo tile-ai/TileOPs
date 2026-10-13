@@ -15,7 +15,7 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._division import full_range_fdiv
 from tileops.kernels.elementwise._dtype import log_for_output_precision
-from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise._erf import erf, gelu
 from tileops.kernels.elementwise._nan import nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
@@ -64,6 +64,11 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the standard erf formulation."""
 
     BYTES_PER_THREAD = 32
+    # The erf body costs more than its access, so a row the shrink reaches keeps two
+    # elements a thread instead of four: 1 x 14336 bfloat16 runs 56 blocks instead of
+    # 28, as torch-compile does, at 1.344 us against 1.440 us. One element a thread
+    # measured no faster in 16 bits and slower in float32.
+    MIN_NUM_PER_THREAD = 2
 
     @classmethod
     def refusal(cls, call: GeluCall) -> "str | None":
@@ -73,11 +78,7 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
-        half = T.cast(0.5, "float32")
-        one = T.cast(1.0, "float32")
-        wide = T.cast(x, "float32")
-        return half * wide * (one + erf(wide * inv_sqrt_2, x.dtype))
+        return gelu(x, x.dtype)
 
 
 class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
