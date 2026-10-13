@@ -629,12 +629,27 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
 
 @pytest.mark.sm90
 @pytest.mark.cuda_only
-@pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("q_lens", "kv_lens", "params", "out_dtype"),
+    ("q_lens", "kv_lens", "params", "out_dtype", "constant_v"),
     [
-        pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
-        pytest.param([256], [1024], {"is_causal": False}, torch.float16, id="non-causal"),
+        pytest.param(
+            [512] * 2,
+            [512] * 2,
+            {},
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.smoke,
+            id="uniform-causal",
+        ),
+        pytest.param(
+            [256],
+            [1024],
+            {"is_causal": False},
+            torch.float16,
+            False,
+            marks=pytest.mark.smoke,
+            id="non-causal",
+        ),
         pytest.param(
             [192, 64],
             [192, 320],
@@ -642,6 +657,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
             # draw scores of magnitude about 2, and a cap of 30 is the identity on them.
             {"sm_scale": 0.05, "softcap": 1.0},
             torch.float16,
+            False,
+            marks=pytest.mark.smoke,
             id="sm-scale-softcap",
         ),
         pytest.param(
@@ -649,6 +666,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
             [200] * 2,
             {"is_causal": False, "window_size_left": 48, "window_size_right": 16},
             torch.bfloat16,
+            False,
+            marks=pytest.mark.smoke,
             id="window-both",
         ),
         # The window leaves the first key tile the block scans entirely invisible to
@@ -659,26 +678,59 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
             [320],
             {"window_size_left": 64},
             torch.bfloat16,
+            False,
+            marks=pytest.mark.smoke,
             id="window-skips-first-tile",
         ),
         pytest.param(
-            [1, 17, 0, 129], [1, 17, 3000, 129], {}, torch.float16, id="ragged-with-empty"
+            [1, 17, 0, 129],
+            [1, 17, 3000, 129],
+            {},
+            torch.float16,
+            False,
+            marks=pytest.mark.smoke,
+            id="ragged-with-empty",
         ),
-        pytest.param([4, 4], [0, 0], {"is_causal": False}, torch.bfloat16, id="empty-kv"),
+        pytest.param(
+            [4, 4],
+            [0, 0],
+            {"is_causal": False},
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.smoke,
+            id="empty-kv",
+        ),
         pytest.param(
             [128, 1],
             [384, 65],
             {"pos_encoding_mode": "rope", "rotary_dim": 64, "rope_layout": "interleaved"},
             torch.float16,
+            False,
+            marks=pytest.mark.smoke,
             id="rope-partial-interleaved",
         ),
         pytest.param(
-            [128, 1], [384, 65], {"pos_encoding_mode": "rope"}, torch.bfloat16, id="rope-full-neox"
+            [128, 1],
+            [384, 65],
+            {"pos_encoding_mode": "rope"},
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.smoke,
+            id="rope-full-neox",
+        ),
+        pytest.param(
+            [129, 1],
+            [3136, 6722],
+            {"is_causal": False},
+            torch.bfloat16,
+            True,
+            marks=pytest.mark.full,
+            id="long-pv-constant-values",
         ),
     ],
 )
 def test_gqa_varlen_fp8_matches_reference(
-    q_lens: list[int], kv_lens: list[int], params: dict, out_dtype: torch.dtype
+    q_lens: list[int], kv_lens: list[int], params: dict, out_dtype: torch.dtype, constant_v: bool
 ) -> None:
     """Every branch the FP8 packed-varlen kernel serves agrees with the float32 reference."""
     heads, heads_kv, dim = 16, 4, 128
@@ -707,7 +759,21 @@ def test_gqa_varlen_fp8_matches_reference(
     # One e4m3 rounding of the softmax weights, and one more of Q and K under fused
     # rotation; the dense FP8 cases are held to the same bound.
 
-    TestBase.check(workload, op, *inputs)
+    if constant_v:
+        # Uniform scores expose loss in both short and long FP8 PV reductions.
+        inputs[0].zero_()
+        inputs[1].zero_()
+        inputs[2].fill_(1.5)
+        inputs[7].fill_(1.25)
+        inputs[2][:, 0].fill_(1.125)
+        inputs[7][:, 0].fill_(4.0)
+        output = op(*inputs)
+        expected = torch.full_like(output, 1.875)
+        expected[:, : heads // heads_kv].fill_(4.5)
+        # These values are exactly representable; generic FP8 tolerance hides the bug.
+        torch.testing.assert_close(output, expected, rtol=0, atol=0)
+    else:
+        TestBase.check(workload, op, *inputs)
 
 
 @pytest.mark.sm90

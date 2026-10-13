@@ -376,6 +376,24 @@ def _gqa_varlen_fp8_ws_kernel(
         ],
     )
     def func():
+        @T.macro
+        def pv_tile(acc_s, values, slot, acc_o):
+            # The FP8 accumulator can lose contributions even on short reductions.
+            # Reuse consumed score registers for one tile and sum tiles in FP32.
+            T.call_extern(
+                "handle",
+                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
+                acc_s.data,
+                T.access_ptr(values[slot, 0, 0], "r"),
+                acc_s.data,
+                True,
+            )
+            T.wait_wgmma(0)
+            T.warpgroup_fence_operand(acc_s, num_regs=64)
+            T.call_extern(
+                "handle", "tileops::fp8_fa3_raw_acc_promote_64x128", acc_o.data, acc_s.data
+            )
+
         total_q = T.dynamic("total_q")
         total_kv = T.dynamic("total_kv")
 
@@ -783,13 +801,7 @@ def _gqa_varlen_fp8_ws_kernel(
                                 ss_shared_1.access_ptr("r"),
                             )
                             T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
-                                acc_s_1.data,
-                                T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
-                                acc_o_1.data,
-                            )
+                            pv_tile(acc_s_1, v_smem, gi_v % stages, acc_o_1)
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                         T.barrier_arrive(v_empty[gi_v % stages])
@@ -954,13 +966,7 @@ def _gqa_varlen_fp8_ws_kernel(
                                 ss_shared_2.access_ptr("r"),
                             )
                             T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
-                                acc_s_2.data,
-                                T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
-                                acc_o_2.data,
-                            )
+                            pv_tile(acc_s_2, v_smem, gi_v % stages, acc_o_2)
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                         T.barrier_arrive(v_empty[gi_v % stages])
