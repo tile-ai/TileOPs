@@ -251,6 +251,23 @@ class GQAVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # wl=0
+                # Regression: a window at D=256 reached the sliding-window kernel, whose
+                # tiles need 394240 bytes of shared memory, and failed at launch; the
+                # general kernel serves it
+                pytest.param(
+                    2,
+                    [300, 129],
+                    [300, 129],
+                    8,
+                    2,
+                    256,
+                    True,
+                    64,
+                    -1,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                ),  # D=256 causal+wl
                 # D=512 stages the score tile through shared memory: two warpgroups where
                 # shared memory allows it, a 32-row tile on one warpgroup where it does not
                 pytest.param(

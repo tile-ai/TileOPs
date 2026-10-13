@@ -32,12 +32,18 @@ __all__ = [
 
 
 class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
-    """Shared base for variable-length GQA sliding window forward kernels."""
+    """Shared base for variable-length GQA sliding window forward kernels.
+
+    Dimension 256 stays on the general kernel: the 128-row, two-stage tiles would need
+    385 KB of shared memory, more than the 227 KB an SM90 block may use.
+    """
 
     @classmethod
     def refusal(cls, call) -> "str | None":
         if not call.uses_sliding_window:
             return "serves a sliding window only"
+        if call.dim > 128:
+            return f"requires head dimension at most 128, got {call.dim}"
         if call.is_fp8:
             return "does not serve FP8"
         if call.fuse_rope:

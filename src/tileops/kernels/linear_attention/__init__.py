@@ -47,7 +47,6 @@ from tileops.kernels.linear_attention.gdn import (
 from tileops.kernels.linear_attention.gla import (
     GLAChunkBwdKernel,
     GLAChunkFwdKernel,
-    GLADensePrefillFwdKernel,
     GLADensePrefillSubchunkKernel,
 )
 from tileops.kernels.linear_attention.gla.recurrent import GLADecodeFP32Kernel, GLADecodeKernel
@@ -87,7 +86,6 @@ __all__ = [
     "GLADecodeFP32Kernel",
     "GLADecodeFwdInterface",
     "GLADecodeKernel",
-    "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
     "KDACall",
     "KDAChunkPrefillFwdKernel",

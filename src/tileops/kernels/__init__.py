@@ -68,7 +68,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLAChunkFwdKernel,
         GLADecodeFP32Kernel,
         GLADecodeKernel,
-        GLADensePrefillFwdKernel,
     )
     from tileops.kernels.moe import MoEPermuteAlignKernel
     from tileops.kernels.norm import (
@@ -153,7 +152,6 @@ _LAZY = {
     "GLAChunkBwdKernel": ".linear_attention",
     "GLADecodeFP32Kernel": ".linear_attention",
     "GLADecodeKernel": ".linear_attention",
-    "GLADensePrefillFwdKernel": ".linear_attention",
     "GLAChunkFwdKernel": ".linear_attention",
     "GQABwdWGMMAPipelinedKernel": ".attention",
     "GQADecodeKernel": ".attention",
