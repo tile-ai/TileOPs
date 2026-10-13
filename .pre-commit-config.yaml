@@ -104,6 +104,12 @@ repos:
         language: python
         files: ^src/tileops/.*\.py$
 
+      - id: comment-narration-lint
+        name: comment and docstring narration lint
+        entry: python scripts/lint/comment_narration_lint.py --base origin/main
+        language: python
+        files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
+
       - id: op-naming-lint
         name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
