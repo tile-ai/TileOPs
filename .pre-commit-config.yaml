@@ -124,6 +124,11 @@ repos:
         pass_filenames: false
         files: ^src/tileops/manifest/spec/.*\.yaml$
 
+      - id: file-set-lint
+        name: work-artifact file lint
+        entry: python scripts/lint/file_set_lint.py
+        language: python
+
       - id: op-naming-lint
         name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
