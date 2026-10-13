@@ -4,7 +4,11 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
+from tileops._csrc import csrc_include
 from tileops.kernels.gemm.call_spec import (
     GemmCall,
     GemmFP8Call,
@@ -1892,8 +1896,11 @@ def _gemm_coop2_kernel(
 
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
-    back to ``_gemm_kernel``. M / N tails are handled by a predicated scalar
-    epilogue (full tiles use the TMA store); K tails are TMA zero-filled.
+    back to ``_gemm_kernel``. Every tile leaves through the TMA store, which drops
+    what an M / N tail puts past the output; K tails are TMA zero-filled. A
+    ``block_n`` of 176 or 192 over 64-wide K steps, which TileLang 0.1.12 issues
+    as narrower WGMMAs, runs one ``block_n``-wide WGMMA per 16 of K through
+    ``dense_wgmma_helper.h``.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -1915,11 +1922,13 @@ def _gemm_coop2_kernel(
         raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
     block_m = 128
+    # ``dense_wgmma_helper.h``'s name for each dtype.
+    wgmma_dtype_tag = {"bfloat16": "bf16", "float16": "fp16"}[dtype]
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_coop2_func(
         block_n: int = 256,
@@ -1938,6 +1947,47 @@ def _gemm_coop2_kernel(
         total_tiles = num_pid_m * num_pid_n
         max_waves = -(-total_tiles // sm_count) + 1
         k_iters = T.ceildiv(k, block_k)
+        # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
+        # as gcd(width, 256)-wide WGMMAs, each re-reading A: 176 as eleven n16, 192 as
+        # three n64. ``dense_wgmma_helper.h`` issues these two widths as one N-wide
+        # WGMMA per 16 of K, over 64-wide K steps; other K steps keep T.wgmma_gemm.
+        wide_wgmma = block_n in (176, 192) and block_k == 64
+        wgmma_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{block_n}_k64"
+        # The accumulator layout T.wgmma_gemm gives one consumer's 64 x block_n tile;
+        # the helper writes the same registers.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=half_m // 4,
+            warp_col_tiles=block_n,
+            chunk=block_k,
+        )
+
+        @T.macro
+        def consumer_wgmma(a_ring, b_ring, slot, acc, ki):
+            if wide_wgmma:
+                T.call_extern(
+                    "handle",
+                    wgmma_helper,
+                    acc.data,
+                    T.address_of(a_ring[slot, 0, 0]),
+                    T.address_of(b_ring[slot, 0, 0]),
+                    T.if_then_else(ki > 0, 1, 0),
+                )
+            else:
+                T.wgmma_gemm(
+                    a_ring[slot, :, :],
+                    b_ring[slot, :, :],
+                    acc,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=(ki == 0),
+                )
 
         @T.macro
         def decode(flat_id, mt, nt):
@@ -1974,6 +2024,13 @@ def _gemm_coop2_kernel(
                         c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
                     }
                 )
+                if wide_wgmma:
+                    T.annotate_layout(
+                        {
+                            c_local_0: acc_emitter.make_mma_store_layout(c_local_0),
+                            c_local_1: acc_emitter.make_mma_store_layout(c_local_1),
+                        }
+                    )
 
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
@@ -2027,19 +2084,10 @@ def _gemm_coop2_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            arows = T.min(T.int32(half_m), T.int32(m) - m_start)
-                            acols = T.min(T.int32(block_n), T.int32(n) - n_start)
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_0 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_0 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    a_smem_top[slot, :, :],
-                                    b_smem[slot, :, :],
-                                    c_local_0,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(ki == 0),
-                                )
+                                consumer_wgmma(a_smem_top, b_smem, slot, c_local_0, ki)
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps0[0]])
@@ -2049,18 +2097,15 @@ def _gemm_coop2_kernel(
                             T.barrier_arrive(ab_empty[ps0[0]])
                             T.warpgroup_fence_operand(c_local_0, num_regs=nr)
                             T.copy(c_local_0, c_cast_0)
-                            if arows == T.int32(half_m) and acols == T.int32(block_n):
-                                for ch in range(n_chunks):
-                                    c0 = ch * sn
-                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
-                                    T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
-                                    T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
-                                    T.copy(c_smem_0, c[m_start, n_start + c0])
-                            else:
-                                for i, j in T.Parallel(half_m, block_n):
-                                    if i < arows and j < acols:
-                                        c[m_start + i, n_start + j] = c_cast_0[i, j]
+                            # The TMA store drops what falls past m or n, so an M or N
+                            # tail takes the same store as a whole tile.
+                            for ch in range(n_chunks):
+                                c0 = ch * sn
+                                T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
+                                T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
+                                T.fence_proxy_async()
+                                T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
+                                T.copy(c_smem_0, c[m_start, n_start + c0])
 
                 else:
                     T.inc_max_nreg(240)
@@ -2070,22 +2115,13 @@ def _gemm_coop2_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            arows = T.max(
-                                T.int32(0),
-                                T.min(T.int32(half_m), T.int32(m) - m_start - T.int32(half_m)),
-                            )
-                            acols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                            # Rows the second consumer holds; none in a tile ending
+                            # inside the first consumer's half.
+                            arows = T.int32(m) - m_start - T.int32(half_m)
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_1 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_1 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    a_smem_bot[slot, :, :],
-                                    b_smem[slot, :, :],
-                                    c_local_1,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(ki == 0),
-                                )
+                                consumer_wgmma(a_smem_bot, b_smem, slot, c_local_1, ki)
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps1[0]])
@@ -2095,7 +2131,7 @@ def _gemm_coop2_kernel(
                             T.barrier_arrive(ab_empty[ps1[0]])
                             T.warpgroup_fence_operand(c_local_1, num_regs=nr)
                             T.copy(c_local_1, c_cast_1)
-                            if arows == T.int32(half_m) and acols == T.int32(block_n):
+                            if arows > T.int32(0):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
                                     T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
@@ -2103,10 +2139,6 @@ def _gemm_coop2_kernel(
                                     T.fence_proxy_async()
                                     T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                                     T.copy(c_smem_1, c[m_start + half_m, n_start + c0])
-                            elif arows > T.int32(0):
-                                for i, j in T.Parallel(half_m, block_n):
-                                    if i < arows and j < acols:
-                                        c[m_start + half_m + i, n_start + j] = c_cast_1[i, j]
 
         return _gemm_coop2_main
 

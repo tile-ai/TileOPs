@@ -261,15 +261,21 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                             cluster_m=cluster_m,
                         )
                     )
-        for bn in (64, 128, 192, 256):
+        for bn in (64, 128, 176, 192, 256):
             for bk in (32, 64, 128):
+                # 176 fills the waves of some N that 192 and 256 leave a partial last
+                # wave. Only as whole tiles: with an N tail its extra tiles each pay an
+                # epilogue the score does not count (4096x7168x2048 measured a tie with
+                # 256). It is one WGMMA only over 64-wide K steps.
+                if bn == 176 and (n % bn or bk != 64):
+                    continue
                 d = _coop2_ns_sn(bn, bk)
                 if d is None:
                     continue
                 ns, sn = d
                 if not _stage_rule_ok(128, bn, ns):
                     continue
-                coop2_ok = bn >= 192
+                coop2_ok = bn >= 176
                 mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
                 if coop2_ok and mn_tiles >= sm_count:
                     out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
