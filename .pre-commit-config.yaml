@@ -110,6 +110,12 @@ repos:
         language: python
         files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
 
+      - id: comment-code-ref-lint
+        name: comment and docstring code-location lint
+        entry: python scripts/lint/comment_code_ref_lint.py
+        language: python
+        files: ^(src/tileops|tests|benchmarks|workloads|scripts)/.*\.py$
+
       - id: op-naming-lint
         name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
