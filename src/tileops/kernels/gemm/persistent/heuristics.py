@@ -379,6 +379,12 @@ def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> i
     return min(budget // per_stage, policy.max_stages)
 
 
+def _deep_enough(desc: GemmDesc, layout: _Layout) -> bool:
+    """Whether ``layout``'s ring is deep enough: three stages, four below a 128x192 tile."""
+    stages = _num_stages(desc, layout)
+    return stages >= 3 and not (layout.block_m * layout.block_n < 128 * 192 and stages < 4)
+
+
 def layout_candidates(desc: GemmDesc) -> list[_Layout]:
     """Every tile layout the template accepts for ``desc``.
 
@@ -413,8 +419,7 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
             if block_m > 128 and block_n > 128:
                 continue
             layout = _Layout(block_m, block_n, policy.block_k)
-            stages = _num_stages(desc, layout)
-            if stages < 3 or (block_m * block_n < 128 * 192 and stages < 4):
+            if not _deep_enough(desc, layout):
                 continue
             candidates.append(layout)
     if not candidates:
@@ -556,8 +561,54 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             and desc.k >= bands.short_group_min_k
             and (desc.activation != "none" or desc.n <= bands.short_group_unfused_max_n)
         ):
-            return _Layout(*bands.short_group_tile)
+            tile = _Layout(*bands.short_group_tile)
+            if desc.activation == "none":
+                return _fuller_short_group_layout(desc, tile)
+            return tile
         return None
+
+    def _fuller_short_group_layout(desc: GemmDesc, tile: _Layout) -> _Layout:
+        """``tile``, or its half-width where that fills the waves better.
+
+        A short group is one row tile, and a group with no rows runs none, so the
+        busy tiles are the groups with rows times the column tiles; the groups with
+        rows are estimated as ``min(num_groups, m)``, rows spread one a group before
+        any group takes two. Where the wide tiles run under two waves, the
+        half-width tile is taken if its ring is deep enough and its tiles fill their
+        waves strictly better; doubling a grid that fills no better only adds
+        per-tile cost, and over more waves a partial last one is a small share.
+        """
+
+        def _busy_tiles(block_n: int) -> int:
+            return min(desc.num_groups, desc.m) * math.ceil(desc.n / block_n)
+
+        def _wave_efficiency(block_n: int) -> float:
+            tiles = _busy_tiles(block_n)
+            return tiles / (math.ceil(tiles / desc.num_sms) * desc.num_sms)
+
+        narrow = _Layout(tile.block_m, tile.block_n // 2, tile.block_k)
+        busy = _busy_tiles(tile.block_n)
+        if (
+            0 < busy < 2 * desc.num_sms
+            and _deep_enough(desc, narrow)
+            and _wave_efficiency(narrow.block_n) > _wave_efficiency(tile.block_n)
+        ):
+            return narrow
+        return tile
+
+    def _filled_layout(desc: GemmDesc, layout: _Layout) -> _Layout:
+        """``layout``, or the half-width tile where ``layout``'s grid leaves SMs idle.
+
+        The cycle model prices bytes and reads the wide tile as cheaper even where its
+        grid does not fill one wave; the narrow one doubles the grid. Tight, unfused
+        groups only: a fused tile's width is its activation's pair.
+        """
+        if desc.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM or desc.fused:
+            return layout
+        if _layout_features(desc, layout).num_blocks >= desc.num_sms:
+            return layout
+        narrow = _Layout(layout.block_m, layout.block_n // 2, layout.block_k)
+        return narrow if narrow in layout_candidates(desc) else layout
 
     def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         """A spec that trades a narrower output staging buffer for a deeper mainloop.
@@ -589,7 +640,9 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
                 return _spec(desc, layout, stages, epilogue_stage_n=stage_n)
         return None
 
-    best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
+    best = _short_group_layout(desc) or _filled_layout(
+        desc, _best_layout(desc, layout_candidates(desc))
+    )
     return _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
 
 

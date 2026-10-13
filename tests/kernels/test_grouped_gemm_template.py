@@ -154,6 +154,52 @@ def test_selector_short_group_h200_band():
 
 
 @pytest.mark.smoke
+def test_selector_fills_the_sms_on_tight_unfused_groups():
+    """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
+    takes it only where its busy tiles fill their waves better."""
+    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=16, device_name="NVIDIA H200")
+    # 64 rows a group: 64x256 runs 96 CTAs on 132 SMs, 64x128 runs 192.
+    routed = get_best_config(_desc(1024, 1536, 2048, **tight))
+    assert (routed.block_m, routed.block_n) == (64, 128)
+    # 16 rows a group: 192 busy tiles fill 73% of two waves, 384 fill 97% of three.
+    ragged = get_best_config(_desc(257, 1536, 2048, **tight))
+    assert (ragged.block_m, ragged.block_n, ragged.block_k) == (64, 64, 128)
+    # Eight groups with a row: 96 and 192 busy tiles fill their waves alike.
+    empty = get_best_config(_desc(8, 1536, 2048, **tight))
+    assert (empty.block_m, empty.block_n, empty.block_k) == (64, 128, 128)
+    # 320 busy tiles run over two waves, where a partial last wave is a small share,
+    # although 640 would fill their waves better.
+    wide = get_best_config(_desc(257, 2560, 2048, **tight))
+    assert (wide.block_m, wide.block_n, wide.block_k) == (64, 128, 128)
+    # No rows: no busy tile to fill, the pinned tile stands.
+    none = get_best_config(_desc(0, 1536, 2048, **tight))
+    assert (none.block_m, none.block_n, none.block_k) == (64, 128, 128)
+    # A fused tile's width is its activation's pair; neither rule moves it.
+    fused = get_best_config(_desc(257, 1536, 2048, activation="silu_and_mul", **tight))
+    assert (fused.block_m, fused.block_n, fused.block_k) == (64, 128, 128)
+
+
+@pytest.mark.smoke
+def test_selector_keeps_the_tile_where_half_width_does_not_apply():
+    """A grid that leaves SMs idle keeps its tile where half its width is not a legal tile,
+    the layout is not tight, or a gated activation is fused. ``k`` sits below the short
+    group band, so the cost model's tile is the one each rule receives."""
+    kw = dict(num_groups=16, device_name="NVIDIA H200")
+    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, **kw)
+    # 64 CTAs of 64x64; a 32-wide tile is off the 64-column step.
+    narrow = get_best_config(_desc(257, 256, 512, **tight))
+    assert (narrow.block_m, narrow.block_n) == (64, 64)
+    # 96 CTAs of 128x256 in the aligned layout.
+    aligned = get_best_config(
+        _desc(257, 1536, 512, gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM, **kw)
+    )
+    assert (aligned.block_m, aligned.block_n) == (128, 256)
+    # 96 CTAs of 64x256 under a fused activation.
+    fused = get_best_config(_desc(257, 1536, 512, activation="silu_and_mul", **tight))
+    assert (fused.block_m, fused.block_n) == (64, 256)
+
+
+@pytest.mark.smoke
 def test_selector_stages_h200_batched_epilogue():
     """H200 batched 128x256 tiles trade half-width stores for a fourth K stage."""
     h200 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200"))
