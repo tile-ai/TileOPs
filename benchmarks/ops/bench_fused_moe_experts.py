@@ -35,10 +35,16 @@ def test_moe_experts_bench(case) -> None:
     _, hidden, w1, w2, _, topk_ids, *biases = case.inputs
     b_gate_up = biases[0] if biases else None
     experts = FusedMoEExpertsFwdOp(**case.arguments)
+    scale = experts.routed_scaling_factor
+
+    def scaled(fn):
+        # Neither library takes the routing scale; it is applied to their result.
+        return fn if scale == 1.0 else lambda *args: fn(*args) * scale
+
     implementations = {
-        "vllm-triton": vllm_experts(experts.activation),
-        "flashinfer-cutlass": flashinfer_experts(
-            hidden, w1, w2, topk_ids.shape[-1], experts.activation, b_gate_up
+        "vllm-triton": scaled(vllm_experts(experts.activation)),
+        "flashinfer-cutlass": scaled(
+            flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], experts.activation, b_gate_up)
         ),
     }
     bench.Runner(experts, case).compare(_routed(case.inputs, implementations))

@@ -111,12 +111,19 @@ def _with_shared_expert(routed):
 def test_fused_moe_shared_expert_bench(case) -> None:
     op = FusedMoESharedExpertFwdOp(**case.arguments)
     hidden, _, w1, w2, correction_bias, *_ = case.inputs
-    bench.Runner(op, case).compare(
-        {
-            tag: _with_shared_expert(_routed_moe(op, fn))
-            for tag, fn in _expert_backends(op, hidden, w1, w2, correction_bias).items()
+    implementations = {}
+    # Under tensor parallelism the op returns this rank's partial shared output; the
+    # baselines compute the whole shared expert.
+    if op.tp_size == 1:
+        backends = _expert_backends(op, hidden, w1, w2, correction_bias, op.activation)
+        implementations = {
+            tag: _with_shared_expert(_routed_moe(op, fn)) for tag, fn in backends.items()
         }
-    )
+    else:
+        print(
+            f"  [skip] {VLLM_TAG}, flashinfer-cutlass: a partial shared output, tp_size={op.tp_size}"
+        )
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SharedExpertMLPFwdOp), ids=lambda case: case.id)
