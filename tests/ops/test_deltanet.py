@@ -105,7 +105,7 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm89],
+                    marks=pytest.mark.full,
                 ),
                 pytest.param(
                     1,
@@ -116,7 +116,7 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                     64,
                     torch.bfloat16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm89],
+                    marks=pytest.mark.full,
                 ),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),

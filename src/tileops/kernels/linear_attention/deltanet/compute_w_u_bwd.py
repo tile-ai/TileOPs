@@ -45,6 +45,9 @@ def compute_w_u_bwd_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
+    reuse_state = (
+        dim_v >= block_C and dim_k * dim_v >= block_C * block_C and dim_k * dim_v % block_C == 0
+    )
 
     @tilelang.jit(
         out_idx=[-3, -2, -1],
@@ -132,20 +135,34 @@ def compute_w_u_bwd_tl(
                 T.copy(dw[bid, hid, by * block_C : (by + 1) * block_C, :], dw_s, disable_tma=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dw_s[i, j] = dw_s[i, j] - dw_corr_frag[i, j]
-                k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
+                T.sync_threads()
+                k_beta_s = (
+                    T.view(S_s, [dim_v, dim_k], accum_dtype)
+                    if reuse_state
+                    else T.alloc_shared([block_C, dim_k], accum_dtype)
+                )
                 k_s = k_beta_s
                 for i, j in T.Parallel(block_C, dim_k):
                     k_beta_s[i, j] = (
                         T.cast(k[bid, hid, by * block_C + i, j], accum_dtype) * beta_s[i]
                     )
-                Aw_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                Aw_s = (
+                    T.view(S_s, [dim_k * dim_v // block_C, block_C], accum_dtype)
+                    if reuse_state
+                    else T.alloc_shared([block_C, block_C], accum_dtype)
+                )
                 dAw_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 T.clear(dAw_frag)
-                T.gemm(dw_s, k_beta_s, dAw_frag, transpose_B=True)
+                T.gemm(dw_s, k_beta_s[0:block_C, :], dAw_frag, transpose_B=True)
                 d_k_beta_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
-                T.copy(Aw[bid, hid, by * block_C : (by + 1) * block_C, :], Aw_s, disable_tma=True)
+                T.sync_threads()
+                T.copy(
+                    Aw[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    Aw_s[0:block_C, :],
+                    disable_tma=True,
+                )
                 T.clear(d_k_beta_frag)
-                T.gemm(Aw_s, dw_s, d_k_beta_frag, transpose_A=True)
+                T.gemm(Aw_s[0:block_C, :], dw_s, d_k_beta_frag, transpose_A=True)
                 d_k_beta_s = T.alloc_shared([block_C, dim_k], accum_dtype)
                 T.copy(d_k_beta_frag, d_k_beta_s)
                 for i, j in T.Parallel(block_C, dim_k):
@@ -166,32 +183,36 @@ def compute_w_u_bwd_tl(
                 # dA = -(Aw^T @ dA_inv @ Aw^T)
                 dA_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 T.clear(dA_frag)
-                T.gemm(dA_inv_s, Aw_s, dA_frag, transpose_B=True)
+                T.gemm(dA_inv_s, Aw_s[0:block_C, :], dA_frag, transpose_B=True)
                 T.copy(dA_frag, dP_s)
                 dA_frag2 = T.alloc_fragment([block_C, block_C], accum_dtype)
                 T.clear(dA_frag2)
-                T.gemm(Aw_s, dP_s, dA_frag2, transpose_A=True)
+                T.gemm(Aw_s[0:block_C, :], dP_s, dA_frag2, transpose_A=True)
 
                 for i, j in T.Parallel(block_C, block_C):
                     dP_s[i, j] = T.if_then_else(i > j, -dA_frag2[i, j], T.float32(0.0))
 
-                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_s, disable_tma=True)
+                T.sync_threads()
+                T.copy(
+                    k[bid, hid, by * block_C : (by + 1) * block_C, :],
+                    k_s[0:block_C, :],
+                    disable_tma=True,
+                )
 
                 # dk_A = beta * (dP @ k) + dP^T @ k_beta
                 T.clear(dk_A_frag)
-                T.gemm(dP_s, k_s, dk_A_frag)
+                T.gemm(dP_s, k_s[0:block_C, :], dk_A_frag)
                 dk_A_frag2 = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 for i, j in T.Parallel(block_C, dim_k):
                     dk_A_frag2[i, j] = dk_A_frag[i, j] * beta_s[i]
                 # dbeta_A = (dP * KK^T).sum(-1)
                 kkt_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 T.clear(kkt_frag)
-                T.gemm(k_s, k_s, kkt_frag, transpose_B=True)
-                beta_product = T.alloc_shared([block_C, block_C], accum_dtype)
+                T.gemm(k_s[0:block_C, :], k_s[0:block_C, :], kkt_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
-                    beta_product[i, j] = dP_s[i, j] * kkt_frag[i, j]
-                dbeta_A_tmp = T.alloc_shared([block_C], accum_dtype)
-                T.reduce_sum(beta_product, dbeta_A_tmp, dim=1)
+                    kkt_frag[i, j] = dP_s[i, j] * kkt_frag[i, j]
+                dbeta_A_tmp = T.alloc_fragment([block_C], accum_dtype)
+                T.reduce_sum(kkt_frag, dbeta_A_tmp, dim=1)
                 for i in T.Parallel(block_C):
                     dbeta[bid, hid, by * block_C + i] = dbeta_s[i] + dbeta_A_tmp[i]
 
@@ -199,7 +220,7 @@ def compute_w_u_bwd_tl(
                     k_beta_s[i, j] = k_s[i, j] * beta_s[i]
 
                 T.clear(dk_A_frag)
-                T.gemm(dP_s, k_beta_s, dk_A_frag, transpose_A=True)
+                T.gemm(dP_s, k_beta_s[0:block_C, :], dk_A_frag, transpose_A=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dk_A_frag2[i, j] = dk_A_frag2[i, j] + dk_A_frag[i, j]
 

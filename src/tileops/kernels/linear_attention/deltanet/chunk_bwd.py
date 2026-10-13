@@ -550,9 +550,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             c * c + c * v + c,  # Au product
             c * v + k * v + 2 * c,  # dw correction
             2 * c * k + 2 * c,  # dAw
-            c * c + c * k + 2 * c,  # Aw product
+            c * c + c * k + 2 * c,  # Aw and key products
             2 * c * c + 2 * c,  # inverse derivative
-            2 * c * c + c * k + 2 * c,  # key Gram and beta product
         )
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
