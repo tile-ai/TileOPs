@@ -377,6 +377,17 @@ class GemmFixture(FixtureBase):
                     id="full-bf16-basic-192-one-wave",
                 ),
                 pytest.param(
+                    16,
+                    24576,
+                    256,
+                    torch.bfloat16,
+                    False,
+                    False,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-basic-192-one-wave-nn",
+                ),
+                pytest.param(
                     64,
                     7168,
                     2048,

@@ -221,15 +221,23 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bn in (64, 128, 192, 256):
             if (bm * bn) // 128 > max_accum_regs:
                 continue
-            # 64x192 is offered only unsplit and where its grid fits one wave, on the
-            # 3-deep ring a 128-wide K step leaves it: there it measured faster than
-            # every tile it displaced; split or past one wave it measured slower.
+            # 64x192 is offered only unsplit, where its grid fits one wave and m holds at
+            # least 8 rows: there it measured faster than every tile it displaced; split,
+            # past one wave, or at m below 8 (where split tiles measured faster) it
+            # measured slower. NT runs it on a 3-deep ring of 128-wide K steps; the other
+            # layouts, whose B or A tile is MN-major, on a 5-deep ring of 64-wide steps,
+            # which measured 1.020-1.027x geomean against 0.994-1.022x for the 3-deep one.
             one_wave_192 = bn == 192
-            if one_wave_192 and (bm != 64 or math.ceil(m / bm) * math.ceil(n / bn) > sm_count):
+            if one_wave_192 and (
+                bm != 64 or m < 8 or math.ceil(m / bm) * math.ceil(n / bn) > sm_count
+            ):
                 continue
-            for bk in (128,) if one_wave_192 else (32, 64, 128):
-                ns = _ns_basic(bm, bn, bk)
-                if not (_stage_rule_ok(bm, bn, ns) or (one_wave_192 and ns == 3)):
+            if one_wave_192:
+                rings = [(128, 3)] if nt else [(64, 5)]
+            else:
+                rings = [(bk, _ns_basic(bm, bn, bk)) for bk in (32, 64, 128)]
+            for bk, ns in rings:
+                if not (one_wave_192 or _stage_rule_ok(bm, bn, ns)):
                     continue
                 ps = _strip_width(bm, bn, sm_count)
                 out.append(_Cand("basic", bm, bn, bk, ns, panel_size=ps))
@@ -294,8 +302,12 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
+                    # 15/16 of a wave where no 128-row tile runs past ``m`` (128x4096x12288:
+                    # 34.6 us on 128 CTAs against 36.7); tiles with rows past ``m`` measured
+                    # slower on such a grid and need a full wave.
+                    min_ctas = -(-15 * sm_count // 16) if m % 128 == 0 else sm_count
                     for sk in (2, 4, 8):
-                        if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
+                        if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
     return out
 
