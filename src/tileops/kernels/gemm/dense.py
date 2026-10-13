@@ -31,14 +31,6 @@ __all__ = [
     "GemvKernel",
 ]
 
-# One named-barrier id per consumer warpgroup: each group arrives on its own
-# barrier (``arrive_count=128``) instead of a block-wide sync. The FP8
-# warp-specialized builder (``_GemmFP8Kernel``) and the coop2 / coop2s builders
-# (``GemmTMAKernel``) read this one pair, so every two-consumer layout in this
-# module names its consumer groups' barriers alike.
-_CONSUMER_BAR_WG0 = 8
-_CONSUMER_BAR_WG1 = 9
-
 
 def _tma_misalignment(
     m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
@@ -116,6 +108,11 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
     # K tile is fixed by the block128 scale grid. Not tunable.
     _FP8_WS_HALF_M = 64
     _FP8_WS_BLOCK_K = 128
+
+    # One named-barrier id per consumer warpgroup: each group arrives on its own
+    # barrier (``arrive_count=128``) instead of a block-wide sync.
+    _CONSUMER_BAR_WG0 = 8
+    _CONSUMER_BAR_WG1 = 9
 
     @staticmethod
     def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype, arch: int) -> Optional[str]:
@@ -198,6 +195,8 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
                 b_scale_rows=self.b_scale_rows,
                 half_m=self._FP8_WS_HALF_M,
                 block_k=self._FP8_WS_BLOCK_K,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
             )
         return _gemm_fp8_kernel(
             self.m,
@@ -297,6 +296,8 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
                     b_scale_rows=self.b_scale_rows,
                     half_m=self._FP8_WS_HALF_M,
                     block_k=self._FP8_WS_BLOCK_K,
+                    consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                    consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 )
             return builder(**tile_config)(a, b, scale_a, scale_b, self._bias_operand(bias, a))
         compiled = _gemm_fp8_kernel(
@@ -759,6 +760,8 @@ def _gemm_fp8_ws_kernel(
     b_scale_rows: int = 1,
     half_m: int,
     block_k: int,
+    consumer_bar_wg0: int,
+    consumer_bar_wg1: int,
 ) -> Callable:
     """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 1 or 2 consumer warpgroups.
 
@@ -796,6 +799,8 @@ def _gemm_fp8_ws_kernel(
             key so a kernel built for one GPU is never reused on another.
         half_m: Rows one consumer warpgroup covers; a tile holds one or two of them.
         block_k: K extent of a tile, one block128 scale column.
+        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
+        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
@@ -1054,7 +1059,7 @@ def _gemm_fp8_ws_kernel(
                                 n_start,
                                 arows,
                                 acols,
-                                bar=_CONSUMER_BAR_WG0,
+                                bar=consumer_bar_wg0,
                                 block_n=block_n,
                                 n=n,
                                 out_dtype=out_dtype,
@@ -1136,7 +1141,7 @@ def _gemm_fp8_ws_kernel(
                                 n_start,
                                 brows,
                                 bcols,
-                                bar=_CONSUMER_BAR_WG1,
+                                bar=consumer_bar_wg1,
                                 block_n=block_n,
                                 n=n,
                                 out_dtype=out_dtype,
@@ -1865,6 +1870,8 @@ def _gemm_coop2_kernel(
     dtype: str = "float16",
     *,
     sm_count: int,
+    consumer_bar_wg0: int,
+    consumer_bar_wg1: int,
 ) -> Callable:
     """Persistent 2-consumer (cooperative) warp-specialized GEMM for SM90.
 
@@ -1897,6 +1904,8 @@ def _gemm_coop2_kernel(
         dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
         sm_count: Persistent grid width — the device SM count. Part of the cache
             key so a kernel built for one GPU is never reused on another.
+        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
+        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
@@ -2043,10 +2052,10 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
+                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
                                     T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
                                     T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
+                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
                                     T.copy(c_smem_0, c[m_start, n_start + c0])
                             else:
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2089,10 +2098,10 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
+                                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                                     T.copy(c_cast_1[:, c0 : c0 + sn], c_smem_1)
                                     T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
+                                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                                     T.copy(c_smem_1, c[m_start + half_m, n_start + c0])
                             elif arows > T.int32(0):
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2465,7 +2474,15 @@ def _gemm_swap_ab_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _gemm_coop2s_kernel(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    *,
+    consumer_bar_wg0: int,
+    consumer_bar_wg1: int,
 ) -> Callable:
     """Single-tile 2-consumer (cooperative) GEMM for small NN shapes (SM90).
 
@@ -2489,6 +2506,8 @@ def _gemm_coop2s_kernel(
         trans_a: Must be ``False`` (NN layout).
         trans_b: Must be ``False`` (NN layout).
         dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
+        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
@@ -2598,10 +2617,10 @@ def _gemm_coop2s_kernel(
                     T.warpgroup_fence_operand(c_local_0, num_regs=nr)
                     T.barrier_arrive(ab_empty[ps0[0]])
                     T.copy(c_local_0, c_cast_0)
-                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
+                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
                     T.copy(c_cast_0, c_smem_0)
                     T.fence_proxy_async()
-                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
+                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
                     T.copy(c_smem_0, c[m_start, n_start])
                 else:
                     T.inc_max_nreg(240)
@@ -2626,10 +2645,10 @@ def _gemm_coop2s_kernel(
                     T.warpgroup_fence_operand(c_local_1, num_regs=nr)
                     T.barrier_arrive(ab_empty[ps1[0]])
                     T.copy(c_local_1, c_cast_1)
-                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
+                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                     T.copy(c_cast_1, c_smem_1)
                     T.fence_proxy_async()
-                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
+                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                     T.copy(c_smem_1, c[m_start + half_m, n_start])
 
         return _gemm_coop2s_main
@@ -2655,6 +2674,11 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
     supported_archs: list[int] = [90]
 
     _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
+
+    # One named-barrier id per consumer warpgroup: each group arrives on its own
+    # barrier (``arrive_count=128``) instead of a block-wide sync.
+    _CONSUMER_BAR_WG0 = 8
+    _CONSUMER_BAR_WG1 = 9
 
     def init_config(self, config: Optional[dict] = None) -> None:
         """Take a structure-flagged explicit config verbatim.
@@ -2763,7 +2787,14 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         if self.config.get("coop2s"):
             cfg = self.config
             compiled = _gemm_coop2s_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
@@ -2777,6 +2808,8 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
                 self.trans_b,
                 self.dtype_str,
                 sm_count=self.sm_count,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
             )(
                 cfg["block_n"],
                 cfg["block_k"],
