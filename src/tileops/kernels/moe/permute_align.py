@@ -1,12 +1,13 @@
 """MoE token-to-expert alignment kernel.
 
-The kernel picks its path when it is built: a call with fewer than 1024 routes and at most 32
-experts takes one fused small-batch kernel; any other call takes the align kernel and then the
-scatter kernel. Both paths return:
+The kernel picks its path when it is built: a call with fewer than 1024 routes and at most one
+warp of experts takes one fused small-batch kernel; any other call takes the align kernel and,
+when it has routes, the scatter kernel after it. Both paths return:
 
   sorted_token_ids  [max_num_tokens_padded]  - route indices grouped by expert, each expert's
                                                routes first in its range, numel elsewhere
-  expert_ids        [num_blocks]             - the expert of each block of the padded length
+  expert_ids        [num_blocks]             - the expert of each block of the padded length,
+                                               num_experts past it
   num_tokens_post_pad [1]                   - total padded route count
 
 Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
@@ -22,6 +23,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
+from tileops.utils import WARP_LANES
 
 __all__ = ["MoEPermuteAlignKernel"]
 
@@ -38,6 +40,8 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _align(threads: int):
+        MoEPermuteAlignKernel._check_threads(threads)
+
         @T.prim_func
         def _align_main(
             flat: T.Tensor([numel], "int32"),
@@ -133,6 +137,12 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         num_tokens_post_pad[0] = s_carry[0]
                     T.sync_threads()
 
+                    # A block past the padded length names no expert.
+                    for i in T.serial(T.ceildiv(max_num_blocks, threads)):
+                        blk = i * threads + tx
+                        if blk >= s_carry[0] // block_size and blk < max_num_blocks:
+                            expert_ids[blk] = num_experts
+
                     e_start = T.alloc_var("int32")
                     e_blocks = T.alloc_var("int32")
                     for c in T.serial(num_chunks):
@@ -155,6 +165,8 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     Takes each expert's next free slot from cumsum as the align kernel left it, so it runs
     after the align kernel on the same stream, and advances it.
     """
+    if numel < 1:
+        raise ValueError(f"the scatter needs at least one route, got numel={numel}")
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     threads = 512
     scatter_blocks = math.ceil(numel / threads)
@@ -207,7 +219,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
 
 @functools.lru_cache(maxsize=32)
 def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
-    """Single fused kernel for small batches (numel < 1024, num_experts <= 64).
+    """Single fused kernel for small batches, one worker lane per expert.
 
     Uses per-worker private count rows to eliminate atomic conflicts in count
     and scatter phases. Concurrent sentinel fill (fill_threads) + compute
@@ -217,10 +229,19 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     Output format matches the large-batch path (K1+K2).
 
     Reference: moe_align_block_size_small_batch_expert_kernel in sgl-kernel.
+
+    Raises:
+        ValueError: ``num_experts`` is more than one warp of workers.
     """
+    # One warp of workers: past it, TileLang can put a named barrier inside the workers' guarded
+    # loops that a warp skipping the last iteration never reaches.
+    worker_threads = WARP_LANES
+    if num_experts > worker_threads:
+        raise ValueError(
+            f"the small-batch kernel takes at most {worker_threads} experts, got {num_experts}"
+        )
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
-    worker_threads = max(num_experts, 32)
     # Threads that write the sentinel fill while the workers count and scatter.
     fill_threads = 256
     total_threads = fill_threads + worker_threads
@@ -285,6 +306,13 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 3
 
+                # A block past the padded length names no expert.
+                if tx < fill_threads:
+                    for i in T.serial(T.ceildiv(max_num_blocks, fill_threads)):
+                        blk = i * fill_threads + tx
+                        if blk >= cumsum_s[num_experts] // block_size and blk < max_num_blocks:
+                            expert_ids[blk] = num_experts
+
                 if tx >= fill_threads:
                     wid = tx - fill_threads
                     e_start = T.alloc_var("int32")
@@ -318,10 +346,14 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         numel: Total number of (token, expert) assignments = total_tokens * top_k.
         num_experts: Number of experts.
         block_size: GEMM tile size (M dimension).
-        config: Optional config dict with "threads". The thread count is fixed by the
-            single-block cumulative-count algorithm, so this kernel defines no
+        config: Optional config dict with "threads", the align kernel's threads per block: a
+            multiple of 32 in [32, 1024]. Its count, scan and fill loops take ``threads`` items
+            per round, so fewer threads only add rounds; this kernel defines no
             ``autotune_configs``.
         device_index: The device this kernel is built for.
+
+    Raises:
+        ValueError: ``config`` states a thread count outside that range.
 
     Note:
         ``dtype`` does not apply. Every tensor this kernel reads or writes is
@@ -338,11 +370,6 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     # The align kernel's default threads per block: the most a CUDA block takes.
     _THREADS = 1024
-    # Below both bounds the call takes the one fused small-batch kernel.
-    _SMALL_NUMEL_THRESHOLD = 1024
-    # Keep <= 32: the small-batch kernel's (worker_threads+1)*num_experts int32s of
-    # shared memory hang the TileLang JIT at num_experts=64.
-    _SMALL_EXPERTS_THRESHOLD = 32
 
     @classmethod
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
@@ -367,19 +394,42 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         self.num_experts = num_experts
         self.block_size = block_size
 
+        # Fewer routes than this, with at most a warp of experts, take the small-batch kernel.
+        small_numel_threshold = 1024
         self._small_batch_fn = (
             _make_small_batch_kernel(numel, num_experts, block_size)
-            if numel < self._SMALL_NUMEL_THRESHOLD and num_experts <= self._SMALL_EXPERTS_THRESHOLD
+            if numel < small_numel_threshold and num_experts <= WARP_LANES
             else None
         )
         if self._small_batch_fn is None:
             self._align_fn = _make_align_kernel(numel, num_experts, block_size)
-            self._scatter_fn = _make_scatter_kernel(numel, num_experts, block_size)
+            # The scatter kernel takes at least one route.
+            self._scatter_fn = (
+                _make_scatter_kernel(numel, num_experts, block_size) if numel else None
+            )
         else:
             self._align_fn = None
             self._scatter_fn = None
 
         self.init_config(config)
+        self._check_threads(self.config["threads"])
+
+    @staticmethod
+    def _check_threads(threads: int) -> None:
+        """Refuse an align-kernel thread count its warp-wise scan cannot take.
+
+        The scan totals whole warps only, so the experts a partial warp holds would drop out of
+        it; a CUDA block takes at most 1024 threads.
+
+        Raises:
+            ValueError: ``threads`` is not a multiple of 32 in [32, 1024].
+        """
+        max_block_threads = 1024  # CUDA's limit on threads per block.
+        if threads % WARP_LANES or not WARP_LANES <= threads <= max_block_threads:
+            raise ValueError(
+                f"threads must be a multiple of {WARP_LANES} in [{WARP_LANES}, "
+                f"{max_block_threads}], got {threads}"
+            )
 
     @property
     def default_config(self) -> dict:
@@ -419,7 +469,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
             threads = self.config["threads"]
             align_fn = self._align_fn(threads)
             align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
-            scatter_fn = self._scatter_fn()
-            scatter_fn(flat, sorted_token_ids, cumsum)
+            if self._scatter_fn is not None:
+                self._scatter_fn()(flat, sorted_token_ids, cumsum)
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad

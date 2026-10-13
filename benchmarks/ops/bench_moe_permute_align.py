@@ -1,8 +1,9 @@
-"""Benchmark for MoEPermuteAlignFwdOp vs Triton and sgl-kernel baselines.
+"""Benchmark for MoEPermuteAlignFwdOp vs Triton, vLLM and sgl-kernel baselines.
 
 Baselines:
   - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
       sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
+  - vLLM: moe_align_block_size from vllm._custom_ops.
   - sgl-kernel (optional): SGLang's production CUDA kernel; only runs when
       sgl_kernel is installed (`pip install sgl-kernel`).
 """
@@ -160,19 +161,24 @@ def test_permute_align_bench(case) -> None:
     implementations = {
         "triton": bench.Implementation(run=_triton_fn, reset=lambda: sorted_ids.fill_(numel))
     }
-    align = vllm_op("moe_align_block_size")
-    vllm_sorted = torch.empty_like(sorted_ids)
-    vllm_experts = torch.empty_like(expert_ids)
-    vllm_count = torch.empty_like(num_post_pad)
+    # vLLM (csrc/moe/moe_align_sum_kernels.cu) refuses an expert count that, rounded up to a
+    # warp, reaches 1024, and sgl-kernel (csrc/moe/moe_align_kernel.cu) leaves the experts past
+    # 1024 uncounted; past 64 experts, both fail on a call with no routes.
+    library_accepts = math.ceil(num_experts / 32) * 32 < 1024 and (numel > 0 or num_experts <= 64)
+    if library_accepts:
+        align = vllm_op("moe_align_block_size")
+        vllm_sorted = torch.empty_like(sorted_ids)
+        vllm_experts = torch.empty_like(expert_ids)
+        vllm_count = torch.empty_like(num_post_pad)
 
-    def vllm_fn(topk_ids):
-        align(topk_ids, num_experts, block_size, vllm_sorted, vllm_experts, vllm_count)
-        return vllm_sorted, vllm_experts, vllm_count
+        def vllm_fn(topk_ids):
+            align(topk_ids, num_experts, block_size, vllm_sorted, vllm_experts, vllm_count)
+            return vllm_sorted, vllm_experts, vllm_count
 
-    implementations[VLLM_TAG] = vllm_fn
+        implementations[VLLM_TAG] = vllm_fn
 
     # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
-    if _SGL_KERNEL_AVAILABLE:
+    if _SGL_KERNEL_AVAILABLE and library_accepts:
         sorted_ids_sgl = torch.empty(max_padded, dtype=torch.int32, device=dev)
         expert_ids_sgl = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
         num_post_pad_sgl = torch.empty(1, dtype=torch.int32, device=dev)
