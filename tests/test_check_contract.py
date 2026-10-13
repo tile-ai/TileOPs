@@ -383,3 +383,240 @@ def test_check_refuses_a_kernel_in_place_of_the_op_path():
     for op, runs in ((kernel, None), (ReluFwdOp(), kernel), (ReluFwdOp(), kernel.forward)):
         with pytest.raises(AssertionError, match="runs="):
             TestBase.check(workload, op, torch.ones(1), runs=runs)
+
+
+@pytest.mark.parametrize(
+    "selection, topk_group, ids, accepted",
+    [
+        pytest.param([[0.9, 0.1], [0.5, 0.5]], 1, [2], True, id="tied-group-swapped-in"),
+        pytest.param([[0.9, 0.1], [0.5, 0.5]], 1, [1], False, id="not-the-kept-group-best"),
+        pytest.param(
+            [[0.6, 0.6], [0.9, 0.1], [0.5, 0.5]], 2, [2, 3], False, id="skips-a-group-above-tie"
+        ),
+        pytest.param(
+            [[0.9, 0.1], [0.8, 0.2], [0.7, 0.3]], 1, [0, 2], False, id="spans-more-groups-than-kept"
+        ),
+        pytest.param(
+            [[0.8, 0.2], [0.6, 0.4], [0.7, 0.3]], 2, [4], True, id="kept-group-with-no-expert"
+        ),
+        pytest.param(
+            [[0.8, 0.2], [0.6, 0.4], [0.7, 0.3]], 2, [2], False, id="every-second-group-beats-it"
+        ),
+        pytest.param(
+            [[0.7, 0.7], [0.6, 0.4], [0.5, 0.5]], 2, [2], False, id="fills-past-a-group-above-tie"
+        ),
+    ],
+)
+def test_grouped_routing_on_a_near_tied_boundary(selection, topk_group, ids, accepted):
+    """A row whose group boundary is within rounding passes only when some valid set of
+    ``topk_group`` groups (every group clearly above the boundary, each group an id lands in,
+    the rest from the groups within rounding) has the returned experts as its top-k."""
+    num_experts = 2 * len(selection)
+    workload = _grouped_topk_workload(num_experts, len(selection), topk_group, len(ids), True)
+    gating, bias = torch.logit(torch.tensor([sum(selection, [])])), torch.zeros(num_experts)
+    returned = torch.tensor([ids], dtype=torch.int32)
+    got = (gating.sigmoid().gather(1, returned.long()), returned)
+    expected = workload.ref_program(gating, bias)
+    evidence = workload.verification(gating, bias)
+    if accepted:
+        compare_outputs(got, expected, evidence)
+    else:
+        with pytest.raises(AssertionError):
+            compare_outputs(got, expected, evidence)
+
+
+def _grouped_topk_workload(num_experts, num_groups, topk_group, top_k, biased):
+    """The ``FusedTopKWorkload`` of one token's sigmoid grouped routing, on the CPU."""
+    from workloads.moe import FusedTopKWorkload
+    from workloads.workload_base import manifest_call
+
+    call = manifest_call(
+        "FusedTopKFwdOp",
+        {"G": "float32"},
+        T=1,
+        E=num_experts,
+        top_k=top_k,
+        scoring_func="sigmoid",
+        renormalize=False,
+        num_expert_group=num_groups,
+        topk_group=topk_group,
+        some=["correction_bias"] if biased else [],
+    )
+    return FusedTopKWorkload(call, device="cpu")
+
+
+def _valid_group_set_top_k(selection, num_groups, topk_group, top_k, biased):
+    """``(groups, top-k ids, sorted top-k selection)`` of every valid set of ``topk_group``
+    groups: each holds the groups above the last kept score by more than the slack and none
+    below it by more, the slack being 1e-5 of that score plus 1e-6."""
+    import itertools
+
+    group_size = selection.numel() // num_groups
+    grouped = selection.view(num_groups, group_size)
+    if biased:
+        pairs = grouped.sort(descending=True).values
+        group_scores = pairs[:, 0] + pairs[:, 1]
+    else:
+        group_scores = grouped.amax(-1)
+    last = group_scores.sort(descending=True).values[topk_group - 1]
+    slack = 1e-5 * last.abs() + 1e-6
+    always = {g for g in range(num_groups) if group_scores[g] > last + slack}
+    allowed = {g for g in range(num_groups) if group_scores[g] >= last - slack}
+    for groups in itertools.combinations(sorted(allowed), topk_group):
+        if always <= set(groups):
+            experts = torch.cat(
+                [torch.arange(g * group_size, (g + 1) * group_size) for g in groups]
+            )
+            top = experts[selection[experts].topk(top_k).indices]
+            yield set(groups), top.tolist(), selection[top].sort().values
+
+
+def _verdicts_disagree(workload, inputs, selection, valid, group_size, candidates):
+    """The candidates on which the verification's verdict differs from the valid group sets'."""
+    expected = workload.ref_program(*inputs)
+    evidence = workload.verification(*inputs)
+    disagree = []
+    for ids in candidates:
+        chosen = selection[list(ids)].sort().values
+        in_spec = any(
+            {i // group_size for i in ids} <= groups
+            and torch.isclose(chosen, top, rtol=1e-5, atol=0).all()
+            for groups, _, top in valid
+        )
+        returned = torch.tensor([ids], dtype=torch.int32)
+        got = (inputs[0].sigmoid().gather(1, returned.long()), returned)
+        try:
+            compare_outputs(got, expected, evidence)
+            accepted = True
+        except AssertionError:
+            accepted = False
+        if accepted != in_spec:
+            disagree.append((ids, accepted))
+    return disagree
+
+
+def _ds_v3_near_tied_candidates(selection, valid, group_size, topk_group):
+    """Each valid set's top-k, then that top-k with one expert traded for a weaker one of its
+    group, for the best of a group outside every valid set, or with the experts of a set that
+    skips a group every valid set keeps; and ids spread over ``topk_group + 1`` groups."""
+    num_groups = selection.numel() // group_size
+    grouped = selection.view(num_groups, group_size)
+    kept_by_some = set().union(*(groups for groups, _, _ in valid))
+    kept_by_all = set.intersection(*(groups for groups, _, _ in valid))
+    dropped = [g for g in range(num_groups) if g not in kept_by_some]
+    candidates = []
+    for groups, top, _ in valid:
+        candidates.append(tuple(top))
+        weakest = min(top, key=lambda i: selection[i])
+        group = weakest // group_size
+        below = [i for i in range(group * group_size, (group + 1) * group_size) if i not in top]
+        swap = max(below, key=lambda i: selection[i])
+        candidates.append(tuple(i if i != weakest else swap for i in top))
+        if dropped:
+            outside = dropped[0] * group_size + int(grouped[dropped[0]].argmax())
+            candidates.append(tuple(i if i != weakest else outside for i in top))
+        for skipped in kept_by_all:
+            for other in sorted(kept_by_some - groups):
+                experts = [
+                    i
+                    for g in (groups - {skipped}) | {other}
+                    for i in range(g * group_size, (g + 1) * group_size)
+                ]
+                best = sorted(experts, key=lambda i: selection[i], reverse=True)
+                candidates.append(tuple(best[: len(top)]))
+    spread = selection.view(num_groups, group_size).amax(-1).argsort(descending=True)
+    firsts = [int(g) * group_size + int(grouped[g].argmax()) for g in spread[: topk_group + 1]]
+    rest = sorted(
+        (i for i in range(selection.numel()) if i not in firsts),
+        key=lambda i: selection[i],
+        reverse=True,
+    )
+    candidates.append(tuple(firsts + rest[: len(valid[0][1]) - len(firsts)]))
+    return candidates
+
+
+def test_grouped_routing_accepts_exactly_the_selections_of_a_valid_group_set():
+    """The verification accepts an output exactly when some valid group set's top-k has its
+    selection scores, with every id inside that set: every candidate of small routings, and
+    at the DeepSeek-V3 shape the valid sets' top-k and their near misses on near-tied rows."""
+    import itertools
+
+    near_tied6 = [
+        [[0.9, 0.1], [0.6, 0.4], [0.3, 0.2]],
+        [[0.9, 0.1], [0.8, 0.2], [0.7, 0.3]],
+        [[0.8, 0.2], [0.6, 0.4], [0.7, 0.3]],
+        [[0.7, 0.7], [0.6, 0.4], [0.5, 0.5]],
+        [[0.6, 0.6], [0.9, 0.1], [0.5, 0.5]],
+        [[0.5 + 2.2e-5, 0.5], [0.5, 0.5], [0.5 - 5e-6, 0.5]],
+        [[0.5, 0.5], [0.5 + 5e-6, 0.5], [0.4, 0.3]],
+        [[0.9, 0.1], [0.2, 0.9], [0.9, 0.5]],
+        [[0.9, 0.1], [0.9 - 4e-6, 0.8], [0.5, 0.3]],
+    ]
+    near_tied8 = [
+        [[0.9, 0.1], [0.8, 0.2], [0.7, 0.3], [0.6, 0.4]],
+        [[0.95, 0.05], [0.6, 0.4], [0.5, 0.5], [0.7, 0.3]],
+        [[0.9, 0.9], [0.9, 0.1], [0.5, 0.5], [0.5, 0.5 + 5e-6]],
+    ]
+    rng = torch.Generator().manual_seed(0)
+    random = [torch.rand(3, 2, generator=rng).tolist() for _ in range(4)]
+    random += [(torch.randint(1, 10, (3, 2), generator=rng) / 10).tolist() for _ in range(2)]
+    random8 = [torch.rand(4, 2, generator=rng).tolist() for _ in range(3)]
+    configs = [
+        (top_k, topk_group, biased, matrices)
+        for biased in (True, False)
+        for top_k, topk_group, matrices in (
+            (2, 1, near_tied6 + random),
+            (2, 2, near_tied6 + random),
+            (3, 2, near_tied8 + random8),
+        )
+    ]
+    disagree = []
+    for top_k, topk_group, biased, matrices in configs:
+        for values in matrices:
+            num_groups, num_experts = len(values), 2 * len(values)
+            workload = _grouped_topk_workload(num_experts, num_groups, topk_group, top_k, biased)
+            target = torch.tensor([sum(values, [])])
+            if biased:
+                inputs = (torch.zeros(1, num_experts), target[0] - 0.5)
+                selection = inputs[0].sigmoid() + inputs[1]
+            else:
+                inputs = (torch.logit(target),)
+                selection = inputs[0].sigmoid()
+            valid = list(
+                _valid_group_set_top_k(selection[0], num_groups, topk_group, top_k, biased)
+            )
+            candidates = itertools.combinations(range(num_experts), top_k)
+            disagree += _verdicts_disagree(workload, inputs, selection[0], valid, 2, candidates)
+
+    # DeepSeek-V3 routing: 8 groups of 32, the best 4 kept, top 8, biased. Each row moves whole
+    # groups so that two or three sit within the slack of the boundary, one sometimes above it
+    # by twice the slack.
+    num_groups, group_size, topk_group, top_k = 8, 32, 4, 8
+    workload = _grouped_topk_workload(256, num_groups, topk_group, top_k, True)
+    for row in range(200):
+        gating = torch.randn(1, 256, generator=rng)
+        bias = torch.randn(256, generator=rng) * 0.1
+        selection = gating[0].sigmoid() + bias
+        pairs = selection.view(num_groups, group_size).topk(2).values.sum(-1)
+        order = pairs.argsort(descending=True)
+        last = pairs[order[topk_group - 1]]
+        slack = float(1e-5 * last.abs() + 1e-6)
+        near = (
+            order[topk_group - 2 : topk_group + 1]
+            if row % 2
+            else order[topk_group - 1 : topk_group + 1]
+        )
+        offsets = (torch.rand(len(near), generator=rng) - 0.5) * 1.8 * slack
+        if row % 3 == 0:
+            near, offsets = order[topk_group - 1 : topk_group + 1], offsets[:2]
+            above = order[topk_group - 2]
+            bias.view(num_groups, group_size)[above] += (last + 2 * slack - pairs[above]) / 2
+        for g, offset in zip(near.tolist(), offsets.tolist(), strict=True):
+            bias.view(num_groups, group_size)[g] += (last + offset - pairs[g]) / 2
+        selection = gating[0].sigmoid() + bias
+        valid = list(_valid_group_set_top_k(selection, num_groups, topk_group, top_k, True))
+        candidates = _ds_v3_near_tied_candidates(selection, valid, group_size, topk_group)
+        disagree += _verdicts_disagree(
+            workload, (gating, bias), selection, valid, group_size, candidates
+        )
+    assert disagree == []

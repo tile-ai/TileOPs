@@ -47,23 +47,48 @@ class FusedTopKWorkload(CallWorkload):
             scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
             selection = scores if correction_bias is None else scores + correction_bias
             rows = torch.ones(ids.shape[0], dtype=torch.bool, device=ids.device)
+            reference_selection = selection.gather(1, ref_ids.long())
             if num_groups > 1:
                 # A group may be kept when it scores within rounding of the last kept one; a
-                # row whose boundary is that close has more than one valid group set, so its
-                # selection is only held to the groups it may keep.
+                # row whose boundary is that close has more than one valid group set. Such a
+                # row passes when some valid set S of topk_group groups has the returned
+                # experts as its top-k. Every valid S holds the groups above the boundary by
+                # more than the slack, and S must hold each group an id lands in; the rest
+                # of S comes from the other groups within the slack. A fill group rejects S
+                # exactly when its best expert beats a returned one, so the fill with the
+                # lowest best experts finds S whenever one exists.
                 group_scores = ref_group_scores(selection, num_groups, correction_bias is not None)
                 ranked = group_scores.sort(-1, descending=True).values
                 last = ranked[:, topk_group - 1 : topk_group]
                 slack = 1e-5 * last.abs() + 1e-6
                 allowed = group_scores >= last - slack
                 group_size = selection.shape[-1] // num_groups
-                assert allowed.gather(1, ids.long() // group_size).all(), "expert in dropped group"
+                selected_groups = ids.long() // group_size
+                assert allowed.gather(1, selected_groups).all(), "expert in dropped group"
                 if topk_group < num_groups:
-                    rows = (last - ranked[:, topk_group : topk_group + 1] > slack).squeeze(-1)
+                    rows = (ranked[:, topk_group : topk_group + 1] < last - slack).squeeze(-1)
+                    forced = group_scores > last + slack
+                    forced.scatter_(1, selected_groups, True)
+                    missing = topk_group - forced.sum(-1, keepdim=True)
+                    assert (missing >= 0).all(), "experts span more groups than are kept"
+                    best = selection.view(-1, num_groups, group_size).amax(-1)
+                    candidates = allowed & ~forced
+                    fill_rank = (
+                        best.masked_fill(~candidates, float("inf"))
+                        .argsort(dim=-1, stable=True)
+                        .argsort(-1)
+                    )
+                    kept = forced | (candidates & (fill_rank < missing))
+                    expert_mask = kept.repeat_interleave(group_size, dim=-1)
+                    within_kept = selection.masked_fill(~expert_mask, float("-inf"))
+                    ambiguous_reference = within_kept.topk(ids.shape[1], dim=-1).values
+                    reference_selection = torch.where(
+                        rows[:, None], reference_selection, ambiguous_reference
+                    )
             # Validate selected scores and per-expert weights independently of tie order.
             torch.testing.assert_close(
-                selection.gather(1, ids.long()).sort(-1).values[rows],
-                selection.gather(1, ref_ids.long()).sort(-1).values[rows],
+                selection.gather(1, ids.long()).sort(-1).values,
+                reference_selection.sort(-1).values,
                 rtol=1e-5,
                 atol=0,
             )
