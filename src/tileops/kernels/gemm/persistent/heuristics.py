@@ -14,8 +14,11 @@ from tileops.utils import calibration_key
 
 __all__ = [
     "ACTIVATIONS",
+    "INTERLEAVED_ACTIVATIONS",
     "PER_GROUP_TYPES",
     "PER_ROW_TYPES",
+    "SWIGLUOAI_ALPHA",
+    "SWIGLUOAI_LIMIT",
     "GemmDesc",
     "GemmType",
     "GroupedGemmSpec",
@@ -26,10 +29,15 @@ __all__ = [
 ]
 
 
-# Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
-# half-loads block_n / 2 gate columns and the matching up columns, one accumulator
-# holds both, and the epilogue stores act(gate) * up, so C has N / 2 columns.
-ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul")
+# Gated activations the epilogue can fuse: B holds gate and up along N, in the row order
+# GemmTemplate's docstring gives each, and C has N / 2 columns.
+ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul", "swigluoai")
+# The fused activations whose B interleaves gate and up rows rather than stacking them.
+INTERLEAVED_ACTIVATIONS = ("swigluoai",)
+# swigluoai's fixed alpha and limit, the constants of gpt-oss's reference ``swiglu``. Both
+# grouped GEMM kernels' epilogues read them, so the two compute one activation.
+SWIGLUOAI_ALPHA = 1.702
+SWIGLUOAI_LIMIT = 7.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -180,10 +188,23 @@ class GroupedGemmSpec:
     activation: str = "none"
     epilogue_stage_n: int = 0
     swizzle_group_m: int = 0
+    # A ``[G, N]`` bias in B's row order and the operand dtype, added to the fp32
+    # accumulator before the activation and the cast. Only the M-grouped GEMMs take one.
+    has_bias: bool = False
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
             raise ValueError(f"activation must be one of {ACTIVATIONS}, got {self.activation!r}")
+        if self.has_bias and self.gemm_type in _FLAT_LIKE_TYPES:
+            raise ValueError(
+                f"a bias is one row per group: only the M-grouped GEMMs take one, not "
+                f"{self.gemm_type.value}"
+            )
+        if self.activation in INTERLEAVED_ACTIVATIONS and self.gemm_type in _FLAT_LIKE_TYPES:
+            raise ValueError(
+                f"{self.activation} reads an interleaved B: only the M-grouped GEMMs take it, not "
+                f"{self.gemm_type.value}"
+            )
         c_tile_n = self.block_n // 2 if self.activation != "none" else self.block_n
         if self.epilogue_stage_n < 0:
             raise ValueError("epilogue_stage_n must be non-negative")
@@ -206,6 +227,12 @@ class GroupedGemmSpec:
             )
         if self.activation != "none" and self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
             raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
+        if self.activation != "none" and self.block_n % 16:
+            raise ValueError(
+                "a fused gated activation splits block_n into gate and up halves, each laid out "
+                f"over the accumulator in columns of 8: block_n must be a multiple of 16, got "
+                f"{self.block_n}"
+            )
         if self.ab_dtype not in ("bfloat16", "float16"):
             raise ValueError(f"ab_dtype must be bfloat16 or float16, got {self.ab_dtype!r}")
         if self.cd_dtype not in (self.ab_dtype, "float32"):
@@ -275,6 +302,7 @@ class GemmDesc:
     expected_m: int = 0
     activation: str = "none"
     device_name: str = ""
+    has_bias: bool = False
 
     # Unannotated, so neither is a dataclass field.
     # One instance for the process: nothing varies it per call.
@@ -362,6 +390,9 @@ def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> i
         prefix_ints += desc.num_groups
     smem_prefix = _align(prefix_ints * 4, 128)
     policy = desc.policy
+    # A biased tile stages its block_n bias values once per math warp-group; GroupedGemmSpec's
+    # num_math_threads of 128 or 256 makes that two at most.
+    smem_bias = 2 * layout.block_n * policy.element_bytes if desc.has_bias else 0
     per_stage = (layout.block_m + layout.block_n) * layout.block_k * policy.element_bytes
     budget = (
         policy.smem_capacity
@@ -373,6 +404,7 @@ def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> i
             else policy.smem_alignment_slack
         )
         - smem_prefix
+        - smem_bias
     )
     return min(budget // per_stage, policy.max_stages)
 
@@ -458,6 +490,7 @@ def _spec(
         activation=desc.activation,
         epilogue_stage_n=epilogue_stage_n,
         swizzle_group_m=swizzle_group_m,
+        has_bias=desc.has_bias,
     )
 
 

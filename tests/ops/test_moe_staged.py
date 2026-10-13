@@ -142,7 +142,7 @@ class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
         type(self).builds += 1
         self.call = call
 
-    def forward(self, a, b, layout_metadata, out=None):
+    def forward(self, a, b, layout_metadata, bias=None, out=None):
         zeros = a.new_zeros((*a.shape[:-1], b.shape[1]), dtype=self.call.cd_dtype)
         return zeros if out is None else out.copy_(zeros)
 
@@ -419,15 +419,17 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
     )
 
 
-@pytest.mark.parametrize(
-    "_architecture",
-    [
-        pytest.param(80, marks=pytest.mark.sm80),
-        pytest.param(86, marks=pytest.mark.sm86),
-        pytest.param(89, marks=pytest.mark.sm89),
-        pytest.param(90, marks=pytest.mark.sm90),
-    ],
-)
+# WGMMA exists on SM90 and not on SM80, SM86 or SM89, so the grouped GEMM takes a different
+# path on each side. Each test parametrized over these runs on the device whose mark it carries.
+_GROUPED_GEMM_ARCHITECTURES = [
+    pytest.param(80, marks=pytest.mark.sm80),
+    pytest.param(86, marks=pytest.mark.sm86),
+    pytest.param(89, marks=pytest.mark.sm89),
+    pytest.param(90, marks=pytest.mark.sm90),
+]
+
+
+@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -592,6 +594,65 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
     op = MoEGroupedGemmFwdOp(spec, **({"activation": activation} if activation else {}))
     with pytest.raises(ValueError, match=reason):
         op.key_for("grouped_gemm", _grouped_call(**facts))
+
+
+# The tensors a grouped GEMM reads while it writes ``out``, in the order the op takes them.
+_GROUPED_GEMM_READS = ("a", "b", "layout_metadata")
+
+
+def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
+    """A tight grouped GEMM whose inputs and ``out`` are views of one ``uint8`` workspace, as a
+    serving framework slices them: each input after a gap as large as ``out``, and ``out`` in
+    the gap before the input *beside* names, its last *into* elements on that input's first
+    bytes and overlapping no other input.
+
+    Returns:
+        The op, its inputs by name, ``out``, the workload and the workspace.
+    """
+    rows, cols = 128, 64
+    call = _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=64, E=2, N=cols)
+    workload = MoEGroupedGemmWorkload(call)
+    inputs = dict(zip(_GROUPED_GEMM_READS, workload.gen_inputs(), strict=True))
+    out_like = torch.empty(rows, cols, dtype=torch.bfloat16)
+    starts, end = {}, 0
+    for name, t in inputs.items():
+        starts[name] = end + out_like.nbytes
+        end = starts[name] + -(-t.nbytes // 256) * 256
+    workspace = torch.zeros(end, dtype=torch.uint8, device=run_device())
+
+    def view(start: int, like: torch.Tensor) -> torch.Tensor:
+        return workspace[start : start + like.nbytes].view(like.dtype).view(like.shape)
+
+    placed = {name: view(starts[name], t).copy_(t) for name, t in inputs.items()}
+    out = view(starts[beside] + (into - out_like.numel()) * out_like.element_size(), out_like)
+    return MoEGroupedGemmFwdOp(**call.arguments({})), placed, out, workload, workspace
+
+
+@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
+@pytest.mark.parametrize("overlap", _GROUPED_GEMM_READS)
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, overlap):
+    """An ``out`` whose last element lies on the first bytes of one input is refused before
+    anything is written: tiles store while other tiles still load."""
+    op, inputs, out, _, workspace = _grouped_gemm_in_workspace(overlap, 1)
+    before = workspace.clone()
+    with pytest.raises(ValueError, match="out must not overlap"):
+        op(*inputs.values(), out=out)
+    assert torch.equal(workspace, before)
+
+
+@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
+@pytest.mark.parametrize("beside", _GROUPED_GEMM_READS)
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture, beside):
+    """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
+    starts: ``out`` is written and returned."""
+    op, inputs, out, workload, _ = _grouped_gemm_in_workspace(beside, 0)
+    assert op(*inputs.values(), out=out) is out
+    args = tuple(inputs.values())
+    compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
 
 
 # Unpermute at a hidden size no power of two divides.

@@ -175,7 +175,9 @@ class MoEGroupedGemmFwdOp(Op):
             a: Expert-materialized activations, ``[M, K]`` or ``[E, max_m, K]`` per the layout.
             b: Per-expert weights, ``[E, N, K]``.
             layout_metadata: ``int32`` metadata whose shape and meaning the layout fixes.
-            out: Optional preallocated output in the resolved output dtype.
+            out: Optional preallocated output in the resolved output dtype. It must not
+                overlap ``a``, ``b`` or ``layout_metadata``, or a ``ValueError`` is raised;
+                disjoint views of one buffer are accepted.
 
         Returns:
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
@@ -271,7 +273,10 @@ class MoEExpertMLPFwdOp(Op):
             w_gate_up: ``[E, 2 * ffn, hidden]``, gate and up stacked along the output axis.
             w_down: ``[E, hidden, ffn]``.
             layout_metadata: ``int32`` metadata the layout fixes; shared by both GEMMs.
-            out: Optional preallocated ``[.., hidden]`` output in the operand dtype.
+            out: Optional preallocated ``[.., hidden]`` output in the operand dtype. It
+                must not overlap ``w_down`` or ``layout_metadata``, which the down GEMM
+                reads while it writes ``out``, or a ``ValueError`` is raised; disjoint views
+                of one buffer are accepted.
 
         Returns:
             ``[M, hidden]`` or ``[E, max_m, hidden]`` in the operand dtype.

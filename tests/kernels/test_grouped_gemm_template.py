@@ -420,6 +420,12 @@ def test_spec_rejects_inconsistent_template_parameters():
         GroupedGemmSpec(**{**fields, "block_m": 256, "block_n": 256})
     with pytest.raises(ValueError, match="block_k must be 64 or 128"):
         GroupedGemmSpec(**{**fields, "block_k": 96})
+    with pytest.raises(ValueError, match="block_m must be 64, 128 or 256"):
+        GroupedGemmSpec(**{**fields, "block_m": 96})
+    with pytest.raises(ValueError, match=r"multiple of 8 in \[8, 256\]"):
+        GroupedGemmSpec(**{**fields, "block_n": 264})
+    with pytest.raises(ValueError, match="num_math_threads must be 128 or 256"):
+        GroupedGemmSpec(**{**fields, "num_math_threads": 384})
     # A pinned pipeline past the shared-memory budget, or the single stage the
     # 128x256x128 tile has room for, is refused, not launched (it deadlocked).
     with pytest.raises(ValueError, match="at most"):
@@ -435,6 +441,26 @@ def test_spec_rejects_inconsistent_template_parameters():
                 "major_a": Major.MN,
             }
         )
+    m_grouped = {**fields, "gemm_type": GemmType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
+    # A fused tile takes block_n a multiple of 16, and refuses an odd multiple of 8.
+    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 16})
+    with pytest.raises(ValueError, match="multiple of 16"):
+        GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 24})
+    # A bias and an interleaved B are taken by the M-grouped GEMMs and refused by every other.
+    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai"}, has_bias=True)
+    for gemm_type in (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS):
+        flat = {**fields, "gemm_type": gemm_type}
+        with pytest.raises(ValueError, match="only the M-grouped GEMMs take one"):
+            GroupedGemmSpec(**flat, has_bias=True)
+        with pytest.raises(ValueError, match="interleaved B"):
+            GroupedGemmSpec(**{**flat, "activation": "swigluoai"})
+    # A bias takes shared memory from the ring: a depth the tile fits without one is refused
+    # with one.
+    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=8)
+    tile = dict(block_m=128, block_n=208, block_k=64, num_stages=4)
+    spec_from_config(_desc(4096, 2880, 2880, **tight), tile)
+    with pytest.raises(ValueError, match="at most 3"):
+        spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
 
 
 @pytest.mark.cuda_only
