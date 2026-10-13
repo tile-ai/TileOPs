@@ -67,6 +67,8 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
         # max_m = 256 on its calibrated 192-wide config, four 64-row tiles, most of them empty.
         pytest.param("qwen3-235b-dec-b64-down", marks=pytest.mark.full),
         pytest.param("kimi-k2-dec-b256-up", marks=pytest.mark.full),
+        # A generated row with 13 idle experts among 48, spread between the busy ones.
+        pytest.param("kimi-k2-dec-b64-down", marks=pytest.mark.full),
     ],
 )
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str) -> None:

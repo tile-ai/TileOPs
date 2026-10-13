@@ -521,9 +521,15 @@ def moe_layout_metadata(layout, rows, experts):
 def moe_masked_routed_metadata(layout, experts, tokens):
     """Valid counts of a masked `layout` when `tokens` routed rows land on `experts` experts.
 
-    Experts at even positions draw weight 2 and odd ones weight 1; each gets its share of
-    `tokens` rounded down, and the rows left over go one each to the largest remainders,
-    the lower position first on a tie. The counts sum to `tokens`.
+    `idle = round(experts * exp(-tokens / experts))` experts get no rows: the number uniform
+    routing is expected to leave empty, each expert's rows being Poisson with mean
+    `tokens / experts`. They sit at the evenly spaced positions
+    `(k * experts + experts // 2) // idle` for `k` in `range(idle)`, so idle experts lie between
+    busy ones; with no tokens every expert is idle. The busy experts, in order, split `tokens`
+    two to one: even positions among them draw weight 2 and odd ones weight 1, each gets its
+    share rounded down, and the rows left over go one each to the largest remainders, the lower
+    position first on a tie. The counts sum to `tokens`. Where `idle` rounds to zero the counts
+    are the plain two-to-one split over all experts.
     """
     if layout.kind != "masked":
         raise ValueError(f"moe.masked_routed_metadata needs a masked layout, got {layout.kind}")
@@ -531,12 +537,22 @@ def moe_masked_routed_metadata(layout, experts, tokens):
         raise ValueError(
             f"moe.masked_routed_metadata needs E > 0 and T >= 0, got E={experts}, T={tokens}"
         )
-    weights = [2 if i % 2 == 0 else 1 for i in range(experts)]
+    idle = round(experts * math.exp(-tokens / experts))
+    # The stride experts / idle is at least 1, so the positions are distinct.
+    idle_positions = {(k * experts + experts // 2) // idle for k in range(idle)}
+    busy = [i for i in range(experts) if i not in idle_positions]
+    weights = [2 if j % 2 == 0 else 1 for j in range(len(busy))]
     total = sum(weights)
-    counts = [tokens * w // total for w in weights]
-    order = sorted(range(experts), key=lambda i: (-(tokens * weights[i] % total), i))
-    for i in order[: tokens - sum(counts)]:
-        counts[i] += 1
+    counts = [0] * experts
+    # Every expert is idle only when tokens == 0: for tokens >= 1 the model leaves at least
+    # experts * (1 - exp(-1 / experts)) >= 0.63 experts busy, which rounds to one or more.
+    if busy:
+        shares = [tokens * w // total for w in weights]
+        order = sorted(range(len(busy)), key=lambda j: (-(tokens * weights[j] % total), j))
+        for j in order[: tokens - sum(shares)]:
+            shares[j] += 1
+        for i, share in zip(busy, shares, strict=True):
+            counts[i] = share
     if max(counts) > layout.max_m:
         raise ValueError(
             f"moe.masked_routed_metadata gives an expert {max(counts)} rows, past "

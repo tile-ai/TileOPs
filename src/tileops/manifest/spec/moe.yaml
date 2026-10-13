@@ -552,7 +552,8 @@ MoEGroupedGemmFP8FwdOp:
     - {N: 7168, K: 2048, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-down-masked}
     # Decode, one token per request, top-8 routing under EP8: a shard receives T = batch rows over
     # its E = experts / 8 local experts, and max_m = batch is the slab one expert taking every
-    # token needs.
+    # token needs. The generator leaves empty the round(E * exp(-T / E)) experts uniform routing
+    # would leave empty.
     - {N: 4096, K: 7168, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-up}
     - {N: 7168, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-down}
     - {N: 4096, K: 7168, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-up}
