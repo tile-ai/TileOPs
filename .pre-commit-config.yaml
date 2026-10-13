@@ -116,6 +116,14 @@ repos:
         language: python
         files: ^(src/tileops|tests|benchmarks|workloads|scripts)/.*\.py$
 
+      - id: manifest-label-lint
+        name: manifest workload label lint
+        entry: python scripts/lint/manifest_label_lint.py --base origin/main
+        language: python
+        additional_dependencies: [pyyaml]
+        pass_filenames: false
+        files: ^src/tileops/manifest/spec/.*\.yaml$
+
       - id: op-naming-lint
         name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
