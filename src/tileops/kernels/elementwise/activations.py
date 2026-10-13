@@ -15,7 +15,7 @@ from tileops.kernels.elementwise._base import (
 )
 from tileops.kernels.elementwise._division import full_range_fdiv
 from tileops.kernels.elementwise._dtype import log_for_output_precision
-from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise._erf import erf, gelu
 from tileops.kernels.elementwise._nan import nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
@@ -78,11 +78,7 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
-        half = T.cast(0.5, "float32")
-        one = T.cast(1.0, "float32")
-        wide = T.cast(x, "float32")
-        return half * wide * (one + erf(wide * inv_sqrt_2, x.dtype))
+        return gelu(x, x.dtype)
 
 
 class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):

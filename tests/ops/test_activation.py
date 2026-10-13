@@ -13,6 +13,7 @@ from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
     Exhaustive16BitWorkload,
+    GeluSignWorkload,
     GeluTailWorkload,
     ReluWorkload,
     UnaryActivationCase,
@@ -218,6 +219,20 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import GeluFwdOp
 
     workload = GeluTailWorkload(dtype)
+    TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gelu_keeps_negative_inputs_nonpositive(dtype: torch.dtype) -> None:
+    """Edge: GELU of a negative input is never positive, at every 16-bit input.
+
+    The erf polynomial overshoots 1 by up to 3.2e-6 short of its clamp. There 1 + erf
+    turns negative unless clipped, and x / 2 scales it into a positive result.
+    """
+    from tileops.ops.elementwise import GeluFwdOp
+
+    workload = GeluSignWorkload(dtype)
     TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
 
 

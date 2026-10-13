@@ -1,10 +1,11 @@
-"""erf(x) at the accuracy the result's storage dtype can hold."""
+"""erf(x) and GELU(x) at the accuracy the result's storage dtype can hold."""
 
 import tilelang.language as T
 
-from tileops.kernels.elementwise._nan import keep_nan
+from tileops.kernels.constants import INV_SQRT2
+from tileops.kernels.elementwise._nan import bound, keep_nan
 
-__all__ = ["erf"]
+__all__ = ["erf", "gelu"]
 
 # |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
 _CLAMP = 3.6
@@ -67,3 +68,46 @@ def erf(x, out_dtype):
     if out_dtype == "float32":
         return T.erf(wide)
     return keep_nan(wide, _clamped_polynomial)
+
+
+def gelu(x, out_dtype):
+    """Element-wise GELU(x) = x / 2 * (1 + erf(x / sqrt(2))), evaluated and returned in float32.
+
+    The polynomial is ``erf``'s with its argument scaled to s = clamp(x / (sqrt(2) *
+    _CLAMP), -1, 1) by one multiply and ``_CLAMP`` folded into the coefficients, so
+    that erf = s * P(1 - s**2) and P(0) rounds to 1.0. The result's dependent chain
+    is five instructions shorter than ``x / 2 * (1 + erf(x / sqrt(2), out_dtype))``:
+
+    - the two argument scales are one multiply;
+    - ``1 + s * P`` contracts into the last FMA;
+    - no NaN select: the clamp takes a NaN to -1, and the x / 2 factor carries the
+      NaN into the result;
+    - one clip side: s * P overshoots 1 by up to 3.2e-6 short of the clamp, which
+      only matters where 1 + erf would turn negative and flip a negative x's sign.
+
+    ``erf`` keeps its form: the bound argument this needs costs Erf and GeluAndMul
+    registers they do not have to spare.
+
+    Args:
+        x: The argument. Any float dtype; promoted to float32 before evaluation.
+        out_dtype: The dtype the caller stores the result in. It selects the
+            evaluation, not the return dtype.
+
+    Returns:
+        GELU(x) in float32.
+    """
+    wide = T.cast(x, "float32")
+    half_x = T.cast(0.5, "float32") * wide
+    one = T.cast(1.0, "float32")
+    if out_dtype == "float32":
+        return half_x * (one + T.erf(wide * T.cast(INV_SQRT2, "float32")))
+
+    def one_plus_erf(s):
+        w = one - s * s
+        acc = T.cast(_POLY_COEFFS[0] * _CLAMP, "float32")
+        for coeff in _POLY_COEFFS[1:]:
+            acc = acc * w + T.cast(coeff * _CLAMP, "float32")
+        return T.max(s * acc + one, T.cast(0.0, "float32"))
+
+    scaled = wide * T.cast(INV_SQRT2 / _CLAMP, "float32")
+    return half_x * bound(T.min(T.max(scaled, -one), one), one_plus_erf)
