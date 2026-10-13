@@ -13,6 +13,7 @@ from workloads.elementwise import (
     GeluAndMulCase,
     GeluTanhAndMulCase,
     SiluAndMulCase,
+    SiluAndMulGateSweepWorkload,
 )
 
 
@@ -49,6 +50,17 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
     for m, n in [(32, 64), (16, 128)]:
         test = SiluAndMulTest(m, n, torch.float16)
         test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
+    """Edge: a bfloat16 gate's fast float32 divide rounds to torch's result at every gate.
+
+    Near gate -88 the divisor passes 2**126, where a bare ``__fdividef`` returns zero
+    for a result torch keeps at about -5e-37.
+    """
+    workload = SiluAndMulGateSweepWorkload()
+    TestBase.check(workload, SiluAndMulFwdOp(), *workload.gen_inputs())
 
 
 class GeluAndMulFixture(FixtureBase):
