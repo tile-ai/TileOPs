@@ -128,12 +128,31 @@ def test_paged_kv_cache_write_scatters_the_named_rows(
 
 @pytest.mark.smoke
 def test_paged_kv_cache_write_saturates_fp8_overflow():
-    """FP8 overflow saturates to finite endpoints; the reference used to produce NaNs."""
-    workload = PagedKVCacheWriteTest(1, 1, 8, 2, 1, torch.float16, torch.float8_e4m3fn, [1])
+    """FP8 preserves NaN, saturates overflow/infinities, and rounds ties to even."""
+    workload = PagedKVCacheWriteTest(1, 1, 16, 2, 1, torch.float16, torch.float8_e4m3fn, [1])
     inputs = workload.gen_inputs()
     k, v, _, _, _, k_scale, v_scale = inputs
     values = torch.tensor(
-        [1000, -1000, 448, -448, 1.2, -1.2, 1.0625, 1.1875], dtype=k.dtype, device=k.device
+        [
+            1000,
+            -1000,
+            448,
+            -448,
+            1.2,
+            -1.2,
+            1.0625,
+            1.1875,
+            float("nan"),
+            float("inf"),
+            -float("inf"),
+            0,
+            -0.0,
+            1,
+            -1,
+            0.5,
+        ],
+        dtype=k.dtype,
+        device=k.device,
     )
     k.copy_(values.reshape_as(k))
     v.copy_(-values.reshape_as(v))

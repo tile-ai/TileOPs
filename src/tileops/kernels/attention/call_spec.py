@@ -692,8 +692,8 @@ class PagedKVCacheWriteFwdInterface(KernelInterface):
 
         ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the page
         pool flattened to ``call.physical_tokens`` rows; a negative slot skips that token.
-        The caller owes distinct non-negative slots, and a slot outside the pool the op was
-        handed an error rather than a clamped write. Every row the call names is written in
+        The caller owes distinct non-negative slots. A slot outside the pool is the
+        caller's error; the op does not check it. Every row the call names is written in
         place and nothing else is: a row no token names keeps whatever it held.
 
         Args:

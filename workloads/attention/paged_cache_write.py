@@ -2,7 +2,6 @@
 
 import torch
 
-from workloads.attention.gqa.call_metadata import _dtype
 from workloads.device import run_device
 from workloads.numerics import Exact
 from workloads.workload_base import CallWorkload, WorkloadBase
@@ -106,7 +105,7 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
         return k, v, k_pages, v_pages, slots, k_scale, v_scale
 
     def ref_program(self, k, v, k_pages, v_pages, slot_mapping, k_scale=None, v_scale=None):
-        """Scatter by index, as ``tests/test_spec_reference.py`` states the write.
+        """Scatter by index, with saturating FP8 conversion that preserves NaN.
 
         The pages are cloned before they are written: the reference runs on the shared
         inputs, and a call that wrote them would leave nothing to compare against. A
@@ -146,8 +145,8 @@ class PagedKVCacheWriteCall(CallWorkload, PagedKVCacheWriteWorkload):
             dim=call.indices["D"],
             page_size=call.indices["PS"],
             num_pages=call.indices["NP"],
-            dtype=_dtype(call, "k"),
-            cache_dtype=_dtype(call, "k_pages"),
+            dtype=getattr(torch, call.tensors["k"][1]),
+            cache_dtype=getattr(torch, call.tensors["k_pages"][1]),
             slots=call.metadata_values("slot_mapping") if call.present("slot_mapping") else None,
         )
 

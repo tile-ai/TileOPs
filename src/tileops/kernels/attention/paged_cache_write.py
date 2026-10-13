@@ -3,7 +3,7 @@
 One block owns a tile of tokens and a column tile of their rows. A token whose slot is
 ``-1`` is skipped; every other token reads its slot once and writes the same columns of
 its key and value rows, so the guard and the slot load are paid once for the two stores.
-An FP8 cache divides by the scale and saturates before the cast.
+An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
 """
 
 import functools
@@ -17,7 +17,6 @@ from tileops.kernels.attention.call_spec import (
     PagedKVCacheWriteCall,
     PagedKVCacheWriteFwdInterface,
 )
-from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["PagedKVCacheWriteKernel"]
@@ -33,7 +32,6 @@ def _paged_cache_write_kernel(
 ) -> Callable:
     row_width = heads_kv * dim
     quantized = cache_dtype == "float8_e4m3fn"
-    fp8_min, fp8_max = -FP8_E4M3_MAX, FP8_E4M3_MAX
 
     @tilelang.jit(out_idx=[])
     def _func(block_rows: int, block_cols: int, threads: int) -> Callable:
@@ -64,16 +62,10 @@ def _paged_cache_write_kernel(
                         if token < tokens and col < row_width:
                             slot = Slots[token]
                             if slot >= 0:
-                                KPages[slot, col] = T.clamp(
-                                    T.Cast("float32", K[token, col]) / KScale[0],
-                                    fp8_min,
-                                    fp8_max,
-                                )
-                                VPages[slot, col] = T.clamp(
-                                    T.Cast("float32", V[token, col]) / VScale[0],
-                                    fp8_min,
-                                    fp8_max,
-                                )
+                                # TileLang's FP8 cast saturates finite overflow and
+                                # infinities while preserving NaN.
+                                KPages[slot, col] = T.Cast("float32", K[token, col]) / KScale[0]
+                                VPages[slot, col] = T.Cast("float32", V[token, col]) / VScale[0]
 
             return _paged_cache_write_fp8
 
@@ -161,9 +153,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
 
     @property
     def default_config(self):
-        # A token's rows are 512 to 1024 elements wide, so one column tile spans a
-        # quarter of a row at most and every block has real work on the 256-row pools
-        # the manifest rows declare.
+        # A modest row tile exposes parallelism on small pools; a 128-column tile
+        # keeps contiguous stores while masking narrower rows.
         return {"block_rows": 16, "block_cols": 128, "threads": 128}
 
     @property
