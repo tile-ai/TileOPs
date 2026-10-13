@@ -42,6 +42,30 @@ __device__ __forceinline__ T load_evict_first(const T* src) {
   return v;
 }
 
+// Loads one element of global memory, evict-last in L1 and L2. T is 4 or 2
+// bytes wide. Each reader states its measurement.
+template <typename T>
+__device__ __forceinline__ T load_evict_last(const T* src) {
+  static_assert(sizeof(T) == 4 || sizeof(T) == 2, "a 4- or 2-byte element");
+  uint64_t policy;
+  asm("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(policy));
+  T v;
+  if constexpr (sizeof(T) == 4) {
+    uint32_t bits;
+    asm("ld.global.L1::evict_last.L2::cache_hint.b32 %0, [%1], %2;"
+        : "=r"(bits)
+        : "l"(src), "l"(policy));
+    __builtin_memcpy(&v, &bits, 4);
+  } else {
+    uint16_t bits;
+    asm("ld.global.L1::evict_last.L2::cache_hint.b16 %0, [%1], %2;"
+        : "=h"(bits)
+        : "l"(src), "l"(policy));
+    __builtin_memcpy(&v, &bits, 2);
+  }
+  return v;
+}
+
 // Loads one float that every block of a kernel reads, evict-last in L1 so that
 // later blocks on the same SM find it there rather than queueing on the one L2
 // line.
