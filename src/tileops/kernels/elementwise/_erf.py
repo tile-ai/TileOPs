@@ -85,8 +85,8 @@ def gelu(x, out_dtype):
     - one clip side: s * P overshoots 1 by up to 3.2e-6 short of the clamp, which
       only matters where 1 + erf would turn negative and flip a negative x's sign.
 
-    ``erf`` keeps its form: the bound argument this needs costs Erf and GeluAndMul
-    registers they do not have to spare.
+    ``erf`` keeps its form: binding its argument the same way measured 9% slower
+    for Erf and up to 6% slower for GeluAndMul.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
