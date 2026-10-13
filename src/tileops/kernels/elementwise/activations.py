@@ -64,6 +64,11 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the standard erf formulation."""
 
     BYTES_PER_THREAD = 32
+    # The erf body costs more than its access, so a row the shrink reaches keeps two
+    # elements a thread instead of four: 1 x 14336 bfloat16 runs 56 blocks instead of
+    # 28, as torch-compile does, at 1.344 us against 1.440 us. One element a thread
+    # measured no faster in 16 bits and slower in float32.
+    MIN_NUM_PER_THREAD = 2
 
     @classmethod
     def refusal(cls, call: GeluCall) -> "str | None":

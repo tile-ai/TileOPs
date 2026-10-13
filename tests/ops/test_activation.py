@@ -343,6 +343,21 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     "tune",
     [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
 )
+def test_gelu_short_row(tune: bool) -> None:
+    """A row the grid-filling shrink reaches: two elements a thread, across a block and its tail."""
+    from tileops.ops.elementwise import GeluFwdOp
+
+    test = UnaryActivationTest(257, torch.float32, "GeluFwdOp", gen_fn=_randn)
+    op = GeluFwdOp()
+    if tune:
+        op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
 def test_leaky_relu_under_tuning(tune: bool) -> None:
     from tileops.ops.elementwise import LeakyReluFwdOp
 
