@@ -114,15 +114,25 @@ def _expert_weight_bytes(call) -> int:
 def _routing_flops(call) -> int:
     """Routing as FusedTopKFwdOp prices it, per token: scoring (sigmoid 4 per logit; softmax 3,
     plus the row sum and a divide per kept weight unless renormalizing), top_k
-    compare-and-selects per logit, the bias add, and 2 * top_k to renormalize."""
+    compare-and-selects per logit, the bias add, and 2 * top_k to renormalize. Grouping adds
+    the group scores (2 compare-and-selects per logit and an add per group with a bias, a max
+    per logit without), topk_group compare-and-selects per group and a select per logit.
+
+    The routing a composite runs keeps a scaling factor of one: the experts' epilogue applies
+    the factor, and :func:`_routed_flops` prices it there."""
     indices = call.indices
     experts, top_k, renormalize = indices["E"], indices["top_k"], indices["renormalize"]
+    biased = call.present("correction_bias")
     if indices["scoring_func"] == "sigmoid":
         scoring = 4 * experts
     else:
         scoring = 3 * experts + (0 if renormalize else experts + top_k)
     per_token = scoring + top_k * experts + (2 * top_k if renormalize else 0)
-    per_token += experts if call.present("correction_bias") else 0
+    per_token += experts if biased else 0
+    groups = indices["num_expert_group"]
+    if groups > 1:
+        group_scores = 2 * experts + groups if biased else experts
+        per_token += group_scores + indices["topk_group"] * groups + experts
     return indices["T"] * per_token
 
 

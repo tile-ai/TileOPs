@@ -41,7 +41,7 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class FusedTopKCall(CallSpec):
-    """One top-k routing call, with the scoring the op fixed at construction."""
+    """One top-k routing call, with the scoring and grouping the op fixed at construction."""
 
     num_tokens: int = 0
     num_experts: int = 0
@@ -49,6 +49,9 @@ class FusedTopKCall(CallSpec):
     scoring_func: str = "softmax"
     renormalize: bool = False
     with_correction_bias: bool = False
+    num_expert_group: int = 1
+    topk_group: int = 1
+    routed_scaling_factor: float = 1.0
     dtype: Optional[torch.dtype] = None
 
 
@@ -182,7 +185,11 @@ class FusedTopKFwdInterface(KernelInterface):
         """Score the router logits, then select each token's ``call.top_k`` experts.
 
         Scoring is ``call.scoring_func`` over each row, in float32 whatever ``call.dtype`` is.
-        Ties break towards the lower expert index. Nothing is written in place.
+        With ``call.num_expert_group > 1`` the experts split into that many groups of
+        consecutive experts, each scored by the sum of its two best selection scores when a
+        bias is passed and by its best one otherwise, and the experts are selected only
+        inside the ``call.topk_group`` best groups. Ties break towards the lower expert
+        index, and among groups towards the lower group index. Nothing is written in place.
 
         Args:
             gating_output: Contiguous ``(call.num_tokens, call.num_experts)`` in
@@ -194,7 +201,8 @@ class FusedTopKFwdInterface(KernelInterface):
         Returns:
             New ``(topk_weights, topk_ids)``: ``float32`` and ``int32``, both
             ``(call.num_tokens, call.top_k)``. The weights are the selected experts' scores,
-            divided by their own sum when ``call.renormalize``.
+            divided by their own sum when ``call.renormalize``, then multiplied by
+            ``call.routed_scaling_factor``.
         """
 
 

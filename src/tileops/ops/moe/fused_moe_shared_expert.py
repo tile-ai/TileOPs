@@ -43,6 +43,13 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
     shared expert's weights enables it; the shared expert is the SharedExpertMLPFwdOp
     sub-op, which applies ``silu_and_mul``.
 
+    The routed half routes as ``FusedMoEFwdOp``: with ``num_expert_group > 1`` the
+    top-k is selected inside the ``topk_group`` best groups of consecutive experts,
+    each scored by the sum of its two best biased scores when ``correction_bias`` is
+    passed and by its best score otherwise; a group within 1e-5 (relative; also 1e-6
+    absolute) of the last kept group score may be kept in its place.
+    ``routed_scaling_factor`` scales the routed output only, once.
+
     TP support (shared expert only):
         When tp_size > 1, the op shards the shared expert weights internally:
           - shared_w_gate_up [2*F_s, H] is split along dim=0 (ColumnParallel)
@@ -67,6 +74,8 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
+        num_expert_group: int = 1,
+        topk_group: int = 1,
         tp_size: int = 1,
         tp_rank: int = 0,
         *,
@@ -82,6 +91,10 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
             scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
             renormalize: Renormalize top-k weights to sum to 1.
             routed_scaling_factor: Multiplier on the routed expert output.
+            num_expert_group: Groups of consecutive experts the routing is restricted
+                by; must divide E. 1 selects over all experts. DeepSeek-V3: 8.
+            topk_group: Groups kept per token, holding at least ``top_k`` experts.
+                DeepSeek-V3: 4.
             tp_size: Tensor parallel world size. Default 1 (no TP).
             tp_rank: This rank's index in the TP group. Default 0.
             activation: Gated activation of the routed experts; the shared expert
@@ -95,6 +108,8 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.routed_scaling_factor = routed_scaling_factor
+        self.num_expert_group = num_expert_group
+        self.topk_group = topk_group
         self.tp_size = tp_size
         self.tp_rank = tp_rank
         self.activation = activation
@@ -120,7 +135,7 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
             gating_output: [T, E] gating logits.
             w_gate_up: [E, 2F, H] routed expert gate+up weights.
             w_down: [E, H, F] routed expert down weights.
-            correction_bias: Optional [E] bias for Kimi-style routing.
+            correction_bias: Optional [E] bias for Kimi K2 / DeepSeek-V3 routing.
             shared_w_gate_up: [2*F_s, H] shared expert gate+up weights (full); passing
                 it enables the shared expert. When tp_size > 1, sharded along dim=0.
             shared_w_down: [H, F_s] shared expert down weight (full), passed with

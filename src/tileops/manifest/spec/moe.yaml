@@ -119,13 +119,21 @@ IndexedExpertMLPFwdOp:
 FusedTopKFwdOp:
   family: moe
   status: implemented
-  ref_api: vllm.model_executor.layers.fused_moe.router.fused_topk_router.fused_topk
+  ref_api: vllm.model_executor.layers.fused_moe.router.grouped_topk_router.grouped_topk
   signature:
     forall: {T: Dim, E: Dim, G: "DType[float16 | bfloat16 | float32]"}
     params:
       top_k: {type: int}
       scoring_func: {type: "'softmax' | 'sigmoid'", default: softmax}
       renormalize: {type: bool, default: false}
+      # DeepSeek grouped routing: the experts split into num_expert_group groups of
+      # E // num_expert_group consecutive experts, the topk_group best groups are kept, and
+      # top_k is selected inside them. A group scores the sum of its two best biased scores
+      # when correction_bias is passed, else its best score. 1 routes over all experts.
+      num_expert_group: {type: int, default: 1}
+      topk_group: {type: int, default: 1}
+      # Multiplies the returned weights, after any renormalization.
+      routed_scaling_factor: {type: float, default: 1.0}
     inputs:
       gating_output: {dtype: G, shape: "[T, E]", contiguous: true}
       # Added to the sigmoid scores for the selection only; the returned weights stay the
@@ -138,6 +146,14 @@ FusedTopKFwdOp:
     - "0 < top_k"
     - "top_k <= E"
     - "not present(correction_bias) or scoring_func == 'sigmoid'"
+    - "1 <= num_expert_group"
+    - "1 <= topk_group"
+    - "topk_group <= num_expert_group"
+    - "E % num_expert_group == 0"
+    - "top_k <= topk_group * (E // num_expert_group)"
+    # The biased group score sums two experts, so each group holds at least two.
+    - "num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
+    - "routed_scaling_factor > 0"
   workloads:
     # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
   - {T: 32, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t32"}
@@ -148,13 +164,20 @@ FusedTopKFwdOp:
   - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
   - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
   - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
-  - {T: 1, E: 256, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: ds-v3-router-decode-b1}
-  - {T: 32, E: 256, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: ds-v3-router-decode-b32}
+    # DeepSeek-V3 routing over the decode-to-prefill token range: biased sigmoid scores,
+    # 8 groups of 32 experts with the best 4 kept, renormalized and scaled by 2.5.
+  - {T: 1, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t1"}
+  - {T: 32, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t32"}
+  - {T: 64, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "ds-v3-grouped-t64"}
+  - {T: 4096, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t4096"}
   roofline:
     # Per token: scoring (sigmoid 4 per logit; softmax 3, plus the row sum and a divide per
     # kept weight unless renormalizing), top_k compare-and-selects per logit, the bias add,
-    # and 2 * top_k to renormalize.
-    flops: "T * (top_k * E + (4 * E if scoring_func == 'sigmoid' else 3 * E + (0 if renormalize else E + top_k)) + (E if present(correction_bias) else 0) + (2 * top_k if renormalize else 0))"
+    # and 2 * top_k to renormalize. Grouping adds the group scores (2 compare-and-selects
+    # per logit for the two best and an add per group with a bias, a max per logit without),
+    # topk_group compare-and-selects per group to keep the best groups, and a select per
+    # logit to drop the rest; a scaling factor other than one, a multiply per kept weight.
+    flops: "T * (top_k * E + (4 * E if scoring_func == 'sigmoid' else 3 * E + (0 if renormalize else E + top_k)) + (E if present(correction_bias) else 0) + (2 * top_k if renormalize else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
 
 FusedMoEFwdOp:
   family: moe
@@ -166,6 +189,10 @@ FusedMoEFwdOp:
       scoring_func: {type: "'softmax' | 'sigmoid'", default: softmax}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
+      # DeepSeek grouped routing, as FusedTopKFwdOp: top_k is selected inside the
+      # topk_group best of num_expert_group groups of consecutive experts.
+      num_expert_group: {type: int, default: 1}
+      topk_group: {type: int, default: 1}
       activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul, kw_only: true}
     inputs:
       hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
@@ -184,11 +211,18 @@ FusedMoEFwdOp:
     - "H > 0"
     - "F > 0"
     - "routed_scaling_factor > 0"
+    - "1 <= num_expert_group"
+    - "1 <= topk_group"
+    - "topk_group <= num_expert_group"
+    - "E % num_expert_group == 0"
+    - "top_k <= topk_group * (E // num_expert_group)"
+    # The biased group score sums two experts, so each group holds at least two.
+    - "num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
   workloads:
   - {T: 512, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}, {D: float16}], label: "qwen3-235b-decode"}
   - {T: 4096, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-prefill"}
-  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode"}
-  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill"}
+  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-decode"}
+  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-decode"}
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
   - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b1}
@@ -433,6 +467,10 @@ FusedMoESharedExpertFwdOp:
       scoring_func: {type: "'softmax' | 'sigmoid'", default: softmax}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
+      # DeepSeek grouped routing, as FusedTopKFwdOp: top_k is selected inside the
+      # topk_group best of num_expert_group groups of consecutive experts.
+      num_expert_group: {type: int, default: 1}
+      topk_group: {type: int, default: 1}
       tp_size: {type: int, default: 1}
       tp_rank: {type: int, default: 0}
       activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul, kw_only: true}
@@ -458,6 +496,13 @@ FusedMoESharedExpertFwdOp:
     - "H > 0"
     - "F > 0"
     - "routed_scaling_factor > 0"
+    - "1 <= num_expert_group"
+    - "1 <= topk_group"
+    - "topk_group <= num_expert_group"
+    - "E % num_expert_group == 0"
+    - "top_k <= topk_group * (E // num_expert_group)"
+    # The biased group score sums two experts, so each group holds at least two.
+    - "num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
     - "1 <= tp_size"
     - "0 <= tp_rank"
     - "tp_rank < tp_size"
@@ -472,13 +517,13 @@ FusedMoESharedExpertFwdOp:
   - {T: 512, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t512"}
   - {T: 2048, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t2048"}
   - {T: 4096, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t4096"}
-  - {T: 1, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t1"}
-  - {T: 32, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-t32"}
-  - {T: 64, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t64"}
-  - {T: 128, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t128"}
-  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t512"}
-  - {T: 2048, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t2048"}
-  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t4096"}
+  - {T: 1, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t1"}
+  - {T: 32, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-grouped-t32"}
+  - {T: 64, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t64"}
+  - {T: 128, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t128"}
+  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t512"}
+  - {T: 2048, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t2048"}
+  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, num_expert_group: 8, topk_group: 4, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-grouped-t4096"}
   - {T: 1, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t1"}
   - {T: 32, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t32"}
   - {T: 64, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t64"}

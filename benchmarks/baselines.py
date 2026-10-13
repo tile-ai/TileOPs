@@ -27,6 +27,7 @@ __all__ = [
     "FLA_TAG",
     "QUACK_TAG",
     "TORCH_COMPILE_TAG",
+    "VLLM_GROUPED_TOPK_SIGMOID",
     "VLLM_TAG",
     "backward_of",
     "compiled_reference",
@@ -51,6 +52,8 @@ FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 FLA_TAG = "fla"
 VLLM_TAG = "vllm"
+# vLLM's fused grouped_topk scoring_func argument: 1 applies the sigmoid to the logits.
+VLLM_GROUPED_TOPK_SIGMOID = 1
 
 
 def compiled_reference(
