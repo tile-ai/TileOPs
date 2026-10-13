@@ -53,9 +53,9 @@ __device__ __forceinline__ float load_f32_evict_last(const float* src) {
   return v;
 }
 
-// Loads 16 bytes of global memory into dst, evict-last in L2. A streaming
-// kernel that reads every input once and writes as much ran faster with it than
-// with the default policy, evict-first or an L1 hint; see the reader.
+// Loads 16 bytes of global memory into dst, evict-last in L2. Streaming kernels
+// that read each input once measured faster with it than with default loads;
+// each reader states its measurement.
 __device__ __forceinline__ void load16_evict_last(void* dst, const void* src) {
   uint64_t policy;
   asm("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(policy));
