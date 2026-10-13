@@ -175,7 +175,8 @@ class _Cand:
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
     # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
     max_accum_regs = 200
-    # Deepest ring each structure is built with, whatever the SMEM budget allows.
+    # Deepest ring each structure is built with, whatever the SMEM budget allows; the
+    # one-wave 64x192 basic tile sets its own ring below.
     ns_cap = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
 
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:

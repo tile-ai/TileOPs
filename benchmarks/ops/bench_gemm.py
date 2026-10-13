@@ -20,7 +20,12 @@ from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
-from workloads.gemm import GemmFP8Workload, GemmWorkload, dequantize_w4a16_weight
+from workloads.gemm import (
+    GemmFP8Workload,
+    GemmWorkload,
+    dequantize_w4a16_weight,
+    matmul_fp32_reduction,
+)
 
 CUBLASLT_TAG = "cublaslt-best"
 
@@ -49,6 +54,7 @@ class _CublasLtBestGemm:
     N_CANDIDATES = 8
 
     def __init__(self, a: torch.Tensor, b: torch.Tensor, trans_b: bool) -> None:
+        from nvmath.bindings.cublasLt import ReductionScheme
         from nvmath.linalg.advanced import (
             Matmul,
             MatmulComputeType,
@@ -71,7 +77,15 @@ class _CublasLtBestGemm:
                 memory_limit=self.WORKSPACE_BYTES,
             ),
         )
-        algorithms = self._mm.plan(preferences=MatmulPlanPreferences(limit=self.N_CANDIDATES))
+        # GemmFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
+        # may reduce its partials only in the compute type: an in-place reduction sums them
+        # in the 16-bit output.
+        algorithms = self._mm.plan(
+            preferences=MatmulPlanPreferences(
+                limit=self.N_CANDIDATES,
+                reduction_scheme_mask=ReductionScheme.COMPUTE_TYPE,
+            )
+        )
         if not algorithms:
             self._mm.free()
             raise RuntimeError("cuBLASLt returned no runnable algorithm")
@@ -81,7 +95,7 @@ class _CublasLtBestGemm:
             algorithms,
             key=lambda al: median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=al))),
         )
-        torch_ms = median_busy_ms(bench_kernel(lambda: torch.matmul(a, rhs)))
+        torch_ms = median_busy_ms(bench_kernel(lambda: matmul_fp32_reduction(a, rhs)))
         best_ms = median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=self._algorithm)))
         self._use_torch = torch_ms < best_ms
 
@@ -102,7 +116,7 @@ class _CublasLtBestGemm:
             self._mm.reset_operands(a=a, b=rhs)
             self._a, self._b = a, b
         if self._use_torch:
-            return torch.matmul(a, rhs)
+            return matmul_fp32_reduction(a, rhs)
         return self._mm.execute(algorithm=self._algorithm)
 
 
@@ -193,9 +207,11 @@ def _deepgemm_bf16_nt(
 ) -> Optional[Callable[..., torch.Tensor]]:
     """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
 
-    It reads both operands K-major and bf16 only, which is the N-T layout here.
+    It reads both operands K-major and bf16 only, which is the N-T layout here, and
+    stores the output through TMA, which needs a whole number of 16-byte units a row:
+    an N that is not a multiple of 8 fails its descriptor.
     """
-    if workload.trans_a or not workload.trans_b or a.dtype != torch.bfloat16:
+    if workload.trans_a or not workload.trans_b or a.dtype != torch.bfloat16 or workload.n % 8:
         return None
 
     gemm = deepgemm_op("bf16_gemm_nt")
@@ -335,12 +351,15 @@ def test_gemm_bench(case) -> None:
         flaggems_mm = flaggems_op("mm")
         implementations[FLAGGEMS_TAG] = flaggems_mm
 
-    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+    # quack requires an output row stride divisible by 8, so it cannot take an N that
+    # is not a multiple of 8.
+    if workload.n % 8 == 0:
+        quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
-    def quack_fn(a, b):
-        return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
+        def quack_fn(a, b):
+            return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
 
-    implementations[QUACK_TAG] = quack_fn
+        implementations[QUACK_TAG] = quack_fn
     bench.Runner(op, case).compare(implementations)
 
 
