@@ -16,7 +16,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, MGroupedGemmFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel", "MoEGroupedGemmTightRowMMAKernel"]
+__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -33,10 +33,11 @@ def _moe_grouped_gemm_mma_kernel(
 ) -> Callable:
     """One ``T.gemm`` tile per block over the rows of one group.
 
-    Masked and per-row layouts map a block to a tile directly. The prefix-sum layouts
-    number each group's tiles after the previous groups', so a block walks the group ends
-    to find its own; ``ceil(m / block_m)`` plus one per group bounds the count, and the
-    blocks past it do nothing.
+    Masked and aligned per-row layouts map a block to a tile directly. The prefix-sum
+    layouts number each group's tiles after the previous groups', so a block walks the
+    group ends to find its own; the tight per-row layout walks them too, finding each end
+    by binary search over the sorted row ids. ``ceil(m / block_m)`` plus one per group
+    bounds the count, and the blocks past it do nothing.
     """
     accum_dtype = "float"
     gtype = GemmType(gemm_type)
@@ -246,12 +247,6 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
 
     supported_archs: list[int] = [80, 86, 89]
     preferred_over = frozenset()
-    # A tile here holds one group's rows, which a tight per-row layout does not guarantee.
-    _TYPES = {
-        key: gtype
-        for key, gtype in MoEGroupedGemmKernel._TYPES.items()
-        if gtype is not GemmType.M_GROUPED_TIGHT_PER_ROW
-    }
 
     def __init__(self, call: MGroupedGemmCall) -> None:
         device_index = call.device.index if call.device is not None else None
@@ -332,12 +327,3 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
             return out
         self.kernel(**self.config)(a, b, layout_metadata, out)
         return out
-
-
-class MoEGroupedGemmTightRowMMAKernel(MoEGroupedGemmMMAKernel):
-    """Recover tight per-row segment bounds for the shared MMA program on SM89."""
-
-    supported_archs: list[int] = [89]
-    _TYPES = {
-        ("contiguous", "tight", "per_row"): GemmType.M_GROUPED_TIGHT_PER_ROW,
-    }

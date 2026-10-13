@@ -420,8 +420,8 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_grouped_gemm_tight_per_row_matches_the_psum_layout(dtype):
     """Per-row ids on tight rows, an empty group included: the psum layout's exact output."""
-    if get_sm_version(torch.device(run_device()).index) not in (89, 90):
-        pytest.skip("tight per-row grouped GEMM requires SM89 or SM90")
+    if get_sm_version(torch.device(run_device()).index) not in (80, 86, 89, 90):
+        pytest.skip("tight per-row grouped GEMM runs on SM80, SM86, SM89 and SM90")
     sizes = [100, 0, 300, 128, 7, 64]
     tight_per_row = {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}}
     call = _gemm_call(dtype, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
@@ -525,6 +525,17 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     )
     op, out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize("arch", [80, 86, 89])
+def test_grouped_gemm_serves_tight_per_row_on_the_mma_kernel(arch):
+    """The MMA kernel finds each tight per-row group's end, so every arch it runs on takes
+    the layout."""
+    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())
+    call = _grouped_call(arch=arch, metadata_kind="per_row")
+    assert op.key_for("grouped_gemm", call) == "grouped_gemm_mma"
 
 
 def _grouped_call(**facts) -> MGroupedGemmCall:
