@@ -90,28 +90,31 @@ def _moe_grouped_gemm_mma_kernel(
                 seen[0] = 0
                 prev_end[0] = 0
                 for g in T.serial(num_groups):
-                    if tight_per_row:
-                        end = T.alloc_var("int32", init=0)
-                        lo = T.alloc_var("int32", init=0)
-                        hi = T.alloc_var("int32", init=m)
-                        for _ in T.serial(32):
-                            if lo < hi:
-                                mid = (lo + hi) >> T.int32(1)
-                                if layout[mid] <= g:
-                                    lo = mid + T.int32(1)
-                                else:
-                                    hi = mid
-                        end = lo
-                    start = prev_end[0] if tight else T.ceildiv(prev_end[0], alignment) * alignment
-                    tiles = T.ceildiv(
-                        T.max((end if tight_per_row else layout[g]) - start, 0), block_m
-                    )
-                    if (group[0] < 0) & (bx < seen[0] + tiles):
-                        group[0] = g
-                        row0[0] = start + (bx - seen[0]) * block_m
-                        row_end[0] = end if tight_per_row else layout[g]
-                    seen[0] += tiles
-                    prev_end[0] = end if tight_per_row else layout[g]
+                    if not tight_per_row or group[0] < 0:
+                        if tight_per_row:
+                            end = T.alloc_var("int32", init=0)
+                            lo = T.alloc_var("int32", init=0)
+                            hi = T.alloc_var("int32", init=m)
+                            for _ in T.serial(32):
+                                if lo < hi:
+                                    mid = (lo + hi) >> T.int32(1)
+                                    if layout[mid] <= g:
+                                        lo = mid + T.int32(1)
+                                    else:
+                                        hi = mid
+                            end = lo
+                        start = (
+                            prev_end[0] if tight else T.ceildiv(prev_end[0], alignment) * alignment
+                        )
+                        tiles = T.ceildiv(
+                            T.max((end if tight_per_row else layout[g]) - start, 0), block_m
+                        )
+                        if (group[0] < 0) & (bx < seen[0] + tiles):
+                            group[0] = g
+                            row0[0] = start + (bx - seen[0]) * block_m
+                            row_end[0] = end if tight_per_row else layout[g]
+                        seen[0] += tiles
+                        prev_end[0] = end if tight_per_row else layout[g]
 
         def activate(gate, up):
             """act(gate) * up in float32, as the SM90 template's epilogue computes it."""
