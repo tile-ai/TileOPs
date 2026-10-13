@@ -93,9 +93,8 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     Raises:
         ValueError: if no V-tile width is admissible at *dim_v*.
     """
-    # Chunk length at or above which the untuned recurrence prefers a tiled width.
-    # Inherited from the per-kernel defaults with no reason stated; no builder
-    # enforces it, so it steers the default only, never the sweep.
+    # Chunk length at or above which the untuned recurrence prefers a tiled width. No
+    # builder enforces it, so it steers the default only, never the sweep.
     tiled_default_min_chunk_size = 64
     candidates = _require_h_block_v_candidates(dim_v)
     tiled = [block_v for block_v in candidates if block_v]

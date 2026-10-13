@@ -365,7 +365,6 @@ def _best_config_cached(
         instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
         leaves.
         """
-        # Both tiny-M rules use a 128-column tile (see above).
         tiny_m_block_n = 128
         stages = _swap_ab_stages(n, sm_count)
         if stages is not None:

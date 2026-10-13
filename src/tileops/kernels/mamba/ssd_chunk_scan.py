@@ -65,6 +65,8 @@ from tileops.utils import get_sm_version
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
+_GEMM_K_STEP = 16
+
 
 @functools.lru_cache(maxsize=32)
 def _ssd_chunk_scan_fwd_kernel(
@@ -489,9 +491,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The tensor-core instruction takes the history GEMM's K extent (block_n) in steps of
-    # this many elements.
-    _GEMM_K_STEP = 16
 
     @classmethod
     def entry_for(cls, call: SSDChunkScanCall) -> Entry:
@@ -552,7 +551,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(64, -(-self.d_state // self._GEMM_K_STEP) * self._GEMM_K_STEP),
+            "block_n": min(64, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP),
             "block_s": 64,
             "threads": 128,
             "num_stages": 3,
@@ -565,7 +564,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         # history-path loop count, num_stages the pipeline depth. block_s (causal
         # GEMM tile size and s-loop count) and threads (warps per block) are the
         # two the sweep varies.
-        block_n = min(128, -(-self.d_state // self._GEMM_K_STEP) * self._GEMM_K_STEP)
+        block_n = min(128, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP)
         return (
             [
                 {

@@ -764,8 +764,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
     supported_archs: list[int] = [90]
     # Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
-    # reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py whenever the tile or
-    # the epilogue changes. A board without an entry keeps BmmKernel.
+    # reaches 64 and loses. A board without an entry keeps BmmKernel.
     _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
 
     @staticmethod

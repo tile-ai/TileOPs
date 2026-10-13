@@ -371,7 +371,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     # Bins one search pass splits its bracket of keys into. A pass costs one shared-memory add
     # an element whatever this is, so the figure to keep down is the passes, and 256 bins spend
     # a bfloat16 key in two of them. It is also the widest split whose per-lane bins fit the
-    # shared budget, at 256 * 32 * 4 = 32 KB. Re-fit by timing a manifest row at 128 and 256.
+    # shared budget, at 256 * 32 * 4 = 32 KB.
     _SEARCH_BINS: ClassVar[int] = 256
 
     @classmethod

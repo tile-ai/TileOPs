@@ -82,7 +82,7 @@ def select_row_config() -> dict:
     Takes no width: a row is padded to a multiple of the 256-element alignment,
     which 128 threads always divide.
     """
-    default_threads = 128  # divides every row padded to a multiple of ALIGNMENT
+    default_threads = 128
     return {"block_m": 1, "threads": default_threads}
 
 
@@ -100,7 +100,7 @@ def select_row_config_by_width(n_padded: int, widths: Optional[tuple] = None) ->
     if widths is None:
         widths = widths_for_row(n_padded)
     usable = sorted(t for t in widths if n_padded % t == 0)
-    target_elements_per_thread = 32  # elements per thread the chosen width aims for
+    target_elements_per_thread = 32
     target = n_padded // target_elements_per_thread
     for candidate in reversed(usable):
         if candidate <= target:
@@ -115,7 +115,7 @@ def select_row_configs(
     dtype: torch.dtype = torch.float16,
     num_buffers: int = 1,
     widths: tuple = _CANDIDATE_THREADS,
-    block_ms: tuple = (1, 2, 4, 8),  # rows per block offered to autotune
+    block_ms: tuple = (1, 2, 4, 8),
     every_width_past_budget: bool = False,
 ) -> list[dict]:
     """Autotune space: *block_ms* x the thread counts *widths* admits.

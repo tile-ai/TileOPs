@@ -284,7 +284,7 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
     head_kv = heads // group
     tile_t = tile_rows // group
     m = tile_rows
-    # A chunk block is two key halves, each scored by one n=16 QK WGMMA.
+    # A chunk block is two key halves, each scored by one QK WGMMA.
     kh = bc // 2
     # Query tiles in flight per CTA.
     stages = 2

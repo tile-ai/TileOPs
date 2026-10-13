@@ -187,8 +187,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
 
     # Pad of a shared row past chunk_len, a multiple of 4; ``_head_tile`` says why.
     _ROW_PAD = 4
-    # The shared memory a block takes without the opt-in.
-    _MAX_SHARED_BYTES = STATIC_SHARED_BYTES
 
     @classmethod
     def _shared_bytes(cls, block_h: int, chunk_len: int) -> int:
@@ -206,7 +204,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         """
         tile = 8
         while tile > 1 and (
-            tile > n_heads or cls._shared_bytes(tile, chunk_len) > cls._MAX_SHARED_BYTES
+            tile > n_heads or cls._shared_bytes(tile, chunk_len) > STATIC_SHARED_BYTES
         ):
             tile //= 2
         return tile
@@ -292,7 +290,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         for bh in [1, 2, 4, 8, 16]:
             if bh > self.n_heads:
                 break
-            if self._shared_bytes(bh, self.chunk_len) > self._MAX_SHARED_BYTES:
+            if self._shared_bytes(bh, self.chunk_len) > STATIC_SHARED_BYTES:
                 break
             for threads in [128, 256, 512, 1024]:
                 if threads > bh * self.chunk_len:
