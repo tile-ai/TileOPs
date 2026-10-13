@@ -5,10 +5,6 @@ import tilelang.language as T
 import torch
 
 RING_DEPTH = 2
-_CONSUMER_THREADS = 128
-# TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
-# producer and consumer ranges take 3 and 4.
-_CONSUMER_BARRIER = 5
 
 COMPILE_FLAGS = [
     "-O3",
@@ -74,6 +70,10 @@ def make_gqa_decode_bs1_split(
     load_kv,
 ):
     """Create the shared context-split schedule around a layout-specific KV loader."""
+    consumer_threads = 128
+    # TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
+    # producer and consumer ranges take 3 and 4.
+    consumer_barrier = 5
 
     def make_gqa_decode_bs1_consumer(
         block_m: int,
@@ -127,7 +127,7 @@ def make_gqa_decode_bs1_split(
                         if k * block_n + j >= this_len:
                             Vs[k % ring_depth, j, d] = T.cast(0, dtype)
                     T.fence_proxy_async()
-                    T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+                    T.sync_threads(consumer_barrier, consumer_threads)
                 T.wgmma_gemm(
                     Qs,
                     Ks[k % ring_depth, :, :],

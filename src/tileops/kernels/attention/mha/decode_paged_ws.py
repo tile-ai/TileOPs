@@ -41,21 +41,6 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["MHADecodePagedWSKernel"]
 
-# Warps in the consumer group. One warp group of each role, 256 threads: two
-# consumer groups deadlock the block-wide sync the layout pass inserts.
-_CONS_WARPS = 4
-_CONS = _CONS_WARPS * WARP_LANES
-_PROD = 128
-# Named barrier the consumer group uses on its own, never block-wide.
-_MERGE_BARRIER = 1
-# Finite stand-in for -inf in the running max, so a fully masked tile rescales
-# by exactly one instead of evaluating exp2(-inf - -inf).
-_NEG_FLOOR = -1.0e38
-# What an empty split publishes as its log-sum-exp, beside a zero partial: finite, so
-# the merge weighs it exp2(_EMPTY_LSE - peak), zero beside a split that saw a key and
-# one when none did, never 0 * NaN.
-_EMPTY_LSE = -1.0e30
-
 
 @functools.lru_cache(maxsize=32)
 def _mha_decode_paged_ws_kernel(
@@ -76,6 +61,20 @@ def _mha_decode_paged_ws_kernel(
     vec = dim // WARP_LANES
     # Key elements a lane reads per shared-memory load, for 16-bit keys.
     kchunk = VECTOR_ACCESS_BYTES // 2
+    # Warps in the consumer group. One warp group of each role, 256 threads: two
+    # consumer groups deadlock the block-wide sync the layout pass inserts.
+    cons_warps = 4
+    cons = cons_warps * WARP_LANES
+    prod = 128
+    # Named barrier the consumer group uses on its own, never block-wide.
+    merge_barrier = 1
+    # Finite stand-in for -inf in the running max, so a fully masked tile rescales
+    # by exactly one instead of evaluating exp2(-inf - -inf).
+    neg_floor = -1.0e38
+    # What an empty split publishes as its log-sum-exp, beside a zero partial: finite, so
+    # the merge weighs it exp2(empty_lse - peak), zero beside a split that saw a key and
+    # one when none did, never 0 * NaN.
+    empty_lse = -1.0e30
 
     @tilelang.jit(
         out_idx=[-1],
@@ -83,12 +82,12 @@ def _mha_decode_paged_ws_kernel(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(block_N: int, num_split: int, stages: int, group: int):
-        rows_per_warp = block_N // _CONS_WARPS
+        rows_per_warp = block_N // cons_warps
         # Lanes that share one key row's score, so every lane works at any tile height.
         lanes_per_row = WARP_LANES // rows_per_warp
         span = dim // lanes_per_row
         chunk = min(kchunk, span)
-        threads = _CONS + _PROD
+        threads = cons + prod
         n_groups = seqlen_q // group
 
         @T.prim_func
@@ -112,9 +111,9 @@ def _mha_decode_paged_ws_kernel(
                 # the other arm.
                 Ks = T.alloc_shared([stages, block_N, dim], dtype)
                 Vs = T.alloc_shared([stages, block_N, dim], dtype)
-                warp_m = T.alloc_shared([group, _CONS_WARPS], accum, scope="shared")
-                warp_l = T.alloc_shared([group, _CONS_WARPS], accum, scope="shared")
-                warp_o = T.alloc_shared([group, _CONS_WARPS, dim], accum, scope="shared")
+                warp_m = T.alloc_shared([group, cons_warps], accum, scope="shared")
+                warp_l = T.alloc_shared([group, cons_warps], accum, scope="shared")
+                warp_o = T.alloc_shared([group, cons_warps, dim], accum, scope="shared")
                 q_s = T.alloc_shared([group, dim], accum, scope="shared")
                 arrived_before = T.alloc_shared([1], "int32", scope="shared")
                 T.annotate_layout(
@@ -128,10 +127,10 @@ def _mha_decode_paged_ws_kernel(
                 # empty barrier by every consumer thread that finished reading
                 # it. The counts are the two group sizes; getting them wrong
                 # hangs the block and takes the context with it.
-                k_ready = T.alloc_barrier([_PROD] * stages)
-                k_free = T.alloc_barrier([_CONS] * stages)
-                v_ready = T.alloc_barrier([_PROD] * stages)
-                v_free = T.alloc_barrier([_CONS] * stages)
+                k_ready = T.alloc_barrier([prod] * stages)
+                k_free = T.alloc_barrier([cons] * stages)
+                v_ready = T.alloc_barrier([prod] * stages)
+                v_free = T.alloc_barrier([cons] * stages)
 
                 tx = T.get_thread_binding()
                 kv_len = real_seqlen_kv[bb]
@@ -146,7 +145,7 @@ def _mha_decode_paged_ws_kernel(
                 tile_begin = bs * tiles_per_split
                 n_tiles = T.max(T.min(tile_begin + tiles_per_split, tiles_total) - tile_begin, 0)
 
-                if tx >= _CONS:
+                if tx >= cons:
                     with T.ws(1):
                         for t in T.serial(n_tiles):
                             st = t % stages
@@ -190,8 +189,8 @@ def _mha_decode_paged_ws_kernel(
                         total = T.alloc_local([1], accum)
                         weight = T.alloc_local([1], accum)
 
-                        for i in T.serial(T.ceildiv(group * dim, _CONS)):
-                            idx = i * _CONS + tx
+                        for i in T.serial(T.ceildiv(group * dim, cons)):
+                            idx = i * cons + tx
                             if idx < group * dim:
                                 q_s[idx // dim, idx % dim] = T.cast(
                                     Q[bb, q0 + idx // dim, bh, idx % dim], accum
@@ -207,10 +206,10 @@ def _mha_decode_paged_ws_kernel(
                             # otherwise reach exp2(-inf - -inf) = NaN and poison the
                             # merge; from a floor the same arithmetic yields a
                             # rescale of exactly 1 over a zero accumulator.
-                            m_run[g] = _NEG_FLOOR
+                            m_run[g] = neg_floor
                             # This lane's share of the row sum.
                             l_run[g] = 0
-                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
+                        T.sync_threads(barrier_id=merge_barrier, arrive_count=cons)
 
                         for t in T.serial(n_tiles):
                             st = t % stages
@@ -279,18 +278,18 @@ def _mha_decode_paged_ws_kernel(
                             if lane == 0:
                                 warp_m[g, warp] = m_run[g]
                                 warp_l[g, warp] = l_run[g]
-                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
+                        T.sync_threads(barrier_id=merge_barrier, arrive_count=cons)
 
-                        # Warp w merges rows w, w + _CONS_WARPS, ...
+                        # Warp w merges rows w, w + cons_warps, ...
                         for g in T.unroll(group):
-                            if warp == g % _CONS_WARPS:
-                                m_new[0] = _NEG_FLOOR
-                                for u in T.serial(_CONS_WARPS):
+                            if warp == g % cons_warps:
+                                m_new[0] = neg_floor
+                                for u in T.serial(cons_warps):
                                     m_new[0] = T.max(m_new[0], warp_m[g, u])
                                 l_run[g] = 0
                                 for c in T.serial(vec):
                                     acc_o[g, c] = 0
-                                for u in T.serial(_CONS_WARPS):
+                                for u in T.serial(cons_warps):
                                     resc[0] = T.exp2(warp_m[g, u] - m_new[0])
                                     l_run[g] += warp_l[g, u] * resc[0]
                                     for c in T.serial(vec):
@@ -311,14 +310,14 @@ def _mha_decode_paged_ws_kernel(
                                         )
                                     if lane == 0:
                                         glse[bb, q0 + g, bh, bs] = T.if_then_else(
-                                            l_run[g] > 0, T.log2(l_run[g]) + m_new[0], _EMPTY_LSE
+                                            l_run[g] > 0, T.log2(l_run[g]) + m_new[0], empty_lse
                                         )
 
                         if num_split > 1:
                             # The last split to arrive merges every split. The release on
                             # the count publishes this block's partials, which the barrier
                             # orders before it; the acquire makes the others' visible.
-                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
+                            T.sync_threads(barrier_id=merge_barrier, arrive_count=cons)
                             if tx == 0:
                                 arrived_before[0] = T.atomic_add(
                                     Arrived[bg * heads + bh],
@@ -326,13 +325,13 @@ def _mha_decode_paged_ws_kernel(
                                     memory_order="acq_rel",
                                     return_prev=True,
                                 )
-                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
+                            T.sync_threads(barrier_id=merge_barrier, arrive_count=cons)
                             if arrived_before[0] == num_split - 1:
                                 for g in T.unroll(group):
-                                    if warp == g % _CONS_WARPS:
+                                    if warp == g % cons_warps:
                                         # Every partial is read before any is used:
                                         # folding into the read loop chains the loads.
-                                        peak[0] = _EMPTY_LSE
+                                        peak[0] = empty_lse
                                         for s in T.serial(num_split):
                                             lse[s] = glse[bb, q0 + g, bh, s]
                                         for s in T.serial(num_split):

@@ -57,11 +57,6 @@ __all__ = [
     "WelfordReduceKernel",
 ]
 
-# The tiled simple reduce's reduction across threads takes one fp32 per thread of shared
-# memory besides its tile, at the widest thread count the tuner offers. Welford's plan
-# already counts a second tile, held only in its second pass and wider than this.
-_TILED_WORKSPACE_BYTES = max(AUTOTUNE_THREADS) * 4
-
 
 class ReduceKernelBase(Kernel):
     """Built from a `ReduceCall`; shapes an ``[M]`` result the way the op declares it.
@@ -93,13 +88,18 @@ class ReduceKernelBase(Kernel):
     def _planner_for(call: ReduceCall, n: int) -> BlockConfigPlanner:
         """The block planner for rows of *n* elements of *call*'s dtype and kind."""
         slots = 2 if call.op_kind in WELFORD_KINDS else 1
+        # The tiled simple reduce's reduction across threads takes one fp32 per thread of
+        # shared memory besides its tile, at the widest thread count the tuner offers.
+        # Welford's plan already counts a second tile, held only in its second pass and
+        # wider than this.
+        tiled_workspace_bytes = max(AUTOTUNE_THREADS) * 4
         return BlockConfigPlanner(
             align_up(n, DEFAULT_ALIGNMENT),
             torch_dtype_nbytes(call.dtype),
             call.smem_budget,
             num_buffers=slots,
             frag_slots=slots,
-            workspace_bytes=0 if slots == 2 else _TILED_WORKSPACE_BYTES,
+            workspace_bytes=0 if slots == 2 else tiled_workspace_bytes,
             split_workspace=True,
         )
 

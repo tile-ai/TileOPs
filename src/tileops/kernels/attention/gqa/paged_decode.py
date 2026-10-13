@@ -31,10 +31,6 @@ from tileops.utils import get_shared_memory_optin
 
 __all__ = ["GQADecodePagedKernel"]
 
-# Below this, no split of the row saw a key. A threshold, not an equality with -inf:
-# fast math folds comparisons with infinity away.
-_NO_KEY_LSE = -1.0e30
-
 
 def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
     """Return the key tile heights that keep one tile inside one page, widest first.
@@ -463,6 +459,10 @@ def _gqa_decode_split_paged_kernel(
                 T.copy(logsum, glse[bid, kv_head, sid, row0 : row0 + block_M])
                 T.copy(acc_o, Output_partial[bid, kv_head, sid, row0 : row0 + block_M, :])
 
+        # Below this, no split of the row saw a key. A threshold, not an equality with -inf:
+        # fast math folds comparisons with infinity away.
+        no_key_lse = -1.0e30
+
         @T.macro
         def combine(
             glse: T.Tensor(shape_lse, accum_dtype),
@@ -491,7 +491,7 @@ def _gqa_decode_split_paged_kernel(
                 # A row no split saw a key for outputs zeros.
                 for d in T.Parallel(dim):
                     Output[bid, r // group, kv_head * group + r % group, d] = T.if_then_else(
-                        lse_max[0] < T.cast(_NO_KEY_LSE, accum_dtype), 0, o_accum[d]
+                        lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
                     )
 
         @T.prim_func

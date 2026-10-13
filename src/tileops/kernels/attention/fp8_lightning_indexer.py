@@ -74,14 +74,9 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
         """
 
 
-# block_Q == 1 deadlocks the software pipeline (some warps never reach the
-# pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
-_MIN_PIPELINED_BLOCK_Q = 2
-
-
 @functools.lru_cache(maxsize=32)
 def _fp8_lightning_indexer_kernel(
-    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits=True
+    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q, clean_logits=True
 ):
     @tilelang.jit(
         pass_configs={
@@ -97,7 +92,7 @@ def _fp8_lightning_indexer_kernel(
         if block_Q is None:
             block_Q = max(1, 128 // heads)
         # Guards every entry point, incl. the default block_Q == 1 for heads >= 65.
-        if block_Q < _MIN_PIPELINED_BLOCK_Q:
+        if block_Q < min_pipelined_block_q:
             num_stages = 0
         dtype = T.float8_e4m3fn
         accum_dtype = T.float32
@@ -282,8 +277,9 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
     """
 
-    @staticmethod
+    @classmethod
     def _fp8_lightning_indexer_run(
+        cls,
         batch: int,
         seq_len: int,
         heads: int,
@@ -303,9 +299,15 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         CuSeqLenKS: torch.Tensor,
         CuSeqLenKE: torch.Tensor,
     ) -> None:
-        _fp8_lightning_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv, kv_group)(
-            block_N, num_stages, threads, block_Q
-        )(
+        _fp8_lightning_indexer_kernel(
+            batch,
+            seq_len,
+            heads,
+            index_dim,
+            seq_len_kv,
+            kv_group,
+            cls._MIN_PIPELINED_BLOCK_Q,
+        )(block_N, num_stages, threads, block_Q)(
             IndexQ.view(batch, seq_len * heads, index_dim),
             IndexK,
             IndexKScale,
@@ -323,6 +325,9 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     _BLOCK_N = 64
     _NUM_STAGES = 2
     _THREADS = 128
+    # block_Q == 1 deadlocks the software pipeline (some warps never reach the
+    # pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
+    _MIN_PIPELINED_BLOCK_Q = 2
 
     @classmethod
     def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
@@ -342,7 +347,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         """Shared memory of the default program, a byte an element: the block's queries, a key
         tile a pipeline stage (one tile at one query, which runs unpipelined), with several
         groups one group's keys and queries, and a reduction workspace of 4 bytes a thread."""
-        stages = cls._NUM_STAGES if block_q >= _MIN_PIPELINED_BLOCK_Q else 1
+        stages = cls._NUM_STAGES if block_q >= cls._MIN_PIPELINED_BLOCK_Q else 1
         n = cls._BLOCK_N
         tiles = block_q * heads * index_dim + stages * n * kv_group * index_dim
         if kv_group > 1:
@@ -395,6 +400,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.index_dim,
             self.seq_len_kv,
             self.kv_group,
+            self._MIN_PIPELINED_BLOCK_Q,
             self.clean_logits,
         )
 
@@ -437,7 +443,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         _configs = [
             c
             for c in itertools.product(block_N, num_stages, threads, block_Q)
-            if c[3] >= _MIN_PIPELINED_BLOCK_Q or c[1] == 0
+            if c[3] >= self._MIN_PIPELINED_BLOCK_Q or c[1] == 0
         ]
 
         configs = [

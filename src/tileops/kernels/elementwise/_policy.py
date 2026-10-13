@@ -8,14 +8,10 @@ from tileops.kernels.elementwise._broadcast import row_tile_leaves_tail
 from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, torch_dtype_nbytes
 from tileops.kernels.kernel_base import Kernel
 
-_AUTOTUNE_THREADS = (128, 256, 512)
-_DEFAULT_THREADS = 128
-_DIRECT_THREADS = 256
+# The default config and the autotune sweep derive elements per thread from these two,
+# so a tuned kernel can land back on its default.
 _BYTES_PER_THREAD = 16
 _MIN_NUM_PER_THREAD = 4
-_BOOL_OUTPUT_MAX_NPT = 4
-_MAX_THREADS = 1024
-_TARGET_BLOCKS = 256
 
 
 def default_launch_config(
@@ -62,15 +58,19 @@ def default_launch_config(
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
-    threads = default_threads or (_DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS)
+    direct_threads = 256
+    vectorized_threads = 128
+    threads = default_threads or (direct_threads if strategy == "direct" else vectorized_threads)
 
     elem_bytes = torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
 
     if output_dtype == torch.bool and stores_bool:
-        capped = min(npt, _BOOL_OUTPUT_MAX_NPT)
+        bool_output_max_npt = 4  # elements per thread a bool store is capped at
+        capped = min(npt, bool_output_max_npt)
         if strategy != "direct":  # a direct block spans `threads` whatever npt says
-            threads = min(_MAX_THREADS, threads * npt // capped)
+            max_threads = 1024  # CUDA's cap on threads per block
+            threads = min(max_threads, threads * npt // capped)
         npt = capped
     else:
         if torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
@@ -81,11 +81,12 @@ def default_launch_config(
         if strategy == "register_copy":
             npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
+    target_blocks = 256  # fewest blocks a launch should spread n_total over
     while (
         n_total is not None
         and strategy != "direct"
         and npt > min_num_per_thread
-        and n_total < threads * npt * _TARGET_BLOCKS
+        and n_total < threads * npt * target_blocks
     ):
         npt //= 2
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
@@ -112,10 +113,11 @@ def elementwise_autotune_configs(
     and *register_copy_num_per_thread* produce, so a kernel can always land back on
     its shipped config, and reaches *min_num_per_thread* where a kernel lowers it.
     """
+    autotune_threads = (128, 256, 512)  # block widths the sweep times
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
-        return [{"threads": t} for t in _AUTOTUNE_THREADS]
+        return [{"threads": t} for t in autotune_threads]
     elem_bytes = torch_dtype_nbytes(dtype)
     default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
     if strategy == "register_copy":
@@ -123,7 +125,7 @@ def elementwise_autotune_configs(
     npts = tuple(
         sorted({min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2})
     )
-    return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
+    return [{"threads": t, "num_per_thread": n} for t in autotune_threads for n in npts]
 
 
 @dataclass(frozen=True)

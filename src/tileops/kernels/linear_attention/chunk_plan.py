@@ -2,6 +2,8 @@ import torch
 
 from tileops.kernels.tiling import align_up
 
+# The chunk length the chunked prefill programs are built with. The shared-memory plan
+# below sizes their tiles from it, so the plan and every program it sizes must agree.
 CHUNK_SIZE = 64
 
 

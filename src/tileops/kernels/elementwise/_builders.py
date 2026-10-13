@@ -15,15 +15,11 @@ from tileops.kernels.elementwise._broadcast import (
 )
 from tileops.kernels.elementwise._op_body import GuardedOpFunc, op_func_for
 
-# Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
-# slots and spends rows * T index chains, so it pays while T / (W - T) stays under
-# the lane slots one chain is worth. At W // 4 that ratio is one chain per three
-# idle slots.
-_TAIL_PACK_RATIO = 4
 # Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
 # keeps every element of a thread in flight, and nvcc left to itself gives it more
 # than 32 registers, which leaves fewer threads resident; asking for blocks enough
-# to fill this many threads holds it at 32.
+# to fill this many threads holds it at 32. The row-broadcast and register-copy
+# builders both set this occupancy floor, so they must agree on it.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
@@ -162,7 +158,12 @@ def _row_broadcast_prim(
     tail_slots = rows * tail_cols
     body_blocks = full_blocks * rows
     tail_blocks = -(-tail_slots // block_cols)
-    pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // _TAIL_PACK_RATIO
+    # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
+    # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
+    # the lane slots one chain is worth. At W // 4 that ratio is one chain per three
+    # idle slots.
+    tail_pack_ratio = 4
+    pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // tail_pack_ratio
     # Columns past the last full block go one element per thread. Indexing
     # vectors rather than rows leaves none, where a vector stays inside a row.
     vecs_per_row = inner // num_per_thread if inner % num_per_thread == 0 else 0

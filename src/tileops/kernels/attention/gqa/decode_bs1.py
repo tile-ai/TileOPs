@@ -31,12 +31,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeBs1Kernel"]
 
-_CONSUMER_THREADS = 128
-# TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
-# per kernel; this kernel's producer and consumer ranges take 3 and 4.
-_CONSUMER_BARRIER = 5
-_TMA_THREADS = 32
-
 
 def _make_dense_decode_split(
     batch: int,
@@ -58,6 +52,11 @@ def _make_dense_decode_split(
 ):
     """Create the Dense context-split schedule."""
     ring_depth = RING_DEPTH
+    consumer_threads = 128
+    # TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
+    # per kernel; this kernel's producer and consumer ranges take 3 and 4.
+    consumer_barrier = 5
+    tma_threads = 32
 
     @T.macro
     def consumer(
@@ -115,7 +114,7 @@ def _make_dense_decode_split(
                         Qs[i, j] = Q[bid, hid * kv_group_num + i, j]
                 else:
                     Qs[i, j] = 0
-            T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+            T.sync_threads(consumer_barrier, consumer_threads)
         else:
             T.copy(
                 Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
@@ -138,7 +137,7 @@ def _make_dense_decode_split(
                     sin = rope_sin[position, freq]
                     Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
                     Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+                T.sync_threads(consumer_barrier, consumer_threads)
             T.wgmma_gemm(
                 Qs,
                 Ks[k % ring_depth, :, :],
@@ -225,11 +224,11 @@ def _make_dense_decode_split(
                     ps: tilelang.layout.make_swizzled_layout(ps),
                 }
             )
-            producer_threads = threads - _CONSUMER_THREADS
+            producer_threads = threads - consumer_threads
             ready = T.alloc_barrier([producer_threads] * RING_DEPTH)
-            free = T.alloc_barrier([_CONSUMER_THREADS] * RING_DEPTH)
+            free = T.alloc_barrier([consumer_threads] * RING_DEPTH)
             if tma_rope_pipeline:
-                loaded = T.alloc_barrier([_TMA_THREADS] * RING_DEPTH)
+                loaded = T.alloc_barrier([tma_threads] * RING_DEPTH)
             load_ready = loaded if tma_rope_pipeline else ready
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
@@ -255,13 +254,13 @@ def _make_dense_decode_split(
             loop_range = T.ceildiv(this_len, block_n)
             tx = T.get_thread_binding()
 
-            if tx >= _CONSUMER_THREADS:
+            if tx >= consumer_threads:
                 for k in T.serial(loop_range):
                     T.mbarrier_wait_parity(
                         free[k % RING_DEPTH],
                         ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
                     )
-                    if tx < _CONSUMER_THREADS + _TMA_THREADS:
+                    if tx < consumer_threads + tma_threads:
                         load_kv(
                             K,
                             V,

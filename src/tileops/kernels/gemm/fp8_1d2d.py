@@ -36,121 +36,6 @@ from tileops.utils import device_calibration, get_sm_count
 
 __all__ = ["GemmFP8Block128WaveFwdKernel", "GemmFP81D2DFwdKernel"]
 
-# K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
-# of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
-_SCALE_A_GROUPS = (16, 8, 4)
-# Buffers of the A-scale ring, so one group is written while the other is read.
-_SCALE_A_BUFFERS = 2
-
-
-# Schedules measured per (m, n, k), by calibrated board (``tileops.utils.calibration_key``);
-# any other board or shape takes the analytic ``block_n`` band of ``default_config``.
-_FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
-    "h200": {
-        (128, 2112, 7168): {
-            "kernel": {"block_n": 16, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": True,
-        },
-        (128, 7168, 2048): {
-            "kernel": {"block_n": 64, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": True,
-            "sm_count": 112,
-        },
-        (4096, 2112, 7168): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": True,
-        },
-        (4096, 4096, 7168): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": True,
-        },
-        (4096, 7168, 2048): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 1},
-            "shared_epilogue": True,
-        },
-        (4096, 7168, 16384): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-            "shared_epilogue": False,
-        },
-        (4096, 24576, 1536): {
-            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 3},
-            "shared_epilogue": True,
-        },
-    },
-}
-
-# Wave schedules measured per (m, n, k), by calibrated board; ``GemmFP8Block128WaveFwdKernel``
-# serves exactly these shapes under 128x128 ``scale_b`` blocks.
-_FP8_1D2D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
-    "h200": {
-        (128, 24576, 1536): {
-            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            "sm_count": 128,
-        },
-        (128, 32768, 512): {
-            "kernel": {"block_n": 128, "num_stages": 5, "group_size_m": 8, "waves": 1},
-            "sm_count": 132,
-        },
-        (4096, 576, 7168): {
-            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            "sm_count": 96,
-        },
-        (4096, 2112, 7168): {
-            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            "sm_count": 118,
-        },
-        (4096, 4096, 7168): {
-            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
-            "sm_count": 128,
-        },
-        (4096, 7168, 2048): {
-            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
-            "sm_count": 128,
-        },
-        (4096, 7168, 16384): {
-            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
-            "sm_count": 128,
-        },
-        (4096, 24576, 1536): {
-            "kernel": {
-                "block_n": 128,
-                "num_stages": 3,
-                "group_size_m": 8,
-                "waves": 2,
-                "prefetch_b": 1,
-            },
-            "sm_count": 128,
-        },
-        (4096, 32768, 512): {
-            "kernel": {"block_n": 128, "num_stages": 5, "group_size_m": 8, "waves": 1},
-            "sm_count": 132,
-        },
-    },
-}
-
-# The same, under 1x128 ``scale_b`` blocks: the scale ring then stages ``block_n`` rows of
-# ``scale_b`` per group, which leaves room for fewer stages than the 128x128 schedule.
-_FP8_1D1D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
-    "h200": {
-        (128, 7168, 16384): {
-            "kernel": {"block_n": 64, "num_stages": 5, "group_size_m": 8, "waves": 1},
-            "sm_count": 112,
-        },
-        (4096, 576, 7168): {
-            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            "sm_count": 96,
-        },
-        (4096, 2112, 7168): {
-            "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
-            "sm_count": 118,
-        },
-        (4096, 7168, 16384): {
-            "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
-            "sm_count": 128,
-        },
-    },
-}
-
 
 @functools.lru_cache(maxsize=32)
 def _gemm_fp8_1d2d_kernel(
@@ -162,6 +47,8 @@ def _gemm_fp8_1d2d_kernel(
     *,
     sm_count: int,
     shared_epilogue: bool = False,
+    scale_a_groups: tuple[int, ...],
+    scale_a_buffers: int,
 ) -> Callable:
     """Build the persistent 1D2D GEMM; the returned factory takes the tile config.
 
@@ -173,7 +60,7 @@ def _gemm_fp8_1d2d_kernel(
     block_k = 128
     accum_dtype = "float"
     scale_k = (k + block_k - 1) // block_k
-    scale_a_group = next(g for g in _SCALE_A_GROUPS if scale_k % g == 0)
+    scale_a_group = next(g for g in scale_a_groups if scale_k % g == 0)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -247,7 +134,7 @@ def _gemm_fp8_1d2d_kernel(
                 if shared_epilogue:
                     shared_c = T.alloc_shared((block_m, block_n), out_dtype)
                 scale_a_ring = T.alloc_shared(
-                    (_SCALE_A_BUFFERS, block_m, scale_a_group), accum_dtype
+                    (scale_a_buffers, block_m, scale_a_group), accum_dtype
                 )
                 if stage_1d2d_b_per_k:
                     one_scale_b = T.alloc_shared((num_stages, 1), accum_dtype)
@@ -261,8 +148,8 @@ def _gemm_fp8_1d2d_kernel(
                 )
 
                 full = T.alloc_barrier([1] * num_stages)
-                scale_a_full = T.alloc_barrier([1] * _SCALE_A_BUFFERS)
-                scale_a_empty = T.alloc_barrier([consumer_warps] * _SCALE_A_BUFFERS)
+                scale_a_full = T.alloc_barrier([1] * scale_a_buffers)
+                scale_a_empty = T.alloc_barrier([consumer_warps] * scale_a_buffers)
                 empty = T.alloc_barrier([consumer_warps] * num_stages)
                 producer_index = T.alloc_var("int32", init=0)
                 consumer_index_0 = T.alloc_var("int32", init=0)
@@ -320,10 +207,10 @@ def _gemm_fp8_1d2d_kernel(
                                         if col == 0:
                                             # The next group's scale_a columns in one TMA box; rows
                                             # past m and columns past scale_k are zero-filled.
-                                            buf = scale_a_producer % _SCALE_A_BUFFERS
+                                            buf = scale_a_producer % scale_a_buffers
                                             T.barrier_wait(
                                                 scale_a_empty[buf],
-                                                ((scale_a_producer // _SCALE_A_BUFFERS) & 1) ^ 1,
+                                                ((scale_a_producer // scale_a_buffers) & 1) ^ 1,
                                             )
                                             T.tma_copy(
                                                 scale_a[
@@ -374,11 +261,11 @@ def _gemm_fp8_1d2d_kernel(
                                     kk = group * scale_a_group + col
                                     slot = consumer_index_0 % num_stages
                                     T.barrier_wait(full[slot], (consumer_index_0 // num_stages) & 1)
-                                    buf = scale_a_consumer_0 % _SCALE_A_BUFFERS
+                                    buf = scale_a_consumer_0 % scale_a_buffers
                                     if col == 0:
                                         T.barrier_wait(
                                             scale_a_full[buf],
-                                            (scale_a_consumer_0 // _SCALE_A_BUFFERS) & 1,
+                                            (scale_a_consumer_0 // scale_a_buffers) & 1,
                                         )
                                     scales[0] = scale_a_ring[buf, acc_row0, col]
                                     scales[1] = scale_a_ring[buf, acc_row1, col]
@@ -486,11 +373,11 @@ def _gemm_fp8_1d2d_kernel(
                                     kk = group * scale_a_group + col
                                     slot = consumer_index_1 % num_stages
                                     T.barrier_wait(full[slot], (consumer_index_1 // num_stages) & 1)
-                                    buf = scale_a_consumer_1 % _SCALE_A_BUFFERS
+                                    buf = scale_a_consumer_1 % scale_a_buffers
                                     if col == 0:
                                         T.barrier_wait(
                                             scale_a_full[buf],
-                                            (scale_a_consumer_1 // _SCALE_A_BUFFERS) & 1,
+                                            (scale_a_consumer_1 // scale_a_buffers) & 1,
                                         )
                                     scales[0] = scale_a_ring[buf, half_m + acc_row0, col]
                                     scales[1] = scale_a_ring[buf, half_m + acc_row1, col]
@@ -1083,14 +970,56 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
             it with TMA. ``None`` takes the calibrated choice for this shape.
     """
 
-    @staticmethod
-    def _calibrated_epilogue(m: int, n: int, k: int, calibration: Optional[str]) -> bool:
+    # K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
+    # of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
+    _SCALE_A_GROUPS = (16, 8, 4)
+    # Buffers of the A-scale ring, so one group is written while the other is read.
+    _SCALE_A_BUFFERS = 2
+
+    # Schedules measured per (m, n, k), by calibrated board (``tileops.utils.calibration_key``);
+    # any other board or shape takes the analytic ``block_n`` band of ``default_config``.
+    _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
+        "h200": {
+            (128, 2112, 7168): {
+                "kernel": {"block_n": 16, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
+                "shared_epilogue": True,
+            },
+            (128, 7168, 2048): {
+                "kernel": {"block_n": 64, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
+                "shared_epilogue": True,
+                "sm_count": 112,
+            },
+            (4096, 2112, 7168): {
+                "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+                "shared_epilogue": True,
+            },
+            (4096, 4096, 7168): {
+                "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+                "shared_epilogue": True,
+            },
+            (4096, 7168, 2048): {
+                "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 1},
+                "shared_epilogue": True,
+            },
+            (4096, 7168, 16384): {
+                "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+                "shared_epilogue": False,
+            },
+            (4096, 24576, 1536): {
+                "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 3},
+                "shared_epilogue": True,
+            },
+        },
+    }
+
+    @classmethod
+    def _calibrated_epilogue(cls, m: int, n: int, k: int, calibration: Optional[str]) -> bool:
         """Whether the schedule calibrated on *calibration*'s board stores through shared memory.
 
         False off a calibrated board or shape: the packed global store has the
         smaller unit, so it addresses every shape the other one does.
         """
-        tuned = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
+        tuned = cls._FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
         return bool(tuned["shared_epilogue"]) if tuned is not None else False
 
     @staticmethod
@@ -1190,7 +1119,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         self.out_dtype = out_dtype
         self.sm_count = get_sm_count(self.device_index)
         calibration = device_calibration(self.device_index)
-        self._calibrated = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
+        self._calibrated = self._FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
         if self._calibrated is not None:
             self.sm_count = int(self._calibrated.get("sm_count", self.sm_count))
         self.shared_epilogue = (
@@ -1211,6 +1140,8 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
             self.out_dtype_str,
             sm_count=self.sm_count,
             shared_epilogue=self.shared_epilogue,
+            scale_a_groups=self._SCALE_A_GROUPS,
+            scale_a_buffers=self._SCALE_A_BUFFERS,
         )
         self.init_config(config)
 
@@ -1257,12 +1188,12 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         block_k = 128
         align = SHARED_BUFFER_ALIGN_BYTES
         scale_k = -(-self.k // block_k)
-        scale_a_group = next(g for g in _SCALE_A_GROUPS if scale_k % g == 0)
+        scale_a_group = next(g for g in self._SCALE_A_GROUPS if scale_k % g == 0)
         per_stage = (block_m + block_n) * block_k
         # The mbarriers' unit, the two ``scale_a`` buffers and the ``scale_b`` row, each
         # rounded up to whole units.
         fixed = align
-        fixed += -(-_SCALE_A_BUFFERS * block_m * scale_a_group * 4 // align) * align
+        fixed += -(-self._SCALE_A_BUFFERS * block_m * scale_a_group * 4 // align) * align
         fixed += -(-scale_k * 4 // align) * align
         if self.shared_epilogue:
             fixed += -(-block_m * block_n * 2 // align) * align
@@ -1304,6 +1235,78 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
     supported_archs = [90]
     preferred_over = frozenset({"gemm_fp8_1d2d", "gemm_fp8_block_scale"})
 
+    # Wave schedules measured per (m, n, k), by calibrated board; this kernel
+    # serves exactly these shapes under 128x128 ``scale_b`` blocks.
+    _FP8_1D2D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
+        "h200": {
+            (128, 24576, 1536): {
+                "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
+                "sm_count": 128,
+            },
+            (128, 32768, 512): {
+                "kernel": {"block_n": 128, "num_stages": 5, "group_size_m": 8, "waves": 1},
+                "sm_count": 132,
+            },
+            (4096, 576, 7168): {
+                "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
+                "sm_count": 96,
+            },
+            (4096, 2112, 7168): {
+                "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
+                "sm_count": 118,
+            },
+            (4096, 4096, 7168): {
+                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "sm_count": 128,
+            },
+            (4096, 7168, 2048): {
+                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "sm_count": 128,
+            },
+            (4096, 7168, 16384): {
+                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "sm_count": 128,
+            },
+            (4096, 24576, 1536): {
+                "kernel": {
+                    "block_n": 128,
+                    "num_stages": 3,
+                    "group_size_m": 8,
+                    "waves": 2,
+                    "prefetch_b": 1,
+                },
+                "sm_count": 128,
+            },
+            (4096, 32768, 512): {
+                "kernel": {"block_n": 128, "num_stages": 5, "group_size_m": 8, "waves": 1},
+                "sm_count": 132,
+            },
+        },
+    }
+
+    # The same, under 1x128 ``scale_b`` blocks: the scale ring then stages ``block_n`` rows of
+    # ``scale_b`` per group, which leaves room for fewer stages than the 128x128 schedule.
+    _FP8_1D1D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
+        "h200": {
+            (128, 7168, 16384): {
+                "kernel": {"block_n": 64, "num_stages": 5, "group_size_m": 8, "waves": 1},
+                "sm_count": 112,
+            },
+            (4096, 576, 7168): {
+                "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
+                "sm_count": 96,
+            },
+            (4096, 2112, 7168): {
+                "kernel": {"block_n": 192, "num_stages": 4, "group_size_m": 8, "waves": 1},
+                "sm_count": 118,
+            },
+            (4096, 7168, 16384): {
+                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "sm_count": 128,
+            },
+        },
+    }
+
     @classmethod
     def refusal(cls, call: GemmFP8Call) -> "str | None":
         if cls.block_scale_grid(call) is None:
@@ -1320,10 +1323,12 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
             return f"has no wave config for {(call.m, call.n, call.k)} on this board"
         return super().refusal(call)
 
-    @staticmethod
-    def _configs(scale_b_per_row: bool) -> dict[str, dict[tuple[int, int, int], dict[str, object]]]:
+    @classmethod
+    def _configs(
+        cls, scale_b_per_row: bool
+    ) -> dict[str, dict[tuple[int, int, int], dict[str, object]]]:
         """The schedule table for the ``scale_b`` grid."""
-        return _FP8_1D1D_WAVE_CONFIGS if scale_b_per_row else _FP8_1D2D_WAVE_CONFIGS
+        return cls._FP8_1D1D_WAVE_CONFIGS if scale_b_per_row else cls._FP8_1D2D_WAVE_CONFIGS
 
     @classmethod
     def entry_for(cls, call: GemmFP8Call) -> Entry:

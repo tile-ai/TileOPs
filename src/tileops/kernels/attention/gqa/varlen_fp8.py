@@ -54,13 +54,6 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 __all__ = ["GQAVarlenFP8FwdKernel", "GQAVarlenFP8WSFwdKernel"]
 
 _FP8_DTYPE = "float8_e4m3fn"
-# A call without rotation still hands the program its tables, so the placeholder's
-# innermost extent is a whole vectorized access, which the packed ABI requires.
-_ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
-# The work counter the persistent CTAs claim from: the next item to hand out, and the
-# CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
-# every launch and no call has to clear it.
-_CLAIM_SLOTS = 2
 
 
 @functools.lru_cache(maxsize=32)
@@ -302,7 +295,9 @@ def _gqa_varlen_fp8_ws_kernel(
     rotary_dim: int,
     rope_layout: str,
     rope_dtype: str,
+    rope_placeholder_width: int,
     num_ctas: int,
+    claim_slots: int,
 ) -> Callable:
     """Build the warp-specialized FP8 packed-varlen program.
 
@@ -351,7 +346,7 @@ def _gqa_varlen_fp8_ws_kernel(
     q_tiling = GroupTiling(batch, positions_per_tile)
     # The program always takes the tables so one body serves both calls; a call without
     # rotation hands it a one-entry placeholder it never reads.
-    rope_half = rotary_dim // 2 if fuse_rope else _ROPE_PLACEHOLDER_WIDTH
+    rope_half = rotary_dim // 2 if fuse_rope else rope_placeholder_width
     # The query tile is rotated where it lands, in the warpgroup that owns it; the keys
     # were rotated in their own launch, because every query tile of a request reads them.
     rotate_query_tile = (
@@ -498,7 +493,7 @@ def _gqa_varlen_fp8_ws_kernel(
             VD: T.Tensor([batch, heads_kv], accum_dtype),  # type: ignore
             RopeCos: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
             RopeSin: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
-            Claim: T.Tensor([_CLAIM_SLOTS], "int32"),  # type: ignore
+            Claim: T.Tensor([claim_slots], "int32"),  # type: ignore
             O: T.Tensor([total_q, heads, dim], out_dtype),  # type: ignore
         ) -> None:
             # A CTA's items come off the claim counter, so the block index names nothing.
@@ -1036,6 +1031,9 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     """Packed prefill over FP8 Q/K/V with one dequantization scale per request and KV head."""
 
     supported_archs: list[int] = [90]
+    # A call without rotation still hands the program its tables, so the placeholder's
+    # innermost extent is a whole vectorized access, which the packed ABI requires.
+    _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -1102,7 +1100,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             if self._rope_placeholder is None:
                 self._rope_placeholder = torch.zeros(
                     self.max_position,
-                    _ROPE_PLACEHOLDER_WIDTH,
+                    self._ROPE_PLACEHOLDER_WIDTH,
                     dtype=self.dtype,
                     device=torch.device("cuda", self.device_index or 0),
                 )
@@ -1228,6 +1226,10 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     # between launches. An item owns a disjoint slice of the output, so the result does
     # not depend on that order.
     _claim: Optional[torch.Tensor] = None
+    # The work counter the persistent CTAs claim from: the next item to hand out, and the
+    # CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
+    # every launch and no call has to clear it.
+    _CLAIM_SLOTS = 2
     # The staged FA3 buffers take 217 KB of the 227 KB an SM90 block may use, and the
     # per-request tile prefix takes four bytes a request out of what is left. Recompute
     # it from the buffer list in the program if any shared buffer grows.
@@ -1271,7 +1273,9 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             self.rotary_dim,
             self.rope_layout,
             self.rope_table_dtype_str,
+            self._ROPE_PLACEHOLDER_WIDTH,
             get_sm_count(self.device_index),
+            self._CLAIM_SLOTS,
         )
 
     @property
@@ -1302,7 +1306,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             k = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
         out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
         if self._claim is None:
-            self._claim = torch.zeros(_CLAIM_SLOTS, dtype=torch.int32, device=q.device)
+            self._claim = torch.zeros(self._CLAIM_SLOTS, dtype=torch.int32, device=q.device)
         self.kernel()(
             q,
             k,

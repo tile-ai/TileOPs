@@ -31,8 +31,6 @@ from tileops.kernels.linear_attention.call_spec import (
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
-_DEFAULT_K_TILE = 16
-
 
 # Low-precision decode kernel — bf16 / fp16, fp32 accumulation
 
@@ -43,7 +41,7 @@ def _gla_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     dtype: str = "float32",
     scale: float = -1.0,
 ):
@@ -179,6 +177,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into.
+    _DEFAULT_K_TILE = 16
     general = True
 
     @classmethod
@@ -278,7 +278,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(
@@ -301,7 +301,7 @@ def _gla_decode_fp32_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     scale: float = -1.0,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
@@ -412,6 +412,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into.
+    _DEFAULT_K_TILE = 16
 
     @classmethod
     def refusal(cls, call: GLADecodeCall) -> "str | None":
@@ -506,7 +508,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(

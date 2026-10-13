@@ -21,9 +21,9 @@ TileOPs kernel family needs:
   the byte model cannot (measured: block_k=128 beats 32 consistently).
 
 The ranking constants are fitted per board, and the scorer reads the current
-device's from ``_CALIBRATIONS``. A board absent from that table is not ranked
-at all: :func:`best_config` returns ``None`` and the kernel takes its own
-default, because ranking with another board's numbers is worse than not
+device's from the table in :func:`_calibration`. A board absent from that table
+is not ranked at all: :func:`best_config` returns ``None`` and the kernel takes
+its own default, because ranking with another board's numbers is worse than not
 ranking. Re-fit when the kernel structures change materially, or when a new
 board is added.
 
@@ -54,23 +54,15 @@ __all__ = [
     "swap_ab_grid_underfills",
 ]
 
+# SM90's opt-in shared memory per block: the dense candidate rings (``_enumerate``) and
+# the FP8 warp-specialized ring (``fp8_ws_config``) are both sized against it.
 _SMEM_BUDGET = BLOCK_SHARED_BYTES_OPT_IN[90]
-_MAX_ACCUM_REGS = 200
 
-_TINY_M_BLOCK_N = 128
-
-# Shortest K slice the FP8 split-K path pays for.
-_FP8_MIN_SLICE_K_TILES = 12
-
+# The swap-AB kernel's N tile: the grid-fill test, the stage pick and the config it
+# returns must count the same CTAs.
 _SWAP_AB_BLOCK_NN = 64
+
 SWAP_AB_MPAD = 8
-
-_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
-
-
-#: The row count the small-M split-K band was fitted at, by calibration key. A board
-#: without an entry has no band.
-_SMALL_M_SPLITK_M = {"h200": 32}
 
 
 @dataclass(frozen=True)
@@ -95,31 +87,29 @@ class _Calibration:
         return dict(self.tensor_core_tflops)[structure]
 
 
-#: One entry per board the scorer has been calibrated on, by its calibration key
-#: (``tileops.utils.calibration_key``). A board absent here is not ranked; see
-#: :func:`best_config`.
-_CALIBRATIONS = {
-    "h200": _Calibration(
-        l1_tbps=33.0,
-        l2_tbps=17.5,
-        reduce_tbps=1.5,
-        launch_us=2.25,
-        issue_ns=150.0,
-        tensor_core_tflops=(
-            ("basic", 420.0),
-            ("coop2", 525.0),
-            ("coop2s", 600.0),
-            ("coop2_splitk", 525.0),
-            ("simple", 500.0),
-            ("splitk", 420.0),
-        ),
-    ),
-}
-
-
 def _calibration(device_name: str) -> Optional[_Calibration]:
     """The calibration measured on *device_name*'s board, or ``None`` for a board without one."""
-    return _CALIBRATIONS.get(calibration_key(device_name))
+    # One entry per board the scorer has been calibrated on, by its calibration key
+    # (``tileops.utils.calibration_key``). A board absent here is not ranked; see
+    # :func:`best_config`.
+    calibrations = {
+        "h200": _Calibration(
+            l1_tbps=33.0,
+            l2_tbps=17.5,
+            reduce_tbps=1.5,
+            launch_us=2.25,
+            issue_ns=150.0,
+            tensor_core_tflops=(
+                ("basic", 420.0),
+                ("coop2", 525.0),
+                ("coop2s", 600.0),
+                ("coop2_splitk", 525.0),
+                ("simple", 500.0),
+                ("splitk", 420.0),
+            ),
+        ),
+    }
+    return calibrations.get(calibration_key(device_name))
 
 
 @dataclass
@@ -181,6 +171,11 @@ class _Cand:
 
 
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
+    # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
+    max_accum_regs = 200
+    # Deepest ring each structure is built with, whatever the SMEM budget allows.
+    ns_cap = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
+
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:
         """L2-footprint-minimizing rasterization panel width.
 
@@ -192,17 +187,17 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return min(_NS_CAP["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
+        return min(ns_cap["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
 
     def _coop2_ns_sn(bn: int, bk: int):
-        """Deepest ring under ``_NS_CAP`` the SMEM budget allows; shrink the epilogue
+        """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
         staging chunk (stage_n) when that buys another pipeline stage."""
         ring = (128 + bn) * bk * 2
         best = None
         for sn in (bn, bn // 2, bn // 4):
             if sn < 32 or bn % sn:
                 continue
-            ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
+            ns = min(ns_cap["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
             if ns < 3:
                 continue
             if best is None or (ns, sn) > best[:2]:
@@ -222,7 +217,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     for bm in (64, 128):
         for bn in (64, 128, 256):
-            if (bm * bn) // 128 > _MAX_ACCUM_REGS:
+            if (bm * bn) // 128 > max_accum_regs:
                 continue
             for bk in (32, 64, 128):
                 ns = _ns_basic(bm, bn, bk)
@@ -279,7 +274,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 if coop2_ok and mn_tiles >= sm_count:
                     out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
                 k_iters = math.ceil(k / bk)
-                ns_sk = min(ns, _NS_CAP["coop2_splitk"])
+                ns_sk = min(ns, ns_cap["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
@@ -370,6 +365,7 @@ def _best_config_cached(
         instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
         leaves.
         """
+        tiny_m_block_n = 128
         stages = _swap_ab_stages(n, sm_count)
         if stages is not None:
             return {
@@ -383,7 +379,7 @@ def _best_config_cached(
             if k_iters % sk == 0 and k_iters // sk >= 12:
                 return {
                     "block_m": 64,
-                    "block_n": _TINY_M_BLOCK_N,
+                    "block_n": tiny_m_block_n,
                     "block_k": 128,
                     "num_stages": 4,
                     "panel_size": 16,
@@ -391,7 +387,7 @@ def _best_config_cached(
                 }
         return {
             "block_m": 64,
-            "block_n": _TINY_M_BLOCK_N,
+            "block_n": tiny_m_block_n,
             "block_k": 128,
             "num_stages": 4,
             "panel_size": 8,
@@ -490,7 +486,10 @@ def small_m_splitk_config(
     """Select the split-K basic GEMM band fitted on a calibrated board for a small-M NT call."""
     block_k = 128
     k_tiles = k // block_k
-    band_m = _SMALL_M_SPLITK_M.get(calibration_key(device_name))
+    # The row count the small-M split-K band was fitted at, by calibration key. A board
+    # without an entry has no band.
+    small_m_splitk_m = {"h200": 32}
+    band_m = small_m_splitk_m.get(calibration_key(device_name))
     if m != band_m or k % block_k or n % 8 or k_tiles < 48:
         return None
     block_ns = [block_n for block_n in range(8, 129, 8) if n % block_n == 0]
@@ -578,12 +577,14 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
     else:
         num_stages = 4
     tiles = -(-m // 128) * -(-n // block_n)
+    # Shortest K slice the FP8 split-K path pays for.
+    fp8_min_slice_k_tiles = 12
     split_k = 1
     for candidate in (4, 2):
         if (
             tiles * candidate <= sm_count
             and k_iters % candidate == 0
-            and k_iters // candidate >= _FP8_MIN_SLICE_K_TILES
+            and k_iters // candidate >= fp8_min_slice_k_tiles
         ):
             split_k = candidate
             break

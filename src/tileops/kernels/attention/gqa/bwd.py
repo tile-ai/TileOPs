@@ -18,8 +18,6 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
 
-_ROWS_PER_BLOCK = 64
-
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit
@@ -28,7 +26,8 @@ def _flashattn_bwd_preprocess_kernel(
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
-    blk = _ROWS_PER_BLOCK
+    # Sequence rows one CTA covers.
+    blk = 64
     # TileLang finds no fragment layout for a row sum over a width that is not a power of
     # two, head dim 96 for one, so the rows are summed over power-of-two column tiles.
     cols = math.gcd(dim, 64)
@@ -128,7 +127,8 @@ def _flashattn_bwd_postprocess_kernel(
     batch: int, heads: int, seq_len: int, dim: int, dtype: str
 ) -> Callable:
     shape = (batch, seq_len, heads, dim)
-    blk = _ROWS_PER_BLOCK
+    # Sequence rows one CTA covers.
+    blk = 64
 
     @T.prim_func
     def flash_bwd_post(
