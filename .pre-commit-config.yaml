@@ -129,6 +129,12 @@ repos:
         entry: python scripts/lint/file_set_lint.py
         language: python
 
+      - id: test-placement-lint
+        name: tests/ops placement lint
+        entry: python scripts/lint/test_placement_lint.py --base origin/main
+        language: python
+        files: ^tests/ops/.*\.py$
+
       - id: op-naming-lint
         name: op and class name lint
         entry: python scripts/lint/op_naming_lint.py
