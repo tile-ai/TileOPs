@@ -41,18 +41,8 @@ __all__ = ["MoEGroupedGemmFP8Kernel"]
 # The K extent one scale covers and the N extent one ``b`` scale row covers, fixed by the
 # operands' scale grids; also the K step, so each step reads one scale of each operand.
 _SCALE_BLOCK = 128
-# The rows one math warp-group's WGMMA covers.
-_WARPGROUP_M = 64
-# An expert's tiles run in groups of this many M tiles, N tile slowest inside a group, so the
-# blocks of one wave that share a weight tile run at once. A schedule constant, not tuned.
-_SWIZZLE_M_TILES = 16
-# Slots of a role's task-sequence cursor.
-_CUR_G, _CUR_M, _CUR_TILES = 0, 1, 2
 # The keys of a config, each a parameter of the builder.
 _CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
-# Kept free below the device's opt-in shared-memory limit, as the on-chip RMSNorm kernel does,
-# for allocator padding ``_smem_bytes`` does not model; no legal config's footprint lies in it.
-_SMEM_HEADROOM = 1024
 
 
 def _b_scale_sub_blocks(block_n: int) -> int:
@@ -79,8 +69,8 @@ def _moe_grouped_gemm_fp8_kernel(
     Block ``pid`` runs tasks ``pid, pid + num_sms, ...`` of a sequence holding only the tiles
     that contain a valid row: expert ``g`` contributes ``cdiv(clamp(count, 0, max_m), block_m)``
     M tiles times ``n_tiles``, the experts in order. Inside an expert, tiles run in groups of
-    ``_SWIZZLE_M_TILES`` M tiles with the M tile fastest, so the blocks that read one weight tile
-    run side by side. Each role walks the sequence itself, reading the counts and carrying its
+    ``swizzle_m_tiles`` (16) M tiles with the M tile fastest, so the blocks that read one weight
+    tile run side by side. Each role walks the sequence itself, reading the counts and carrying its
     expert cursor across its tasks; a task past the sequence's end is skipped by both roles and
     touches no barrier. A tile's columns run in sub-blocks ``gcd(128, block_n)`` wide, each
     inside one ``b_scale`` row wherever the tile starts: the producer stages one scale per
@@ -91,6 +81,13 @@ def _moe_grouped_gemm_fp8_kernel(
     shared memory; every config is checked by ``MoEGroupedGemmFP8Kernel.config_refusal``
     before anything is traced.
     """
+    # The rows one math warp-group's WGMMA covers.
+    warpgroup_m = 64
+    # An expert's tiles run in groups of this many M tiles, N tile slowest inside a group, so the
+    # blocks of one wave that share a weight tile run at once. A schedule constant, not tuned.
+    swizzle_m_tiles = 16
+    # Slots of a role's task-sequence cursor.
+    cur_g, cur_m, cur_tiles = 0, 1, 2
     accum_dtype = "float"
     ab_dtype = "float8_e4m3fn"
     cd_dtype = "bfloat16"
@@ -126,12 +123,12 @@ def _moe_grouped_gemm_fp8_kernel(
         # The sequence is never longer than every tile of every slab.
         max_tasks = num_groups * tiles_per_slab * n_tiles
         max_waves = tilelang.cdiv(max_tasks, num_sms)
-        swizzle_span = _SWIZZLE_M_TILES * n_tiles
+        swizzle_span = swizzle_m_tiles * n_tiles
         # The last tile of a slab whose rows end inside it reads no scale past max_m.
         ragged_slab = max_m % block_m != 0
-        math_threads = block_m // _WARPGROUP_M * 128
+        math_threads = block_m // warpgroup_m * 128
         math_warps = math_threads // 32
-        fragment_regs = _WARPGROUP_M * block_n // 128
+        fragment_regs = warpgroup_m * block_n // 128
         # A whole number of rings per task starts every task on slot 0, so unrolled by its
         # length every slot is a constant and the phase follows from the tasks run so far.
         # Otherwise each role carries its ring position across tasks.
@@ -169,14 +166,14 @@ def _moe_grouped_gemm_fp8_kernel(
             """Advance ``cursor`` to the expert holding ``task_id``, or to ``num_groups`` past the
             sequence's end. A macro's arguments bind immutably, so the cursor is a register
             array: the expert, the M tiles of the experts before it, and the expert's own."""
-            while cursor[_CUR_G] < num_groups:
-                cursor[_CUR_TILES] = (
-                    T.max(T.min(layout[cursor[_CUR_G]], max_m), 0) + block_m - 1
+            while cursor[cur_g] < num_groups:
+                cursor[cur_tiles] = (
+                    T.max(T.min(layout[cursor[cur_g]], max_m), 0) + block_m - 1
                 ) // block_m
-                if task_id < (cursor[_CUR_M] + cursor[_CUR_TILES]) * n_tiles:
+                if task_id < (cursor[cur_m] + cursor[cur_tiles]) * n_tiles:
                     break
-                cursor[_CUR_M] = cursor[_CUR_M] + cursor[_CUR_TILES]
-                cursor[_CUR_G] = cursor[_CUR_G] + 1
+                cursor[cur_m] = cursor[cur_m] + cursor[cur_tiles]
+                cursor[cur_g] = cursor[cur_g] + 1
 
         @T.macro
         def tile_of(task_id, cursor, tile):
@@ -187,9 +184,9 @@ def _moe_grouped_gemm_fp8_kernel(
             non-negative, truncating division is exact, and below exactly one branch of the
             constant-divisor form matches.
             """
-            local = task_id - cursor[_CUR_M] * n_tiles
-            m_tiles = cursor[_CUR_TILES]
-            if tiles_per_slab <= _SWIZZLE_M_TILES:
+            local = task_id - cursor[cur_m] * n_tiles
+            m_tiles = cursor[cur_tiles]
+            if tiles_per_slab <= swizzle_m_tiles:
                 # One group spans every M tile of the expert. A runtime divisor costs a long
                 # division, so each of the tiles_per_slab values m_tiles can take gets its own.
                 for i in T.unroll(tiles_per_slab):
@@ -197,9 +194,9 @@ def _moe_grouped_gemm_fp8_kernel(
                         tile[0] = T.truncmod(local, i + 1)
                         tile[1] = T.truncdiv(local, i + 1)
             else:
-                first = T.truncdiv(local, swizzle_span) * _SWIZZLE_M_TILES
+                first = T.truncdiv(local, swizzle_span) * swizzle_m_tiles
                 in_group = T.truncmod(local, swizzle_span)
-                group_m_tiles = T.min(_SWIZZLE_M_TILES, m_tiles - first)
+                group_m_tiles = T.min(swizzle_m_tiles, m_tiles - first)
                 tile[0] = first + T.truncmod(in_group, group_m_tiles)
                 tile[1] = T.truncdiv(in_group, group_m_tiles)
 
@@ -324,12 +321,12 @@ def _moe_grouped_gemm_fp8_kernel(
                         walk_to(layout, task_id, cursor)
                         # Both roles walk one sequence from one read-only ``layout``, so they skip
                         # the same tasks, and a skipped task touches no barrier.
-                        if T.And(cursor[_CUR_G] < num_groups, producer_warp == 0):
+                        if T.And(cursor[cur_g] < num_groups, producer_warp == 0):
                             tile_of(task_id, cursor, tile)
                             # The clamps change no value; inlined rather than let-bound, they
                             # bound the indices for TileLang, which otherwise guards every scale
                             # load against them.
-                            g = T.meta_var(T.max(T.min(cursor[_CUR_G], num_groups - 1), 0))
+                            g = T.meta_var(T.max(T.min(cursor[cur_g], num_groups - 1), 0))
                             m_start = T.meta_var(
                                 T.max(T.min(tile[0], tiles_per_slab - 1), 0) * block_m
                             )
@@ -378,7 +375,7 @@ def _moe_grouped_gemm_fp8_kernel(
                 else:
                     T.inc_max_nreg(232)
                     math_wg_idx = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), tx // 128, 0, 32, 32)
-                    math_wg_offset = math_wg_idx * _WARPGROUP_M
+                    math_wg_offset = math_wg_idx * warpgroup_m
                     a_desc_lo = T.call_extern(
                         "uint32",
                         "tileops::moe_fp8_wgmma_desc_lo",
@@ -395,9 +392,9 @@ def _moe_grouped_gemm_fp8_kernel(
                     for wave in T.serial(max_waves):
                         task_id = num_sms * wave + pid
                         walk_to(layout, task_id, cursor)
-                        if cursor[_CUR_G] < num_groups:
+                        if cursor[cur_g] < num_groups:
                             tile_of(task_id, cursor, tile)
-                            g = T.meta_var(T.max(T.min(cursor[_CUR_G], num_groups - 1), 0))
+                            g = T.meta_var(T.max(T.min(cursor[cur_g], num_groups - 1), 0))
                             m_start = T.meta_var(
                                 T.max(T.min(tile[0], tiles_per_slab - 1), 0) * block_m
                             )
@@ -578,7 +575,11 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         self.call = call
         self.scale_k = call.k // _SCALE_BLOCK
         self.sm_count = get_sm_count(self.device_index)
-        self.smem_limit = get_shared_memory_optin(self.device_index) - _SMEM_HEADROOM
+        # Kept free below the device's opt-in shared-memory limit, as the on-chip RMSNorm kernel
+        # does, for allocator padding ``_smem_bytes`` does not model; no legal config's footprint
+        # lies in it.
+        smem_headroom = 1024
+        self.smem_limit = get_shared_memory_optin(self.device_index) - smem_headroom
         calibration = device_calibration(self.device_index)
         self._calibrated = self._CONFIGS.get(calibration, {}).get(
             (call.num_groups, call.n, call.k, call.max_m)
