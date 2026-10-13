@@ -53,6 +53,19 @@ __device__ __forceinline__ float load_f32_evict_last(const float* src) {
   return v;
 }
 
+// Loads 16 bytes of global memory into dst, evict-last in L2. Streaming kernels
+// that read each input once measured faster with it than with default loads;
+// each reader states its measurement.
+__device__ __forceinline__ void load16_evict_last(void* dst, const void* src) {
+  uint64_t policy;
+  asm("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(policy));
+  uint4 v;
+  asm("ld.global.L2::cache_hint.v4.u32 {%0, %1, %2, %3}, [%4], %5;"
+      : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+      : "l"(src), "l"(policy));
+  __builtin_memcpy(dst, &v, 16);
+}
+
 // Loads 16 bytes of global memory into dst with the default cache policy.
 __device__ __forceinline__ void load16(void* dst, const void* src) {
   uint4 v = *reinterpret_cast<const uint4*>(src);
