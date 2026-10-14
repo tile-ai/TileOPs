@@ -66,9 +66,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     capped_softmax_scale = softcap * LOG2E
     lse_scale = capped_softmax_scale if use_softcap else scale
     defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
-    # Hopper FP8 tensor-core accumulation loses low bits even over short reductions.
-    # Reuse the consumed score registers for one PV tile, then promote with
-    # FP32 additions. This avoids another 64 accumulator registers per thread.
     causal_offset = seq_len_kv - seq_len_q
 
     @tilelang.jit(
@@ -382,15 +379,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.barrier_arrive(v_full_1)
                                 gi_vp = gi_vp + 1
-                            # Keep the static buffer choice outside the runtime phase test.
-                            if not use_out_of_place_v:  # noqa: SIM102
-                                # TMA overwrites the in-place MMA operand, so wait
-                                # for its preceding PV before issuing the load.
-                                if gi_vp >= 2:
-                                    if gi_vp % 2 == 0:
-                                        T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
-                                    else:
-                                        T.barrier_wait(v_empty_1, (gi_vp // 2 - 1) % 2)
                             if tx == 0:
                                 T.mbarrier_expect_tx(v_raw_full, dim * 224)
                                 v_desc = T.create_tma_descriptor(
@@ -625,8 +613,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_1.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    acc_s_1.data,
-                                    True,
+                                    acc_o_1.data,
                                 )
                             else:
                                 T.call_extern(
@@ -634,17 +621,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_1.data,
                                     v_tc_smem_1.access_ptr("r"),
-                                    acc_s_1.data,
-                                    True,
+                                    acc_o_1.data,
                                 )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(acc_s_1, num_regs=64)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                acc_o_1.data,
-                                acc_s_1.data,
-                            )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                         if gi_vc1 % 2 == 0:
@@ -830,8 +808,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_2.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    acc_s_2.data,
-                                    True,
+                                    acc_o_2.data,
                                 )
                             else:
                                 T.call_extern(
@@ -839,17 +816,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     pv_begin_accumulate_helper,
                                     acc_s_2.data,
                                     v_tc_smem_1.access_ptr("r"),
-                                    acc_s_2.data,
-                                    True,
+                                    acc_o_2.data,
                                 )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(acc_s_2, num_regs=64)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                acc_o_2.data,
-                                acc_s_2.data,
-                            )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                         if gi_vc2 % 2 == 0:
