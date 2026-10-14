@@ -23,8 +23,7 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
         num_seqs == 1
         and total >= minimum_tokens
         and (
-            value_heads <= sparse_heads
-            or (value_heads <= medium_heads and total <= medium_tokens)
+            value_heads <= sparse_heads or (value_heads <= medium_heads and total <= medium_tokens)
         )
         and dim == 128
         and arch == 89
