@@ -114,6 +114,8 @@ class FusedMoE(Op):
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
         correction_bias: Optional[torch.Tensor],
+        b_gate_up: Optional[torch.Tensor] = None,
+        b_down: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Route, prepare, run the experts and finalize; the ``[T, H]`` routed output."""
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
@@ -125,7 +127,16 @@ class FusedMoE(Op):
             if expert_out_shape == tuple(hidden_states.shape)
             else hidden_states.new_empty(expert_out_shape)
         )
-        self._experts(expert_out, r.hidden_q, w_gate_up, w_down, r.topk_weights, r.topk_ids)
+        self._experts(
+            expert_out,
+            r.hidden_q,
+            w_gate_up,
+            w_down,
+            r.topk_weights,
+            r.topk_ids,
+            b_gate_up,
+            b_down,
+        )
         self._prepare.finalize(
             output, expert_out, r.topk_weights, r.topk_ids, self._experts.make_weighted_reduce()
         )
@@ -148,6 +159,11 @@ class FusedMoEFwdOp(FusedMoE):
     within 1e-5 (relative; also 1e-6 absolute) of the last kept group score may be
     kept in its place, as in ``FusedTopKFwdOp``. The output is multiplied by
     ``routed_scaling_factor`` once.
+
+    gpt-oss is ``scoring_func="softmax"``, ``renormalize=True``, ``activation="swigluoai"``
+    and both expert biases. ``activation``, and the row order of ``w_gate_up`` and
+    ``b_gate_up`` it reads, are as ``MoEGroupedGemmFwdOp`` defines them; the optional expert
+    biases ``b_gate_up`` and ``b_down`` join each route as ``FusedMoEExpertsFwdOp`` states.
     """
 
     def __init__(
@@ -176,7 +192,9 @@ class FusedMoEFwdOp(FusedMoE):
                 by; must divide E. 1 selects over all experts. DeepSeek-V3: 8.
             topk_group: Groups kept per token, holding at least ``top_k`` experts.
                 DeepSeek-V3: 4.
-            activation: Gated activation applied to gate_up.
+            activation: Gated activation applied to gate_up: ``"silu_and_mul"`` or
+                ``"gelu_and_mul"`` over a stacked ``w_gate_up``, ``"swigluoai"`` over an
+                interleaved one.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
                 The sub-ops it builds are given the same one.
@@ -201,6 +219,22 @@ class FusedMoEFwdOp(FusedMoE):
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
         correction_bias: Optional[torch.Tensor] = None,
+        b_gate_up: Optional[torch.Tensor] = None,
+        b_down: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Route each token to its top-k experts and return the ``[T, H]`` weighted sum."""
-        return self._routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
+        """Route each token to its top-k experts and return the ``[T, H]`` weighted sum.
+
+        Args:
+            hidden_states: ``[T, H]`` tokens.
+            gating_output: ``[T, E]`` float32 router logits.
+            w_gate_up: ``[E, 2F, H]`` gate and up weights, stacked or interleaved as
+                ``activation`` reads them.
+            w_down: ``[E, H, F]`` down weights.
+            correction_bias: Optional ``[E]`` float32 bias added to the sigmoid scores for
+                the selection only.
+            b_gate_up: Optional ``[E, 2F]`` gate/up bias in ``w_gate_up``'s row order.
+            b_down: Optional ``[E, H]`` down bias.
+        """
+        return self._routed(
+            hidden_states, gating_output, w_gate_up, w_down, correction_bias, b_gate_up, b_down
+        )

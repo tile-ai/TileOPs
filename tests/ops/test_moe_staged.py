@@ -319,7 +319,7 @@ def _gemm_call(dtype: torch.dtype, layout: dict, **row):
 def _run(workload) -> tuple:
     """The op built from the call, its output on the call's inputs, and the reference."""
     inputs = workload.gen_inputs()
-    cls = MoEGroupedGemmFwdOp if len(inputs) == 3 else MoEExpertMLPFwdOp
+    cls = MoEGroupedGemmFwdOp if isinstance(workload, MoEGroupedGemmWorkload) else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments({}))
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
@@ -389,33 +389,69 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("layout", "sizes", "activation"),
+    ("layout", "sizes", "activation", "some"),
     [
-        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, id="tight-psum"),
-        pytest.param(_aligned("per_row"), [100, 0, 300, 128, 7, 64], None, id="aligned-per-row"),
-        pytest.param(_aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, id="aligned-psum"),
-        pytest.param(_aligned("physical_psum"), [300] * 32, None, id="aligned-psum-32-experts"),
-        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, id="masked"),
+        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), id="tight-psum"),
         pytest.param(
-            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", id="masked-gated"
+            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-per-row"
+        ),
+        pytest.param(
+            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-psum"
+        ),
+        pytest.param(_aligned("physical_psum"), [300] * 32, None, (), id="aligned-psum-32-experts"),
+        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), id="masked"),
+        pytest.param(
+            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", (), id="masked-gated"
+        ),
+        # A bias under each layout; the gate/up bias stacked and interleaved.
+        pytest.param(
+            _aligned("per_row"),
+            [100, 0, 300, 128, 7, 64],
+            None,
+            ("bias",),
+            id="aligned-per-row-bias",
+        ),
+        pytest.param(
+            {"masked": {"max_m": 256}},
+            [100, 0, 256, 33],
+            "swigluoai",
+            ("bias",),
+            id="masked-swigluoai-bias",
+        ),
+        pytest.param(
+            {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}},
+            [100, 0, 300, 128, 7, 64],
+            None,
+            ("bias",),
+            id="tight-per-row-bias",
+        ),
+        pytest.param(
+            _aligned("physical_psum"),
+            [100, 0, 300, 128, 7, 64],
+            "silu_and_mul",
+            ("bias",),
+            id="aligned-psum-silu-bias",
         ),
     ],
 )
-def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation):
+def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation, some):
     """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
     written and matches the reference."""
     rows, metadata = _uneven_rows(layout, sizes)
     extra = {} if activation is None else {"activation": activation}
+    extra |= {"some": list(some)} if some else {}
     rows_arg = {} if "masked" in layout else {"P": rows}
     call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=256, **rows_arg, **extra)
     workload = MoEGroupedGemmWorkload(call)
-    a, b, _ = workload.gen_inputs()
+    a, b, _, bias = workload.gen_inputs()
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
     out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
-    assert op(a, b, metadata, out=out) is out
+    assert op(a, b, metadata, bias, out=out) is out
     compare_outputs(
-        out, workload.ref_program(a, b, metadata), workload.verification(a, b, metadata)
+        out,
+        workload.ref_program(a, b, metadata, bias),
+        workload.verification(a, b, metadata, bias),
     )
 
 
@@ -442,7 +478,7 @@ def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype
     tight_per_row = {"contiguous": {"packing": "tight", "metadata_kind": "per_row", "alignment": 1}}
     call = _gemm_call(dtype, tight_per_row, K=1024, E=len(sizes), N=2048, P=sum(sizes))
     workload = MoEGroupedGemmWorkload(call)
-    a, b, _ = workload.gen_inputs()
+    a, b, _, _ = workload.gen_inputs()
     # Unit-scale operands distinguish wrong expert selection under the shared policy.
     a, b = torch.randn_like(a), torch.randn_like(b)
     counts = torch.tensor(sizes, device=a.device)
@@ -455,7 +491,7 @@ def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+@pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul", "swigluoai"])
 def test_grouped_gemm_fuses_the_gated_activation(activation):
     """With ``activation`` the op hands the kernel a gate||up ``b`` and gets ffn columns back."""
     num_experts = 6
@@ -470,6 +506,49 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
     )
     op, out = _run(MoEGroupedGemmWorkload(call))
     assert out.shape == (600, 192)
+
+
+@pytest.mark.smoke
+def test_grouped_gemm_adds_the_bias_on_tight_rows_off_the_tile_grid():
+    """A gate/up ``bias`` in ``b``'s interleaved row order, on tight rows whose output width is
+    off the tile grid, is added before swigluoai."""
+    call = _gemm_call(
+        torch.bfloat16,
+        _TIGHT_MOE_GROUPED_GEMM,
+        P=600,
+        K=512,
+        E=6,
+        N=192,
+        activation="swigluoai",
+        some=["bias"],
+    )
+    _, out = _run(MoEGroupedGemmWorkload(call))
+    assert out.shape == (600, 192)
+
+
+@pytest.mark.smoke
+def test_grouped_gemm_clamps_swigluoai_at_its_limit():
+    """Gate and up products at 7, at its bfloat16 neighbours and past it on both sides meet the
+    clamped swigluoai."""
+    limit_pairs = [
+        (gate, up)
+        for gate in (6.96875, 7.0, 7.03125, 9.0)
+        for up in (-9.0, -7.03125, -7.0, -6.96875, 6.96875, 7.0, 7.03125, 9.0)
+    ]
+    rows, k = len(limit_pairs), 64
+    call = _gemm_call(
+        torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=k, E=1, N=8, activation="swigluoai"
+    )
+    workload = MoEGroupedGemmWorkload(call)
+    # Row i of a is the i-th unit vector, so row i of the product is column i of b.
+    a = torch.eye(rows, k, dtype=torch.bfloat16, device=run_device())
+    b = torch.zeros(1, 16, k, dtype=torch.bfloat16, device=run_device())
+    for i, (gate, up) in enumerate(limit_pairs):
+        b[0, 0::2, i], b[0, 1::2, i] = gate, up
+    metadata = torch.tensor([rows], dtype=torch.int32, device=run_device())
+    out = MoEGroupedGemmFwdOp(**call.arguments({}))(a, b, metadata)
+    inputs = (a, b, metadata, None)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
 @pytest.mark.smoke
@@ -496,7 +575,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
         out_dtype="float32",
     )
     workload = MoEGroupedGemmWorkload(call)
-    a, b, metadata = workload.gen_inputs()
+    a, b, metadata, _ = workload.gen_inputs()
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
@@ -543,6 +622,51 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     assert out.dtype is dtype and out.shape == (600, 256)
 
 
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_expert_mlp_adds_both_biases_in_float16():
+    """In float16, ``b_gate_up`` goes to the first GEMM before swigluoai and ``b_down`` to the
+    second."""
+    dtype = torch.float16
+    call = manifest_call(
+        "MoEExpertMLPFwdOp",
+        {"D": "float16"},
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+        activation="swigluoai",
+        some=["b_gate_up", "b_down"],
+        P=600,
+        H=256,
+        E=6,
+        F=192,
+    )
+    _, out = _run(MoEExpertMLPWorkload(call))
+    assert out.dtype is dtype and out.shape == (600, 256)
+
+
+@pytest.mark.smoke
+def test_expert_mlp_in_tuned_mode_serves_repeated_calls():
+    """In tuned mode the expert MLP, on swigluoai with both biases, matches the reference on
+    the call that tunes its two GEMMs and on the next one, which reuses them."""
+    call = manifest_call(
+        "MoEExpertMLPFwdOp",
+        {"D": "bfloat16"},
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+        activation="swigluoai",
+        some=["b_gate_up", "b_down"],
+        P=600,
+        H=256,
+        E=6,
+        F=192,
+    )
+    workload = MoEExpertMLPWorkload(call)
+    inputs = workload.gen_inputs()
+    op = MoEExpertMLPFwdOp(**call.arguments({}))
+    op.request_tune()
+    expected = workload.ref_program(*inputs)
+    for _ in range(2):
+        compare_outputs(op(*inputs), expected, workload.verification(*inputs))
+
+
 def _grouped_call(**facts) -> MGroupedGemmCall:
     return MGroupedGemmCall(
         **{
@@ -569,6 +693,7 @@ def _grouped_call(**facts) -> MGroupedGemmCall:
     ("layout", "activation", "facts", "reason"),
     [
         pytest.param("tight", None, {"k": 60}, "steps K by 8", id="k-off-8"),
+        pytest.param("tight", None, {"n": 12}, "N a multiple of 8", id="n-off-8"),
         pytest.param(
             "tight",
             "silu_and_mul",
@@ -597,7 +722,7 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
 
 
 # The tensors a grouped GEMM reads while it writes ``out``, in the order the op takes them.
-_GROUPED_GEMM_READS = ("a", "b", "layout_metadata")
+_GROUPED_GEMM_READS = ("a", "b", "layout_metadata", "bias")
 
 
 def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
@@ -610,7 +735,9 @@ def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
         The op, its inputs by name, ``out``, the workload and the workspace.
     """
     rows, cols = 128, 64
-    call = _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=64, E=2, N=cols)
+    call = _gemm_call(
+        torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=rows, K=64, E=2, N=cols, some=["bias"]
+    )
     workload = MoEGroupedGemmWorkload(call)
     inputs = dict(zip(_GROUPED_GEMM_READS, workload.gen_inputs(), strict=True))
     out_like = torch.empty(rows, cols, dtype=torch.bfloat16)

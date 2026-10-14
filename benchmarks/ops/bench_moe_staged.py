@@ -71,43 +71,71 @@ def _tight_psum(op) -> bool:
     return layout.kind == "contiguous" and layout.packing.value == "tight"
 
 
+def _row_bias(bias, ends: torch.Tensor):
+    """Each tight row's expert bias in fp32, or ``None``; built outside the timed callable."""
+    if bias is None:
+        return None
+    counts = torch.diff(ends.long(), prepend=ends.new_zeros(1, dtype=torch.long))
+    return bias.float().repeat_interleave(counts, dim=0)
+
+
+def _bias_after_rounding(*biases) -> "str | None":
+    """Why a torch._grouped_mm row has no ratio when the call passes a bias: the op adds a bias to
+    the fp32 product, and torch._grouped_mm writes the product in the operand dtype."""
+    if all(bias is None for bias in biases):
+        return None
+    return "adds the bias to the GEMM product after rounding it to the operand dtype"
+
+
+def _biased(output: torch.Tensor, row_bias) -> torch.Tensor:
+    """*output* plus its rows' bias, added in fp32 as the op adds it."""
+    return output if row_bias is None else (output.float() + row_bias).to(output.dtype)
+
+
 @pytest.mark.parametrize("case", bench.cases(MoEGroupedGemmFwdOp), ids=lambda case: case.id)
 def test_moe_grouped_gemm_bench(case) -> None:
-    _, b, _ = case.inputs
+    # The optional per-expert bias follows the metadata.
+    _, b, metadata, bias = case.inputs
     op = MoEGroupedGemmFwdOp(**case.arguments)
     implementations = {}
+    # torch._grouped_mm writes only the operand dtype, so an fp32 out_dtype has no torch row.
     if _tight_psum(op) and op.out_dtype is None:
         b_kn = b.transpose(1, 2).contiguous()
+        row_bias = _row_bias(bias, metadata)
 
-        def _torch_grouped_mm(a_, _b, ends):
-            output = torch._grouped_mm(a_, b_kn, offs=ends)
+        def _torch_grouped_mm(a_, _b, ends, _bias):
+            output = _biased(torch._grouped_mm(a_, b_kn, offs=ends), row_bias)
             return output if op.activation is None else gated_activation(output, op.activation)
 
-        implementations["torch-grouped-mm"] = _torch_grouped_mm
+        implementations["torch-grouped-mm"] = bench.Implementation(
+            run=_torch_grouped_mm, noncomparable_reason=_bias_after_rounding(bias)
+        )
     bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(MoEExpertMLPFwdOp), ids=lambda case: case.id)
 def test_moe_expert_mlp_bench(case) -> None:
-    _, w_gate_up, w_down, metadata = case.inputs
+    # The optional biases b_gate_up, b_down follow the metadata.
+    _, w_gate_up, w_down, metadata, b_gate_up, b_down = case.inputs
     op = MoEExpertMLPFwdOp(**case.arguments)
     gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
     down_kn = w_down.transpose(1, 2).contiguous()
+    gate_up_bias = _row_bias(b_gate_up, metadata)
+    down_bias = _row_bias(b_down, metadata)
 
-    def _torch_grouped_mlp(x_, _w_gate_up, _w_down, ends):
-        gate_up = torch._grouped_mm(x_, gate_up_kn, offs=ends)
+    def _torch_grouped_mlp(x_, _w_gate_up, _w_down, ends, _b_gate_up, _b_down):
+        gate_up = _biased(torch._grouped_mm(x_, gate_up_kn, offs=ends), gate_up_bias)
         activated = gated_activation(gate_up, op.activation)
-        return torch._grouped_mm(activated, down_kn, offs=ends)
+        return _biased(torch._grouped_mm(activated, down_kn, offs=ends), down_bias)
 
-    segment_gemm = _flashinfer_segment_gemm(metadata)
-    silu_and_mul = flashinfer_op("activation.silu_and_mul")
+    implementations = {"torch-grouped-mm": _torch_grouped_mlp}
+    # FlashInfer's segment GEMM takes no bias and its activation here is silu_and_mul.
+    if op.activation == "silu_and_mul" and b_gate_up is None and b_down is None:
+        segment_gemm = _flashinfer_segment_gemm(metadata)
+        silu_and_mul = flashinfer_op("activation.silu_and_mul")
 
-    def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends):
-        return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
+        def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends, _b_gate_up, _b_down):
+            return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
 
-    bench.Runner(op, case).compare(
-        {
-            "torch-grouped-mm": _torch_grouped_mlp,
-            "flashinfer-segment-mlp": _flashinfer_mlp,
-        }
-    )
+        implementations["flashinfer-segment-mlp"] = _flashinfer_mlp
+    bench.Runner(op, case).compare(implementations)

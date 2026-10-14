@@ -28,6 +28,9 @@ from tileops.kernels.gemm.persistent.heuristics import (
 )
 from tileops.kernels.gemm.persistent.template import GemmTemplate, GemmType, Major
 from workloads.device import run_device
+from workloads.moe import MoEGroupedGemmWorkload
+from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 pytestmark = pytest.mark.sm90
 
@@ -557,6 +560,58 @@ def test_fused_gated_activation_tight(activation, config):
     out = kernel(a, b, grouped_layout=ends)
     assert out.shape == (a.shape[0], 512)
     _assert_gemm(out, _gated_ref(ref, activation))
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "activation,block_n,n,k,config",
+    [
+        # The narrowest fused tile; N and K exactly one tile.
+        pytest.param("swigluoai", 16, 16, 64, dict(block_m=128), id="swigluoai-block-n-16"),
+        # The widest fused tile, with an 8-column output tail and a K tail.
+        pytest.param("swigluoai", 256, 272, 72, dict(block_m=64), id="swigluoai-block-n-256"),
+        # The tallest tile, two math warp-groups, and an output tail.
+        pytest.param("swigluoai", 128, 272, 64, dict(block_m=256), id="swigluoai-block-m-256"),
+        # A stacked gate/up B with an output tail.
+        pytest.param("silu_and_mul", 128, 144, 128, dict(block_k=128), id="silu-tail"),
+        # The narrowest unfused tile; N exactly one tile.
+        pytest.param("none", 8, 8, 72, dict(block_m=128), id="none-block-n-8"),
+        # An odd multiple of 8 with an 8-column output tail.
+        pytest.param("none", 24, 32, 64, dict(block_m=64), id="none-block-n-24"),
+    ],
+)
+def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
+    """At the extremes of block_n and block_m, with and without an output tail, every row of
+    uneven groups, one of them empty, meets the grouped GEMM's contract with a bias."""
+    sizes = [100, 0, 300, 7]
+    fused = activation != "none"
+    row = dict(
+        P=sum(sizes),
+        K=k,
+        E=len(sizes),
+        N=n // 2 if fused else n,
+        layout={
+            "contiguous": {"packing": "tight", "metadata_kind": "physical_psum", "alignment": 1}
+        },
+        some=["bias"],
+        **({"activation": activation} if fused else {}),
+    )
+    workload = MoEGroupedGemmWorkload(
+        manifest_call("MoEGroupedGemmFwdOp", {"D": "bfloat16"}, **row)
+    )
+    a, b, _, bias = workload.gen_inputs()
+    ends = torch.tensor(sizes, device=a.device).cumsum(0).int()
+    kernel = GemmTemplate(
+        GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=len(sizes),
+        activation=activation,
+        config={"block_n": block_n, "block_m": 128, **config},
+    )
+    out = torch.full((a.shape[0], row["N"]), 1e4, dtype=torch.bfloat16, device=a.device)
+    kernel(a, b, grouped_layout=ends, out=out, bias=bias)
+    inputs = (a, b, ends, bias)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
 def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
