@@ -362,8 +362,9 @@ def _instance_norm_train_kernel(
                         total_mean = total_mean + block_sums[0, i]
                         total_var = total_var + block_sums[1, i]
                     if splits == 1:
-                        running_mean[c] = T.cast(T.cast(total_mean / float(N), dtype), accum_dtype)
-                        running_var[c] = T.cast(T.cast(total_var / float(N), dtype), accum_dtype)
+                        # The batch mean as torch's mean takes it, by the reciprocal.
+                        running_mean[c] = T.cast(T.cast(total_mean * (1.0 / N), dtype), accum_dtype)
+                        running_var[c] = T.cast(T.cast(total_var * (1.0 / N), dtype), accum_dtype)
                     else:
                         partial[s, 0, c] = total_mean
                         partial[s, 1, c] = total_var
@@ -404,8 +405,9 @@ def _instance_norm_stats_kernel(N, C, splits, dtype):
                     for s in T.serial(splits):
                         total_mean = total_mean + partial[s, 0, c]
                         total_var = total_var + partial[s, 1, c]
-                    running_mean[c] = T.cast(T.cast(total_mean / float(N), dtype), accum_dtype)
-                    running_var[c] = T.cast(T.cast(total_var / float(N), dtype), accum_dtype)
+                    # The batch mean as torch's mean takes it, by the reciprocal.
+                    running_mean[c] = T.cast(T.cast(total_mean * (1.0 / N), dtype), accum_dtype)
+                    running_var[c] = T.cast(T.cast(total_var * (1.0 / N), dtype), accum_dtype)
 
         return main
 
