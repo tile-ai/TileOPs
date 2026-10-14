@@ -486,8 +486,8 @@ def _gla_bwd_fused_kernel(
 
                 # PHASE B: Inter-chunk gradients + combine + dg
 
-                h_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
+                h_cast_s = dh_cast_s if lean else T.alloc_shared([dim_k, dim_v], dtype)
 
                 if not lean:
                     for i_k, i_v in T.Parallel(dim_k, dim_v):
@@ -541,6 +541,7 @@ def _gla_bwd_fused_kernel(
 
                 # dq_inter = do @ h^T → write to shared to avoid layout conflict
                 if lean:
+                    T.sync_threads()
                     do_b = T.alloc_shared([BT, dim_v], dtype)
                     T.copy(do[i_b, chunk_start : chunk_start + BT, i_h, :], do_b, disable_tma=True)
                     for i_k, i_v in T.Parallel(dim_k, dim_v):
