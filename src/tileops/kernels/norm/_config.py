@@ -9,8 +9,8 @@ yet numerically correct, so no correctness test catches it. Every config chosen
 here pins ``block_m=1``, where the per-row uniformity the reduction needs holds
 for any width, thread count and dtype.
 
-A row of whole 16-byte vectors up to :data:`NARROW_ROW` wide is instead held by one
-warp, unpadded: :func:`make_warp_row_norm` builds that body.
+A row of whole 16-byte vectors up to 1024 elements wide is instead held by one warp,
+unpadded: :func:`make_warp_row_norm` builds that body.
 
 Of the two fragment row reductions here, :func:`make_row_reduce` walks the row twice and
 holds one fp32 copy of it, and :func:`make_shifted_row_reduce` walks it once and
@@ -256,12 +256,13 @@ def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
 
     The fragment body pads such a row to a power of two -- 784 columns to 1024 -- and guards
     every element past it; a warp guards only the vectors past the row. Measured on H200 at
-    784 and 1024 columns, the widths of the InstanceNorm workloads, where it led the fragment
-    body at every dtype.
+    64 to 1024 columns, where it led or tied the fragment body at every dtype.
     """
     vec = VECTOR_ACCESS_BYTES // elem_bytes
-    max_vectors = 8  # a lane's vectors: 64 16-bit or 32 fp32 elements in registers
-    if n % vec or n > NARROW_ROW or n > WARP_LANES * vec * max_vectors:
+    # At 2048 16-bit columns the fragment body led it on H200: by 3% at 128 rows with one
+    # row a block, and at parity at 512 rows.
+    widest = 1024
+    if n % vec or n > widest:
         return None
     return vec
 

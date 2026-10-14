@@ -139,7 +139,7 @@ class _RowNormKernel(Kernel):
         if self._warp_row_vector() is not None:
             # Eight rows a block, one a warp. On H200 at (1024, 784) it took 3.136 us in
             # float32 against 3.167 at four rows and 3.200 at one; in float16 four and eight
-            # tied at 2.464 against 2.496 at one.
+            # tied at 2.464 against 2.496 at one. `_warp_rows` takes fewer for fewer rows.
             warp_row_threads = 256
             return {"block_m": 1, "threads": warp_row_threads}
         return select_row_config_by_width(self.D_padded, self._row_widths)
@@ -174,14 +174,21 @@ def _register_load(x, row, col, shift, guarded, M, D):
 
 
 def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
-    """``threads / 32`` rows a block, one a warp; see `make_warp_row_norm`.
+    """Up to ``threads / 32`` rows a block, one a warp; see `make_warp_row_norm`.
 
     A warp past the last row normalizes the last row and stores nothing.
 
     Args:
         affine: Whether row ``m`` is scaled and shifted by channel ``m % num_groups``.
     """
+    # Fewer rows a block until the grid holds 128 blocks: on H200 at 1024 columns, 256
+    # rows took 2.240 us in float32 at eight rows a block against 2.016 at two, while
+    # 1024 rows led at eight.
+    min_blocks = 128
     warps = threads // WARP_LANES
+    while warps > 1 and -(-M // warps) < min_blocks:
+        warps //= 2
+    threads = warps * WARP_LANES
     held_n, reduce_row, write_row = make_warp_row_norm(D, dtype, eps, vec, affine)
 
     if affine:
