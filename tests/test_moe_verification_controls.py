@@ -76,8 +76,11 @@ def _case(op: str, label: str) -> tuple:
     workload = _WORKLOADS[op](manifest_call(op, row["dtype_cases"][0], **fields), device="cpu")
     inputs = workload.gen_inputs()
     reference = workload.ref_program(*inputs)
-    # The construction without a fault is the reference itself.
-    assert torch.equal(_BUILDERS[op](workload, inputs, None), reference)
+    # The construction without a fault passes, so a rejected construction is rejected for its
+    # fault.
+    compare_outputs(
+        _BUILDERS[op](workload, inputs, None), reference, workload.verification(*inputs)
+    )
     return workload, inputs, reference
 
 
