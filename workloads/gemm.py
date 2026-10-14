@@ -361,6 +361,128 @@ class GemmW4A16Workload(WorkloadBase):
         return Exact(atol=7e-2, rtol=5e-2)
 
 
+def unpack_signed_int4(packed: torch.Tensor) -> torch.Tensor:
+    """The ``[N, K]`` INT4 values of a row-major ``[N, K // 2]`` uint8 packing.
+
+    Byte ``(n, j)`` holds ``k = 2j`` in its low nibble and ``k = 2j + 1`` in its high nibble,
+    each a signed two's-complement value in ``[-8, 7]``.
+    """
+    nibbles = torch.stack((packed & 0xF, packed >> 4), dim=-1).to(torch.int16)
+    return ((nibbles ^ 8) - 8).reshape(packed.shape[0], 2 * packed.shape[1])
+
+
+class GemmW4A8Workload(WorkloadBase):
+    """FP8 activations times signed INT4 weights with a group, a channel and a token scale.
+
+    The weight is generated in the row-major packing :func:`unpack_signed_int4` reads. The
+    reference dequantizes it to ``q * weight_group_scale`` rounded to float8_e4m3fn, nearest
+    even, contracts in fp32, and then scales by the token and channel scales.
+
+    Each element of an accepted result is within ``5e-5 * K + 2e-2 * |reference|`` of the
+    reference, which admits fp32 accumulation and Hopper FP8 tensor-core accumulation without
+    fp32 promotion (the ``atol`` and ``rtol`` of :meth:`verification`). Its squared error over
+    the whole output is at most ``5e-5`` of the output's and the reference's combined energy
+    (the ``normalized`` bound of :meth:`verification`). A result computed from the unrounded
+    weight ``q * weight_group_scale`` is rejected (control ``weight-unrounded``). A result that
+    ignores the activation is rejected (control ``left-operand-zeroed``).
+    """
+
+    def __init__(self, m: int, n: int, k: int, group_size: int) -> None:
+        self.m = m
+        self.n = n
+        self.k = k
+        self.group_size = group_size
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GemmW4A8Workload":
+        """The workload of one manifest call of ``GemmW4A8FwdOp``."""
+        indices = call.indices
+        return cls(indices["M"], indices["N"], indices["K"], indices["group_size"])
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        """Return activation, packed weight, group scale, channel scale and token scale.
+
+        The magnitudes match ``GemmFP8Workload``'s: the activation and the dequantized weight
+        have standard deviation near 0.25, the channel and token scales lie in ``[0.5, 1.5)``,
+        and the group scale is drawn from ``[0.03, 0.08)``, which e4m3 rounds into
+        ``[0.0293, 0.0781]``. A nonzero ``q * weight_group_scale`` therefore lies in
+        ``[0.0293, 0.625]`` in magnitude, inside e4m3's normal range ``[2**-6, 448]``: its
+        rounding to e4m3 neither saturates nor goes subnormal. The output, of standard
+        deviation near ``0.07 * sqrt(K)``, is far inside bf16.
+        """
+        device = run_device()
+        activation = (torch.randn(self.m, self.k, device=device) * 0.25).to(torch.float8_e4m3fn)
+        q = torch.randint(-8, 8, (self.n, self.k), device=device, dtype=torch.int16)
+        packed = ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
+        groups = self.k // self.group_size
+        group_scale = (0.03 + 0.05 * torch.rand(self.n, groups, device=device)).to(
+            torch.float8_e4m3fn
+        )
+        channel_scale = 0.5 + torch.rand(self.n, device=device)
+        token_scale = 0.5 + torch.rand(self.m, device=device)
+        return activation, packed.contiguous(), group_scale, channel_scale, token_scale
+
+    def ref_program(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_group_scale: torch.Tensor,
+        weight_channel_scale: torch.Tensor,
+        activation_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        return self._contract(
+            activation,
+            packed_weight,
+            weight_group_scale,
+            weight_channel_scale,
+            activation_scale,
+            round_weight=True,
+        )
+
+    def _contract(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_group_scale: torch.Tensor,
+        weight_channel_scale: torch.Tensor,
+        activation_scale: torch.Tensor,
+        *,
+        round_weight: bool,
+    ) -> torch.Tensor:
+        group_scale = weight_group_scale.float().repeat_interleave(self.group_size, dim=1)
+        # q times the group scale is exact in fp32, so the e4m3 rounding is the weight's only one.
+        weight = unpack_signed_int4(packed_weight).float() * group_scale
+        if round_weight:
+            weight = weight.to(torch.float8_e4m3fn).float()
+        out = torch.matmul(activation.float(), weight.T)
+        out = out * activation_scale[:, None] * weight_channel_scale[None, :]
+        return out.to(torch.bfloat16)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, NegativeControl, zeroed_input
+
+        def weight_unrounded(reference, inputs):
+            return self._contract(*inputs, round_weight=False)
+
+        # Each product of the e4m3 activation and the e4m3 weight is exact in fp32; what is
+        # left is the accumulation and the bf16 output rounding. Over the 26 manifest rows on
+        # H200, vLLM's FP8 tensor-core accumulation needed an atol of at most 2.2e-5 * K beside
+        # rtol 2e-2; 5e-5 * K keeps a 2.3x margin.
+        atol = 5e-5 * self.k
+        # The same rows measured a normalized squared error of at most 1.07e-5 for vLLM and
+        # at least 2.03e-4 for the unrounded weight; 5e-5 sits 4.7x and 4.1x inside them.
+        normalized = 5e-5
+        return Exact(
+            atol=atol,
+            rtol=2e-2,
+            normalized=normalized,
+            controls=(
+                zeroed_input(0, "left-operand-zeroed"),
+                NegativeControl("weight-unrounded", weight_unrounded),
+            ),
+        )
+
+
 class BmmWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
 

@@ -280,10 +280,12 @@ GemmINT8W8A8FwdOp:
     - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama3-70b-prefill-down}
 
 GemmW4A8FwdOp:
-  # Dequantization is affine in two steps: a group scale along K, then a per-channel
-  # scale along N. The activation carries a per-token scale. The packing order is the
-  # implementation's, held between its `repack` and its GEMM, so it is not in the
-  # signature.
+  # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
+  # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
+  # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n]. An fp8
+  # group scale with an fp32 channel scale is the form a bf16 group scale takes split into an
+  # fp32 factor per channel and an fp8 remainder per group. The packing order is the
+  # implementation's, held between its `repack` and its GEMM, so it is not in the signature.
   family: gemm
   status: spec-only
   ref_api: vllm._custom_ops.cutlass_w4a8_mm
@@ -294,9 +296,10 @@ GemmW4A8FwdOp:
       group_size: {type: int, default: 128}
     inputs:
       activation: {dtype: float8_e4m3fn, shape: "[M, K]"}
-      # Two INT4 weights per byte, in the order this op's `repack` produces.
+      # Two INT4 weights per byte, each signed two's complement in [-8, 7] with no zero
+      # point, in the order this op's `repack` produces.
       packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
-      weight_group_scale: {dtype: bfloat16, shape: "[N, K // group_size]"}
+      weight_group_scale: {dtype: float8_e4m3fn, shape: "[N, K // group_size]"}
       weight_channel_scale: {dtype: float32, shape: "[N]"}
       activation_scale: {dtype: float32, shape: "[M]"}
     outputs:
@@ -304,8 +307,10 @@ GemmW4A8FwdOp:
     shape_rules:
     - "M > 0 and N > 0"
     - "group_size > 0"
-    # The packing order is defined per 128-element K step, as in GemmW4A16FwdOp.
+    # `repack` orders the weight within whole 128-element K blocks, and the groups tile K.
     - "K % 128 == 0 and K % group_size == 0"
+    # `repack` packs the weight in 16-row units, one warp's slice of the tensor core's A operand.
+    - "N % 16 == 0"
 
   workloads:
   # DeepSeek-R1: hidden 7168, MLP intermediate 18432. Both directions, since the down
@@ -323,6 +328,22 @@ GemmW4A8FwdOp:
   - {M: 1, N: 28672, K: 8192, label: llama-70b-up-b1}
   - {M: 64, N: 28672, K: 8192, label: llama-70b-up-b64}
   - {M: 4096, N: 28672, K: 8192, label: llama-70b-up-4k}
+  # The token axis at the DeepSeek-R1 down shape, from batched decode to prefill.
+  - {M: 2, N: 7168, K: 18432, label: ds-r1-down-b2}
+  - {M: 8, N: 7168, K: 18432, label: ds-r1-down-b8}
+  - {M: 16, N: 7168, K: 18432, label: ds-r1-down-b16}
+  - {M: 32, N: 7168, K: 18432, label: ds-r1-down-b32}
+  - {M: 96, N: 7168, K: 18432, label: ds-r1-down-b96}
+  - {M: 128, N: 7168, K: 18432, label: ds-r1-down-b128}
+  - {M: 512, N: 7168, K: 18432, label: ds-r1-down-b512}
+  - {M: 1024, N: 7168, K: 18432, label: ds-r1-down-b1024}
+  # Eight-way tensor-parallel shards: an eighth of N shrinks the grid, an eighth of K the K loop.
+  - {M: 1, N: 2304, K: 7168, label: ds-r1-up-tp8-b1}
+  - {M: 4096, N: 2304, K: 7168, label: ds-r1-up-tp8-4k}
+  - {M: 1, N: 7168, K: 2304, label: ds-r1-down-tp8-b1}
+  - {M: 4096, N: 7168, K: 2304, label: ds-r1-down-tp8-4k}
+  - {M: 1, N: 3584, K: 8192, label: llama-70b-up-tp8-b1}
+  - {M: 1, N: 8192, K: 3584, label: llama-70b-down-tp8-b1}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
