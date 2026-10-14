@@ -25,9 +25,9 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
 
     ``output[t] = scale * sum_k w[t, k] * (down_k(act(gate_up_k(h[t]) + b_gate_up[k]))
     + b_down[k])`` over each token's routed experts ``k``, where ``scale`` is
-    ``routed_scaling_factor``. Each GEMM accumulates in fp32 and each bias is added to it
-    before the activation or the cast; the routing weight then scales the biased down
-    output, as gpt-oss and vLLM's fused experts apply it. The biases are optional and
+    ``routed_scaling_factor``. Each bias joins its GEMM's result before the activation or the
+    cast; the routing weight then scales the biased down output, as gpt-oss and vLLM's fused
+    experts apply it. The biases are optional and
     independent of each other and of the activation.
 
     ``act`` is the gated activation ``activation`` names, and ``w_gate_up`` and
