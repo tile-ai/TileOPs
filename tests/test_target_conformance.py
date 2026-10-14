@@ -106,7 +106,8 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
 
     registry.register_kernel_builder(name, "elsewhere", build_kernel)
 
-    result = op(*args)
+    positional, keywords = cls._signature.sig.forward_arguments(args)
+    result = op(*positional, **keywords)
 
     assert len(seen) == 1, "the kernel the target built runs the call"
     assert all(a is b for a, b in zip(seen[0], passed, strict=True)), (

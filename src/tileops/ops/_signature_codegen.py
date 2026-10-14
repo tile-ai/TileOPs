@@ -1225,6 +1225,9 @@ class _CompileBoundary:
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
 
     def _schema(self, written: frozenset, out: bool, emitted: frozenset) -> str:
+        """The operator's schema: every input positional in signature order, a `kw_only` one
+        included, since `torch.library.custom_op` refuses a keyword-only tensor, then `out`, the
+        execution parameters and the instance key."""
         sig, aliases = self.plan.sig, iter(string.ascii_lowercase)
         args = []
         for name, t in sig.inputs.items():
@@ -1349,13 +1352,15 @@ class _CompileBoundary:
         return None if not values else values[0] if len(values) == 1 else tuple(values)
 
     def build_call_boundary(self, cls: type):
-        """`_call_boundary` for *cls*: `forward`'s parameters bound by plain Python arguments."""
+        """`_call_boundary` for *cls*: `forward`'s parameters, each of the same kind, bound by
+        plain Python arguments."""
         parameters = list(inspect.signature(cls.forward).parameters.values())[1:]
         defaults = {f"_d{i}": p.default for i, p in enumerate(parameters)}
-        formal = ", ".join(
-            p.name if p.default is inspect.Parameter.empty else f"{p.name}=_d{i}"
-            for i, p in enumerate(parameters)
-        )
+        formal = []
+        for i, p in enumerate(parameters):
+            if p.kind is inspect.Parameter.KEYWORD_ONLY and "*" not in formal:
+                formal.append("*")
+            formal.append(p.name if p.default is inspect.Parameter.empty else f"{p.name}=_d{i}")
         inputs = "".join(f"{n}, " for n in self.plan.sig.inputs)
         writes = (
             "{'out': out} if out is not None else {}"
@@ -1364,7 +1369,7 @@ class _CompileBoundary:
         )
         execution = ", ".join(f"{n!r}: {n}" for n, _ in self.execution)
         source = (
-            f"def _call_boundary(self, {formal}):\n"
+            f"def _call_boundary(self, {', '.join(formal)}):\n"
             f"    return _boundary.call(self, ({inputs}), {writes}, {{{execution}}})"
         )
         scope = {**defaults, "_boundary": self}
@@ -1389,14 +1394,20 @@ def _schema_type(cls: type, parameter: inspect.Parameter) -> str:
 
 
 def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
-    """A method taking the signature's inputs as `forward` does, that calls `body(self, tensors)`;
-    with *dtypes* it also takes keyword-only `dtypes`, an input name to dtype mapping, and calls
-    `body(self, tensors, dtypes)`."""
+    """A method taking the signature's inputs as `forward` does, a `kw_only` one keyword-only,
+    that calls `body(self, tensors)`; with *dtypes* it also takes keyword-only `dtypes`, an input
+    name to dtype mapping, and calls `body(self, tensors, dtypes)`."""
     formal = [
         "self",
-        *(f"{t}=None" if d.optional is not False else t for t, d in sig.inputs.items()),
+        *(
+            f"{t}=None" if d.optional is not False else t
+            for t, d in sig.inputs.items()
+            if not d.kw_only
+        ),
     ]
-    formal += ["*", "dtypes=None"] if dtypes else []
+    keyword = [f"{t}=None" for t, d in sig.inputs.items() if d.kw_only]
+    keyword += ["dtypes=None"] if dtypes else []
+    formal += ["*", *keyword] if keyword else []
     tensors = ", ".join(f"{t!r}: {t}" for t in sig.inputs)
     tail = ", dtypes or {}" if dtypes else ""
     source = f"def {name}({', '.join(formal)}):\n    return _body(self, {{{tensors}}}{tail})"

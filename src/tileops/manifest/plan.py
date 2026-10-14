@@ -74,6 +74,7 @@ _TENSOR_FIELDS: dict[str, tuple] = {
     "mutated": (lambda v: isinstance(v, (bool, str)), "a bool or a discriminant condition"),
     "write_only": (lambda v: isinstance(v, bool), "a bool"),
     "contiguous": (lambda v: isinstance(v, bool), "a bool"),
+    "kw_only": (lambda v: isinstance(v, bool), "a bool"),
     "alias": (lambda v: isinstance(v, str), "an input name"),
     "buffer": (lambda v: v == "out", "'out'"),
     "device": (lambda v: v == "cpu", "'cpu'"),
@@ -85,7 +86,8 @@ _COMMON_TENSOR_KEYS = {"dtype", "shape", "contiguous"}
 _ROLE_KEYS = {
     "params": frozenset(_COMMON_TENSOR_KEYS | {"optional", "device", "values", "requires"}),
     "inputs": frozenset(
-        _COMMON_TENSOR_KEYS | {"optional", "mutated", "write_only", "device", "values", "requires"}
+        _COMMON_TENSOR_KEYS
+        | {"optional", "kw_only", "mutated", "write_only", "device", "values", "requires"}
     ),
     "outputs": frozenset(_COMMON_TENSOR_KEYS | {"nullable", "buffer", "alias"}),
 }
@@ -399,22 +401,39 @@ def signature_schema_errors(sig: dict) -> list[str]:
 
 
 def _input_order_errors(inputs: dict) -> list[str]:
-    """An optional input may not precede a required one.
+    """An optional input may not precede a required one, nor a `kw_only` input a positional one,
+    and a `kw_only` input is optional.
 
     Input order is the generated signature's parameter order, and an optional input becomes a
     parameter with a default, so a required input after one emits `parameter without a default
-    follows parameter with a default` and the generated validator does not compile.
+    follows parameter with a default` and the generated validator does not compile. A `kw_only`
+    input is a keyword-only parameter after every positional one, which a caller may omit.
     """
-    optional = [n for n, d in inputs.items() if isinstance(d, dict) and d.get("optional")]
-    if not optional:
-        return []
-    first = next(n for n in inputs if n in optional)
-    after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in optional]
-    return [
-        f"inputs.{n}: a required input may not follow the optional {first!r}; "
-        "order every optional input last"
-        for n in after
+    decls = {n: d for n, d in inputs.items() if isinstance(d, dict)}
+    optional = [n for n, d in decls.items() if d.get("optional")]
+    errors = [
+        f"inputs.{n}: a kw_only input must be optional"
+        for n, d in decls.items()
+        if d.get("kw_only") is True and n not in optional
     ]
+    if optional:
+        first = next(n for n in inputs if n in optional)
+        after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in optional]
+        errors += [
+            f"inputs.{n}: a required input may not follow the optional {first!r}; "
+            "order every optional input last"
+            for n in after
+        ]
+    keyword = [n for n, d in decls.items() if d.get("kw_only") is True]
+    if keyword:
+        first = keyword[0]
+        after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in keyword]
+        errors += [
+            f"inputs.{n}: a positional input may not follow the kw_only {first!r}; "
+            "order every kw_only input last"
+            for n in after
+        ]
+    return errors
 
 
 # ---------------------------------------------------------------- type families

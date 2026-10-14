@@ -84,6 +84,7 @@ class Tensor:
     write_only: bool = False
     alias: str | None = None
     contiguous: bool = False
+    kw_only: bool = False
 
 
 @dataclass
@@ -104,6 +105,23 @@ class Signature:
     def call_tensors(self) -> dict[str, Tensor]:
         """Tensors unification reads: construction-time tensors, then call-time inputs."""
         return {**self.ctor_tensors, **self.inputs}
+
+    def forward_arguments(self, inputs) -> tuple[tuple, dict]:
+        """*inputs*, call-time inputs in `inputs` order, as `forward` takes them.
+
+        Returns the positional ones in order, and each `kw_only` one by name. *inputs* may stop
+        before the last input; the ones it leaves out are not passed.
+        """
+        inputs = tuple(inputs)
+        if len(inputs) > len(self.inputs):
+            raise TypeError(
+                f"{self.name}: {len(inputs)} inputs, the signature has {len(self.inputs)}"
+            )
+        named = list(zip(list(self.inputs.values())[: len(inputs)], inputs, strict=True))
+        return (
+            tuple(v for t, v in named if not t.kw_only),
+            {t.name: v for t, v in named if t.kw_only},
+        )
 
     def kind(self, name: str) -> Kind | None:
         if name in self.forall:
@@ -167,6 +185,7 @@ def _tensor(name: str, decl: object) -> Tensor:
         decl.get("write_only") is True,
         decl.get("alias"),
         decl.get("contiguous") is True,
+        decl.get("kw_only") is True,
     )
 
 

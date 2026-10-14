@@ -506,6 +506,34 @@ def test_generated_methods_bind_inputs_by_name():
         op._infer_output_shapes((2,), (9,), (1,))
 
 
+def test_a_kw_only_input_is_taken_by_name_after_out():
+    """The boundary, the body and `_infer_output_shapes` take a `kw_only` input after `out`,
+    keyword-only, so a positional `out` binds `out`."""
+    signature = {
+        **_VEC,
+        "inputs": {
+            **_VEC["inputs"],
+            "w": {"dtype": "T", "shape": "[M]", "optional": True, "kw_only": True},
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}},
+    }
+
+    def eager(self, x, out=None, *, w=None):
+        y = x + 1 if w is None else x + w
+        return y if out is None else out.copy_(y)
+
+    op = _probe("ProbeKeywordFwdOp", signature, eager, boundary=True)()
+    x, w = torch.ones(2, dtype=torch.float16), torch.full((2,), 5, dtype=torch.float16)
+    out = torch.zeros(2, dtype=torch.float16)
+    assert op(x, out) is out and out.tolist() == [2, 2]
+    assert op(x, out, w=w) is out and out.tolist() == [6, 6]
+    with pytest.raises(TypeError):
+        op(x, out, w)
+    assert op._infer_output_shapes((2,), w=(2,)) == {"y": (2,)}
+    with pytest.raises(TypeError):
+        op._infer_output_shapes((2,), (2,))
+
+
 def test_a_roofline_reads_the_presence_of_out():
     signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}}}
 

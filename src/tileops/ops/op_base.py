@@ -679,11 +679,11 @@ class Op(ABC):
         Every eager call that runs an implementation passes here, so the check, the record
         and the failure handling exist once: the compile-boundary operator's body calls it,
         and so does ``__call__`` for an op without a compile boundary. *body* is the op's
-        ``forward``, called with *inputs* in manifest order, then *writes* and *execution*
-        by name. The in-tree kernels run *body*; a target runs the whole op. *written* names
-        the inputs this operator's kernel writes, when that is not every input the call
-        writes: an op that registers an inplace companion writes nothing through its
-        default operator.
+        ``forward``, called with *inputs* in manifest order, a ``kw_only`` one by name, then
+        *writes* and *execution* by name. The in-tree kernels run *body*; a target runs the
+        whole op. *written* names the inputs this operator's kernel writes, when that is not
+        every input the call writes: an op that registers an inplace companion writes nothing
+        through its default operator.
 
         Raises:
             OpNotAvailableError: What :meth:`_bind_target` raises.
@@ -709,7 +709,8 @@ class Op(ABC):
                     inputs, writes, call.written if written is None else written, execution
                 )
             else:
-                result = body(*inputs, **writes, **(execution or {}))
+                args, keywords = type(self)._signature.sig.forward_arguments(inputs)
+                result = body(*args, **keywords, **writes, **(execution or {}))
             self._check_and_finish_call(call, result, tensors)
             return result
         except Exception:
