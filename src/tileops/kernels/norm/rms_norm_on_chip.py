@@ -22,6 +22,14 @@ from tileops.utils import WARP_LANES
 __all__ = ["RMSNormOnChipKernel"]
 
 
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def _rms_norm_on_chip_kernel(
     M, N, eps, dtype, has_weight, cluster, threads, held_vectors, async_stage
@@ -42,7 +50,7 @@ def _rms_norm_on_chip_kernel(
     own = warps
     clustered = cluster > 1
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("cluster_partials.h"))
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("cluster_partials.h", "streaming_load.h"))
     def build():
         def normalize(value, rrms, scale):
             """*value* scaled by the row's reciprocal RMS and, where there is one, the weight."""
@@ -82,15 +90,27 @@ def _rms_norm_on_chip_kernel(
                     T.cluster_arrive_relaxed()
 
                 if async_stage:
-                    T.async_copy(x[cta : cta + 1, held:chunk], tile)
+                    for v in T.unroll(staged_vectors):
+                        T.call_extern(
+                            "handle",
+                            "tileops::cp_async16_evict_last",
+                            T.address_of(tile[0, (v * threads + tx) * vec]),
+                            T.address_of(x[cta, held + (v * threads + tx) * vec]),
+                        )
+                    T.ptx_commit_group()
                 for v in T.unroll(held_vectors):
-                    for i in T.vectorized(vec):
-                        values[v * vec + i] = x[cta, (v * threads + tx) * vec + i]
+                    _load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
                 if async_stage:
                     T.ptx_wait_group(0)
                     T.sync_threads()
                 else:
-                    T.copy(x[cta : cta + 1, held:chunk], tile)
+                    # Staged through registers: T.copy lowers to the same vector copy, without
+                    # a cache policy.
+                    for v in T.unroll(staged_vectors):
+                        _load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
+                        for i in T.vectorized(vec):
+                            tile[0, (v * threads + tx) * vec + i] = piece[i]
+                    T.sync_threads()
 
                 total[0] = T.cast(0, "float32")
                 for j in T.unroll(held_vectors * vec):

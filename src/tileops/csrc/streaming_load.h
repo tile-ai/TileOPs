@@ -90,6 +90,19 @@ __device__ __forceinline__ void load16_evict_last(void* dst, const void* src) {
   __builtin_memcpy(dst, &v, 16);
 }
 
+// Starts a 16-byte cp.async from global src to shared dst, evict-last in L2.
+// The caller commits and waits for the group.
+__device__ __forceinline__ void cp_async16_evict_last(void* dst,
+                                                      const void* src) {
+  uint64_t policy;
+  asm("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(policy));
+  unsigned shared = static_cast<unsigned>(__cvta_generic_to_shared(dst));
+  asm volatile(
+      "cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;" ::"r"(
+          shared),
+      "l"(src), "l"(policy));
+}
+
 // Loads 16 bytes of global memory into dst with the default cache policy.
 __device__ __forceinline__ void load16(void* dst, const void* src) {
   uint4 v = *reinterpret_cast<const uint4*>(src);
