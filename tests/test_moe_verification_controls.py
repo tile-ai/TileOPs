@@ -45,17 +45,6 @@ _WORKLOADS = {
     "FusedMoEFwdOp": FusedMoEWorkload,
 }
 _ROUTED = ("FusedMoEExpertsFwdOp", "FusedMoEFwdOp")
-# The swigluoai faults: each breaks one clause of the definition in MoEGroupedGemmFwdOp's
-# docstring.
-_SWIGLUOAI_FAULTS = (
-    "stacked-read",
-    "gate-up-swapped",
-    "gate-clamp-missing",
-    "up-upper-clamp-missing",
-    "up-lower-clamp-missing",
-    "alpha-1",
-    "plus-one-missing",
-)
 
 
 def _biases(row: dict) -> list[str]:
@@ -227,7 +216,19 @@ def test_rejects_an_output_without_a_bias_the_call_passes(op, label, bias):
     _rejects(op, label, f"{bias}-dropped")
 
 
-@pytest.mark.parametrize("fault", _SWIGLUOAI_FAULTS)
+# Each fault breaks one clause of swigluoai's definition in MoEGroupedGemmFwdOp's docstring.
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "stacked-read",
+        "gate-up-swapped",
+        "gate-clamp-missing",
+        "up-upper-clamp-missing",
+        "up-lower-clamp-missing",
+        "alpha-1",
+        "plus-one-missing",
+    ),
+)
 @pytest.mark.parametrize(("op", "label", "_"), _rows(swigluoai_only=True))
 def test_rejects_an_output_off_the_swigluoai_definition(op, label, _, fault):
     """Gate and up read stacked or swapped, a clamp left out, alpha 1, or no ``+ 1`` on up.
