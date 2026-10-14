@@ -132,6 +132,8 @@ def _moe_grouped_gemm_mma_kernel(
             if activation == "silu_and_mul":
                 return gate * (half + half * T.tanh(half * gate)) * up
             if activation == "swigluoai":
+                # min(gate, limit) * sigmoid(alpha * min(gate, limit)) * (clamp(up, limit) + 1),
+                # the sigmoid in silu's tanh form.
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 clamped_gate = T.min(gate, limit)
                 clamped_up = T.max(T.min(up, limit), -limit)

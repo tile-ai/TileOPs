@@ -17,6 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
+from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
 from tileops.utils import get_sm_count
@@ -176,10 +177,10 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     @property
     def default_config(self) -> dict:
         # The largest width that divides the row, whose fragment is laid out over the
-        # threads, at one 16-byte vector a thread: up to 1024 threads with no more tokens
-        # than SMs, up to 256 otherwise so several blocks share an SM.
-        cap = 1024 if self.num_tokens <= self.sm_count else 256
-        threads = min(cap, self.hidden_size // (16 // self.dtype.itemsize))
+        # threads, at one vector access a thread: up to a block's thread limit with no more
+        # tokens than SMs, up to 256 otherwise so several blocks share an SM.
+        cap = MAX_BLOCK_THREADS if self.num_tokens <= self.sm_count else 256
+        threads = min(cap, self.hidden_size // (VECTOR_ACCESS_BYTES // self.dtype.itemsize))
         while threads > 0 and self.hidden_size % threads != 0:
             threads -= 1
         return {"threads": max(threads, 1)}

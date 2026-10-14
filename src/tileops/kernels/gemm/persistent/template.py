@@ -11,6 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
+from tileops.kernels.constants import WARPGROUP_THREADS
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.gemm.persistent.heuristics import (
     ACTIVATIONS,
@@ -410,15 +411,15 @@ def _make_prim_func(
     def stage_bias(Bias, bias_s, group, col0, tx):
         """Copy the tile's ``block_n`` bias values into the warp-group's shared row; the
         previous tile's readers of the row are past ``store_tile``'s barrier."""
-        for step in range(-(-block_n // 128)):
-            j = step * 128 + tx % 128
+        for step in range(-(-block_n // WARPGROUP_THREADS)):
+            j = step * WARPGROUP_THREADS + tx % WARPGROUP_THREADS
             if j < block_n:
                 bias_s[j] = bias_at(Bias, group, col0, j)
 
     @T.macro
     def add_bias(C_l, bias_s, wg):
         """Add the bias of each accumulator column, in fp32, before the activation and cast."""
-        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
         for i, j in T.Parallel(wg_rows, block_n):
             C_l[i, j] = C_l[i, j] + T.cast(bias_s[j], accum_dtype)
 
@@ -441,6 +442,8 @@ def _make_prim_func(
                 half = T.cast(0.5, accum_dtype)
                 C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
             elif activation == "swigluoai":
+                # min(g, limit) * sigmoid(alpha * min(g, limit)) * (clamp(u, -limit, limit) + 1),
+                # the sigmoid in the tanh form above.
                 half = T.cast(0.5, accum_dtype)
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 gate = T.min(g, limit)
@@ -674,7 +677,7 @@ def _make_prim_func(
         num_waves = T.ceildiv(num_blocks, num_sms)
 
         if tx < tma_threads:
-            # ── TMA warp-group ──
+            # The producer warp-group TMA-loads each tile's A and B stages into the ring.
             T.dec_max_nreg(tma_regs)
             gi = T.alloc_var("int32", init=0)
             t_group = T.alloc_local((1,), "int32")
@@ -723,7 +726,7 @@ def _make_prim_func(
                         load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
                         T.barrier_arrive(full[slot])
                         gi = gi + 1
-        elif tx < tma_threads + 128:
+        elif tx < tma_threads + WARPGROUP_THREADS:
             math_warpgroup(
                 A_s0,
                 B_s,
