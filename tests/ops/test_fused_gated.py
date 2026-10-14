@@ -25,8 +25,10 @@ class SiluAndMulFixture(FixtureBase):
                 pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
+                # Tile boundary: the second 1024-column block is half past N, so the evict-last
+                # path masks its upper threads with the col < N guard.
+                pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
-                pytest.param(2048, 2048, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -61,6 +63,16 @@ def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
     """
     workload = SiluAndMulGateSweepWorkload()
     TestBase.check(workload, SiluAndMulFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_input_off_a_vector_boundary() -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches the reference."""
+    test = SiluAndMulTest(64, 1024, torch.bfloat16)
+    (aligned,) = test.gen_inputs()
+    x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
+    x = x.view(aligned.shape).copy_(aligned)
+    test.check(SiluAndMulFwdOp(), x)
 
 
 class GeluAndMulFixture(FixtureBase):

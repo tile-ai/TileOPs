@@ -45,7 +45,7 @@ from tileops.kernels.elementwise.call_spec import (
     FusedGatedCall,
     FusedGatedFwdInterface,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 
 __all__ = [
     "BinaryKernel",
@@ -435,6 +435,8 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    # Whether whole-vector threads read x evict-last in L2; see ``make_fused_gated_explicit``.
+    EVICT_LAST_LOADS = False
 
     @staticmethod
     def activation_func(x):
@@ -477,6 +479,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
                 effective_op,
                 cfg["threads"],
                 cfg["num_per_thread"],
+                self.EVICT_LAST_LOADS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -493,7 +496,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
 
     def forward(self, x):
         self._require_cuda(x=x)
-        result = self._compiled_fn(x)
+        result = self._compiled_fn(vector_aligned(x))
         return self._restore_output_dtype(result)
 
 
