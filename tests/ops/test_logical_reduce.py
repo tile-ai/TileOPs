@@ -727,17 +727,30 @@ def test_logical_reduce_edge_axes_fused_dispatch(
     "dtype, value",
     [
         pytest.param(torch.float32, -0.0, id="negative-zero"),
+        # 16-bit floats go two to a 32-bit word: the sign mask must clear -0.0 in either half.
+        pytest.param(torch.float16, -0.0, id="float16-negative-zero"),
+        pytest.param(torch.bfloat16, -0.0, id="bfloat16-negative-zero"),
+        # The sign mask must leave NaN nonzero.
+        pytest.param(torch.bfloat16, float("nan"), id="bfloat16-nan"),
         pytest.param(torch.complex128, 1e-300j, id="float64-only-imag"),
     ],
 )
 def test_logical_reduce_truth_at_own_width(dtype: torch.dtype, value: complex) -> None:
-    """Truth is decided in the input's own dtype, and a conjugated input reads the same."""
+    """Truth is decided in the input's own dtype, and a conjugated input reads the same.
+
+    Rows of 1000 elements fill whole 32-bit words for 16- and 32-bit floats, so the fold tests
+    them a word at a time. *value* sits at an even column (a word's low half) and an odd one
+    (its high half): among ones in rows 0 and 1, which ``all`` sees, and among zeros in rows 2
+    and 3, which ``any`` sees.
+    """
     from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     x = torch.ones(4, 1000, dtype=dtype, device=run_device())
+    x[0, 2] = value
     x[1, 3] = value
-    x[2] = 0
-    x[2, 999] = value
+    x[2:] = 0
+    x[2, 998] = value
+    x[3, 999] = value
     inputs = [x, x.conj()] if dtype.is_complex else [x]
     for t in inputs:
         compare_outputs(AnyFwdOp(dim=-1)(t), t.any(-1), reduction_verification((t.any(-1)).dtype))
