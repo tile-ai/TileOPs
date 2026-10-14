@@ -626,7 +626,8 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
       tile wins even under a short grid. Per-tensor, with no scaled
       partial beside the accumulator, 192 also fits; it is taken where its waves,
       counted whole, cover fewer columns than 128's, since a partial last wave
-      costs a full one.
+      costs a full one. 176 replaces 192 where it fills as many waves and pads
+      ``n`` no further: each wave then multiplies 176 columns instead of 192.
     - ring depth: the deepest the budget allows, except in block128, where a
       K-step ends in a promotion the next WGMMA cannot start under. There the
       ring covers nothing beyond the fill, and 4 stages is enough — 3 over a
@@ -660,13 +661,17 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         epilogue = block_m * block_n * 2 if m > half_m else 0
         return (_SMEM_BUDGET - epilogue) // per_stage
 
+    def _waves(block_n: int) -> int:
+        return -(-(-(-m // 128) * -(-n // block_n)) // sm_count)
+
     def _waved_columns(block_n: int) -> int:
-        return -(-(-(-m // 128) * -(-n // block_n)) // sm_count) * block_n
+        return _waves(block_n) * block_n
 
     k_iters = -(-k // 128)
     block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
     if not block_scaled and block_n == 128 and _waved_columns(192) < _waved_columns(128):
-        block_n = 192
+        narrow = _waves(176) == _waves(192) and -(-n // 176) * 176 <= -(-n // 192) * 192
+        block_n = 176 if narrow else 192
     deepest = _fp8_ws_stages(2 * half_m, block_n)
     if not block_scaled or m <= 8:
         num_stages = deepest
