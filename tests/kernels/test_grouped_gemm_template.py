@@ -589,6 +589,15 @@ def test_fused_gated_activation_tight(activation, config):
         pytest.param("none", 8, 8, 72, dict(block_m=128), id="none-block-n-8"),
         # An odd multiple of 8 with an 8-column output tail.
         pytest.param("none", 24, 32, 64, dict(block_m=64), id="none-block-n-24"),
+        # The two-buffer staged epilogue over full and ragged tiles, with an output tail.
+        pytest.param(
+            "none",
+            256,
+            272,
+            64,
+            dict(block_m=128, epilogue_stage_n=64, epilogue_buffers=2),
+            id="none-two-buffer-epilogue",
+        ),
     ],
 )
 def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
