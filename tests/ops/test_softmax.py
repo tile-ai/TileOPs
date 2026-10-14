@@ -51,6 +51,12 @@ class SoftmaxFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # Rows of whole thread-wide vectors, held in registers; a 2 KB row on a warp.
+                pytest.param((8, 2048), -1, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param((8, 1024), -1, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param((4, 512), -1, torch.float32, False, marks=pytest.mark.smoke),
+                # A 2 KB row on a warp, tail-M: the last CTA's warps past M store nothing.
+                pytest.param((5, 512), -1, torch.float32, False, marks=pytest.mark.full),
                 # request_tune() regression: kernel must be built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
