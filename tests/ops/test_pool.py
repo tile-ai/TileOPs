@@ -1896,6 +1896,31 @@ def test_max_pool1d_windowed_taps_match_torch(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype",
+    [
+        pytest.param(3072, 3, 3, 0, torch.float32, id="in-row-fp32"),
+        pytest.param(3072, 3, 3, 0, torch.bfloat16, id="in-row-bf16"),
+        pytest.param(3070, 2, 3, 1, torch.float32, id="padded-fp32"),
+        pytest.param(4093, 3, 4, 1, torch.bfloat16, id="padded-bf16"),
+    ],
+)
+def test_max_pool1d_indices_windowed_taps_match_torch(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: torch.dtype
+) -> None:
+    """Windows no wider than their stride, 1024 outputs a row so that a block divides the
+    output and each thread stores adjacent outputs as vectors, give torch's values and
+    positions with the 4- and 2-byte element loads, the last NaN in a window winning."""
+    x = torch.randn(4, 8, l_in, device=run_device(), dtype=dtype)
+    # Adjacent pairs put two NaNs in some windows.
+    x.view(-1)[::313] = float("nan")
+    x.view(-1)[1::313] = float("nan")
+    op = MaxPool1dIndicesFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)
+    expected = max_pool_ref(1)(x, kernel_l, stride_l, pad_l, return_indices=True)
+    compare_outputs(op(x), expected, pool_verification(maximum=True))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "shape, kernel, stride, padding, dtype, offset, nan",
     [
         pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, False, id="pad-before-fp16"),

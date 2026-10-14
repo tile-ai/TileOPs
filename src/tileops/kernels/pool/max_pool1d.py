@@ -230,8 +230,11 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
+    # Rows up to 128 MiB are read evict-last in L1 and L2, as Inductor's loads are. The
+    # bound is not measured here; it is the value-only windowed kernel's evict-first bound.
+    evict_last = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
-    @tilelang.jit(out_idx=[1, 2], compile_flags=_JIT_FLAGS)
+    @tilelang.jit(out_idx=[1, 2], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
     def _build(block_ol: int, threads: int):
         def _windowed_indices_scan(
             l_in: int,
@@ -266,7 +269,15 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
                 for kw in T.serial(kernel_w):
                     iw = iw0 + kw * dilation_w
                     if always_in_bounds or ((iw >= 0) and (iw < l_in)):
-                        val = T.cast(x[row, iw], _ACCUM_DTYPE)
+                        if evict_last:
+                            val = T.cast(
+                                T.call_extern(
+                                    dtype, "tileops::load_evict_last", T.address_of(x[row, iw])
+                                ),
+                                _ACCUM_DTYPE,
+                            )
+                        else:
+                            val = T.cast(x[row, iw], _ACCUM_DTYPE)
                         # Strict `>` reports the first of equal maxima, as PyTorch does, and
                         # rejects NaN without a separate test.
                         take = val > max_val
@@ -283,6 +294,7 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
             return _store
 
         tail_free = total_output % block_ol == 0
+        per_thread = block_ol // threads
         scan = _windowed_indices_scan(l_in, kernel_w, stride_w, pad_w, dilation_w, dtype, in_bounds)
 
         @T.prim_func
@@ -292,11 +304,24 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
             indices: T.Tensor((total_output,), "int64"),  # type: ignore
         ):
             with T.Kernel(T.ceildiv(total_output, block_ol), threads=threads) as bx:
-                for i in T.Parallel(block_ol):
-                    idx = bx * block_ol + i
-                    if tail_free:
-                        scan(x, out, indices, idx // out_l, idx % out_l, idx)
-                    else:
+                # A thread takes adjacent outputs and stores them, and their indices, as
+                # vectors, as Inductor's kernel does. With the evict-last loads, (2560, 4096)
+                # float32 took 21.15 us against 22.19 and float16 15.23 against 15.62 (H200);
+                # the same loads on one output a thread took float16 to 16.67.
+                if tail_free and block_ol % threads == 0:
+                    tx = T.get_thread_binding()
+                    vals = T.alloc_local([per_thread], dtype)
+                    picks = T.alloc_local([per_thread], "int64")
+                    first = bx * block_ol + tx * per_thread
+                    for i in T.unroll(per_thread):
+                        scan(x, vals, picks, (first + i) // out_l, (first + i) % out_l, i)
+                    for i in T.vectorized(per_thread):
+                        out[first + i] = vals[i]
+                    for i in T.vectorized(per_thread):
+                        indices[first + i] = picks[i]
+                else:
+                    for i in T.Parallel(block_ol):
+                        idx = bx * block_ol + i
                         if idx < total_output:
                             scan(x, out, indices, idx // out_l, idx % out_l, idx)
 
