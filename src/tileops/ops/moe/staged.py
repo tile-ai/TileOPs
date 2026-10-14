@@ -177,8 +177,9 @@ class MoEGroupedGemmFwdOp(Op):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        bias: torch.Tensor | None = None,
         out: torch.Tensor | None = None,
+        *,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run one GEMM per expert over the rows the layout assigns it.
 
@@ -186,10 +187,11 @@ class MoEGroupedGemmFwdOp(Op):
             a: Expert-materialized activations, ``[M, K]`` or ``[E, max_m, K]`` per the layout.
             b: Per-expert weights, ``[E, N, K]``.
             layout_metadata: ``int32`` metadata whose shape and meaning the layout fixes.
-            bias: Optional per-expert bias in ``b``'s dtype and row order, ``[E, N]``.
             out: Optional preallocated output in the resolved output dtype. It must not
                 overlap ``a``, ``b``, ``layout_metadata`` or ``bias``, or a ``ValueError``
                 is raised; disjoint views of one buffer are accepted.
+            bias: Optional per-expert bias in ``b``'s dtype and row order, ``[E, N]``;
+                keyword-only.
 
         Returns:
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
@@ -215,7 +217,7 @@ class MoEGroupedGemmFwdOp(Op):
             k=k,
         )
         kernel = self.kernel_for("grouped_gemm", call)
-        return kernel(a, b, layout_metadata, bias, out=out)
+        return kernel(a, b, layout_metadata, out=out, bias=bias)
 
 
 class MoEExpertMLPFwdOp(Op):
@@ -286,9 +288,10 @@ class MoEExpertMLPFwdOp(Op):
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
         layout_metadata: torch.Tensor,
+        out: torch.Tensor | None = None,
+        *,
         b_gate_up: torch.Tensor | None = None,
         b_down: torch.Tensor | None = None,
-        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the gate/up GEMM with its fused activation, then the down GEMM.
 
@@ -298,18 +301,19 @@ class MoEExpertMLPFwdOp(Op):
                 or interleaved as ``activation`` reads them.
             w_down: ``[E, hidden, ffn]``.
             layout_metadata: ``int32`` metadata the layout fixes; shared by both GEMMs.
-            b_gate_up: Optional ``[E, 2 * ffn]`` bias in ``w_gate_up``'s row order.
-            b_down: Optional ``[E, hidden]`` bias.
             out: Optional preallocated ``[.., hidden]`` output in the operand dtype. It
                 must not overlap ``w_down``, ``layout_metadata`` or ``b_down``, which the
                 down GEMM reads while it writes ``out``, or a ``ValueError`` is raised;
                 disjoint views of one buffer are accepted.
+            b_gate_up: Optional ``[E, 2 * ffn]`` bias in ``w_gate_up``'s row order;
+                keyword-only.
+            b_down: Optional ``[E, hidden]`` bias; keyword-only.
 
         Returns:
             ``[M, hidden]`` or ``[E, max_m, hidden]`` in the operand dtype.
         """
-        activated = self.gate_up(expert_input, w_gate_up, layout_metadata, b_gate_up)
-        return self.down(activated, w_down, layout_metadata, b_down, out=out)
+        activated = self.gate_up(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
+        return self.down(activated, w_down, layout_metadata, out=out, bias=b_down)
 
 
 class MoEPostPermuteFwdOp(Op):

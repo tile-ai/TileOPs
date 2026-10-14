@@ -298,8 +298,9 @@ class MGroupedGemmFwdInterface(KernelInterface):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
+        *,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Contract each expert's rows of *a* with its weights and add its bias.
 
@@ -317,12 +318,12 @@ class MGroupedGemmFwdInterface(KernelInterface):
                 for a masked layout, in ``call.ab_dtype`` on ``call.device``.
             b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
             layout_metadata: Contiguous ``int32`` whose shape the layout fixes.
-            bias: Contiguous ``(call.num_groups, call.n)`` in ``call.ab_dtype``, in *b*'s row
-                order, passed exactly when ``call.has_bias``.
             out: An optional buffer in ``call.cd_dtype``, shaped like the return value,
                 written in place and returned; ``None`` allocates one. It must not overlap
                 *a*, *b*, *layout_metadata* or *bias*: tiles store while others still load.
                 Disjoint views of one buffer are accepted.
+            bias: Contiguous ``(call.num_groups, call.n)`` in ``call.ab_dtype``, in *b*'s row
+                order, passed exactly when ``call.has_bias``; keyword-only.
 
         Returns:
             ``(call.m, N)`` or ``(call.num_groups, call.max_m, N)`` in ``call.cd_dtype``, where

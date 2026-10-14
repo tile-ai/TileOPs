@@ -142,7 +142,7 @@ class _ExecutableGroupedCandidate(Kernel, MGroupedGemmFwdInterface):
         type(self).builds += 1
         self.call = call
 
-    def forward(self, a, b, layout_metadata, bias=None, out=None):
+    def forward(self, a, b, layout_metadata, out=None, *, bias=None):
         zeros = a.new_zeros((*a.shape[:-1], b.shape[1]), dtype=self.call.cd_dtype)
         return zeros if out is None else out.copy_(zeros)
 
@@ -321,7 +321,8 @@ def _run(workload) -> tuple:
     inputs = workload.gen_inputs()
     cls = MoEGroupedGemmFwdOp if isinstance(workload, MoEGroupedGemmWorkload) else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments({}))
-    out = op(*inputs)
+    args, keywords = workload.call.signature.forward_arguments(inputs)
+    out = op(*args, **keywords)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
     return op, out
 
@@ -447,7 +448,7 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
     out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
     op = MoEGroupedGemmFwdOp(**call.arguments({}))
-    assert op(a, b, metadata, bias, out=out) is out
+    assert op(a, b, metadata, out, bias=bias) is out
     compare_outputs(
         out,
         workload.ref_program(a, b, metadata, bias),
@@ -584,6 +585,31 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     )
 
 
+@pytest.mark.parametrize(
+    "op_name",
+    [
+        pytest.param("MoEGroupedGemmFwdOp", marks=pytest.mark.smoke),
+        pytest.param("MoEExpertMLPFwdOp", marks=pytest.mark.full),
+    ],
+)
+def test_an_out_passed_after_the_required_inputs_by_position_is_the_output(op_name):
+    """``out`` passed by position right after the required inputs is written and returned,
+    with no bias added: the biases are keyword-only."""
+    if op_name == "MoEGroupedGemmFwdOp":
+        call = _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
+        workload, op = MoEGroupedGemmWorkload(call), MoEGroupedGemmFwdOp(**call.arguments({}))
+    else:
+        call = manifest_call(
+            op_name, {"D": "bfloat16"}, layout=_TIGHT_MOE_GROUPED_GEMM, P=64, H=128, E=2, F=64
+        )
+        workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments({}))
+    inputs = workload.gen_inputs()
+    required = [t for t in inputs if t is not None]
+    out = torch.full_like(op(*required), float("nan"))
+    assert op(*required, out) is out
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
 @pytest.mark.smoke
 def test_grouped_gemm_refuses_a_strided_out():
     """The output buffer is declared contiguous; a strided one is refused before the kernel."""
@@ -593,7 +619,7 @@ def test_grouped_gemm_refuses_a_strided_out():
     op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     out = torch.empty(64, 128, dtype=torch.bfloat16, device=run_device())[:, ::2]
     with pytest.raises(ValueError, match="out must be contiguous"):
-        op(*workload.gen_inputs(), out=out)
+        op(*workload.gen_inputs()[:3], out=out)
 
 
 @pytest.mark.sm90
@@ -663,8 +689,9 @@ def test_expert_mlp_in_tuned_mode_serves_repeated_calls():
     op = MoEExpertMLPFwdOp(**call.arguments({}))
     op.request_tune()
     expected = workload.ref_program(*inputs)
+    args, keywords = call.signature.forward_arguments(inputs)
     for _ in range(2):
-        compare_outputs(op(*inputs), expected, workload.verification(*inputs))
+        compare_outputs(op(*args, **keywords), expected, workload.verification(*inputs))
 
 
 def _grouped_call(**facts) -> MGroupedGemmCall:
@@ -770,7 +797,7 @@ def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, o
     op, inputs, out, _, workspace = _grouped_gemm_in_workspace(overlap, 1)
     before = workspace.clone()
     with pytest.raises(ValueError, match="out must not overlap"):
-        op(*inputs.values(), out=out)
+        op(**inputs, out=out)
     assert torch.equal(workspace, before)
 
 
@@ -781,7 +808,7 @@ def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture, be
     """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
     starts: ``out`` is written and returned."""
     op, inputs, out, workload, _ = _grouped_gemm_in_workspace(beside, 0)
-    assert op(*inputs.values(), out=out) is out
+    assert op(**inputs, out=out) is out
     args = tuple(inputs.values())
     compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
 

@@ -308,8 +308,9 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
+        *,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run each expert's grouped product, with its bias and fused activation when requested."""
         return self.inner(a, b, grouped_layout=layout_metadata, out=out, bias=bias)
@@ -397,8 +398,9 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
+        *,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run each expert's grouped product, with its bias and fused activation when requested."""
         call = self.call

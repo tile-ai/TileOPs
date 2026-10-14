@@ -144,6 +144,6 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         )
         expert_input, physical_ends, inverse_indices = pre_permute(hidden_states, topk_ids)
         expert_output = self._expert_mlp(
-            expert_input, w_gate_up, w_down, physical_ends, b_gate_up, b_down
+            expert_input, w_gate_up, w_down, physical_ends, b_gate_up=b_gate_up, b_down=b_down
         )
         self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
