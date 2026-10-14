@@ -12,7 +12,8 @@ from benchmarks._cases import Entry, default_binder
 from benchmarks.baselines import private_inputs
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
-from tileops.manifest import load_manifest
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.signature import parse_signature
 from workloads.numerics import Exact, Unestablished
 
 pytestmark = pytest.mark.smoke
@@ -33,6 +34,11 @@ class SumFwdOp:
 
 class NotAManifestOp(SumFwdOp):
     """A wrapper of the kind a benchmark must not report under."""
+
+
+def _signature(name):
+    """The manifest signature of *name*, which binds the case's inputs as the op's ``forward``."""
+    return parse_signature(name, load_manifest()[name], load_adts())
 
 
 def _case(
@@ -57,7 +63,7 @@ def _case(
     call = SimpleNamespace(
         tensors={"x": ((4,), "float32")},
         params={"dim": [0]},
-        signature=SimpleNamespace(name="SumFwdOp"),
+        signature=_signature("SumFwdOp"),
     )
     return bench.Case("probe", call, Entry(lambda _call: workload, count_copies, binder))
 
@@ -121,7 +127,7 @@ def test_the_runner_refuses_an_op_the_manifest_does_not_declare():
 def test_the_runner_refuses_a_case_for_another_op():
     case = _case()
     with pytest.raises(ValueError, match="cannot run case"):
-        other_call = SimpleNamespace(signature=SimpleNamespace(name="AbsFwdOp"))
+        other_call = SimpleNamespace(signature=_signature("AbsFwdOp"))
         bench.Runner(SumFwdOp(), dataclasses.replace(case, _call=other_call))
 
 
