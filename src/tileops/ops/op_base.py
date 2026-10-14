@@ -340,7 +340,10 @@ class Op(ABC):
             keys = tuple(
                 k for k, cls in self._installed_kernel_types.items() if issubclass(cls, interface)
             )
-            arguments = list(inspect.signature(interface.forward).parameters)[1:]
+            parameters = list(inspect.signature(interface.forward).parameters.values())[1:]
+            # Each argument as the interface takes it: by position, or by name after `*`.
+            arguments = [p.name for p in parameters if p.kind is not p.KEYWORD_ONLY]
+            keywords = {p.name: p.name for p in parameters if p.kind is p.KEYWORD_ONLY}
             for key in keys:
                 runs = self._installed_kernel_types[key]
                 if not issubclass(runs, Kernel):
@@ -355,7 +358,7 @@ class Op(ABC):
                         f"{name}.{where} {key!r}: {runs.__name__}.entry_for is not a classmethod"
                     )
                 try:
-                    inspect.signature(runs.forward).bind(None, *arguments)
+                    inspect.signature(runs.forward).bind(None, *arguments, **keywords)
                 except TypeError as exc:
                     raise TypeError(
                         f"{name}.{where} {key!r}: {runs.__name__}.forward does not take "

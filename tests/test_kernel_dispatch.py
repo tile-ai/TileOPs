@@ -249,6 +249,49 @@ def test_a_registered_implementation_implements_its_interface(kernel_type, error
         _ScaleOp()
 
 
+class _Shifting(KernelInterface):
+    """Scale *x*, adding an optional *shift* passed by name."""
+
+    request = _Call
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, out=None, *, shift=None) -> torch.Tensor:
+        """Return a new tensor."""
+
+
+@pytest.mark.parametrize(
+    ("forward", "accepted"),
+    [
+        pytest.param(lambda self, x, out=None, *, shift=None: x, True, id="keyword-only"),
+        pytest.param(lambda self, x, out=None: x, False, id="without-the-keyword"),
+    ],
+)
+def test_an_implementation_takes_the_interface_keyword_only_argument_by_name(
+    forward, accepted
+) -> None:
+    """The interface's keyword-only argument is passed by name, never by position."""
+
+    class _ShiftImplementation(Kernel, _Shifting):
+        devices = frozenset({"cpu"})
+        general = True
+
+        @classmethod
+        def entry_for(cls, call):
+            return 0, cls
+
+    _ShiftImplementation.forward = forward
+
+    class _ShiftOp(_ScaleOp):
+        kernel_types = {"shift": _ShiftImplementation}
+        interfaces = {"shift": _Shifting}
+
+    if accepted:
+        _ShiftOp()
+    else:
+        with pytest.raises(TypeError, match="does not take _Shifting's arguments"):
+            _ShiftOp()
+
+
 @pytest.mark.parametrize(
     ("added", "match"),
     [
