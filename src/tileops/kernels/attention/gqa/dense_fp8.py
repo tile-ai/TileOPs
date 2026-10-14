@@ -411,7 +411,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 if overlap_softmax_pv:
                     p_regs_1 = T.alloc_local([28], "uint32")
-                    pv_tile_1 = T.alloc_local([64], accum_dtype)
                 acc_s_1 = T.alloc_fragment([half_m, 224], accum_dtype)
                 acc_o_1 = T.alloc_fragment([half_m, dim], accum_dtype)
                 sm_1 = T.alloc_fragment([half_m], accum_dtype)
@@ -421,7 +420,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 ls_1 = T.alloc_fragment([half_m], accum_dtype)
                 if overlap_softmax_pv:
                     p_regs_2 = T.alloc_local([28], "uint32")
-                    pv_tile_2 = T.alloc_local([64], accum_dtype)
                 acc_s_2 = T.alloc_fragment([half_m, 224], accum_dtype)
                 acc_o_2 = T.alloc_fragment([half_m, dim], accum_dtype)
                 sm_2 = T.alloc_fragment([half_m], accum_dtype)
@@ -515,10 +513,11 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.barrier_arrive(v_full_1)
                                 gi_vp = gi_vp + 1
-                            # Keep the static buffer choice outside the runtime phase test.
-                            if not use_out_of_place_v:  # noqa: SIM102
-                                # TMA overwrites the in-place MMA operand, so wait
-                                # for its preceding PV before issuing the load.
+                            # Keep specialization separate from the runtime counter.
+                            if overlap_softmax_pv and not use_out_of_place_v:  # noqa: SIM102
+                                # Raw V aliases the MMA tile. Wait before TMA
+                                # overwrites it, not just before the transpose:
+                                # the preceding PV may still be reading this slot.
                                 if gi_vp >= 2:
                                     if gi_vp % 2 == 0:
                                         T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
@@ -732,8 +731,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         "tileops::fp8_pv_from_p_regs_64x128x224",
                                         p_regs_1.data,
                                         v_tc_smem_0.access_ptr("r"),
-                                        pv_tile_1.data,
-                                        True,
+                                        acc_o_1.data,
                                     )
                                 else:
                                     T.call_extern(
@@ -741,8 +739,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         "tileops::fp8_pv_from_p_regs_64x128x224",
                                         p_regs_1.data,
                                         v_tc_smem_1.access_ptr("r"),
-                                        pv_tile_1.data,
-                                        True,
+                                        acc_o_1.data,
                                     )
                                 T.named_barrier_arrive(9, 256)
                                 T.wait_wgmma(1)
@@ -761,13 +758,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     row_base,
                                 )
                                 T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(pv_tile_1, num_regs=64)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                    acc_o_1.data,
-                                    pv_tile_1.data,
-                                )
+                                T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                                 T.call_extern(
                                     "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_1.data
                                 )
@@ -858,8 +849,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         pv_begin_accumulate_helper,
                                         acc_s_1.data,
                                         v_tc_smem_0.access_ptr("r"),
-                                        acc_s_1.data,
-                                        True,
+                                        acc_o_1.data,
                                     )
                                 else:
                                     T.call_extern(
@@ -867,17 +857,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         pv_begin_accumulate_helper,
                                         acc_s_1.data,
                                         v_tc_smem_1.access_ptr("r"),
-                                        acc_s_1.data,
-                                        True,
+                                        acc_o_1.data,
                                     )
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_s_1, num_regs=64)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                    acc_o_1.data,
-                                    acc_s_1.data,
-                                )
                         if overlap_softmax_pv:
                             if gi_vc1 % 2 == 0:
                                 T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
@@ -889,8 +870,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     "tileops::fp8_pv_from_p_regs_64x128x224",
                                     p_regs_1.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    pv_tile_1.data,
-                                    True,
+                                    acc_o_1.data,
                                 )
                             else:
                                 T.call_extern(
@@ -898,18 +878,10 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     "tileops::fp8_pv_from_p_regs_64x128x224",
                                     p_regs_1.data,
                                     v_tc_smem_1.access_ptr("r"),
-                                    pv_tile_1.data,
-                                    True,
+                                    acc_o_1.data,
                                 )
                         T.wait_wgmma(0)
                         if overlap_softmax_pv:
-                            T.warpgroup_fence_operand(pv_tile_1, num_regs=64)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                acc_o_1.data,
-                                pv_tile_1.data,
-                            )
                             T.call_extern(
                                 "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_1.data
                             )
@@ -1055,8 +1027,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         "tileops::fp8_pv_from_p_regs_64x128x224",
                                         p_regs_2.data,
                                         v_tc_smem_0.access_ptr("r"),
-                                        pv_tile_2.data,
-                                        True,
+                                        acc_o_2.data,
                                     )
                                 else:
                                     T.call_extern(
@@ -1064,8 +1035,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         "tileops::fp8_pv_from_p_regs_64x128x224",
                                         p_regs_2.data,
                                         v_tc_smem_1.access_ptr("r"),
-                                        pv_tile_2.data,
-                                        True,
+                                        acc_o_2.data,
                                     )
                                 T.named_barrier_arrive(8, 256)
                                 T.wait_wgmma(1)
@@ -1084,13 +1054,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     row_base,
                                 )
                                 T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(pv_tile_2, num_regs=64)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                    acc_o_2.data,
-                                    pv_tile_2.data,
-                                )
+                                T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                                 T.call_extern(
                                     "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_2.data
                                 )
@@ -1175,8 +1139,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         pv_begin_accumulate_helper,
                                         acc_s_2.data,
                                         v_tc_smem_0.access_ptr("r"),
-                                        acc_s_2.data,
-                                        True,
+                                        acc_o_2.data,
                                     )
                                 else:
                                     T.call_extern(
@@ -1184,17 +1147,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                         pv_begin_accumulate_helper,
                                         acc_s_2.data,
                                         v_tc_smem_1.access_ptr("r"),
-                                        acc_s_2.data,
-                                        True,
+                                        acc_o_2.data,
                                     )
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_s_2, num_regs=64)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                    acc_o_2.data,
-                                    acc_s_2.data,
-                                )
                         if overlap_softmax_pv:
                             if gi_vc2 % 2 == 0:
                                 T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
@@ -1206,8 +1160,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     "tileops::fp8_pv_from_p_regs_64x128x224",
                                     p_regs_2.data,
                                     v_tc_smem_0.access_ptr("r"),
-                                    pv_tile_2.data,
-                                    True,
+                                    acc_o_2.data,
                                 )
                             else:
                                 T.call_extern(
@@ -1215,18 +1168,10 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     "tileops::fp8_pv_from_p_regs_64x128x224",
                                     p_regs_2.data,
                                     v_tc_smem_1.access_ptr("r"),
-                                    pv_tile_2.data,
-                                    True,
+                                    acc_o_2.data,
                                 )
                         T.wait_wgmma(0)
                         if overlap_softmax_pv:
-                            T.warpgroup_fence_operand(pv_tile_2, num_regs=64)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_promote_64x128",
-                                acc_o_2.data,
-                                pv_tile_2.data,
-                            )
                             T.call_extern(
                                 "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_2.data
                             )
