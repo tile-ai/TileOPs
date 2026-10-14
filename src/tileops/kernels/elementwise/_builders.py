@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 from tvm import DataType
 
+from tileops._csrc import csrc_include
 from tileops.kernels.elementwise._broadcast import (
     broadcast_plan_for,
     compute_broadcast_offsets,
@@ -683,14 +684,30 @@ def make_binary_explicit(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
-def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
-    """FusedGated explicit_parallel: N elements per thread."""
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
 
-    @tilelang.jit(out_idx=[1])
+
+@functools.lru_cache(maxsize=32)
+def make_fused_gated_explicit(
+    M, N, dtype, op_name, threads=256, num_per_thread=8, evict_last=False
+):
+    """FusedGated explicit_parallel: N elements per thread.
+
+    With *evict_last*, a thread whose elements are whole 16-byte vectors of a row
+    reads both halves through ``tileops::load16_evict_last``.
+    """
+    vec = 16 // (DataType(dtype).bits // 8)
+
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg
+        hinted = evict_last and npt_arg % vec == 0 and N % npt_arg == 0
 
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
@@ -698,11 +715,23 @@ def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=
                 bx,
                 by,
             ):
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (bx * threads_arg + i) * npt_arg + j
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+                if hinted:
+                    tx = T.get_thread_binding()
+                    gate = T.alloc_local([npt_arg], dtype)
+                    value = T.alloc_local([npt_arg], dtype)
+                    col = (bx * threads_arg + tx) * npt_arg
+                    if col < N:
+                        for k in T.unroll(npt_arg // vec):
+                            _load16_evict_last(gate, k * vec, x, (by, col + k * vec))
+                            _load16_evict_last(value, k * vec, x, (by, N + col + k * vec))
+                        for j in T.vectorized(npt_arg):
+                            y[by, col + j] = op_func(gate[j], value[j])
+                else:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (bx * threads_arg + i) * npt_arg + j
+                        gate = x[by, col]
+                        value = x[by, N + col]
+                        y[by, col] = op_func(gate, value)
 
         return main
 

@@ -61,7 +61,10 @@ class RoPEBasicFixture(FixtureBase):
 
 
 class RoPEEdgeFixture(FixtureBase):
-    """Edge case fixture: seq_len=1, small head_dim."""
+    """Edge cases: one position, a small head_dim, and a half-row of 12 float16 elements.
+
+    12 is not a whole number of 8-element vectors, so 2D neox takes its per-pair path.
+    """
 
     PARAMS = [
         (
@@ -69,6 +72,7 @@ class RoPEEdgeFixture(FixtureBase):
             [
                 pytest.param(1, 1, 1, 16, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(1, 1, 1, 16, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1, 4, 2, 24, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(2, 512, 8, 64, torch.float16, marks=pytest.mark.full),
             ],
         ),

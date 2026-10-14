@@ -22,7 +22,7 @@ from tileops.kernels.reduction._primitives import (
     restore_same_shape,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall
-from tileops.kernels.reduction.softmax import _SoftmaxKernelBase
+from tileops.kernels.reduction.softmax import _load16_evict_last, _SoftmaxKernelBase
 from tileops.utils import WARP_LANES
 
 __all__ = ["SoftmaxOnChipKernel"]
@@ -35,7 +35,8 @@ def _softmax_on_chip_kernel(
     """Build the program for ``(M, N)`` rows, each split across ``cluster`` CTAs.
 
     A CTA takes ``N // cluster`` columns: ``held_vectors`` 16-byte vectors a thread in
-    registers, the rest staged in shared memory.
+    registers, the rest staged in shared memory. Every load is evict-last in L2: at
+    (32768, 65536) bfloat16 on H200 that took 1992.8 us against 2074.2 with default loads.
     The buffers are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     """
     vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
@@ -55,7 +56,7 @@ def _softmax_on_chip_kernel(
 
     @tilelang.jit(
         out_idx=[1],
-        compile_flags=csrc_include("cluster_partials.h", "approx_math.h"),
+        compile_flags=csrc_include("cluster_partials.h", "approx_math.h", "streaming_load.h"),
     )
     def build():
         def fold(peak, total, other_peak, other_total):
@@ -125,9 +126,13 @@ def _softmax_on_chip_kernel(
                 T.cluster_arrive_relaxed()
 
                 for v in T.unroll(held_vectors):
+                    _load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
+                # Staged through registers: T.copy lowers to the same vector copy, without
+                # a cache policy.
+                for v in T.unroll(staged_vectors):
+                    _load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                     for i in T.vectorized(vec):
-                        values[v * vec + i] = x[cta, (v * threads + tx) * vec + i]
-                T.copy(x[cta : cta + 1, held:chunk], tile)
+                        tile[0, (v * threads + tx) * vec + i] = piece[i]
 
                 # The maximum is one of the values: taken in their own type, two 16-bit
                 # elements a lane-wide instruction.

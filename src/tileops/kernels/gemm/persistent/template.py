@@ -28,7 +28,7 @@ from tileops.kernels.gemm.persistent.heuristics import (
     spec_from_config,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
+from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = [
     "GemmDesc",
@@ -58,6 +58,7 @@ def _make_prim_func(
     num_sms: int,
     activation: str,
     epilogue_stage_n: int,
+    epilogue_buffers: int,
     swizzle_group_m: int,
     has_bias: bool,
 ):
@@ -410,7 +411,8 @@ def _make_prim_func(
     @T.macro
     def stage_bias(Bias, bias_s, group, col0, tx):
         """Copy the tile's ``block_n`` bias values into the warp-group's shared row; the
-        previous tile's readers of the row are past ``store_tile``'s barrier."""
+        previous tile's readers of the row are past the barrier that opens its epilogue
+        (``store_tile`` or ``store_chunk``)."""
         for step in range(-(-block_n // WARPGROUP_THREADS)):
             j = step * WARPGROUP_THREADS + tx % WARPGROUP_THREADS
             if j < block_n:
@@ -488,6 +490,43 @@ def _make_prim_func(
                         T.copy(C_s, C[group, row0, col0 + chunk_col])
                 else:
                     T.copy(C_s, C[row0, col0 + chunk_col])
+
+    @T.macro
+    def store_chunk(C, C_l, buf, group, row0, col0, chunk_col, rows, wg):
+        """Cast one chunk of the accumulator into ``buf`` and store it without waiting.
+
+        In a full tile the store that last read ``buf`` was issued two chunks ago, so
+        waiting for all but the newest store leaves the other buffer's store in
+        flight while this chunk stages. A ragged tile's rows go out under a row mask
+        and issue no store, so the store still reading ``buf`` may be the newest:
+        it waits for every store.
+        """
+        if T.get_thread_binding() % 128 == 0:
+            if tight and rows < T.int32(wg_rows):
+                T.tma_store_wait(0)
+            else:
+                T.tma_store_wait(1)
+        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+        for i, j in T.Parallel(wg_rows, staged_n):
+            buf[i, j] = T.cast(C_l[i, chunk_col + j], cd_dtype)
+        if tight and rows < T.int32(wg_rows):
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            if rows > 0:
+                for i, j in T.Parallel(wg_rows, staged_n):
+                    if i < rows and col0 + chunk_col + j < c_cols:
+                        C[row0 + i, col0 + chunk_col + j] = buf[i, j]
+        else:
+            T.fence_proxy_async()
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            if c_has_group:
+                T.tma_copy(buf, C[group, row0, col0 + chunk_col], leader_scope_threads=128)
+            else:
+                T.tma_copy(buf, C[row0, col0 + chunk_col], leader_scope_threads=128)
+
+    def store_tile_buffered(C, C_l, bufs, group, row0, col0, rows, wg):
+        """``store_tile`` over two staging buffers in turn; a plain loop, so it unrolls."""
+        for chunk in range(epilogue_chunks):
+            store_chunk(C, C_l, bufs[chunk % 2], group, row0, col0, chunk * staged_n, rows, wg)
 
     @T.macro
     def release_stage(empty, slot, lane):
@@ -587,15 +626,22 @@ def _make_prim_func(
 
                 row0 = t_row0[0] + T.int32(wg * wg_rows)
                 rows = t_rows[0] - T.int32(wg * wg_rows)
-                if fused or not cast_output or batched:
+                if epilogue_buffers > 1:
+                    store_tile_buffered(C, C_l, C_s, t_group[0], row0, t_col0[0], rows, wg)
+                elif fused or not cast_output or batched:
                     # The fused epilogue casts as it multiplies; fp32 out needs no cast.
                     # Batched GEMM casts each staged chunk directly into shared memory.
                     store_tile(C, C_l, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 else:
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
-        if batched_async_store and tx % 128 == 0:
+        if (batched_async_store or epilogue_buffers > 1) and tx % 128 == 0:
             T.tma_store_wait(0)
+
+    def add_swizzled(layouts, buffers):
+        """Swizzle one staging buffer or each of a pair; a plain loop, so it unrolls."""
+        for buf in buffers if isinstance(buffers, list) else [buffers]:
+            layouts[buf] = tilelang.layout.make_swizzled_layout(buf)
 
     @T.macro
     def persistent_body(A, B, C, grouped_layout, Bias, pid):
@@ -607,23 +653,21 @@ def _make_prim_func(
         # The cast fragment serves a plain 16-bit output; the fused epilogue casts
         # as it multiplies and takes the up half through its own fragment.
         C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-        C_cast0 = (
-            T.alloc_fragment((wg_rows, block_n), cd_dtype)
-            if cast_output and not fused and not batched
-            else C_l0
-        )
+        # A staged epilogue over two buffers casts each chunk as it stages it.
+        separate_cast = cast_output and not fused and not batched and epilogue_buffers == 1
+        C_cast0 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l0
         C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
         C_s0 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+        if epilogue_buffers > 1:
+            C_s0 = [C_s0, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
         bias_s0 = T.alloc_shared((block_n,), dtype) if has_bias else None
         if num_math_wgs > 1:
             C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-            C_cast1 = (
-                T.alloc_fragment((wg_rows, block_n), cd_dtype)
-                if cast_output and not fused and not batched
-                else C_l1
-            )
+            C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l1
             C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
             C_s1 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+            if epilogue_buffers > 1:
+                C_s1 = [C_s1, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
             bias_s1 = T.alloc_shared((block_n,), dtype) if has_bias else None
         if dense:
             s_cum = T.alloc_local((1,), "int32")
@@ -637,15 +681,15 @@ def _make_prim_func(
         swizzled = {
             A_s0: tilelang.layout.make_swizzled_layout(A_s0),
             B_s: tilelang.layout.make_swizzled_layout(B_s),
-            C_s0: tilelang.layout.make_swizzled_layout(C_s0),
         }
+        add_swizzled(swizzled, C_s0)
         if num_math_wgs > 1:
             swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
-            swizzled[C_s1] = tilelang.layout.make_swizzled_layout(C_s1)
+            add_swizzled(swizzled, C_s1)
         T.annotate_layout(swizzled)
 
-        # full tracks producer arrivals; empty tracks consumer releases.
-        full = T.alloc_barrier([tma_threads] * num_stages)
+        # full tracks the producer warp's arrivals; empty tracks consumer releases.
+        full = T.alloc_barrier([WARP_LANES] * num_stages)
         empty = T.alloc_barrier([math_warps] * num_stages)
 
         num_m_blocks = T.ceildiv(m, block_m)
@@ -679,53 +723,56 @@ def _make_prim_func(
         if tx < tma_threads:
             # The producer warp-group TMA-loads each tile's A and B stages into the ring.
             T.dec_max_nreg(tma_regs)
-            gi = T.alloc_var("int32", init=0)
-            t_group = T.alloc_local((1,), "int32")
-            t_row0 = T.alloc_local((1,), "int32")
-            t_col0 = T.alloc_local((1,), "int32")
-            t_rows = T.alloc_local((1,), "int32")
-            t_k0 = T.alloc_local((1,), "int32")
-            t_klen = T.alloc_local((1,), "int32")
-            t_khead = T.alloc_local((1,), "int32")
+            # One elected thread issues every copy, so one warp runs the loop; the
+            # warp-group's other three warps only hand their registers back.
+            if tx < WARP_LANES:
+                gi = T.alloc_var("int32", init=0)
+                t_group = T.alloc_local((1,), "int32")
+                t_row0 = T.alloc_local((1,), "int32")
+                t_col0 = T.alloc_local((1,), "int32")
+                t_rows = T.alloc_local((1,), "int32")
+                t_k0 = T.alloc_local((1,), "int32")
+                t_klen = T.alloc_local((1,), "int32")
+                t_khead = T.alloc_local((1,), "int32")
 
-            for w in T.serial(num_waves):
-                block_idx = w * T.int32(num_sms) + pid
-                if block_idx < num_blocks:
-                    resolve_tile(
-                        block_idx,
-                        grouped_layout,
-                        s_ends if tight_per_row else grouped_layout,
-                        s_cum,
-                        num_m_blocks,
-                        num_n_blocks,
-                        t_group,
-                        t_row0,
-                        t_col0,
-                        t_rows,
-                        t_k0,
-                        t_klen,
-                        t_khead,
-                    )
-                    k_iters = tile_k_iters(t_klen)
-                    for ki in T.serial(k_iters):
-                        slot = gi % num_stages
-                        phase = (gi // num_stages) & 1
-                        k0 = t_k0[0] + ki * T.int32(block_k)
-                        T.barrier_wait(empty[slot], phase ^ 1)
-                        load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
-                        if num_math_wgs > 1:
-                            load_a(
-                                A,
-                                A_s1,
-                                full,
-                                slot,
-                                t_group[0],
-                                t_row0[0] + T.int32(wg_rows),
-                                k0,
-                            )
-                        load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
-                        T.barrier_arrive(full[slot])
-                        gi = gi + 1
+                for w in T.serial(num_waves):
+                    block_idx = w * T.int32(num_sms) + pid
+                    if block_idx < num_blocks:
+                        resolve_tile(
+                            block_idx,
+                            grouped_layout,
+                            s_ends if tight_per_row else grouped_layout,
+                            s_cum,
+                            num_m_blocks,
+                            num_n_blocks,
+                            t_group,
+                            t_row0,
+                            t_col0,
+                            t_rows,
+                            t_k0,
+                            t_klen,
+                            t_khead,
+                        )
+                        k_iters = tile_k_iters(t_klen)
+                        for ki in T.serial(k_iters):
+                            slot = gi % num_stages
+                            phase = (gi // num_stages) & 1
+                            k0 = t_k0[0] + ki * T.int32(block_k)
+                            T.barrier_wait(empty[slot], phase ^ 1)
+                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
+                            if num_math_wgs > 1:
+                                load_a(
+                                    A,
+                                    A_s1,
+                                    full,
+                                    slot,
+                                    t_group[0],
+                                    t_row0[0] + T.int32(wg_rows),
+                                    k0,
+                                )
+                            load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
+                            T.barrier_arrive(full[slot])
+                            gi = gi + 1
         elif tx < tma_threads + WARPGROUP_THREADS:
             math_warpgroup(
                 A_s0,
@@ -827,6 +874,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     num_sms = spec.num_sms
     activation = spec.activation
     epilogue_stage_n = spec.epilogue_stage_n
+    epilogue_buffers = spec.epilogue_buffers
     swizzle_group_m = spec.swizzle_group_m
     has_bias = spec.has_bias
 
@@ -857,6 +905,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             num_sms,
             activation,
             epilogue_stage_n,
+            epilogue_buffers,
             swizzle_group_m,
             has_bias,
         )

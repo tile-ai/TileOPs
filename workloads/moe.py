@@ -102,50 +102,57 @@ class MoEPermuteAlignWorkload(CallWorkload):
     """The routing ids of one ``MoEPermuteAlignFwdOp`` call."""
 
     def ref_program(self, topk_ids):
+        """Routes in ascending index order within each expert's range, padded with ``numel``.
+
+        Blocks past the padded length hold ``num_experts``, one of the values that name no
+        expert.
+        """
         p = self.call.params
         ids, experts, count = ref_permute_align(topk_ids, p["block_size"], p["num_experts"])
         capacity = topk_ids.numel() + (p["num_experts"] + 1) * (p["block_size"] - 1)
         blocks = math.ceil(capacity / p["block_size"])
         return (
             torch.nn.functional.pad(ids, (0, capacity - ids.numel()), value=topk_ids.numel()),
-            torch.nn.functional.pad(experts, (0, blocks - experts.numel())),
+            torch.nn.functional.pad(experts, (0, blocks - experts.numel()), value=p["num_experts"]),
             count,
         )
 
     def verification(self, *inputs):
+        """Exact up to route order within each expert and the value past the padded length."""
         from workloads.numerics import Custom
 
+        num_experts = self.call.params["num_experts"]
         block_size = self.call.params["block_size"]
-        numel = inputs[0].numel()
+        flat = inputs[0].flatten().long()
+        counts = torch.bincount(flat, minlength=num_experts)
+        padded = (counts + block_size - 1) // block_size * block_size
+        starts = torch.cumsum(padded, 0) - padded
+        # Each route's slot when every expert's routes are in ascending index order.
+        rank = torch.arange(flat.numel(), device=flat.device) - (
+            torch.cumsum(counts, 0) - counts
+        ).repeat_interleave(counts)
+        group_start = starts.repeat_interleave(counts)
+        routed_slots = group_start + rank
 
         def validate(got, expected):
+            # compare_outputs has already matched every output's shape, dtype and device.
             tokens, experts, count = got
             ref_tokens, ref_experts, ref_count = expected
-            assert tokens.dtype == ref_tokens.dtype and experts.dtype == ref_experts.dtype
-            torch.testing.assert_close(count, ref_count, rtol=0, atol=0)
-            size = int(ref_count.item())
-            blocks = size // block_size
-            assert tokens.numel() >= size and experts.numel() >= blocks
-            torch.testing.assert_close(experts[:blocks], ref_experts[:blocks], rtol=0, atol=0)
-            tokens = tokens[:size].long()
-            assert ((tokens >= 0) & (tokens <= numel)).all(), "invalid padding/token id"
-            valid = tokens < numel
-            # Every route occurs exactly once, and belongs to its block's expert.
-            torch.testing.assert_close(
-                tokens[valid].sort().values,
-                torch.arange(numel, device=tokens.device),
-                rtol=0,
-                atol=0,
+            assert torch.equal(count, ref_count), "num_tokens_post_pad differs"
+            blocks = int(ref_count.item()) // block_size
+            assert torch.equal(experts[:blocks], ref_experts[:blocks]), "a block's owner differs"
+            tail = experts[blocks:]
+            assert ((tail < 0) | (tail >= num_experts)).all(), (
+                "a block past the end names an expert"
             )
-            owners = experts[:blocks].repeat_interleave(block_size)
-            torch.testing.assert_close(
-                inputs[0].flatten()[tokens[valid]],
-                owners[valid],
-                rtol=0,
-                atol=0,
-            )
+            # Sort each expert's routed slots, which may hold its routes in any order.
+            key = torch.arange(tokens.numel(), device=tokens.device)
+            key[routed_slots] = group_start
+            order = torch.sort(tokens, stable=True).indices
+            order = order[torch.sort(key[order], stable=True).indices]
+            assert torch.equal(tokens[order], ref_tokens), "sorted_token_ids differs"
 
-        return Custom(validate, "all valid routes and expert ownership; unused capacity ignored")
+        return Custom(validate, "exact up to route order within each expert's routed slots")
 
 
 class MoEPrePermuteWorkload(CallWorkload):

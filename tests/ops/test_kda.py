@@ -184,3 +184,22 @@ def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
     test.check(op, *test.gen_inputs())
     kernels = list(op.iter_kernels())
     assert kernels and all(isinstance(kernel, KDAFusedPrefillFwdKernel) for kernel in kernels)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("batch,heads", [(1, 4), (16, 16)], ids=["chunk", "fused"])
+def test_kda_prefill_correlated_keys(dtype, batch, heads):
+    """Repeated keys must not destabilize the inverse, including a partial chunk."""
+    torch.manual_seed(42)
+    workload = KDAFwdTest(batch, 65, heads, 128, dtype)
+    q, k, v, g, beta, state = workload.gen_inputs()
+    inputs = (
+        q,
+        k[:, :1].expand_as(k).contiguous(),
+        v,
+        torch.full_like(g, -0.01),
+        torch.full_like(beta, 0.95),
+        state,
+    )
+    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)

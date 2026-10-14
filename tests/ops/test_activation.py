@@ -13,6 +13,7 @@ from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
     Exhaustive16BitWorkload,
+    GeluSignWorkload,
     GeluTailWorkload,
     ReluWorkload,
     UnaryActivationCase,
@@ -221,6 +222,20 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gelu_keeps_negative_inputs_nonpositive(dtype: torch.dtype) -> None:
+    """Edge: GELU of a negative input is never positive, at every 16-bit input.
+
+    The erf polynomial overshoots 1 by up to 3.2e-6 short of its clamp. There 1 + erf
+    turns negative unless clipped, and x / 2 scales it into a positive result.
+    """
+    from tileops.ops.elementwise import GeluFwdOp
+
+    workload = GeluSignWorkload(dtype)
+    TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
+
+
 # Independent activation ops
 
 
@@ -337,6 +352,21 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     bad = torch.randn((2, 8, 4), device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_gelu_short_row(tune: bool) -> None:
+    """A row the grid-filling shrink reaches: two elements a thread, across a block and its tail."""
+    from tileops.ops.elementwise import GeluFwdOp
+
+    test = UnaryActivationTest(257, torch.float32, "GeluFwdOp", gen_fn=_randn)
+    op = GeluFwdOp()
+    if tune:
+        op.request_tune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize(

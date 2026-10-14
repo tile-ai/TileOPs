@@ -218,8 +218,8 @@ class PermuteAlignFwdInterface(KernelInterface):
         """Sort the routes by expert and pad each expert's run to ``call.block_size``.
 
         Nothing is written in place. A padding slot holds ``call.num_routes`` in
-        *sorted_token_ids*, an index no route has, and a block past the padded length holds
-        ``call.num_experts`` in *expert_ids*.
+        *sorted_token_ids*, an index no route has, and a block past the padded length names no
+        expert in *expert_ids*: it holds a value outside ``[0, call.num_experts)``.
 
         Args:
             topk_ids: Contiguous ``int32`` with ``call.num_routes`` elements, each in

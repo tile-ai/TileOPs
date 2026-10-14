@@ -375,11 +375,11 @@ def test_selector_golden_specs(fields, expected):
         # model then prefers is what these pin.
         (32, (64, 128, 128, 4, 0)),
         (33, (64, 256, 64, 4, 0)),
-        (64, (64, 256, 64, 4, 0)),
+        (64, (64, 256, 64, 5, 64)),
         (65, (128, 256, 64, 3, 0)),
         (127, (128, 256, 64, 3, 0)),
-        (128, (128, 256, 64, 3, 0)),
-        (129, (128, 256, 64, 3, 0)),
+        (128, (128, 256, 64, 4, 64)),
+        (129, (128, 256, 64, 4, 64)),
     ],
 )
 def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
@@ -421,6 +421,11 @@ def test_spec_rejects_inconsistent_template_parameters():
         GroupedGemmSpec(**{**fields, "block_m": 64})
     with pytest.raises(ValueError, match="both exceed 128"):
         GroupedGemmSpec(**{**fields, "block_m": 256, "block_n": 256})
+    with pytest.raises(ValueError, match="two epilogue buffers"):
+        GroupedGemmSpec(**{**fields, "epilogue_stage_n": 64, "epilogue_buffers": 2})
+    k_grouped = {**fields, "gemm_type": GemmType.K_GROUPED_CONTIGUOUS, "epilogue_buffers": 2}
+    with pytest.raises(ValueError, match="even number of epilogue chunks"):
+        GroupedGemmSpec(**{**k_grouped, "epilogue_stage_n": 128})
     with pytest.raises(ValueError, match="block_k must be 64 or 128"):
         GroupedGemmSpec(**{**fields, "block_k": 96})
     with pytest.raises(ValueError, match="block_m must be 64, 128 or 256"):
@@ -477,6 +482,11 @@ def test_spec_rejects_inconsistent_template_parameters():
             [100, 0, 300, 128, 7, 64],
             dict(block_m=128, block_n=256, epilogue_stage_n=64, num_stages=4),
             id="chunked-epilogue",
+        ),
+        pytest.param(
+            [100, 0, 300, 128, 7, 64] * 3,
+            dict(block_m=128, block_n=256, epilogue_stage_n=64, epilogue_buffers=2),
+            id="two-buffer-epilogue",
         ),
     ],
 )
@@ -643,6 +653,12 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
     [
         pytest.param("mn", "mn", dict(block_m=64, block_n=128), id="tn-one-wg"),
         pytest.param("mn", "mn", dict(block_m=128, block_n=128), id="tn-two-wgs"),
+        pytest.param(
+            "mn",
+            "mn",
+            dict(block_m=128, block_n=128, epilogue_stage_n=32, epilogue_buffers=2),
+            id="tn-two-buffer-epilogue",
+        ),
     ],
 )
 def test_k_grouped_contiguous(major_a, major_b, config):

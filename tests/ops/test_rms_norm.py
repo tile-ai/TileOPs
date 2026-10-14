@@ -54,6 +54,10 @@ class RMSNormFixture(FixtureBase):
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # A short unaligned row: several share a block, with a tail block.
                 pytest.param(17, 96, torch.bfloat16, False, marks=pytest.mark.full),
+                # Rows a group of a warp's lanes holds, with a tail; and a row read twice.
+                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(64, 2048, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4, 32768, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -202,6 +206,35 @@ def test_no_weight_and_no_eps_match_torch() -> None:
     compare_outputs(
         RMSNormFwdOp(normalized_shape=(4,))(x),
         F.rms_norm(x, [4]),
+        normalization_verification("RMSNormFwdOp", x.dtype),
+    )
+
+
+@pytest.mark.parametrize(
+    "n",
+    [
+        # Warp rows: 16 lanes a row at 256, three vectors a lane at 768, and the bound 2048;
+        # a row held in registers; a row read twice.
+        pytest.param(256, marks=pytest.mark.smoke),
+        pytest.param(768, marks=pytest.mark.smoke),
+        pytest.param(2048, marks=pytest.mark.smoke),
+        pytest.param(8192, marks=pytest.mark.smoke),
+        pytest.param(32768, marks=pytest.mark.smoke),
+        # Warp rows at 32 lanes a row; the fragment body just past the warp-row bound; and
+        # the widest held row, the two-pass body's exclusive bound.
+        pytest.param(512, marks=pytest.mark.full),
+        pytest.param(2304, marks=pytest.mark.full),
+        pytest.param(16384, marks=pytest.mark.full),
+    ],
+)
+def test_tuned_rms_norm_in_each_row_body(n: int) -> None:
+    """Each body a row width selects is right tuned, and an absent weight scales by one."""
+    x = torch.randn(5, n, dtype=torch.bfloat16, device=run_device())
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
+    op.request_tune()
+    compare_outputs(
+        op(x),
+        F.rms_norm(x.float(), (n,), eps=1e-6).to(x.dtype),
         normalization_verification("RMSNormFwdOp", x.dtype),
     )
 

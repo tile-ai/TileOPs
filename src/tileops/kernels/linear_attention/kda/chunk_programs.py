@@ -7,11 +7,8 @@ the scan multiplies the state by, the intra-chunk attention matrix, and the
 chunk's decay. ``chunk_scan`` is what is left: one CTA per (sequence, value
 head) walking that sequence's chunks in order.
 
-Inside ``chunk_prepare`` the unit-triangular WY inverse is six nilpotent
-Neumann factors, so every step of it is a tensor-core matmul rather than a
-row-sequential forward substitution. Each of the four reference blocks rescales
-one pre-exponentiated tile instead of taking its own exponential, which is what
-keeps the shared-memory footprint at two CTAs per SM on SM90.
+The WY inverse uses stable 16-row diagonal solves and block matrix products.
+Gate references rescale pre-exponentiated tiles without additional shared buffers.
 """
 
 import functools
@@ -22,6 +19,7 @@ import tilelang.language as T
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gdn.prefill_common import step_size
+from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = ["chunk_prepare_program", "chunk_scan_program"]
 
@@ -77,6 +75,8 @@ def chunk_prepare_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
+        invert = inverse_program(chunk_size=BT, block_size=BC, dtype=dtype)
+
         def gated_query(qa_s, gc_s, i, j):
             return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]), dtype)
 
@@ -256,32 +256,11 @@ def chunk_prepare_program(
                             kg[0, bos + i, ihv, j] = gated_key(kb_s, gc_s, rows, i, j)
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
-                # (I - N)^-1 = (I+N)(I+N^2)(I+N^4)(I+N^8)(I+N^16)(I+N^32) for the
-                # nilpotent strictly-lower N: six tensor-core factors, no row
-                # the chunk solves in sequence.
                 if gate_mode == "channel":
                     for i, j in T.Parallel(BT, BT):
                         m_s[i, j] = T.cast(T.if_then_else(i > j, -akk[i, j] * bt_s[i], 0.0), dtype)
-                        p_s[i, j] = T.cast(
-                            T.if_then_else(i > j, -akk[i, j] * bt_s[i], 0.0)
-                            + T.if_then_else(i == j, 1.0, 0.0),
-                            dtype,
-                        )
                     T.sync_threads()
-                    for _level in T.serial(5):
-                        T.clear(tkk)
-                        T.gemm(m_s, m_s, tkk)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, BT):
-                            m_s[i, j] = T.cast(tkk[i, j] + T.if_then_else(i == j, 1.0, 0.0), dtype)
-                        T.sync_threads()
-                        T.clear(tqk)
-                        T.gemm(p_s, m_s, tqk)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, BT):
-                            m_s[i, j] = T.cast(T.if_then_else(i > j, tkk[i, j], 0.0), dtype)
-                            p_s[i, j] = T.cast(tqk[i, j], dtype)
-                        T.sync_threads()
+                    invert(m_s, p_s, tkk)
                 else:
                     for i, j in T.Parallel(BT, BT):
                         p_s[i, j] = T.if_then_else(
