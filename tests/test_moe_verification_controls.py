@@ -5,10 +5,12 @@ with its expert and token counts cut so it runs on the CPU; its hidden and ffn s
 activation, biases and routing are the row's, so each output element is drawn as the row
 draws it. A case constructs, from the workload's reference, an output that breaks one part of
 the op's contract and asserts the workload's verification rejects it; one positive case
-asserts an output the contract admits passes. No kernel runs.
+asserts an output the contract admits passes. Rows the cut makes equal are one case. No kernel
+runs.
 """
 
 import functools
+import json
 
 import pytest
 import torch
@@ -24,8 +26,6 @@ from workloads.moe import (
 )
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
-
-pytestmark = pytest.mark.smoke
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -51,19 +51,33 @@ def _biases(row: dict) -> list[str]:
     return [name for name in ("bias", "b_gate_up", "b_down") if name in row.get("some", ())]
 
 
+def _cut(op: str, row: dict) -> dict:
+    """The row's call fields with its expert and token counts cut to a CPU size."""
+    fields = {k: v for k, v in row.items() if k not in ("label", "dtype_cases")}
+    return fields | ({"E": 4, "T": 16} if op in _ROUTED else {"E": 2, "P": 128})
+
+
 def _rows(ops=tuple(_WORKLOADS), swigluoai_only=False, each=lambda row: [None]) -> list:
-    """``pytest.param(op, label, x)`` for every row of *ops* that fuses swigluoai or passes an
-    expert bias (only the swigluoai ones with *swigluoai_only*), once per *x* in ``each(row)``."""
-    params = []
+    """``pytest.param(op, label, x)`` for every distinct cut of a row of *ops* that fuses
+    swigluoai or passes an expert bias (only the swigluoai ones with *swigluoai_only*), labelled
+    by the first row with that cut, once per *x* in ``each(row)``; the first case is ``smoke``,
+    the rest ``full``."""
+    params, seen = [], set()
     for op in ops:
         for row in load_workloads(op):
             fused = row.get("activation") == "swigluoai"
-            if fused or (_biases(row) and not swigluoai_only):
-                for x in each(row):
-                    suffix = "" if x is None else f"-{x}"
-                    params.append(
-                        pytest.param(op, row["label"], x, id=f"{op}-{row['label']}{suffix}")
-                    )
+            if not (fused or (_biases(row) and not swigluoai_only)):
+                continue
+            key = json.dumps([op, row["dtype_cases"][0], _cut(op, row)], sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            for x in each(row):
+                suffix = "" if x is None else f"-{x}"
+                tier = pytest.mark.full if params else pytest.mark.smoke
+                params.append(
+                    pytest.param(op, row["label"], x, id=f"{op}-{row['label']}{suffix}", marks=tier)
+                )
     return params
 
 
@@ -71,9 +85,8 @@ def _rows(ops=tuple(_WORKLOADS), swigluoai_only=False, each=lambda row: [None]) 
 def _case(op: str, label: str) -> tuple:
     """The row's workload with its expert and token counts cut, its inputs and reference."""
     row = next(r for r in load_workloads(op) if r["label"] == label)
-    fields = {k: v for k, v in row.items() if k not in ("label", "dtype_cases")}
-    fields |= {"E": 4, "T": 16} if op in _ROUTED else {"E": 2, "P": 128}
-    workload = _WORKLOADS[op](manifest_call(op, row["dtype_cases"][0], **fields), device="cpu")
+    call = manifest_call(op, row["dtype_cases"][0], **_cut(op, row))
+    workload = _WORKLOADS[op](call, device="cpu")
     inputs = workload.gen_inputs()
     reference = workload.ref_program(*inputs)
     # The construction without a fault passes, so a rejected construction is rejected for its
@@ -221,22 +234,25 @@ def test_rejects_an_output_without_a_bias_the_call_passes(op, label, bias):
 
 # Each fault breaks one clause of swigluoai's definition in MoEGroupedGemmFwdOp's docstring.
 @pytest.mark.parametrize(
-    "fault",
-    (
-        "stacked-read",
-        "gate-up-swapped",
-        "gate-clamp-missing",
-        "up-upper-clamp-missing",
-        "up-lower-clamp-missing",
-        "alpha-1",
-        "plus-one-missing",
+    ("op", "label", "fault"),
+    _rows(
+        swigluoai_only=True,
+        each=lambda row: (
+            "stacked-read",
+            "gate-up-swapped",
+            "gate-clamp-missing",
+            "up-upper-clamp-missing",
+            "up-lower-clamp-missing",
+            "alpha-1",
+            "plus-one-missing",
+        ),
     ),
 )
-@pytest.mark.parametrize(("op", "label", "_"), _rows(swigluoai_only=True))
-def test_rejects_an_output_off_the_swigluoai_definition(op, label, _, fault):
+def test_rejects_an_output_off_the_swigluoai_definition(op, label, fault):
     """Gate and up read stacked or swapped, a clamp left out, alpha 1, or no ``+ 1`` on up.
 
-    One case per swigluoai row and clause of the definition, so more than 20.
+    One case per clause for each op's distinct cut swigluoai row, 4 x 7: each op's verification
+    is its own code path and each clause a different wrong output, so more than 20.
     """
     _rejects(op, label, fault)
 

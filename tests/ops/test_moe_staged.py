@@ -723,6 +723,12 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
 
 # The tensors a grouped GEMM reads while it writes ``out``, in the order the op takes them.
 _GROUPED_GEMM_READS = ("a", "b", "layout_metadata", "bias")
+# The overlap boundary per input: one input's case is smoke on each architecture mark, the rest
+# full.
+_GROUPED_GEMM_READ_CASES = [
+    pytest.param(name, marks=pytest.mark.full if i else pytest.mark.smoke)
+    for i, name in enumerate(_GROUPED_GEMM_READS)
+]
 
 
 def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
@@ -756,9 +762,8 @@ def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
 
 
 @pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
-@pytest.mark.parametrize("overlap", _GROUPED_GEMM_READS)
+@pytest.mark.parametrize("overlap", _GROUPED_GEMM_READ_CASES)
 @pytest.mark.cuda_only
-@pytest.mark.smoke
 def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, overlap):
     """An ``out`` whose last element lies on the first bytes of one input is refused before
     anything is written: tiles store while other tiles still load."""
@@ -770,9 +775,8 @@ def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, o
 
 
 @pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
-@pytest.mark.parametrize("beside", _GROUPED_GEMM_READS)
+@pytest.mark.parametrize("beside", _GROUPED_GEMM_READ_CASES)
 @pytest.mark.cuda_only
-@pytest.mark.smoke
 def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture, beside):
     """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
     starts: ``out`` is written and returned."""
