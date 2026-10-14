@@ -13,6 +13,7 @@ from tileops.kernels.grouped_tiling import GroupTiling
 
 pytestmark = [pytest.mark.cuda_only]
 
+# Tile height both tests build the tiling with and compute the host tile counts from.
 _BLOCK_M = 64
 
 
@@ -40,15 +41,15 @@ def _program(tiling: GroupTiling, from_offsets: bool, threads: int, index_dtype:
     "groups, threads, rows_per_offset, index_dtype",
     [
         # The loop every thread runs for the few groups below the scan.
-        pytest.param(8, 128, 1, "int32", marks=pytest.mark.smoke),
+        pytest.param(8, 128, 1, "int32", marks=pytest.mark.full),
         # The fewest groups the scan takes: one warp, its run ending short.
         pytest.param(9, 128, 1, "int32", marks=pytest.mark.full),
         # Two warps carry into each other, and a row unit of two rows.
         pytest.param(33, 384, 2, "int32", marks=pytest.mark.full),
-        # Every warp takes eight runs and the last warp's runs end short.
-        pytest.param(1000, 128, 1, "int32", marks=pytest.mark.full),
-        # Offsets read at 64 bits.
-        pytest.param(1000, 256, 1, "int64", marks=pytest.mark.full),
+        # Four warps of two runs: the third warp's second run is empty, the fourth has none.
+        pytest.param(129, 128, 1, "int32", marks=pytest.mark.smoke),
+        # Three passes of two warps carry into each other, offsets read at 64 bits.
+        pytest.param(5000, 64, 1, "int64", marks=pytest.mark.full),
     ],
 )
 def test_cumsum_offsets(groups, threads, rows_per_offset, index_dtype):

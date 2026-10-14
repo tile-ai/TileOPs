@@ -13,6 +13,8 @@ caller's buffers so each kernel keeps its own scheduler.
 import tilelang.language as T
 from tilelang.language.kernel import KernelLaunchFrame
 
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
+
 __all__ = ["GroupTiling"]
 
 
@@ -100,23 +102,13 @@ class GroupTiling:
         return group_tile_decode
 
 
-def _scan_shape(num_groups):
-    """The warps that scan ``num_groups`` groups in the current kernel, and the 32-group runs each takes."""
-    threads, rest_y, rest_z = KernelLaunchFrame.Current().get_thread_extents()
-    if threads % 32 != 0 or rest_y * rest_z != 1:
-        raise ValueError(f"the scan needs whole warps along threadIdx.x, got {threads}")
-    # Only as many warps as there are 32-group runs take part.
-    warps = min(threads // 32, -(-num_groups // 32))
-    return warps, -(-num_groups // (warps * 32))
-
-
 def _tile_prefix_sum(num_groups, tiles):
     """Macro writing ``s_cum[g + 1] = tiles(src, 0) + ... + tiles(src, g)`` and ``s_cum[0] = 0``.
 
     Every CTA of the caller's grid computes the whole sum, so the CTA's threads share
-    it: each warp scans a contiguous run of groups 32 at a time with shuffles, the
-    lanes reading adjacent groups, and adds the totals of the warps before it. The
-    macro ends with a block barrier, and every thread of the block must reach it.
+    it: each warp scans a contiguous run of groups, one group a lane per round, with
+    shuffles, and adds the totals of the warps before it. The macro ends with a block
+    barrier, and every thread of the block must reach it.
     """
     # Up to this many groups the scan's shuffles and barriers cost paged attention up to
     # 5% over a loop on every thread (H200); from 16 groups on the scan is no slower.
@@ -133,41 +125,61 @@ def _tile_prefix_sum(num_groups, tiles):
 
     @T.macro
     def group_tile_prefix_scan(src, s_cum):
-        warps, rounds = _scan_shape(num_groups)
+        threads, rest_y, rest_z = KernelLaunchFrame.Current().get_thread_extents()
+        if threads % WARP_LANES != 0 or rest_y * rest_z != 1:
+            raise ValueError(f"the scan needs whole warps along threadIdx.x, got {threads}")
+        # Only as many warps as there are runs of WARP_LANES groups take part. A thread
+        # holds one tile count a round in registers, and the rounds unroll: past
+        # `max_rounds` rounds the CTA scans in passes, each carrying the passes before it.
+        # 32 rounds is 4096 groups on 128 threads, and holds 56 registers (H200).
+        max_rounds = 32
+        runs = -(-num_groups // WARP_LANES)
+        warps = min(threads // WARP_LANES, runs)
+        passes = -(-runs // (warps * max_rounds))
+        rounds = -(-runs // (warps * passes))
+        span = warps * rounds * WARP_LANES
         tx = T.get_thread_binding()
-        lane = tx % 32
-        first = tx // 32 * 32 * rounds + lane
+        lane = tx % WARP_LANES
+        warp = tx // WARP_LANES
         vals = T.alloc_local([rounds], "int32")
         running = T.alloc_local([1], "int32")
         carry = T.alloc_local([1], "int32")
-        if tx < warps * 32:
-            for r in T.unroll(rounds):
-                vals[r] = T.int32(0)
-                if first + r * 32 < num_groups:
-                    vals[r] = tiles(src, first + r * 32)
-            for r in T.unroll(rounds):
-                for step in T.unroll(5):
-                    up = T.shfl_up(vals[r], T.int32(1) << step)
-                    if lane >= (T.int32(1) << step):
-                        vals[r] = vals[r] + up
-            running[0] = T.int32(0)
-            for r in T.unroll(rounds):
-                vals[r] = vals[r] + running[0]
-                running[0] = T.shfl_sync(vals[r], 31)
-            # s_cum[1 + warp] holds each warp's total until every warp has read it.
-            if warps > 1 and lane == 31:
-                s_cum[tx // 32 + 1] = running[0]
-        carry[0] = T.int32(0)
-        if warps > 1:
-            T.sync_threads()
-            for w in T.serial(warps - 1):
-                if w < tx // 32:
-                    carry[0] = carry[0] + s_cum[w + 1]
-            T.sync_threads()
-        if tx < warps * 32:
-            for r in T.unroll(rounds):
-                if first + r * 32 < num_groups:
-                    s_cum[first + r * 32 + 1] = vals[r] + carry[0]
+        for p in T.serial(passes):
+            first = p * span + warp * WARP_LANES * rounds + lane
+            if tx < warps * WARP_LANES:
+                for r in T.unroll(rounds):
+                    vals[r] = T.int32(0)
+                    if first + r * WARP_LANES < num_groups:
+                        vals[r] = tiles(src, first + r * WARP_LANES)
+                for r in T.unroll(rounds):
+                    for step in T.unroll(WARP_SHUFFLE_STAGES):
+                        up = T.shfl_up(vals[r], T.int32(1) << step)
+                        if lane >= (T.int32(1) << step):
+                            vals[r] = vals[r] + up
+                running[0] = T.int32(0)
+                for r in T.unroll(rounds):
+                    vals[r] = vals[r] + running[0]
+                    running[0] = T.shfl_sync(vals[r], WARP_LANES - 1)
+                # s_cum[p * span + 1 + warp] holds each warp's total until every warp
+                # has read it.
+                if warps > 1 and lane == WARP_LANES - 1:
+                    s_cum[p * span + warp + 1] = running[0]
+            carry[0] = T.int32(0)
+            # The previous pass ended with a barrier, so its last sum is final.
+            if passes > 1 and p > 0:
+                carry[0] = s_cum[p * span]
+            if warps > 1:
+                T.sync_threads()
+                for w in T.serial(warps - 1):
+                    if w < warp:
+                        carry[0] = carry[0] + s_cum[p * span + w + 1]
+                T.sync_threads()
+            if tx < warps * WARP_LANES:
+                for r in T.unroll(rounds):
+                    if first + r * WARP_LANES < num_groups:
+                        s_cum[first + r * WARP_LANES + 1] = vals[r] + carry[0]
+            if passes > 1:
+                T.sync_threads()
         if tx == 0:
             s_cum[0] = T.int32(0)
         T.sync_threads()
