@@ -68,9 +68,6 @@ class MoEPermuteAlignFixture(FixtureBase):
     ]
 
 
-# Custom comparator
-
-
 @MoEPermuteAlignFixture
 def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
     call = manifest_call(

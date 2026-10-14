@@ -21,6 +21,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import MAX_BLOCK_THREADS
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
 from tileops.utils import WARP_LANES
@@ -40,8 +41,6 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _align(threads: int):
-        MoEPermuteAlignKernel._check_threads(threads)
-
         @T.prim_func
         def _align_main(
             flat: T.Tensor([numel], "int32"),
@@ -219,14 +218,11 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
 
 @functools.lru_cache(maxsize=32)
 def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
-    """Single fused kernel for small batches, one worker lane per expert.
+    """The small-batch kernel: one block whose worker lanes count and scatter the routes
+    while the other threads write the padding.
 
-    Uses per-worker private count rows to eliminate atomic conflicts in count
-    and scatter phases. Concurrent sentinel fill (fill_threads) + compute
-    (worker_threads) within the same block.
-
-    Uses 0-indexed expert IDs throughout (unlike sgl-kernel which uses 1-indexed).
-    Output format matches the large-batch path (K1+K2).
+    Each worker counts into its own row, so neither the count nor the scatter takes an
+    atomic. Writes the same outputs as the align and scatter kernels.
 
     Reference: moe_align_block_size_small_batch_expert_kernel in sgl-kernel.
 
@@ -245,7 +241,8 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     # Threads that write the sentinel fill while the workers count and scatter.
     fill_threads = 256
     total_threads = fill_threads + worker_threads
-    # tokens_cnts: row k+1 is worker k's private counts, row 0 the accumulator.
+    # tokens_cnts: row k + 1 holds worker k's counts; after the prefix sum over rows, row k
+    # holds worker k's first rank per expert and the last row the totals.
     cnts_size = (worker_threads + 1) * num_experts
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
@@ -270,30 +267,30 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                             sorted_token_ids[idx] = numel
 
                 if tx >= fill_threads:
-                    wid = tx - fill_threads  # 0-indexed worker id
+                    wid = tx - fill_threads
                     for i in T.serial(num_experts):
                         tokens_cnts[(wid + 1) * num_experts + i] = T.int32(0)
                     for i in T.serial(T.ceildiv(numel, worker_threads)):
                         idx = wid + i * worker_threads
                         if idx < numel:
-                            eid = flat[idx]  # 0-indexed
+                            eid = flat[idx]
                             tokens_cnts[(wid + 1) * num_experts + eid] = (
                                 tokens_cnts[(wid + 1) * num_experts + eid] + 1
                             )
 
-                T.sync_threads()  # sync 1
+                T.sync_threads()
 
                 if tx >= fill_threads:
                     wid = tx - fill_threads
                     if wid < num_experts:
-                        tokens_cnts[wid] = T.int32(0)  # init row 0 accumulator
+                        tokens_cnts[wid] = T.int32(0)
                         for k in T.serial(worker_threads):
                             tokens_cnts[(k + 1) * num_experts + wid] = (
                                 tokens_cnts[(k + 1) * num_experts + wid]
                                 + tokens_cnts[k * num_experts + wid]
                             )
 
-                T.sync_threads()  # sync 2
+                T.sync_threads()
 
                 if tx >= fill_threads:
                     wid = tx - fill_threads
@@ -304,7 +301,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                             cumsum_s[e + 1] = cumsum_s[e] + T.ceildiv(cnt, block_size) * block_size
                         num_tokens_post_pad[0] = cumsum_s[num_experts]
 
-                T.sync_threads()  # sync 3
+                T.sync_threads()
 
                 # A block past the padded length names no expert.
                 if tx < fill_threads:
@@ -321,12 +318,12 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                         e_start = cumsum_s[wid] // block_size
                         e_blocks = cumsum_s[wid + 1] // block_size - e_start
                         for b in T.serial(e_blocks):
-                            expert_ids[e_start + b] = wid  # 0-indexed expert id
+                            expert_ids[e_start + b] = wid
 
                     for i in T.serial(T.ceildiv(numel, worker_threads)):
                         idx = wid + i * worker_threads
                         if idx < numel:
-                            eid = flat[idx]  # 0-indexed
+                            eid = flat[idx]
                             rank = tokens_cnts[wid * num_experts + eid]
                             slot = rank + cumsum_s[eid]
                             sorted_token_ids[slot] = idx
@@ -368,8 +365,6 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The align kernel's default threads per block: the most a CUDA block takes.
-    _THREADS = 1024
 
     @classmethod
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
@@ -424,16 +419,16 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         Raises:
             ValueError: ``threads`` is not a multiple of 32 in [32, 1024].
         """
-        max_block_threads = 1024  # CUDA's limit on threads per block.
-        if threads % WARP_LANES or not WARP_LANES <= threads <= max_block_threads:
+        if threads % WARP_LANES or not WARP_LANES <= threads <= MAX_BLOCK_THREADS:
             raise ValueError(
                 f"threads must be a multiple of {WARP_LANES} in [{WARP_LANES}, "
-                f"{max_block_threads}], got {threads}"
+                f"{MAX_BLOCK_THREADS}], got {threads}"
             )
 
     @property
     def default_config(self) -> dict:
-        return {"threads": self._THREADS}
+        # Fewer threads only add rounds to the align kernel's loops.
+        return {"threads": MAX_BLOCK_THREADS}
 
     def forward(self, topk_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the alignment kernel.

@@ -82,7 +82,7 @@ class MoEPermuteAlignWorkload(CallWorkload):
         counts = torch.bincount(flat, minlength=num_experts)
         padded = (counts + block_size - 1) // block_size * block_size
         starts = torch.cumsum(padded, 0) - padded
-        # D: each expert's routes may take any order within its range's first count[e] slots.
+        # Each route's slot when every expert's routes are in ascending index order.
         rank = torch.arange(flat.numel(), device=flat.device) - (
             torch.cumsum(counts, 0) - counts
         ).repeat_interleave(counts)
@@ -93,23 +93,18 @@ class MoEPermuteAlignWorkload(CallWorkload):
             # compare_outputs has already matched every output's shape, dtype and device.
             tokens, experts, count = got
             ref_tokens, ref_experts, ref_count = expected
-            # Docstring: num_tokens_post_pad is the sum of the rounded-up counts.
             assert torch.equal(count, ref_count), "num_tokens_post_pad differs"
             blocks = int(ref_count.item()) // block_size
-            # Docstring: expert_ids names the owner of each block of the ranges.
             assert torch.equal(experts[:blocks], ref_experts[:blocks]), "a block's owner differs"
-            # Docstring: a block past the padded length lies outside [0, num_experts).
             tail = experts[blocks:]
             assert ((tail < 0) | (tail >= num_experts)).all(), (
                 "a block past the end names an expert"
             )
-            # Docstring: the routes fill their expert's first count[e] slots in an unspecified
-            # order. Sorting within those slots maps every order in D to the reference's.
+            # Sort each expert's routed slots, which may hold its routes in any order.
             key = torch.arange(tokens.numel(), device=tokens.device)
             key[routed_slots] = group_start
             order = torch.sort(tokens, stable=True).indices
             order = order[torch.sort(key[order], stable=True).indices]
-            # Docstring: everything else in sorted_token_ids, both padding and tail, is numel.
             assert torch.equal(tokens[order], ref_tokens), "sorted_token_ids differs"
 
         return Custom(validate, "exact up to route order within each expert's routed slots")
