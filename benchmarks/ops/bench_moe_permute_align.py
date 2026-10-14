@@ -24,7 +24,9 @@ except ImportError:
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, vllm_op
+from tileops.kernels.constants import MAX_BLOCK_THREADS
 from tileops.ops.moe import MoEPermuteAlignFwdOp
+from tileops.utils import WARP_LANES
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 
@@ -167,7 +169,9 @@ def test_permute_align_bench(case) -> None:
     # vLLM (csrc/moe/moe_align_sum_kernels.cu) refuses an expert count that, rounded up to a
     # warp, reaches 1024, and sgl-kernel (csrc/moe/moe_align_kernel.cu) leaves the experts past
     # 1024 uncounted; past 64 experts, both fail on a call with no routes.
-    library_accepts = math.ceil(num_experts / 32) * 32 < 1024 and (numel > 0 or num_experts <= 64)
+    library_accepts = math.ceil(num_experts / WARP_LANES) * WARP_LANES < MAX_BLOCK_THREADS and (
+        numel > 0 or num_experts <= 64
+    )
     if library_accepts:
         align = vllm_op("moe_align_block_size")
         vllm_sorted = torch.empty_like(sorted_ids)

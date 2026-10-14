@@ -24,7 +24,7 @@ import torch
 from tileops.kernels.constants import MAX_BLOCK_THREADS
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["MoEPermuteAlignKernel"]
 
@@ -51,7 +51,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
         ):
             with T.Kernel(2, threads=threads) as (bx,):
                 tx = T.get_thread_binding()
-                num_warps = threads // 32
+                num_warps = threads // WARP_LANES
                 num_chunks = T.ceildiv(num_experts, threads)
 
                 s_counts = T.alloc_shared([num_experts], "int32")
@@ -83,8 +83,8 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                             T.atomic_add(s_counts[flat[idx]], 1)
                     T.sync_threads()
 
-                    lane = tx % 32
-                    warp_id = tx // 32
+                    lane = tx % WARP_LANES
+                    warp_id = tx // WARP_LANES
 
                     if tx == 0:
                         s_carry[0] = T.int32(0)
@@ -98,17 +98,20 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         s_vals[tx] = own_padded
                         T.sync_threads()
 
-                        # log2 of the warp width.
-                        for d in T.serial(5):
+                        for d in T.serial(WARP_SHUFFLE_STAGES):
                             stride = 1 << d
                             up_val = T.tvm_warp_shuffle_up(
-                                T.uint32(0xFFFFFFFF), s_vals[tx], stride, 32, 32
+                                T.uint32((1 << WARP_LANES) - 1),
+                                s_vals[tx],
+                                stride,
+                                WARP_LANES,
+                                WARP_LANES,
                             )
                             if lane >= stride:
                                 s_vals[tx] = s_vals[tx] + up_val
                         T.sync_threads()
 
-                        if lane == 31:
+                        if lane == WARP_LANES - 1:
                             s_warp_sum[warp_id] = s_vals[tx]
                         T.sync_threads()
 
@@ -167,6 +170,8 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     if numel < 1:
         raise ValueError(f"the scatter needs at least one route, got numel={numel}")
     max_padded = numel + (num_experts + 1) * (block_size - 1)
+    # Timed against 256 and 1024 on the H200 manifest rows: fastest at T = 4096, and within
+    # 0.2 us of the fastest on the others.
     threads = 512
     scatter_blocks = math.ceil(numel / threads)
     expert_rounds = math.ceil(num_experts / threads)
@@ -407,18 +412,9 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
             self._scatter_fn = None
 
         self.init_config(config)
-        self._check_threads(self.config["threads"])
-
-    @staticmethod
-    def _check_threads(threads: int) -> None:
-        """Refuse an align-kernel thread count its warp-wise scan cannot take.
-
-        The scan totals whole warps only, so the experts a partial warp holds would drop out of
-        it; a CUDA block takes at most 1024 threads.
-
-        Raises:
-            ValueError: ``threads`` is not a multiple of 32 in [32, 1024].
-        """
+        # The align kernel's scan totals whole warps only, so the experts a partial warp holds
+        # would drop out of it.
+        threads = self.config["threads"]
         if threads % WARP_LANES or not WARP_LANES <= threads <= MAX_BLOCK_THREADS:
             raise ValueError(
                 f"threads must be a multiple of {WARP_LANES} in [{WARP_LANES}, "

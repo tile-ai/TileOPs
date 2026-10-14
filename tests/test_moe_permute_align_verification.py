@@ -284,13 +284,6 @@ def test_verifier_matches_the_docstring_oracle_on_every_small_output(topk) -> No
     assert accepted > 0
 
 
-def _manifest_rows():
-    return [
-        {k: row[k] for k in ("T", "K", "num_experts", "block_size")}
-        for row in load_manifest()["MoEPermuteAlignFwdOp"]["workloads"]
-    ]
-
-
 @pytest.mark.parametrize(
     "num_experts",
     [
@@ -306,7 +299,11 @@ def test_verifier_matches_the_docstring_oracle_on_manifest_shapes(num_experts: i
     with one more slot changed, are judged by the verifier and the oracle alike.
     """
     rng = random.Random(num_experts)
-    rows = [row for row in _manifest_rows() if row["num_experts"] == num_experts]
+    rows = [
+        row
+        for row in load_manifest()["MoEPermuteAlignFwdOp"]["workloads"]
+        if row["num_experts"] == num_experts
+    ]
     assert rows
     for row in rows:
         total_tokens, top_k, block_size = row["T"], row["K"], row["block_size"]
