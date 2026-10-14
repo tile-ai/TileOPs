@@ -13,7 +13,11 @@ from tileops.kernels.elementwise._base import (
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
-from tileops.kernels.elementwise._division import float32_quotient, full_range_fdiv
+from tileops.kernels.elementwise._division import (
+    float32_quotient,
+    full_range_fdiv,
+    refined_reciprocal,
+)
 from tileops.kernels.elementwise._dtype import log_for_output_precision
 from tileops.kernels.elementwise._erf import erf, gelu
 from tileops.kernels.elementwise._nan import nan_max, nan_min
@@ -126,6 +130,7 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sigmoid(x)."""
 
     BYTES_PER_THREAD = 32
+    EVICT_LAST_LOADS = True
 
     @staticmethod
     def op_func(x):
@@ -134,14 +139,17 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
         bfloat16 divides with ``full_range_fdiv``, which rounds to torch's value at
-        every bfloat16 input. float16 keeps the IEEE divide: ``approx_fdiv``'s two ulp
-        move two of the 65536 float16 results by one ulp.
+        every bfloat16 input. float16 takes ``refined_reciprocal``, which rounds to
+        torch's value at every float16 input; ``approx_fdiv``'s two ulp alone move two
+        of the 65536 float16 results by one ulp. float32 keeps the IEEE divide.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
         den = one + T.exp2(-wide * T.cast(LOG2E, "float32"))
         if str(x.dtype) == "bfloat16":
             return full_range_fdiv(one, den)
+        if str(x.dtype) == "float16":
+            return refined_reciprocal(den)
         return one / den
 
 

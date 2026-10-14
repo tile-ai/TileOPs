@@ -5,7 +5,7 @@ import tvm.tirx as tirx
 
 from tileops.kernels.elementwise._nan import bound
 
-__all__ = ["approx_fdiv", "float32_quotient", "full_range_fdiv"]
+__all__ = ["approx_fdiv", "float32_quotient", "full_range_fdiv", "refined_reciprocal"]
 
 
 def approx_fdiv(num, den):
@@ -41,6 +41,24 @@ def full_range_fdiv(num, den):
         return bound(scale, lambda s: approx_fdiv(num * s, den * s))
 
     return bound(T.abs(den), scaled)
+
+
+def refined_reciprocal(den):
+    """``1 / den`` in float32 for *den* of at least one: a reciprocal and one Newton step.
+
+    The step costs two fused multiply-adds and no branch; an IEEE divide costs a
+    range check and a branch to its slow path per element. ``approx_fdiv`` returns
+    zero for a divisor past ``2**126``, where the step would form ``inf * 0``, so a
+    zero reciprocal is kept; a NaN divisor gives NaN. Below one the domain ends: a
+    zero divisor gives NaN, not infinity. The result is not the IEEE quotient in
+    every bit, so a caller checks its rounded results.
+    """
+
+    def step(d, r):
+        one = T.cast(1.0, "float32")
+        return tirx.Select(r == T.cast(0.0, "float32"), r, r + r * (one - d * r))
+
+    return bound(den, lambda d: bound(approx_fdiv(T.cast(1.0, "float32"), d), lambda r: step(d, r)))
 
 
 def float32_quotient(dtype: str, num, den):

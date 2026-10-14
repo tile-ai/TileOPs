@@ -184,13 +184,36 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
     """Sigmoid gives torch's result bit for bit at every 16-bit input.
 
-    A two-ulp float32 divide moves two float16 results by one ulp, so float16 keeps
-    the IEEE divide; bfloat16 rounds the fast one to torch's value everywhere.
+    A two-ulp float32 divide alone moves two float16 results by one ulp, so float16
+    refines its reciprocal by one Newton step; bfloat16 rounds the fast divide to
+    torch's value everywhere.
     """
     from tileops.ops.elementwise import SigmoidFwdOp
 
     workload = Exhaustive16BitWorkload("SigmoidFwdOp", dtype)
     TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_sigmoid_partial_last_block() -> None:
+    """A last block that ends one vector in: of a thread's two vectors, the second is past N."""
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    # 2**18 float32 elements keep eight a thread, two 16-byte vectors; one more vector
+    # leaves a 1024-element block holding only it.
+    _make_activation_test(2**18 + 4, torch.float32, _randn, SigmoidFwdOp)
+
+
+@pytest.mark.smoke
+def test_sigmoid_input_off_a_vector_boundary() -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches the reference."""
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    test = UnaryActivationTest(4096, torch.float32, "SigmoidFwdOp", gen_fn=_randn)
+    (aligned,) = test.gen_inputs()
+    x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
+    x.copy_(aligned)
+    test.check(SigmoidFwdOp(), x)
 
 
 @ActivationEdgeFixture
