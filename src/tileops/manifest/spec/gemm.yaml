@@ -287,7 +287,7 @@ GemmW4A8FwdOp:
   # fp32 factor per channel and an fp8 remainder per group. The packing order is the
   # implementation's, held between its `repack` and its GEMM, so it is not in the signature.
   family: gemm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.cutlass_w4a8_mm
 
   signature:

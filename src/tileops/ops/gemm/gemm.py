@@ -18,6 +18,7 @@ from tileops.kernels.gemm import (
     GemmW4A8Call,
     GemmW4A8DecodeKernel,
     GemmW4A8FwdInterface,
+    GemmW4A8PrefillKernel,
     GemmW4A16Call,
     GemmW4A16FwdInterface,
     GemmW4A16Kernel,
@@ -350,6 +351,7 @@ class GemmW4A8FwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_w4a8_decode": GemmW4A8DecodeKernel,
+        "gemm_w4a8_prefill": GemmW4A8PrefillKernel,
         "w4a8_repack": W4A8RepackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {

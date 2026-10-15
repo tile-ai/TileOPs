@@ -37,6 +37,7 @@ from tileops.kernels.gemm.dense import (
 )
 from tileops.kernels.gemm.fp8_1d2d import GemmFP8Block128WaveFwdKernel, GemmFP81D2DFwdKernel
 from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
+from tileops.kernels.gemm.w4a8_prefill import GemmW4A8PrefillKernel
 from tileops.kernels.gemm.w4a8_repack import W4A8RepackKernel
 from tileops.kernels.gemm.w4a16 import GemmW4A16Kernel, GemmW4A16MMAKernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
@@ -67,6 +68,7 @@ __all__ = [
     "GemmW4A8Call",
     "GemmW4A8DecodeKernel",
     "GemmW4A8FwdInterface",
+    "GemmW4A8PrefillKernel",
     "GemmW4A16Call",
     "GemmW4A16FwdInterface",
     "GemmW4A16Kernel",
