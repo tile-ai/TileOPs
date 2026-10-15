@@ -2,10 +2,14 @@
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
-The normalized row goes from the register fragment straight to global memory. Only the
-partial reduction reads shared memory, because a thread walking a strided run of the row
-can reach it there and cannot reach another thread's registers.
+Four bodies, chosen by ``_row_body`` from the row's width and dtype alone: a group of a
+warp's lanes a row for rows of 256 to 2048 elements, a row held in a block's registers past
+4096, a row read twice at 1024 threads past 16384, and otherwise the fragment body. Tuning
+sizes the chosen body and never switches bodies.
 
+In the fragment body the normalized row goes from the register fragment straight to
+global memory. Only the partial reduction reads shared memory, because a thread walking a
+strided run of the row can reach it there and cannot reach another thread's registers.
 The fragment may be wider than the row: columns past the row load zero and are never
 stored, and the mean divides by N.
 """
@@ -18,14 +22,260 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
-from tileops.kernels.constants import STATIC_SHARED_BYTES
+from tileops._csrc import csrc_include
+from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import get_shared_memory_optin, get_sm_count
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
 
 __all__ = ["RMSNormKernel"]
+
+# What selects a body. ``_row_body`` and ``_held_widths`` read them for both the jit builder
+# and ``RMSNormKernel``'s configs, so a config is only offered to the body that takes it.
+# Measured on H200 under the benchmark's cold L2, each body at its best config (us):
+# - Held row: (32768, 8192) float16 248.7 against 255.6 on the fragment body. At 4096
+#   columns the fragment body two rows a block leads, 9.95 against 10.24; at 512 threads,
+#   or past 64 elements a thread, (32768, 32768) bfloat16 takes 1049 against 1019.
+# - Warp rows: (32768, 256) float16 9.15 against 9.66, (32768, 1024) bfloat16 32.72
+#   against 34.11.
+# - Two-pass: (32768, 32768) float16 995.9 against 1019.2; at 512 threads it took 1266.
+_HELD_MIN_N = 4096  # exclusive
+_HELD_THREADS = (128, 256)
+_HELD_MAX_ELEMS = 64  # a thread's elements; past them the registers cap the warps
+_WARP_ROWS_N = (256, 2048)  # the widths measured
+_TWO_PASS_MIN_N = 16384  # exclusive: narrower rows are held in registers
+_TWO_PASS_THREADS = 1024
+_TWO_PASS_CHUNK = 2  # vectors a thread reads at a time; one measured 997.8 us, four 1016.0
+
+
+def _held_widths(n: int, elem_bytes: int) -> tuple:
+    """Block widths that hold a row of *n* in whole 16-byte vectors, within the element cap."""
+    vec = VECTOR_ACCESS_BYTES // elem_bytes
+    return tuple(
+        threads
+        for threads in _HELD_THREADS
+        if n % (threads * vec) == 0 and n // threads <= _HELD_MAX_ELEMS
+    )
+
+
+def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
+    """The body serving rows of *n* elements: ``"warp_rows"``, ``"held_row"``, ``"two_pass"``
+    or ``"fragment"``.
+
+    A function of the row alone, never of the launch config, so tuning cannot switch bodies.
+    """
+    vec = VECTOR_ACCESS_BYTES // elem_bytes
+    if n_padded != n or n % vec:
+        return "fragment"
+    vectors = n // vec
+    per_lane = max(2, vectors // WARP_LANES)
+    lanes = vectors // per_lane
+    if (
+        _WARP_ROWS_N[0] <= n <= _WARP_ROWS_N[1]
+        and vectors % per_lane == 0
+        and lanes & (lanes - 1) == 0
+    ):
+        return "warp_rows"
+    if n > _HELD_MIN_N and _held_widths(n, elem_bytes):
+        return "held_row"
+    if n > _TWO_PASS_MIN_N and n % (_TWO_PASS_THREADS * _TWO_PASS_CHUNK * vec) == 0:
+        return "two_pass"
+    return "fragment"
+
+
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
+def _held_row(M, N, eps, dtype, has_weight, threads, vec):
+    """One row a block, each thread holding ``N / threads`` elements in registers.
+
+    Thread ``t`` holds vectors ``k * threads + t``, read evict-last in L2. The sum of
+    squares folds across a warp with shuffles, then across warps through shared memory.
+    """
+    steps = N // (threads * vec)
+    held_n = steps * vec
+    num_warps = threads // WARP_LANES
+
+    @T.prim_func
+    def main(
+        x: T.Tensor[(M, N), dtype],
+        weight: T.Tensor[(N if has_weight else 1,), dtype],
+        y: T.Tensor[(M, N), dtype],
+    ):
+        with T.Kernel(M, threads=threads) as row:
+            tx = T.get_thread_binding()
+            held = T.alloc_local((held_n,), dtype)
+            scale = T.alloc_local((held_n,), dtype)
+            out = T.alloc_local((held_n,), dtype)
+            part = T.alloc_local((1,), "float32")
+            warp_sum = T.alloc_shared((num_warps,), "float32")
+
+            for k in T.unroll(steps):
+                _load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+            part[0] = T.cast(0.0, "float32")
+            for i in T.unroll(held_n):
+                part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
+            for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
+            if tx % WARP_LANES == 0:
+                warp_sum[tx // WARP_LANES] = part[0]
+            if has_weight:
+                for k in T.unroll(steps):
+                    for c in T.vectorized(vec):
+                        scale[k * vec + c] = weight[(k * threads + tx) * vec + c]
+            T.sync_threads()
+            part[0] = warp_sum[0]
+            for w in T.unroll(1, num_warps):
+                part[0] += warp_sum[w]
+            # N, not a padded width: every column of the row is held.
+            part[0] = T.rsqrt(part[0] / float(N) + eps)
+            for i in T.unroll(held_n):
+                if has_weight:
+                    out[i] = T.cast(
+                        T.cast(held[i], "float32") * part[0] * T.cast(scale[i], "float32"), dtype
+                    )
+                else:
+                    out[i] = T.cast(T.cast(held[i], "float32") * part[0], dtype)
+            for k in T.unroll(steps):
+                for c in T.vectorized(vec):
+                    y[row, (k * threads + tx) * vec + c] = out[k * vec + c]
+
+    return main
+
+
+def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec):
+    """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
+
+    A thread walks its vectors two at a time and holds those two, not the row: the second
+    read finds the row in L2, where the first pass's policy kept it.
+    """
+    steps = N // (threads * vec)
+    num_warps = threads // WARP_LANES
+    chunk = _TWO_PASS_CHUNK
+    width = chunk * vec
+
+    @T.prim_func
+    def main(
+        x: T.Tensor[(M, N), dtype],
+        weight: T.Tensor[(N if has_weight else 1,), dtype],
+        y: T.Tensor[(M, N), dtype],
+    ):
+        with T.Kernel(M, threads=threads) as row:
+            # Two blocks an SM where two fit (SM80, SM90; ptxas ignores it on SM86/SM89):
+            # without it the compiler spends the registers one block leaves free.
+            T.annotate_min_blocks_per_sm(2)
+            tx = T.get_thread_binding()
+            held = T.alloc_local((width,), dtype)
+            scale = T.alloc_local((width,), dtype)
+            out = T.alloc_local((width,), dtype)
+            part = T.alloc_local((1,), "float32")
+            warp_sum = T.alloc_shared((num_warps,), "float32")
+
+            part[0] = T.cast(0.0, "float32")
+            for s in T.serial(steps // chunk):
+                for k in T.unroll(chunk):
+                    _load16_evict_last(
+                        held, k * vec, x, (row, ((s * chunk + k) * threads + tx) * vec)
+                    )
+                for i in T.unroll(width):
+                    part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
+            for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
+            if tx % WARP_LANES == 0:
+                warp_sum[tx // WARP_LANES] = part[0]
+            T.sync_threads()
+            part[0] = warp_sum[0]
+            for w in T.unroll(1, num_warps):
+                part[0] += warp_sum[w]
+            part[0] = T.rsqrt(part[0] / float(N) + eps)
+            for s in T.serial(steps // chunk):
+                for k in T.unroll(chunk):
+                    at = ((s * chunk + k) * threads + tx) * vec
+                    T.call_extern(
+                        "handle",
+                        "tileops::load16_evict_first",
+                        T.address_of(held[k * vec]),
+                        T.address_of(x[row, at]),
+                    )
+                    if has_weight:
+                        for c in T.vectorized(vec):
+                            scale[k * vec + c] = weight[at + c]
+                for i in T.unroll(width):
+                    if has_weight:
+                        out[i] = T.cast(
+                            T.cast(held[i], "float32") * part[0] * T.cast(scale[i], "float32"),
+                            dtype,
+                        )
+                    else:
+                        out[i] = T.cast(T.cast(held[i], "float32") * part[0], dtype)
+                for k in T.unroll(chunk):
+                    for c in T.vectorized(vec):
+                        y[row, ((s * chunk + k) * threads + tx) * vec + c] = out[k * vec + c]
+
+    return main
+
+
+def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
+    """Rows of ``lanes * per_lane`` vectors, ``lanes`` adjacent lanes of a warp a row.
+
+    ``block_m`` does not apply: a block of ``warps`` warps takes as many rows as its lanes
+    hold.
+
+    A lane holds vectors ``k * lanes + lane`` of its row, read evict-last in L2, and the
+    group's lanes fold the sum of squares by shuffles: no shared memory, no barrier. A lane
+    past the last row reads the last row and stores nothing.
+    """
+    vec = N // (lanes * per_lane)
+    held_n = per_lane * vec
+    rows_per_cta = WARP_LANES // lanes * warps
+    stages = lanes.bit_length() - 1
+
+    @T.prim_func
+    def main(
+        x: T.Tensor[(M, N), dtype],
+        weight: T.Tensor[(N if has_weight else 1,), dtype],
+        y: T.Tensor[(M, N), dtype],
+    ):
+        with T.Kernel(T.ceildiv(M, rows_per_cta), threads=warps * WARP_LANES) as bx:
+            tx = T.get_thread_binding()
+            lane = tx % lanes
+            row = T.min(bx * rows_per_cta + tx // lanes, M - 1)
+            held = T.alloc_local((held_n,), dtype)
+            scale = T.alloc_local((held_n,), dtype)
+            out = T.alloc_local((held_n,), dtype)
+            part = T.alloc_local((1,), "float32")
+            for k in T.unroll(per_lane):
+                _load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
+            if has_weight:
+                for k in T.unroll(per_lane):
+                    for c in T.vectorized(vec):
+                        scale[k * vec + c] = weight[(k * lanes + lane) * vec + c]
+            part[0] = T.cast(0.0, "float32")
+            for i in T.unroll(held_n):
+                part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
+            for s in T.unroll(stages):
+                part[0] += T.shfl_xor(part[0], T.shift_left(1, s))
+            part[0] = T.rsqrt(part[0] / float(N) + eps)
+            for i in T.unroll(held_n):
+                if has_weight:
+                    out[i] = T.cast(
+                        T.cast(held[i], "float32") * part[0] * T.cast(scale[i], "float32"), dtype
+                    )
+                else:
+                    out[i] = T.cast(T.cast(held[i], "float32") * part[0], dtype)
+            if bx * rows_per_cta + tx // lanes < M:
+                for k in T.unroll(per_lane):
+                    for c in T.vectorized(vec):
+                        y[row, (k * lanes + lane) * vec + c] = out[k * vec + c]
+
+    return main
 
 
 @functools.lru_cache(maxsize=32)
@@ -33,8 +283,29 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
     col_guard = N_padded != N
     elem_bytes = DataType(dtype).bits // 8
 
-    @tilelang.jit(out_idx=[2])
+    vec = VECTOR_ACCESS_BYTES // elem_bytes
+    body = _row_body(N, N_padded, elem_bytes)
+
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
+        if body == "held_row":
+            widths = _held_widths(N, elem_bytes)
+            if block_m != 1 or threads not in widths:
+                raise ValueError(f"a held row of {N} takes one row a block at {widths} threads")
+            return _held_row(M, N, eps, dtype, has_weight, threads, vec)
+        if body == "warp_rows":
+            # block_m does not apply: a block takes as many rows as its lanes hold.
+            vectors = N // vec
+            per_lane = max(2, vectors // WARP_LANES)
+            lanes = vectors // per_lane
+            return _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, threads // WARP_LANES)
+        if body == "two_pass":
+            if (block_m, threads) != (1, _TWO_PASS_THREADS):
+                raise ValueError(
+                    f"a row read twice takes one row a block at {_TWO_PASS_THREADS} threads"
+                )
+            return _two_pass_row(M, N, eps, dtype, has_weight, threads, vec)
+
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
         # a grid that oversubscribes the device is paid back for the walk, and
@@ -138,8 +409,8 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
 class RMSNormKernel(Kernel, RMSNormFwdInterface):
     """RMSNorm kernel.
 
-    Supports SM80+ architectures. The row is held in a register fragment from the load
-    through the store; rows of at most ``_SHARED_ROW_MAX`` elements share a block.
+    Supports SM80+ architectures. The row's width and dtype select one of the module's
+    bodies (``_row_body``); rows of at most ``_SHARED_ROW_MAX`` elements share a block.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -176,9 +447,20 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         self.init_config(config)
 
     @property
+    def _body(self) -> str:
+        return _row_body(self.N, self.N_padded, self.dtype.itemsize)
+
+    @property
     def default_config(self) -> dict:
         config = select_row_config()
-        if self.N_padded <= self._SHARED_ROW_MAX:
+        if self._body == "held_row":
+            config["threads"] = _held_widths(self.N, self.dtype.itemsize)[0]
+        elif self._body == "two_pass":
+            config["threads"] = _TWO_PASS_THREADS
+        elif self._body == "warp_rows":
+            # Four warps a block; block_m does not apply.
+            pass
+        elif self.N_padded <= self._SHARED_ROW_MAX:
             # 2048 elements a block: two 16-byte accesses a thread.
             config["block_m"] = 2048 // self.N_padded
         elif self.N_padded * self.dtype.itemsize > STATIC_SHARED_BYTES:
@@ -189,7 +471,19 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """The width-derived default alone for shared-block rows; L2-warm tuning misranks them."""
+        """Configs of the body ``_row_body`` chose; the default alone for rows of at most
+        ``_SHARED_ROW_MAX`` elements, which L2-warm tuning misranks."""
+        if self._body == "held_row":
+            return [
+                {"block_m": 1, "threads": threads}
+                for threads in _held_widths(self.N, self.dtype.itemsize)
+            ]
+        if self._body == "two_pass" or self.N_padded <= self._SHARED_ROW_MAX:
+            return [self.default_config]
+        if self._body == "warp_rows":
+            # The block widths the fragment configs offer a row this wide, one row a block.
+            configs = select_row_configs(self.N_padded, self.dtype, every_width_past_budget=True)
+            return [{"block_m": 1, "threads": t} for t in sorted({c["threads"] for c in configs})]
         if self.default_config["block_m"] > 1:
             return [self.default_config]
         # Past the shared budget the best width still varies with the row.

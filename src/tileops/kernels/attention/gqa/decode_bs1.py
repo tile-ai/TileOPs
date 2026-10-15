@@ -26,6 +26,7 @@ from tileops.kernels.attention.gqa.decode_bs1_common import (
     RING_DEPTH,
     make_gqa_decode_bs1_combine,
 )
+from tileops.kernels.attention.online_softmax import make_apply_softcap
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -40,6 +41,8 @@ def _make_dense_decode_split(
     dim: int,
     dtype: str,
     scale: float,
+    score_scale: float,
+    softcap: float,
     kv_group_num: int,
     ctx_splits: int,
     threads: int,
@@ -57,6 +60,11 @@ def _make_dense_decode_split(
     # per kernel; this kernel's producer and consumer ranges take 3 and 4.
     consumer_barrier = 5
     tma_threads = 32
+    apply_softcap = (
+        make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+        if softcap > 0.0
+        else None
+    )
 
     @T.macro
     def consumer(
@@ -147,6 +155,8 @@ def _make_dense_decode_split(
                 clear_accum=True,
             )
             T.wait_wgmma(0)
+            if softcap > 0.0:
+                apply_softcap(acc_s)
             for i, j in T.Parallel(block_m, block_n):
                 acc_s[i, j] = T.if_then_else(
                     k * block_n + j < this_len,
@@ -358,7 +368,7 @@ def gqa_decode_bs1_ctx_kernel(
     rope_layout="neox",
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
-    scale = score_scale * LOG2E
+    scale = LOG2E if softcap > 0.0 else score_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
 
@@ -399,6 +409,8 @@ def gqa_decode_bs1_ctx_kernel(
             dim,
             dtype,
             scale,
+            score_scale,
+            softcap,
             kv_group_num,
             ctx_splits,
             threads,

@@ -25,6 +25,8 @@ __all__ = [
     "IndexedRouteStatsFwdInterface",
     "IndexedWeightedReduceFwdInterface",
     "MGroupedGemmCall",
+    "MGroupedGemmFP8Call",
+    "MGroupedGemmFP8FwdInterface",
     "MGroupedGemmFwdInterface",
     "PermuteAlignCall",
     "PermuteAlignFwdInterface",
@@ -39,7 +41,7 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class FusedTopKCall(CallSpec):
-    """One top-k routing call, with the scoring the op fixed at construction."""
+    """One top-k routing call, with the scoring and grouping the op fixed at construction."""
 
     num_tokens: int = 0
     num_experts: int = 0
@@ -47,6 +49,9 @@ class FusedTopKCall(CallSpec):
     scoring_func: str = "softmax"
     renormalize: bool = False
     with_correction_bias: bool = False
+    num_expert_group: int = 1
+    topk_group: int = 1
+    routed_scaling_factor: float = 1.0
     dtype: Optional[torch.dtype] = None
 
 
@@ -134,6 +139,24 @@ class MGroupedGemmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
+class MGroupedGemmFP8Call(CallSpec):
+    """Complete selection facts for one block-scaled FP8 M-grouped GEMM invocation.
+
+    The scale shapes are carried whole so an implementation can refuse a scale grid
+    other than the 1x128 (``a``) and 128x128 (``b``) blocks it reads.
+    """
+
+    kind: str = ""  # "contiguous" | "masked"
+    max_m: int | None = None  # masked only
+    ab_dtype: torch.dtype | None = None
+    num_groups: int = 0
+    n: int = 0
+    k: int = 0
+    a_scale_shape: tuple[int, ...] = ()
+    b_scale_shape: tuple[int, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
 class PostPermuteCall(CallSpec):
     """Complete selection facts for one post-permute invocation."""
 
@@ -162,7 +185,11 @@ class FusedTopKFwdInterface(KernelInterface):
         """Score the router logits, then select each token's ``call.top_k`` experts.
 
         Scoring is ``call.scoring_func`` over each row, in float32 whatever ``call.dtype`` is.
-        Ties break towards the lower expert index. Nothing is written in place.
+        With ``call.num_expert_group > 1`` the experts split into that many groups of
+        consecutive experts, each scored by the sum of its two best selection scores when a
+        bias is passed and by its best one otherwise, and the experts are selected only
+        inside the ``call.topk_group`` best groups. Ties break towards the lower expert
+        index, and among groups towards the lower group index. Nothing is written in place.
 
         Args:
             gating_output: Contiguous ``(call.num_tokens, call.num_experts)`` in
@@ -174,7 +201,8 @@ class FusedTopKFwdInterface(KernelInterface):
         Returns:
             New ``(topk_weights, topk_ids)``: ``float32`` and ``int32``, both
             ``(call.num_tokens, call.top_k)``. The weights are the selected experts' scores,
-            divided by their own sum when ``call.renormalize``.
+            divided by their own sum when ``call.renormalize``, then multiplied by
+            ``call.routed_scaling_factor``.
         """
 
 
@@ -188,8 +216,8 @@ class PermuteAlignFwdInterface(KernelInterface):
         """Sort the routes by expert and pad each expert's run to ``call.block_size``.
 
         Nothing is written in place. A padding slot holds ``call.num_routes`` in
-        *sorted_token_ids*, an index no route has, and a block past the padded length holds
-        ``call.num_experts`` in *expert_ids*.
+        *sorted_token_ids*, an index no route has, and a block past the padded length names no
+        expert in *expert_ids*: it holds a value outside ``[0, call.num_experts)``.
 
         Args:
             topk_ids: Contiguous ``int32`` with ``call.num_routes`` elements, each in
@@ -289,6 +317,45 @@ class MGroupedGemmFwdInterface(KernelInterface):
         Returns:
             ``(call.m, N)`` or ``(call.num_groups, call.max_m, N)`` in ``call.cd_dtype``, where
             ``N`` is ``call.n`` halved when ``call.activation`` is set.
+        """
+
+
+class MGroupedGemmFP8FwdInterface(KernelInterface):
+    """One block-scaled FP8 GEMM per expert over the rows of its masked slab."""
+
+    request = MGroupedGemmFP8Call
+
+    @abstractmethod
+    def forward(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        out: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Contract each expert's valid rows with its weights under their block scales.
+
+        ``out[g, m, n] = sum_kk (a[g, m, kk] . b[g, n, kk]) * a_scale[g, m, kk] *
+        b_scale[g, n // 128, kk]`` over the 128-wide K blocks ``kk``, accumulated in float32
+        and written in bfloat16. Rows at or past ``layout_metadata[g]`` hold unspecified
+        values. The metadata's values are not checked, since checking would synchronise.
+
+        Args:
+            a: Contiguous ``(call.num_groups, call.max_m, call.k)`` in ``call.ab_dtype`` on
+                ``call.device``.
+            a_scale: Contiguous ``float32`` ``call.a_scale_shape``, one scale per row and 128
+                columns of *a*.
+            b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
+            b_scale: Contiguous ``float32`` ``call.b_scale_shape``, one scale per 128x128 block
+                of *b*.
+            layout_metadata: Contiguous ``int32`` ``(call.num_groups,)`` valid row counts.
+            out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
+                written in place and returned; ``None`` allocates one.
+
+        Returns:
+            ``(call.num_groups, call.max_m, call.n)`` in ``bfloat16``.
         """
 
 

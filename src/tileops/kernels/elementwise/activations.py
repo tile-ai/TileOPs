@@ -13,9 +13,13 @@ from tileops.kernels.elementwise._base import (
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
-from tileops.kernels.elementwise._division import full_range_fdiv
+from tileops.kernels.elementwise._division import (
+    float32_quotient,
+    full_range_fdiv,
+    refined_reciprocal,
+)
 from tileops.kernels.elementwise._dtype import log_for_output_precision
-from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise._erf import erf, gelu
 from tileops.kernels.elementwise._nan import nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
@@ -64,6 +68,11 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the standard erf formulation."""
 
     BYTES_PER_THREAD = 32
+    # The erf body costs more than its access, so a row the shrink reaches keeps two
+    # elements a thread instead of four: 1 x 14336 bfloat16 runs 56 blocks instead of
+    # 28, as torch-compile does, at 1.344 us against 1.440 us. One element a thread
+    # measured no faster in 16 bits and slower in float32.
+    MIN_NUM_PER_THREAD = 2
 
     @classmethod
     def refusal(cls, call: GeluCall) -> "str | None":
@@ -73,11 +82,7 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        inv_sqrt_2 = T.cast(INV_SQRT2, "float32")
-        half = T.cast(0.5, "float32")
-        one = T.cast(1.0, "float32")
-        wide = T.cast(x, "float32")
-        return half * wide * (one + erf(wide * inv_sqrt_2, x.dtype))
+        return gelu(x, x.dtype)
 
 
 class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
@@ -115,7 +120,6 @@ class SiluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-        ``SiluAndMulFwdKernel`` computes the same form.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
@@ -126,6 +130,7 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sigmoid(x)."""
 
     BYTES_PER_THREAD = 32
+    EVICT_LAST_LOADS = True
 
     @staticmethod
     def op_func(x):
@@ -134,14 +139,17 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
         bfloat16 divides with ``full_range_fdiv``, which rounds to torch's value at
-        every bfloat16 input. float16 keeps the IEEE divide: ``approx_fdiv``'s two ulp
-        move two of the 65536 float16 results by one ulp.
+        every bfloat16 input. float16 takes ``refined_reciprocal``, which rounds to
+        torch's value at every float16 input; ``approx_fdiv``'s two ulp alone move two
+        of the 65536 float16 results by one ulp. float32 keeps the IEEE divide.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
         den = one + T.exp2(-wide * T.cast(LOG2E, "float32"))
         if str(x.dtype) == "bfloat16":
             return full_range_fdiv(one, den)
+        if str(x.dtype) == "float16":
+            return refined_reciprocal(den)
         return one / den
 
 
@@ -380,14 +388,22 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
+    # (2048, 14336) bfloat16 on H200: 43.06 us with default loads, 41.86 evict-last.
+    EVICT_LAST_LOADS = True
 
     @staticmethod
     def activation_func(x):
-        # exp2 form (fp32): exp2 lowers to one MUFU.EX2 vs expf's multi-op sequence.
+        """gate / (1 + exp2(-gate * log2 e)), in fp32.
+
+        exp2 lowers to one MUFU.EX2 against expf's multi-op sequence. A 16-bit gate
+        divides with ``float32_quotient``: the IEEE divide's range check and branch
+        around its slow path kept the (32, 12288) bfloat16 call at 2.34 us against
+        2.14 us on H200.
+        """
         g = T.Cast("float32", x)
         one = T.cast(1.0, "float32")
         log2e = T.cast(LOG2E, "float32")
-        return g / (one + T.exp2(-g * log2e))
+        return float32_quotient(str(x.dtype), g, one + T.exp2(-g * log2e))
 
 
 class GeluAndMulFwdKernel(FusedGatedKernel):

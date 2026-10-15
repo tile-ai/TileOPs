@@ -1272,6 +1272,20 @@ def _batch_norm_fwd_infer_kernel(
         # parameter of this builder must therefore be a config key.
         blocks = -(-total // span)
 
+        @T.macro
+        def _channel_affine(weight, bias, running_mean, running_var, ch, sc, sh):
+            """Write channel *ch*'s scale into ``sc[0]`` and its shift into ``sh[0]``."""
+            if input_dtype_params:
+                mean_c = T.cast(T.cast(running_mean[ch], dtype), accum_dtype)
+                var_c = T.cast(T.cast(running_var[ch], dtype), accum_dtype)
+                weight_c = T.cast(weight[ch], accum_dtype) if has_weight else T.float32(1.0)
+                bias_c = T.cast(bias[ch], accum_dtype) if has_bias else T.float32(0.0)
+                sc[0] = T.rsqrt(var_c + T.cast(eps, accum_dtype)) * weight_c
+                sh[0] = bias_c - mean_c * sc[0]
+            else:
+                sc[0] = weight[ch] / T.sqrt(running_var[ch] + T.cast(eps, accum_dtype))
+                sh[0] = bias[ch] - running_mean[ch] * sc[0]
+
         @T.prim_func
         def _bn_fwd_infer(
             x_ncs: T.Tensor([N, C, S], dtype),
@@ -1286,59 +1300,70 @@ def _batch_norm_fwd_infer_kernel(
                 x = T.Tensor([total], dtype, x_ncs.data)
                 y = T.Tensor([total], dtype, y_ncs.data)
                 tx = T.get_thread_binding()
-                # One scale and shift per channel turns the body into a single
-                # multiply-add, and the block builds that table once rather than
-                # every element recomputing a root and a divide.
-                scale = T.alloc_shared([C], accum_dtype)
-                shift = T.alloc_shared([C], accum_dtype)
-                for c in T.serial(T.ceildiv(C, threads)):
-                    ch = c * threads + tx
-                    if ch < C:
-                        if input_dtype_params:
-                            mean_c = T.cast(T.cast(running_mean[ch], dtype), accum_dtype)
-                            var_c = T.cast(T.cast(running_var[ch], dtype), accum_dtype)
-                            weight_c = (
-                                T.cast(weight[ch], accum_dtype) if has_weight else T.float32(1.0)
-                            )
-                            bias_c = T.cast(bias[ch], accum_dtype) if has_bias else T.float32(0.0)
-                            sc = T.rsqrt(var_c + T.cast(eps, accum_dtype)) * weight_c
-                            scale[ch] = sc
-                            shift[ch] = bias_c - mean_c * sc
-                        else:
-                            sc = weight[ch] / T.sqrt(running_var[ch] + T.cast(eps, accum_dtype))
-                            scale[ch] = sc
-                            shift[ch] = bias[ch] - running_mean[ch] * sc
-                T.sync_threads()
-
-                v = T.alloc_local([num_per_thread], dtype)
-                o = T.alloc_local([num_per_thread], dtype)
-                # Each step is contiguous across the block.
-                for k in T.serial(steps):
-                    base = bx * span + (k * threads + tx) * num_per_thread
-                    if base + num_per_thread <= total:
-                        for i in T.vectorized(num_per_thread):
-                            v[i] = x[base + i]
-                        if vector_holds_one_channel:
+                if vector_holds_one_channel:
+                    # A thread's vectors each stay in one channel, whose scale and shift it
+                    # computes itself after issuing the read: no table and no barrier
+                    # stand between the block's start and its loads.
+                    v = T.alloc_local([steps * num_per_thread], dtype)
+                    o = T.alloc_local([num_per_thread], dtype)
+                    sc = T.alloc_local([1], accum_dtype)
+                    sh = T.alloc_local([1], accum_dtype)
+                    for k in T.unroll(steps):
+                        base = bx * span + (k * threads + tx) * num_per_thread
+                        if base + num_per_thread <= total:
+                            for i in T.vectorized(num_per_thread):
+                                v[k * num_per_thread + i] = x[base + i]
+                    for k in T.unroll(steps):
+                        base = bx * span + (k * threads + tx) * num_per_thread
+                        if base + num_per_thread <= total:
                             ch = (base // S) % C
+                            _channel_affine(weight, bias, running_mean, running_var, ch, sc, sh)
+                            for i in T.unroll(num_per_thread):
+                                o[i] = T.cast(
+                                    T.cast(v[k * num_per_thread + i], accum_dtype) * sc[0] + sh[0],
+                                    dtype,
+                                )
+                            for i in T.vectorized(num_per_thread):
+                                y[base + i] = o[i]
+                else:
+                    # One scale and shift per channel turns the body into a single
+                    # multiply-add, and the block builds that table once rather than
+                    # every element recomputing a root and a divide.
+                    scale = T.alloc_shared([C], accum_dtype)
+                    shift = T.alloc_shared([C], accum_dtype)
+                    sc = T.alloc_local([1], accum_dtype)
+                    sh = T.alloc_local([1], accum_dtype)
+                    for c in T.serial(T.ceildiv(C, threads)):
+                        ch = c * threads + tx
+                        if ch < C:
+                            _channel_affine(weight, bias, running_mean, running_var, ch, sc, sh)
+                            scale[ch] = sc[0]
+                            shift[ch] = sh[0]
+                    T.sync_threads()
+
+                    v = T.alloc_local([num_per_thread], dtype)
+                    o = T.alloc_local([num_per_thread], dtype)
+                    # Each step is contiguous across the block.
+                    for k in T.serial(steps):
+                        base = bx * span + (k * threads + tx) * num_per_thread
+                        if base + num_per_thread <= total:
+                            for i in T.vectorized(num_per_thread):
+                                v[i] = x[base + i]
                             for i in T.serial(num_per_thread):
+                                ch = ((base + i) // S) % C
                                 o[i] = T.cast(
                                     T.cast(v[i], accum_dtype) * scale[ch] + shift[ch], dtype
                                 )
+                            for i in T.vectorized(num_per_thread):
+                                y[base + i] = o[i]
                         else:
                             for i in T.serial(num_per_thread):
-                                ch = ((base + i) // S) % C
-                                o[i] = T.cast(
-                                    T.cast(v[i], accum_dtype) * scale[ch] + shift[ch], dtype
-                                )
-                        for i in T.vectorized(num_per_thread):
-                            y[base + i] = o[i]
-                    else:
-                        for i in T.serial(num_per_thread):
-                            if base + i < total:
-                                ch = ((base + i) // S) % C
-                                y[base + i] = T.cast(
-                                    T.cast(x[base + i], accum_dtype) * scale[ch] + shift[ch], dtype
-                                )
+                                if base + i < total:
+                                    ch = ((base + i) // S) % C
+                                    y[base + i] = T.cast(
+                                        T.cast(x[base + i], accum_dtype) * scale[ch] + shift[ch],
+                                        dtype,
+                                    )
 
         return _bn_fwd_infer
 

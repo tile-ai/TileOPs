@@ -6,11 +6,8 @@ intra-chunk attention never leave the chip. What it costs is parallelism: the
 launch is one block per (sequence, value head), so it is the right shape only
 when there are enough of those to cover the machine.
 
-Inside the chunk, the unit-triangular WY inverse is six nilpotent Neumann
-factors -- every step of it a tensor-core matmul rather than a row-sequential
-forward substitution -- and one gate reference per 16 rows is produced once and
-rescaled per block, so one reference block's operands are gone before the next
-is built.
+The WY inverse uses stable 16-row diagonal solves and block matrix products.
+Gate references are computed once per 16 rows and rescaled per block.
 """
 
 import functools
@@ -20,6 +17,7 @@ import tilelang.language as T
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.linear_attention.kda.chunk_programs import L2_EPS, REFERENCE_BLOCK
+from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = ["fused_chunk_program"]
 
@@ -56,6 +54,10 @@ def fused_chunk_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
+        invert = inverse_program(
+            chunk_size=BT, block_size=BC, dtype=dtype, output_offset=BT if compact else 0
+        )
+
         def reference_gate(gc, metadata, block, channel):
             return metadata[block * K + channel] if compact else gc[block * BC + REF, channel]
 
@@ -122,14 +124,13 @@ def fused_chunk_program(
                 length = T.cast(cu_seqlens[iseq + 1], "int32") - origin
 
                 if compact:
-                    arena = T.alloc_shared([BT, K], accum)
                     qa_s = T.alloc_shared([BT, K], dtype)
                     ka_s = T.alloc_shared([BT, K], dtype)
                     kb_s = T.alloc_shared([BT, K], dtype)
                     b_s = T.alloc_shared([BT, K], dtype)
                     metadata = T.alloc_shared([(NC + 1) * K + BT], accum)
-                    gc_s = T.view(arena, [BT, K], accum)
-                    state_s = T.view(arena, [K, V], dtype)
+                    state_s = T.alloc_shared([K, V], dtype)
+                    gc_s = state_s
                     vb_s = T.view(b_s, [BT, V], dtype)
                     vn_s = T.view(ka_s, [BT, V], dtype)
                     m_s = ka_s
@@ -203,8 +204,17 @@ def fused_chunk_program(
 
                     T.clear(acc)
                     T.gemm(matrix(prefix_s), b_s, acc)
-                    for i, j in T.Parallel(BT, K):
-                        gc_s[i, j] = acc[i, j] * LOG2E
+                    if compact:
+                        # Keep FP32 prefixes in acc; only reference rows cross threads.
+                        for i, j in T.Parallel(BT, K):
+                            if i % BC == REF:
+                                metadata[(i // BC) * K + j] = acc[i, j] * LOG2E
+                            if i == rows - 1:
+                                metadata[NC * K + j] = acc[i, j] * LOG2E
+                        T.sync_threads()
+                    else:
+                        for i, j in T.Parallel(BT, K):
+                            gc_s[i, j] = acc[i, j] * LOG2E
                     for i, j in T.Parallel(BT, K):
                         norm_f[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
                     T.reduce_sum(norm_f, rowsum, dim=1)
@@ -229,29 +239,31 @@ def fused_chunk_program(
                     for i, j in T.Parallel(BT, K):
                         kb_s[i, j] = T.cast(
                             T.cast(ka_s[i, j], accum)
-                            * T.exp2(gc_s[(i // BC) * BC + REF, j] - gc_s[i, j]),
+                            * T.exp2(
+                                reference_gate(gc_s, metadata, i // BC, j)
+                                - (acc[i, j] * LOG2E if compact else gc_s[i, j])
+                            ),
                             dtype,
                         )
                     T.sync_threads()
                     for i, j in T.Parallel(BT, K):
                         ka_s[i, j] = T.cast(
                             T.cast(ka_s[i, j], accum)
-                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                            * T.exp2(
+                                (acc[i, j] * LOG2E if compact else gc_s[i, j])
+                                - reference_gate(gc_s, metadata, i // BC, j)
+                            ),
                             dtype,
                         )
                         qa_s[i, j] = T.cast(
                             T.cast(qa_s[i, j], accum)
-                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                            * T.exp2(
+                                (acc[i, j] * LOG2E if compact else gc_s[i, j])
+                                - reference_gate(gc_s, metadata, i // BC, j)
+                            ),
                             dtype,
                         )
                     T.sync_threads()
-
-                    if compact:
-                        for i, j in T.Parallel(NC + 1, K):
-                            metadata[i * K + j] = gc_s[
-                                T.if_then_else(i < NC, i * BC + REF, rows - 1), j
-                            ]
-                        T.sync_threads()
 
                     T.clear(akk)
                     T.clear(aq)
@@ -285,26 +297,8 @@ def fused_chunk_program(
                         m_s[i, j] = T.cast(
                             T.if_then_else(i > j, -akk[i, j] * step(bt_s, i), 0.0), dtype
                         )
-                        p_s[i, j + BT if compact else j] = T.cast(
-                            T.if_then_else(i > j, -akk[i, j] * step(bt_s, i), 0.0)
-                            + T.if_then_else(i == j, 1.0, 0.0),
-                            dtype,
-                        )
                     T.sync_threads()
-                    for _level in T.serial(5):
-                        T.clear(tkk)
-                        T.gemm(matrix(m_s), matrix(m_s), tkk)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, BT):
-                            m_s[i, j] = T.cast(tkk[i, j] + T.if_then_else(i == j, 1.0, 0.0), dtype)
-                        T.sync_threads()
-                        T.clear(tqk)
-                        T.gemm(matrix(p_s, True), matrix(m_s), tqk)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, BT):
-                            m_s[i, j] = T.cast(T.if_then_else(i > j, tkk[i, j], 0.0), dtype)
-                            p_s[i, j + BT if compact else j] = T.cast(tqk[i, j], dtype)
-                        T.sync_threads()
+                    invert(m_s, p_s, tkk)
 
                     # The chunk's step over the state this CTA carries.
                     if not compact:

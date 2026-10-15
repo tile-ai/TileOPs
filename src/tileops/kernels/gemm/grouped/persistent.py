@@ -73,7 +73,14 @@ class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = GemmTemplate(gemm_type, num_groups=batch_count, device_index=device_index)
+        # A K-grouped call's M is ``n``, fixed here: compiling it in turns the tile
+        # decode's divisions by the M-tile count into multiplies.
+        self.inner = GemmTemplate(
+            gemm_type,
+            num_groups=batch_count,
+            device_index=device_index,
+            static_dims="mnk" if transpose_a else "nk",
+        )
 
     def forward(
         self,

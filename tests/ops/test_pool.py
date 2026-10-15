@@ -350,6 +350,60 @@ class AvgPool3dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-2x2x2-default-stride-fp32",
                 ),
+                # Windows past the rows the wide kernel holds, and padded windows past the taps
+                # it unrolls: both keep a serial loop.
+                pytest.param(
+                    1,
+                    4,
+                    10,
+                    10,
+                    20,
+                    (5, 5, 2),
+                    None,
+                    (0, 0, 0),
+                    False,
+                    True,
+                    None,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-5x5x2-wide-serial-fp32",
+                ),
+                pytest.param(
+                    1,
+                    4,
+                    8,
+                    8,
+                    8,
+                    (4, 4, 3),
+                    (2, 2, 2),
+                    (1, 1, 1),
+                    False,
+                    True,
+                    5,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-4x4x3-padded-serial-fp16",
+                ),
+                pytest.param(
+                    1,
+                    24,
+                    10,
+                    20,
+                    22,
+                    (2, 2, 3),
+                    (2, 2, 2),
+                    (0, 1, 1),
+                    False,
+                    True,
+                    7,
+                    torch.bfloat16,
+                    False,
+                    # A padded window with a fixed divisor and at most 32 taps: the clamped taps.
+                    marks=pytest.mark.smoke,
+                    id="smoke-divisor-override-clamped-bf16",
+                ),
                 pytest.param(
                     1,
                     48,
@@ -366,23 +420,6 @@ class AvgPool3dFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-ceil-no-pad-count-fp16",
-                ),
-                pytest.param(
-                    1,
-                    24,
-                    10,
-                    20,
-                    22,
-                    (2, 2, 3),
-                    (2, 2, 2),
-                    (0, 1, 1),
-                    False,
-                    True,
-                    7,
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-divisor-override-bf16",
                 ),
                 pytest.param(
                     1,
@@ -1892,6 +1929,31 @@ def test_max_pool1d_windowed_taps_match_torch(
     out = MaxPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)(x)
     expected = F.max_pool1d(x, kernel_l, stride_l, pad_l)
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype",
+    [
+        pytest.param(3072, 3, 3, 0, torch.float32, id="in-row-fp32"),
+        pytest.param(3072, 3, 3, 0, torch.bfloat16, id="in-row-bf16"),
+        pytest.param(3070, 2, 3, 1, torch.float32, id="padded-fp32"),
+        pytest.param(4093, 3, 4, 1, torch.bfloat16, id="padded-bf16"),
+    ],
+)
+def test_max_pool1d_indices_windowed_taps_match_torch(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: torch.dtype
+) -> None:
+    """Windows no wider than their stride, 1024 outputs a row so that a block divides the
+    output and each thread stores adjacent outputs as vectors, give torch's values and
+    positions with the 4- and 2-byte element loads, the last NaN in a window winning."""
+    x = torch.randn(4, 8, l_in, device=run_device(), dtype=dtype)
+    # Adjacent pairs put two NaNs in some windows.
+    x.view(-1)[::313] = float("nan")
+    x.view(-1)[1::313] = float("nan")
+    op = MaxPool1dIndicesFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)
+    expected = max_pool_ref(1)(x, kernel_l, stride_l, pad_l, return_indices=True)
+    compare_outputs(op(x), expected, pool_verification(maximum=True))
 
 
 @pytest.mark.smoke

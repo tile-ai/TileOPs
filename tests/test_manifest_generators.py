@@ -96,6 +96,42 @@ def test_layout_valid_table(layout, metadata, rows, expected):
     assert _layout_valid(metadata, layout, rows, 3) is expected
 
 
+def test_masked_routed_metadata_splits_tokens_two_to_one_within_capacity():
+    """Even busy experts take twice the odd ones' share; 768 rows over 8 reproduce 128/64."""
+    routed = GENERATORS["moe.masked_routed_metadata"]
+    assert routed(_masked(128), 8, 768) == [128, 64] * 4
+    for experts, tokens in [(32, 64), (48, 256), (3, 0)]:
+        counts = routed(_masked(tokens or 1), experts, tokens)
+        assert sum(counts) == tokens
+        assert (len(counts),) == GENERATOR_SHAPES["moe.masked_routed_metadata"](
+            _masked(tokens or 1), experts, tokens
+        )
+        assert _layout_valid(counts, _masked(tokens or 1), experts * (tokens or 1), experts)
+    with pytest.raises(ValueError):
+        routed(_masked(100), 8, 768)  # an expert would hold 128 rows
+    with pytest.raises(ValueError):
+        routed(_LAYOUTS["tight-psum"], 8, 768)
+
+
+def test_masked_routed_metadata_leaves_the_experts_uniform_routing_leaves_empty():
+    """round(E * exp(-T / E)) experts get no rows, at evenly spaced positions; the busy ones
+    split T two to one, and a split the model leaves no expert idle in is the plain one."""
+    routed = GENERATORS["moe.masked_routed_metadata"]
+    counts = routed(_masked(64), 32, 64)  # 32 * exp(-2) = 4.33
+    assert [i for i, c in enumerate(counts) if c == 0] == [4, 12, 20, 28]
+    busy = [c for c in counts if c > 0]
+    assert len(busy) == 28 and sum(counts) == 64 and max(counts) <= 64
+    # 64 over weights 2, 1, ... (total 42): floors 3 and 1, the 8 leftover rows to the first
+    # 8 odd experts, whose remainder 22 / 42 beats the even ones' 2 / 42.
+    assert busy == [3, 2] * 8 + [3, 1] * 6
+    # 16 * exp(-4) = 0.29 rounds to no idle expert: the counts are the plain 2:1 split.
+    assert routed(_masked(64), 16, 64) == [5, 3] * 8
+    assert routed(_masked(1), 5, 0) == [0] * 5
+    # One expert: idle only without tokens; one token is the smallest busy split.
+    assert routed(_masked(1), 1, 0) == [0]
+    assert routed(_masked(1), 1, 1) == [1]
+
+
 def test_sample_indices_draws_distinct_values_in_range():
     values = GENERATORS["sample_indices"](random.Random(0), 6, 8)
     assert len(set(values)) == 6 and all(0 <= v < 8 for v in values)

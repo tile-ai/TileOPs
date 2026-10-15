@@ -29,6 +29,7 @@ from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
+    MoEGroupedGemmFP8FwdOp,
     MoEGroupedGemmFwdOp,
     MoEPermuteAlignFwdOp,
     MoEPostPermuteFwdOp,
@@ -145,6 +146,23 @@ def _staged_grouped_gemm_masked_case():
     return make, (a, b, masked_m), ()
 
 
+def _grouped_gemm_fp8_masked_case():
+    num_experts = 2
+    max_m, n, k = 64, 128, 128
+
+    def make():
+        return MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
+
+    fp8 = torch.float8_e4m3fn
+    a = (torch.randn(num_experts, max_m, k, device=run_device()) * 0.25).to(fp8)
+    a_scale = torch.rand(num_experts, max_m, k // 128, device=run_device()) + 0.5
+    b = (torch.randn(num_experts, n, k, device=run_device()) * 0.25).to(fp8)
+    b_scale = torch.rand(num_experts, n // 128, k // 128, device=run_device()) + 0.5
+    masked_m = torch.tensor([64, 17], dtype=torch.int32, device=run_device())
+    # Rows past an expert's valid count hold unspecified values.
+    return make, (a, a_scale, b, b_scale, masked_m), ()
+
+
 def _fused_topk_case(with_bias: bool = False):
     num_experts = 4
     top_k = 2
@@ -197,6 +215,16 @@ def test_leaf_op_owns_its_graph_nodes(case) -> None:
     indices = range(len(compiled)) if reproducible == "all" else reproducible
     for i in indices:
         torch.testing.assert_close(compiled[i], eager[i])
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_fp8_grouped_gemm_owns_its_graph_nodes() -> None:
+    """The FP8 masked GEMM, whose only kernel is SM90's, traces cold to its own operator."""
+    make, inputs, _ = _grouped_gemm_fp8_masked_case()
+    assert_op_owns_graph_nodes(make(), *inputs)
+    _assert_same_layout(_compile_cold(make(), *inputs), (make()(*inputs),))
 
 
 @pytest.mark.smoke
@@ -323,6 +351,7 @@ for _op_cls in (
     MoEPrePermuteFwdOp,
     MoEPostPermuteFwdOp,
     MoEGroupedGemmFwdOp,
+    MoEGroupedGemmFP8FwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

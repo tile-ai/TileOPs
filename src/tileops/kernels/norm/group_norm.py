@@ -41,12 +41,15 @@ from tileops.kernels.norm._config import (
     NARROW_ROW,
     make_row_reduce,
     make_shifted_row_reduce,
+    make_warp_row_norm,
     row_padding,
     select_row_config_by_width,
     select_row_configs,
+    warp_row_vector,
     widths_for_row,
 )
 from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
+from tileops.utils import WARP_LANES
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
@@ -122,12 +125,31 @@ class _RowNormKernel(Kernel):
         """Block widths this row admits, narrowed while it is held in registers."""
         return self._row_widths_for(self.D, self.D_padded)
 
+    def _warp_row_vector(self) -> Optional[int]:
+        """Vector width of the warp-a-row body for this row, or ``None`` if it does not apply."""
+        return self._warp_row_vector_for(self.D, self.dtype)
+
+    @classmethod
+    def _warp_row_vector_for(cls, D: int, dtype: torch.dtype) -> Optional[int]:
+        """`_warp_row_vector` for a row of *D* elements of *dtype*, before construction."""
+        return warp_row_vector(D, dtype.itemsize)
+
     @property
     def default_config(self) -> dict:
+        if self._warp_row_vector() is not None:
+            # Eight rows a block, one a warp. On H200 at (1024, 784) it took 3.136 us in
+            # float32 against 3.167 at four rows and 3.200 at one; in float16 four and eight
+            # tied at 2.464 against 2.496 at one. `_warp_rows` takes fewer for fewer rows.
+            warp_row_threads = 256
+            return {"block_m": 1, "threads": warp_row_threads}
         return select_row_config_by_width(self.D_padded, self._row_widths)
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self._warp_row_vector() is not None:
+            # Pinned: these rows run in 2.5 to 3.1 us, where the configs differ by about
+            # one 32 ns timer tick, which the autotuner cannot rank.
+            return [self.default_config]
         if self._holds_row_in_registers(self.D, self.D_padded):
             # One row per block, pinned rather than swept: a row this narrow runs
             # in under three microseconds, which the autotuner cannot rank, and
@@ -151,8 +173,64 @@ def _register_load(x, row, col, shift, guarded, M, D):
     return value
 
 
+def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
+    """Up to ``threads / 32`` rows a block, one a warp; see `make_warp_row_norm`.
+
+    A warp past the last row normalizes the last row and stores nothing.
+
+    Args:
+        affine: Whether row ``m`` is scaled and shifted by channel ``m % num_groups``.
+    """
+    # Fewer rows a block until the grid holds 128 blocks: on H200 at 1024 columns, 256
+    # rows took 2.240 us in float32 at eight rows a block against 2.016 at two, while
+    # 1024 rows led at eight.
+    min_blocks = 128
+    warps = threads // WARP_LANES
+    while warps > 1 and -(-M // warps) < min_blocks:
+        warps //= 2
+    threads = warps * WARP_LANES
+    held_n, reduce_row, write_row = make_warp_row_norm(D, dtype, eps, vec, affine)
+
+    if affine:
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, D), dtype],
+            weight: T.Tensor[(num_groups,), dtype],
+            bias: T.Tensor[(num_groups,), dtype],
+            y: T.Tensor[(M, D), dtype],
+        ):
+            with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
+                m = bx * warps + T.get_thread_binding() // WARP_LANES
+                scale = T.alloc_local((1,), "float32")
+                shift = T.alloc_local((1,), "float32")
+                held = T.alloc_local((held_n,), dtype)
+                stats = T.alloc_local((4,), "float32")
+                # Ahead of the row load, so the two reads are in flight while it runs.
+                scale[0] = T.cast(weight[T.min(m, M - 1) % num_groups], "float32")
+                shift[0] = T.cast(bias[T.min(m, M - 1) % num_groups], "float32")
+                reduce_row(x, T.min(m, M - 1), held, stats)
+                write_row(y, T.min(m, M - 1), m < M, held, stats, scale, shift)
+
+        return main
+
+    @T.prim_func
+    def main_no_affine(
+        x: T.Tensor[(M, D), dtype],
+        y: T.Tensor[(M, D), dtype],
+    ):
+        with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
+            m = bx * warps + T.get_thread_binding() // WARP_LANES
+            held = T.alloc_local((held_n,), dtype)
+            stats = T.alloc_local((4,), "float32")
+            reduce_row(x, T.min(m, M - 1), held, stats)
+            write_row(y, T.min(m, M - 1), m < M, held, stats, None, None)
+
+    return main_no_affine
+
+
 @functools.lru_cache(maxsize=32)
-def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct):
+def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct, warp_vec):
     """Build a row-wise normalization kernel with a per-channel affine.
 
     This is the core computation shared by GroupNorm and InstanceNorm. The
@@ -169,6 +247,8 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
         channels_per_group: C / G. Row ``m`` covers channels
             ``(m % G) * channels_per_group`` onwards.
         register_direct: Whether a row is read from global memory into fragments.
+        warp_vec: Vector width of the warp-a-row body, or ``None`` for the fragment body.
+            Only a group of one channel takes it.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     spatial_size = D // channels_per_group
@@ -176,6 +256,9 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
+        if warp_vec is not None:
+            return _warp_rows(M, D, eps, dtype, warp_vec, threads, num_groups, True)
+
         # A non-aligned D would read and write columns >= D unless masked.
         def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
             """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
@@ -384,6 +467,10 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         self.channels_per_group = channels_per_group
         super().__init__(D, eps, dtype, config=config)
 
+    def _warp_row_vector(self) -> Optional[int]:
+        # The warp-a-row body applies one channel's affine to the whole row.
+        return super()._warp_row_vector() if self.channels_per_group == 1 else None
+
     def forward(
         self,
         x: torch.Tensor,
@@ -425,6 +512,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
             self.num_groups,
             self.channels_per_group,
             self._holds_row_in_registers(self.D, self.D_padded),
+            self._warp_row_vector(),
         )
         if self._tune_pending:
             self._tune_pending = False
@@ -435,7 +523,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct):
+def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
     """Build a row-wise normalization kernel for shape (M, D) without affine.
 
     Same numerics and same boundary handling as `_group_norm_kernel`,
@@ -449,11 +537,14 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct):
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
         register_direct: Whether a row is read from global memory into fragments.
+        warp_vec: Vector width of the warp-a-row body, or ``None`` for the fragment body.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
+        if warp_vec is not None:
+            return _warp_rows(M, D, eps, dtype, warp_vec, threads, 1, False)
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
         # A tail row block runs past the end unless every index is guarded.
@@ -611,6 +702,7 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
             self.eps,
             self.dtype_str,
             self._holds_row_in_registers(self.D, self.D_padded),
+            self._warp_row_vector(),
         )
         if self._tune_pending:
             self._tune_pending = False

@@ -4,7 +4,11 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
+from tileops._csrc import csrc_include
 from tileops.kernels.gemm.call_spec import (
     GemmCall,
     GemmFP8Call,
@@ -17,7 +21,7 @@ from tileops.kernels.gemm.heuristics import (
     fp8_ws_config,
     gemv_config,
     small_batch_config,
-    swap_ab_grid_underfills,
+    two_row_gemv_wins,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.trace import trace
@@ -1892,8 +1896,13 @@ def _gemm_coop2_kernel(
 
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
-    back to ``_gemm_kernel``. M / N tails are handled by a predicated scalar
-    epilogue (full tiles use the TMA store); K tails are TMA zero-filled.
+    back to ``_gemm_kernel``. Where TMA addresses the output rows, every tile leaves
+    through the TMA store, which drops what an M / N tail puts past the output;
+    otherwise each tile is staged in shared memory and stored a row a warp,
+    predicated on the tails. K tails are TMA zero-filled. A
+    ``block_n`` of 176 or 192 over 64-wide K steps, which TileLang 0.1.12 issues
+    as narrower WGMMAs, runs one ``block_n``-wide WGMMA per 16 of K through
+    ``dense_wgmma_helper.h``.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -1915,11 +1924,13 @@ def _gemm_coop2_kernel(
         raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
     block_m = 128
+    # ``dense_wgmma_helper.h``'s name for each dtype.
+    wgmma_dtype_tag = {"bfloat16": "bf16", "float16": "fp16"}[dtype]
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_coop2_func(
         block_n: int = 256,
@@ -1938,6 +1949,89 @@ def _gemm_coop2_kernel(
         total_tiles = num_pid_m * num_pid_n
         max_waves = -(-total_tiles // sm_count) + 1
         k_iters = T.ceildiv(k, block_k)
+        # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
+        # as gcd(width, 256)-wide WGMMAs, each re-reading A: 176 as eleven n16, 192 as
+        # three n64. ``dense_wgmma_helper.h`` issues these two widths as one N-wide
+        # WGMMA per 16 of K, over 64-wide K steps; other K steps keep T.wgmma_gemm.
+        wide_wgmma = block_n in (176, 192) and block_k == 64
+        wgmma_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{block_n}_k64"
+        # The accumulator layout T.wgmma_gemm gives one consumer's 64 x block_n tile;
+        # the helper writes the same registers.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=half_m // 4,
+            warp_col_tiles=block_n,
+            chunk=block_k,
+        )
+
+        @T.macro
+        def consumer_wgmma(a_ring, b_ring, slot, acc, ki):
+            if wide_wgmma:
+                T.call_extern(
+                    "handle",
+                    wgmma_helper,
+                    acc.data,
+                    T.address_of(a_ring[slot, 0, 0]),
+                    T.address_of(b_ring[slot, 0, 0]),
+                    T.if_then_else(ki > 0, 1, 0),
+                )
+            else:
+                T.wgmma_gemm(
+                    a_ring[slot, :, :],
+                    b_ring[slot, :, :],
+                    acc,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=(ki == 0),
+                )
+
+        # TMA addresses the output only where its 16-bit rows are a whole number of
+        # 16-byte units; there it also drops what an M / N tail puts past the output.
+        tma_rows = n % 8 == 0
+
+        @T.macro
+        def store_half(c, c_cast, c_smem, row_start, rows, n_start, bar):
+            """Store one consumer's ``rows`` (at most ``half_m``) of the tile."""
+            if tma_rows:
+                for ch in range(n_chunks):
+                    c0 = ch * sn
+                    # The previous store may still read c_smem; waiting here rather
+                    # than after issuing it lets that store overlap the mainloop
+                    # that ran since.
+                    T.tma_store_wait(0)
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    T.copy(c_cast[:, c0 : c0 + sn], c_smem)
+                    T.fence_proxy_async()
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    T.tma_copy(
+                        c_smem,
+                        c[row_start : row_start + half_m, n_start + c0 : n_start + c0 + sn],
+                    )
+            else:
+                # A warp stores one row at a time, its lanes on consecutive columns. The
+                # row loop stays rolled: unrolled, each thread holds every store address
+                # live and the consumer spills its accumulator.
+                lane = T.get_thread_binding() % 32
+                warp = T.get_thread_binding() % 128 // 32
+                for ch in range(n_chunks):
+                    c0 = ch * sn
+                    cols = T.min(T.int32(sn), T.int32(n) - n_start - c0)
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    T.copy(c_cast[:, c0 : c0 + sn], c_smem)
+                    T.sync_threads(barrier_id=bar, arrive_count=128)
+                    for r in T.serial(half_m // 4):
+                        i = r * 4 + warp
+                        if i < rows:
+                            for t in T.unroll(-(-sn // 32)):
+                                j = t * 32 + lane
+                                if j < cols:
+                                    c[row_start + i, n_start + c0 + j] = c_smem[i, j]
 
         @T.macro
         def decode(flat_id, mt, nt):
@@ -1974,6 +2068,13 @@ def _gemm_coop2_kernel(
                         c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
                     }
                 )
+                if wide_wgmma:
+                    T.annotate_layout(
+                        {
+                            c_local_0: acc_emitter.make_mma_store_layout(c_local_0),
+                            c_local_1: acc_emitter.make_mma_store_layout(c_local_1),
+                        }
+                    )
 
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
@@ -2027,19 +2128,10 @@ def _gemm_coop2_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            arows = T.min(T.int32(half_m), T.int32(m) - m_start)
-                            acols = T.min(T.int32(block_n), T.int32(n) - n_start)
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_0 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_0 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    a_smem_top[slot, :, :],
-                                    b_smem[slot, :, :],
-                                    c_local_0,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(ki == 0),
-                                )
+                                consumer_wgmma(a_smem_top, b_smem, slot, c_local_0, ki)
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps0[0]])
@@ -2049,18 +2141,17 @@ def _gemm_coop2_kernel(
                             T.barrier_arrive(ab_empty[ps0[0]])
                             T.warpgroup_fence_operand(c_local_0, num_regs=nr)
                             T.copy(c_local_0, c_cast_0)
-                            if arows == T.int32(half_m) and acols == T.int32(block_n):
-                                for ch in range(n_chunks):
-                                    c0 = ch * sn
-                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
-                                    T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
-                                    T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
-                                    T.copy(c_smem_0, c[m_start, n_start + c0])
-                            else:
-                                for i, j in T.Parallel(half_m, block_n):
-                                    if i < arows and j < acols:
-                                        c[m_start + i, n_start + j] = c_cast_0[i, j]
+                            store_half(
+                                c,
+                                c_cast_0,
+                                c_smem_0,
+                                m_start,
+                                T.min(T.int32(half_m), T.int32(m) - m_start),
+                                n_start,
+                                consumer_bar_wg0,
+                            )
+                    # Drain the last store before the CTA's shared memory goes.
+                    T.tma_store_wait(0)
 
                 else:
                     T.inc_max_nreg(240)
@@ -2070,22 +2161,13 @@ def _gemm_coop2_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            arows = T.max(
-                                T.int32(0),
-                                T.min(T.int32(half_m), T.int32(m) - m_start - T.int32(half_m)),
-                            )
-                            acols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                            # Rows the second consumer holds; none in a tile ending
+                            # inside the first consumer's half.
+                            arows = T.int32(m) - m_start - T.int32(half_m)
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_1 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_1 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    a_smem_bot[slot, :, :],
-                                    b_smem[slot, :, :],
-                                    c_local_1,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(ki == 0),
-                                )
+                                consumer_wgmma(a_smem_bot, b_smem, slot, c_local_1, ki)
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps1[0]])
@@ -2095,22 +2177,349 @@ def _gemm_coop2_kernel(
                             T.barrier_arrive(ab_empty[ps1[0]])
                             T.warpgroup_fence_operand(c_local_1, num_regs=nr)
                             T.copy(c_local_1, c_cast_1)
-                            if arows == T.int32(half_m) and acols == T.int32(block_n):
-                                for ch in range(n_chunks):
-                                    c0 = ch * sn
-                                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
-                                    T.copy(c_cast_1[:, c0 : c0 + sn], c_smem_1)
-                                    T.fence_proxy_async()
-                                    T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
-                                    T.copy(c_smem_1, c[m_start + half_m, n_start + c0])
-                            elif arows > T.int32(0):
-                                for i, j in T.Parallel(half_m, block_n):
-                                    if i < arows and j < acols:
-                                        c[m_start + half_m + i, n_start + j] = c_cast_1[i, j]
+                            if arows > T.int32(0):
+                                store_half(
+                                    c,
+                                    c_cast_1,
+                                    c_smem_1,
+                                    m_start + half_m,
+                                    arows,
+                                    n_start,
+                                    consumer_bar_wg1,
+                                )
+                    T.tma_store_wait(0)
 
         return _gemm_coop2_main
 
     return _gemm_coop2_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_pingpong_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    *,
+    sm_count: int,
+    consumer_bar_wg0: int,
+    consumer_bar_wg1: int,
+) -> Callable:
+    """Persistent ping-pong warp-specialized GEMM for SM90 (NT).
+
+    One producer warpgroup fills one TMA ring in tile order; two consumer
+    warpgroups take a CTA's tiles in turn, each a whole ``128 x block_n`` tile
+    held as two 64-row accumulators. The consumers' mainloops alternate on the
+    tensor cores -- a consumer waits on its turn barrier before its first WGMMA
+    and, after issuing its last, arrives on the other's -- so one consumer's
+    epilogue runs under the other's mainloop instead of between two mainloops,
+    as in ``_gemm_coop2_kernel``. A consumer reads ``A`` and ``B`` from shared
+    memory once per tile, where coop2's two consumers each read ``B``.
+
+    The grid is ``sm_count`` CTAs; CTA ``pid`` takes tile ids
+    ``sm_count * w + pid`` in a grouped order (``group_size_m``), consumer
+    ``w % 2`` the ``w``-th. Every tile leaves through the TMA store, which drops
+    what an M / N tail puts past the output, so ``n`` is a multiple of 8; K tails
+    are TMA zero-filled. A
+    ``block_n`` of 176 or 192 over 64-wide K steps runs one ``block_n``-wide
+    WGMMA per 16 of K through ``dense_wgmma_helper.h``.
+
+    Args:
+        m: Rows of ``A`` / ``C``.
+        n: Columns of ``op(B)`` / ``C``.
+        k: Contraction dim.
+        trans_a: Must be ``False`` (NT layout).
+        trans_b: Must be ``True`` (NT layout).
+        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+        sm_count: Persistent grid width -- the device SM count.
+        consumer_bar_wg0: Named-barrier id of the first consumer's epilogue.
+        consumer_bar_wg1: Named-barrier id of the second consumer's epilogue.
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
+        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
+    """
+    if trans_a or not trans_b:
+        raise ValueError("_gemm_pingpong_kernel is NT-only (trans_a=False, trans_b=True)")
+    # Every tile leaves through the TMA store, which addresses 16-bit output rows only
+    # in whole 16-byte units.
+    if n % 8:
+        raise ValueError(f"_gemm_pingpong_kernel needs n to be a multiple of 8, got {n}")
+    accum_dtype = "float"
+    block_m = 128
+    half_m = 64
+    # ``dense_wgmma_helper.h``'s name for each dtype.
+    wgmma_dtype_tag = {"bfloat16": "bf16", "float16": "fp16"}[dtype]
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            *csrc_include("dense_wgmma_helper.h"),
+        ],
+    )
+    def _gemm_pingpong_func(
+        block_n: int = 128,
+        block_k: int = 64,
+        num_stages: int = 4,
+        group_size_m: int = 16,
+        stage_n: int = 0,
+    ) -> Callable:
+        # A consumer holds 128 x block_n f32 in 240 registers a thread; past 192
+        # columns the accumulators spill.
+        if block_n > 192:
+            raise ValueError(f"block_n must be at most 192, got {block_n}")
+        # The epilogue casts and stages the tile ``sn`` columns at a time, straight from
+        # the accumulators; a TMA store box row is a multiple of 16 bytes.
+        sn = block_n if stage_n <= 0 else stage_n
+        if block_n % sn or sn % 8:
+            raise ValueError(f"stage_n must divide block_n and be a multiple of 8, got {sn}")
+        n_chunks = block_n // sn
+        b_evict = _b_eviction(m, block_m)
+        nr = (half_m * block_n) // 128
+        num_pid_m = -(-m // block_m)
+        num_pid_n = -(-n // block_n)
+        total_tiles = num_pid_m * num_pid_n
+        max_waves = -(-total_tiles // sm_count)
+        # Each consumer takes every other wave.
+        consumer_waves = -(-max_waves // 2)
+        k_iters = -(-k // block_k)
+        wide_wgmma = block_n in (176, 192) and block_k == 64
+        wgmma_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{block_n}_k64"
+        # The accumulator layout T.wgmma_gemm gives a 64 x block_n tile over one
+        # warpgroup; the helper writes the same registers.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=half_m // 4,
+            warp_col_tiles=block_n,
+            chunk=block_k,
+        )
+
+        @T.macro
+        def half_wgmma(a_ring, b_ring, slot, acc, ki):
+            if wide_wgmma:
+                T.call_extern(
+                    "handle",
+                    wgmma_helper,
+                    acc.data,
+                    T.address_of(a_ring[slot, 0, 0]),
+                    T.address_of(b_ring[slot, 0, 0]),
+                    T.if_then_else(ki > 0, 1, 0),
+                )
+            else:
+                T.wgmma_gemm(
+                    a_ring[slot, :, :],
+                    b_ring[slot, :, :],
+                    acc,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=(ki == 0),
+                )
+
+        @T.macro
+        def decode(flat_id, mt, nt):
+            gin = T.int32(group_size_m * num_pid_n)
+            gid = flat_id // gin
+            first_m = gid * T.int32(group_size_m)
+            gsize = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+            mt[0] = first_m + (flat_id % gin) % gsize
+            nt[0] = (flat_id % gin) // gsize
+
+        @T.macro
+        def consumer(
+            wg,
+            pid,
+            c,
+            a_top,
+            a_bot,
+            b_smem,
+            ab_full,
+            ab_empty,
+            turn,
+            acc_top,
+            acc_bot,
+            c_smem,
+            mt,
+            nt,
+            prev,
+            epilogue_bar,
+        ):
+            for j in T.serial(consumer_waves):
+                w = 2 * j + wg
+                flat_id = T.int32(sm_count) * w + pid
+                if flat_id < total_tiles:
+                    decode(flat_id, mt, nt)
+                    m_start = mt[0] * block_m
+                    n_start = nt[0] * block_n
+                    # This consumer's j-th turn on the tensor cores.
+                    T.barrier_wait(turn[wg], j & 1)
+                    for ki in T.Pipelined(k_iters, num_stages=0):
+                        stage = w * k_iters + ki
+                        slot = stage % num_stages
+                        T.barrier_wait(ab_full[slot], (stage // num_stages) & 1)
+                        half_wgmma(a_top, b_smem, slot, acc_top, ki)
+                        half_wgmma(a_bot, b_smem, slot, acc_bot, ki)
+                        if ki > 0:
+                            T.wait_wgmma(2)
+                            T.barrier_arrive(ab_empty[prev[0]])
+                        prev[0] = slot
+                    # The other consumer's next tile may start its WGMMAs; they queue
+                    # behind this tile's last.
+                    if flat_id + T.int32(sm_count) < total_tiles:
+                        T.barrier_arrive(turn[1 - wg])
+                    T.wait_wgmma(0)
+                    T.barrier_arrive(ab_empty[prev[0]])
+                    T.warpgroup_fence_operand(acc_top, num_regs=nr)
+                    T.warpgroup_fence_operand(acc_bot, num_regs=nr)
+                    for ch in range(n_chunks):
+                        c0 = ch * sn
+                        # The previous store may still read c_smem; waiting here lets it
+                        # overlap the mainloop that ran since.
+                        T.tma_store_wait(0)
+                        T.sync_threads(barrier_id=epilogue_bar, arrive_count=128)
+                        T.copy(acc_top[:, c0 : c0 + sn], c_smem[0:half_m, :])
+                        T.copy(acc_bot[:, c0 : c0 + sn], c_smem[half_m:block_m, :])
+                        T.fence_proxy_async()
+                        T.sync_threads(barrier_id=epilogue_bar, arrive_count=128)
+                        T.tma_copy(
+                            c_smem, c[m_start : m_start + block_m, n_start + c0 : n_start + c0 + sn]
+                        )
+            # Drain the last store before the CTA's shared memory goes.
+            T.tma_store_wait(0)
+
+        @T.prim_func
+        def _gemm_pingpong_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(sm_count, threads=384) as (pid,):
+                a_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                a_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                acc_top_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                acc_bot_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                acc_top_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                acc_bot_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                c_smem_0 = T.alloc_shared((block_m, sn), dtype)
+                c_smem_1 = T.alloc_shared((block_m, sn), dtype)
+                T.annotate_layout(
+                    {
+                        a_top: tilelang.layout.make_swizzled_layout(a_top),
+                        a_bot: tilelang.layout.make_swizzled_layout(a_bot),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem_0: tilelang.layout.make_swizzled_layout(c_smem_0),
+                        c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
+                    }
+                )
+                if wide_wgmma:
+                    T.annotate_layout(
+                        {
+                            acc_top_0: acc_emitter.make_mma_store_layout(acc_top_0),
+                            acc_bot_0: acc_emitter.make_mma_store_layout(acc_bot_0),
+                            acc_top_1: acc_emitter.make_mma_store_layout(acc_top_1),
+                            acc_bot_1: acc_emitter.make_mma_store_layout(acc_bot_1),
+                        }
+                    )
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([128] * num_stages)
+                # One per consumer: completes a phase when the other consumer hands it
+                # the tensor cores.
+                turn = T.alloc_barrier([128, 128])
+                gi_prod = T.alloc_var("int32", init=0)
+                prev_0 = T.alloc_local((1,), "int32")
+                prev_1 = T.alloc_local((1,), "int32")
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((1,), "int32")
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(sm_count) * w + pid
+                        if flat_id < total_tiles:
+                            decode(flat_id, mt, nt)
+                            m_start = mt[0] * block_m
+                            n_start = nt[0] * block_n
+                            for ki in T.Pipelined(k_iters, num_stages=0):
+                                slot = gi_prod % num_stages
+                                ks = ki * block_k
+                                T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
+                                T.tma_copy(
+                                    a[m_start : m_start + half_m, ks : ks + block_k],
+                                    a_top[slot, :, :],
+                                    barrier=ab_full[slot],
+                                )
+                                T.tma_copy(
+                                    a[m_start + half_m : m_start + block_m, ks : ks + block_k],
+                                    a_bot[slot, :, :],
+                                    barrier=ab_full[slot],
+                                )
+                                T.tma_copy(
+                                    b[n_start : n_start + block_n, ks : ks + block_k],
+                                    b_smem[slot, :, :],
+                                    barrier=ab_full[slot],
+                                    eviction_policy=b_evict,
+                                )
+                                T.barrier_arrive(ab_full[slot])
+                                gi_prod = gi_prod + 1
+                elif tx < 256:
+                    T.inc_max_nreg(240)
+                    consumer(
+                        0,
+                        pid,
+                        c,
+                        a_top,
+                        a_bot,
+                        b_smem,
+                        ab_full,
+                        ab_empty,
+                        turn,
+                        acc_top_0,
+                        acc_bot_0,
+                        c_smem_0,
+                        mt,
+                        nt,
+                        prev_0,
+                        consumer_bar_wg0,
+                    )
+                else:
+                    T.inc_max_nreg(240)
+                    # The first consumer's first tile goes first.
+                    if pid < total_tiles:
+                        T.barrier_arrive(turn[0])
+                    consumer(
+                        1,
+                        pid,
+                        c,
+                        a_top,
+                        a_bot,
+                        b_smem,
+                        ab_full,
+                        ab_empty,
+                        turn,
+                        acc_top_1,
+                        acc_bot_1,
+                        c_smem_1,
+                        mt,
+                        nt,
+                        prev_1,
+                        consumer_bar_wg1,
+                    )
+
+        return _gemm_pingpong_main
+
+    return _gemm_pingpong_func
 
 
 @functools.lru_cache(maxsize=32)
@@ -2663,7 +3072,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
     default structure is warp-specialized: one producer warpgroup issues TMA
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
-    coop2_splitk / simple / split-K variants instead (see ``forward``).
+    coop2_splitk / pingpong / simple / split-K variants instead (see ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
@@ -2673,7 +3082,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
 
     supported_archs: list[int] = [90]
 
-    _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
+    _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "pingpong", "simple", "swap_ab")
 
     # One named-barrier id per consumer warpgroup: each group arrives on its own
     # barrier (``arrive_count=128``) instead of a block-wide sync.
@@ -2741,7 +3150,8 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         if activation != "none":
             split_k = self.config.get("split_k", 1)
             unsupported = any(
-                self.config.get(flag) for flag in ("simple", "swap_ab", "coop2", "coop2s")
+                self.config.get(flag)
+                for flag in ("simple", "swap_ab", "coop2", "coop2s", "pingpong")
             )
             if split_k <= 1 or unsupported:
                 raise ValueError("a fused activation requires a split-K GEMM config")
@@ -2801,6 +3211,27 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         if self.config.get("coop2"):
             cfg = self.config
             compiled = _gemm_coop2_kernel(
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                sm_count=self.sm_count,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
+            )(
+                cfg["block_n"],
+                cfg["block_k"],
+                cfg["num_stages"],
+                cfg["group_size_m"],
+                cfg.get("stage_n", 0),
+            )
+            return compiled(a, b)
+
+        if self.config.get("pingpong"):
+            cfg = self.config
+            compiled = _gemm_pingpong_kernel(
                 self.m,
                 self.n,
                 self.k,
@@ -2997,7 +3428,8 @@ class GemvKernel(Kernel, GemmFwdInterface):
 
     Three bands build one body, :func:`_gemm_small_batch_kernel`, which reduces over
     K on CUDA cores: the two layouts a vector operand can take, and the ``m == 2`` NT
-    calls whose 64-wide n-tiling still underfills a wave. They differ in the region
+    calls whose 64-wide n-tiling still underfills a wave and whose weight the tiny-m
+    split-K tile does not stream faster (``two_row_gemv_wins``). They differ in the region
     they serve and in the config band they pick, which is what :meth:`band_for` and
     :attr:`default_config` state; the body is the same, so they are one class.
 
@@ -3046,7 +3478,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
             return vector
         if call.trans_a or not call.trans_b or call.m != 2:
             return None
-        if not swap_ab_grid_underfills(call.n, call.sm_count):
+        if not two_row_gemv_wins(call.n, call.k, call.sm_count):
             return None
         return "lhs_rows"
 

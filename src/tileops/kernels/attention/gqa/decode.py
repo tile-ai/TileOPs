@@ -530,14 +530,14 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     @staticmethod
     def _limit_refusal(dim: int, seq_len_kv: int, arch: int) -> Optional[str]:
         """Why the program cannot build this shape; read by the region and the constructor,
-        which a caller can reach directly. D256 uses a separately validated SM89 tile.
+        which a caller can reach directly. D256 uses the narrow, one-stage tile.
         """
         if seq_len_kv <= 0:
             return "requires a non-empty KV cache"
-        if dim == 256 and arch == 89:
+        if dim == 256 and arch in (80, 89, 90):
             return None
         if dim % 16 != 0 or not 16 <= dim <= 128:
-            return "requires head dimension a multiple of 16 in [16, 128]"
+            return "requires head dimension a multiple of 16 in [16, 128], or 256"
         return None
 
     @classmethod
@@ -698,7 +698,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     def default_config(self) -> dict:
         if self.dim == 256:
             # The split program's query rows and one K and V tile of 64 keys: 98304 bytes.
-            # The no-split program also holds the output rows, so forward runs two splits.
+            # If the no-split output rows exceed the device limit, forward uses two splits.
             return {"block_H": 64, "block_N": 64, "num_split": 16, "num_stages": 1, "threads": 128}
         if self._use_batched_config:
             head_ctas = self.batch * self.groups

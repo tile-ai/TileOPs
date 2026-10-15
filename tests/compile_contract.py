@@ -25,6 +25,7 @@ _EVIDENCE_MODULES = (
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_moe_compile",
     "tests.ops.test_norm_compile",
+    "tests.ops.test_paged_kv_cache_write",
     "tests.ops.test_pool",
     "tests.ops.test_reduction_compile",
     "tests.ops.test_rms_norm",

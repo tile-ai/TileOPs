@@ -66,6 +66,8 @@ GQADenseFwdOp:
   - {B: 32, S_q: 1, S_kv: 2048, H: 71, H_kv: 1, D: 64, dtype_cases: [{T: bfloat16}], label: falcon-7b-2k}
   - {B: 16, S_q: 1, S_kv: 8192, H: 48, H_kv: 1, D: 128, dtype_cases: [{T: float16}], label: starcoder-8k}
   - {B: 16, S_q: 1, S_kv: 8192, H: 22, H_kv: 1, D: 128, dtype_cases: [{T: bfloat16}], label: starcoderbase-3b-8k}
+  - {B: 1, S_q: 1, S_kv: 8192, H: 8, H_kv: 1, D: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma-2b-8k-bs1}
+  - {B: 16, S_q: 1, S_kv: 8192, H: 8, H_kv: 1, D: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma-2b-8k-b16}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
   - {B: 1, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-prefill}
@@ -176,6 +178,7 @@ GQAPagedFwdOp:
       v_scale: {dtype: float32, shape: "[*SK]", optional: "present(k_scale)"}
       rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      sinks: {dtype: float32, shape: "[H]", optional: true}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
     let:
@@ -220,6 +223,8 @@ GQAPagedFwdOp:
   - {T_q: 8, NP: 512, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-decode, P: 4096, pos_encoding_mode: rope}
   - {T_q: 2048, NP: 256, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-prefill, P: 4096, pos_encoding_mode: rope}
   - {T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: qwen-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
+  - {T_q: 288, NP: 68, PS: 64, W: 17, H: 64, H_kv: 8, D: 64, q_lens: [256, 1, 0, 31], cache_lens: [1025, 513, 0, 127], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-mixed, window_size_left: 128}
+  - {T_q: 8, NP: 256, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-decode}
   roofline:
     func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 
@@ -631,7 +636,7 @@ PagedKVCacheWriteFwdOp:
   # skips the token, and distinct non-negative slots are the caller's obligation. An FP8
   # cache stores (k / k_scale) and (v / v_scale) with a saturating cast.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.reshape_and_cache_flash
   signature:
     forall: {N: Dim, H_kv: Dim, D: Dim, NP: Dim, PS: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]"}
@@ -657,6 +662,8 @@ PagedKVCacheWriteFwdOp:
   - {N: 8192, H_kv: 8, D: 128, NP: 4096, PS: 16, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: llama-8b-prefill}
   - {N: 4096, H_kv: 4, D: 128, NP: 4096, PS: 16, some: [k_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: qwen3-235b-fp8}
   - {N: 256, H_kv: 8, D: 64, NP: 4096, PS: 16, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-120b}
+  - {N: 7, H_kv: 2, D: 64, NP: 5, PS: 7, dtype_cases: [{T: float16, KV: float16}], label: odd-tokens-and-page}
+  - {N: 1024, H_kv: 4, D: 128, NP: 512, PS: 32, some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen3-235b-fp8-fp16}
   roofline:
     # Only the tokens with a slot are read and written.
     func: "tileops.perf.formulas.paged_kv_cache_write_roofline"

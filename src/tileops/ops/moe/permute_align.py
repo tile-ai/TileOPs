@@ -23,6 +23,19 @@ class MoEPermuteAlignFwdOp(Op):
     grouped GEMM: sorted token indices, per-block expert ids, and the total
     padded token count.
 
+    With ``numel = T * K`` routes and ``count[e]`` of them on expert ``e``, the result is:
+
+    - ``num_tokens_post_pad``: the sum over experts of ``count[e]`` rounded up to
+      ``block_size``.
+    - ``sorted_token_ids[:num_tokens_post_pad]``: one range per expert, in expert order, of
+      that rounded-up length. The first ``count[e]`` slots of the range hold the indices of
+      the routes on ``e``, each once, in an order that is unspecified and may differ
+      between calls on the same input; the rest of the range holds ``numel``.
+    - ``expert_ids[:num_tokens_post_pad // block_size]``: the owner of each ``block_size``
+      block of those ranges.
+    - Past those lengths, every entry of ``sorted_token_ids`` is ``numel`` and every entry
+      of ``expert_ids`` lies outside ``[0, num_experts)``.
+
     Example:
         ```python linenums="1"
         op = MoEPermuteAlignFwdOp(num_experts=8, block_size=16)
