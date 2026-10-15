@@ -31,11 +31,18 @@ class GQAPagedFwdOp(Op):
     and the cache share a float16 or bfloat16 dtype, over any positive page size
     and any mix of per-request query lengths, a request with no query token
     included. Optional float32 sinks contribute a logit per query head to the
-    softmax denominator only: they are not scaled or softcapped; -inf disables a sink
-    and +inf makes that head's output zero. A query row with no visible key returns zero,
+    softmax denominator only: they are not scaled or softcapped; ``-inf`` disables a sink
+    and ``+inf`` makes that head's output zero. A query row with no visible key returns zero,
     including when its sink is disabled. RoPE rotates Q and cached K in NeoX or interleaved
     layout, including a partial rotary width. The table must cover every request's
     cache length. FP8 calls still require an external target implementation.
+
+    The Hopper RoPE path may allocate up to 512 MiB of temporary rotated Q/K/V
+    storage per call. Under CUDA Graph capture, the graph pool retains that storage.
+    Its allocation is bounded by the page-table and rotary-table extents; preparation
+    writes only live cache pages, including the last page's padding. Calls exceeding
+    this budget use fused rotation without expanded KV storage. Device lengths stay
+    live replay inputs; choosing and preparing this path requires no host readback.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

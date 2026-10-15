@@ -27,6 +27,7 @@ from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
+    make_sink_scale,
 )
 from tileops.kernels.attention.varlen_rope import rope_channel_pair
 from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
@@ -329,6 +330,7 @@ def _gqa_paged_varlen_kernel(
             sm90 and producer_warpgroup,
         )
         load_q, load_kv, separate_cut, scan_tile = parts
+        sink_scale = make_sink_scale(softmax_scale, accum_dtype, block_M, head_group=group)
 
         @T.prim_func
         def gqa_paged_varlen(
@@ -474,18 +476,12 @@ def _gqa_paged_varlen_kernel(
                                 kv_len,
                             )
 
-                    # One reciprocal a row: a per-element divide by a row scalar is not.
-                    for i in T.Parallel(block_M):
-                        row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
-                        if has_sinks:
-                            sink = Sinks[by * group + (row0 + i) % group] * LOG2E
-                            maximum = T.max(scores_max[i] * softmax_scale, sink)
-                            weight = T.exp2(scores_max[i] * softmax_scale - maximum)
-                            row_scale[i] = T.if_then_else(
-                                (logsum[i] > 0) & (sink < T.infinity(accum_dtype)),
-                                weight / (logsum[i] * weight + T.exp2(sink - maximum)),
-                                0,
-                            )
+                    if has_sinks:
+                        sink_scale(scores_max, logsum, Sinks, by * group, row_scale, row0)
+                    else:
+                        # One reciprocal per row, shared by all output channels.
+                        for i in T.Parallel(block_M):
+                            row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
                     for i, d in T.Parallel(block_M, dim):
                         if row0 + i < rows:
                             r = row0 + i

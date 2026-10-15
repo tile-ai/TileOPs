@@ -573,3 +573,31 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
         v_pages[page_table[slots // page_size], slots % page_size] = float("nan")
         graph.replay()
         TestBase.check(workload, op, *inputs, runs=lambda *args: output)
+
+
+@pytest.mark.smoke
+def test_gqa_paged_sink_normalization() -> None:
+    """A small paged prefill includes one denominator-only logit per query head."""
+    workload = GQAPagedFwdWorkload(8, 2, 64, [17], [65], 32, 3, 3, torch.bfloat16, has_sinks=True)
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, GQAPagedFwdOp(), *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only
+def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
+    """Unsupported Q dtypes and malformed sinks fail at the public signature check."""
+    from tileops.ops._signature_codegen import CheckError
+
+    workload = GQAPagedFwdWorkload(8, 2, 64, [1], [1], 16, 1, 1, torch.float16, has_sinks=True)
+    inputs = workload.gen_inputs()
+    op = GQAPagedFwdOp()
+    with pytest.raises(CheckError, match="dtype"):
+        op(inputs[0].float(), *inputs[1:])
+    for bad_sink, message in (
+        (inputs[-1].half(), "dtype"),
+        (inputs[-1][:-1], "H|shape|size"),
+        (inputs[-1].cpu(), "device"),
+    ):
+        with pytest.raises(CheckError, match=message):
+            op(*inputs[:-1], bad_sink)

@@ -23,7 +23,8 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops.kernels.attention.gqa.paged_rope_prepare import preprocess_kernel
+from tileops.kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_prepare_kernel
+from tileops.kernels.attention.online_softmax import make_sink_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -72,6 +73,7 @@ def _gqa_paged_ws_kernel(
     pool_rows = T.dynamic("pool_rows")
     # Row r of a tile is query r % span of head kv_head * group + r // span.
     span = block_m // group
+    sink_scale = make_sink_scale(scale, accum, half, rows_per_head=span)
     tiling = GroupTiling(batch, span)
     # A key tile is part of one page or a run of whole pages: one TMA copy per page.
     box = min(block_n, page_size)
@@ -427,21 +429,15 @@ def _gqa_paged_ws_kernel(
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
 
-            # Windowed padding rows can have no visible key; normalize them to zero.
-            for i in T.Parallel(half):
-                if has_window or has_sinks:
-                    alpha[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
-                else:
-                    alpha[i] = 1.0 / logsum[i]
-                if has_sinks:
-                    sink = Sinks[kv_head * group + (wg * half + i) // span] * LOG2E
-                    maximum = T.max(sm[i] * scale, sink)
-                    weight = T.exp2(sm[i] * scale - maximum)
-                    alpha[i] = T.if_then_else(
-                        (logsum[i] > 0) & (sink < T.infinity(accum)),
-                        weight / (logsum[i] * weight + T.exp2(sink - maximum)),
-                        0,
-                    )
+            if has_sinks:
+                sink_scale(sm, logsum, Sinks, kv_head * group + wg * half // span, alpha)
+            else:
+                # Windowed padding rows can have no visible key.
+                for i in T.Parallel(half):
+                    if has_window:
+                        alpha[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
+                    else:
+                        alpha[i] = 1.0 / logsum[i]
             for i, d in T.Parallel(half, dim):
                 r = wg * half + i
                 if q0 + r % span < q_len:
@@ -549,7 +545,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     # The per-request tile prefix shares shared memory with the Q, K and V buffers, which take
     # 192 of the 227 KB at dimension 128; 4096 requests take 16 KB of the rest.
     _MAX_BATCH: int = 4096
-    # The general kernel applies RoPE while reading the cache and needs no expanded KV.
+    # Bound temporary storage to 512 MiB per call, including each captured graph pool.
     _MAX_ROPE_SCRATCH_BYTES: int = 512 * 1024 * 1024
 
     @staticmethod
@@ -566,6 +562,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 return block_n
         return None
 
+    @staticmethod
+    def rope_pages_for(width: int, page_size: int, positions: int) -> int:
+        """The rotary table bounds live cache lengths without reading device metadata."""
+        return min(width, tilelang.cdiv(positions, page_size))
+
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
@@ -581,23 +582,22 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size) is None:
             return "requires a page size that is a multiple of 16 rows"
-        # Prefer the general kernel for narrow left windows, measured faster on H200
-        # window/sink mixed workloads. RoPE retains the separate preparation path.
-        if (
-            not call.fuse_rope
-            and 0 <= call.window_size_left <= cls.block_n_for(call.page_size)
-            and call.window_size_right <= 0
-        ):
-            return "narrow left windows without RoPE use the general kernel"
+        if not call.fuse_rope and call.uses_sliding_window:
+            return "requires unrestricted windows when RoPE is disabled"
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
         if call.fuse_rope:
             kv_elements = (
-                2 * call.batch * call.max_pages_per_req * call.page_size * call.heads_kv * call.dim
+                2
+                * call.batch
+                * cls.rope_pages_for(call.max_pages_per_req, call.page_size, call.max_position)
+                * call.page_size
+                * call.heads_kv
+                * call.dim
             )
             q_elements = call.max_seqlen_q * call.heads * call.dim
-            if (kv_elements + q_elements) * 2 > cls._MAX_ROPE_SCRATCH_BYTES:
-                return "RoPE preparation exceeds the 512 MiB scratch budget"
+            if (kv_elements + q_elements) * call.dtype.itemsize > cls._MAX_ROPE_SCRATCH_BYTES:
+                return f"RoPE preparation exceeds the {cls._MAX_ROPE_SCRATCH_BYTES} byte scratch budget"
         if call.batch > cls._MAX_BATCH:
             return f"serves at most {cls._MAX_BATCH} requests"
         return None
@@ -666,9 +666,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         self.rotary_dim, self.rope_layout = rotary_dim or dim, rope_layout
         device = torch.device("cuda", self.device_index)
         self._unused_sinks = torch.empty(heads, dtype=torch.float32, device=device)
+        self._rope_pages = (
+            self.rope_pages_for(max_pages_per_req, page_size, max_position)
+            if fuse_rope
+            else max_pages_per_req
+        )
         self._rope_table = (
-            torch.arange(batch * max_pages_per_req, dtype=torch.int32, device=device).reshape(
-                batch, max_pages_per_req
+            torch.arange(batch * self._rope_pages, dtype=torch.int32, device=device).reshape(
+                batch, self._rope_pages
             )
             if fuse_rope
             else None
@@ -689,7 +694,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.heads_kv,
             self.dim,
             self.page_size,
-            self.max_pages_per_req,
+            self._rope_pages,
             self.is_causal,
             self.sm_scale,
             self.softcap,
@@ -717,13 +722,15 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         if q.shape[0] == 0:
             return torch.empty_like(q)
         if self.fuse_rope:
-            prepare = preprocess_kernel(
+            prepare = _gqa_paged_rope_prepare_kernel(
                 self.batch,
                 self.heads,
                 self.heads_kv,
                 self.dim,
                 self.page_size,
                 self.max_pages_per_req,
+                self._rope_pages,
+                get_sm_count(self.device_index),
                 self.max_position,
                 self.rotary_dim,
                 self.rope_layout,
