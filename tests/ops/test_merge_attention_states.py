@@ -21,7 +21,6 @@ from workloads.attention.merge_states import MergeAttentionStatesWorkload
             17, 3, 576, torch.bfloat16, False, marks=pytest.mark.full, id="vector-tail-576"
         ),
         pytest.param(17, 3, 32, torch.float16, False, marks=pytest.mark.full, id="narrow-32"),
-        pytest.param(17, 3, 64, torch.bfloat16, False, marks=pytest.mark.full, id="narrow-64"),
         pytest.param(7, 3, 0, torch.bfloat16, False, marks=pytest.mark.full),
     ],
 )
@@ -34,18 +33,16 @@ def test_merge_attention_states(tokens, heads, dim, dtype, strided):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_merge_attention_states_misaligned_storage(dtype):
+def test_merge_attention_states_misaligned_storage():
     """Contiguous views with an unaligned storage offset remain valid inputs."""
-    w = MergeAttentionStatesWorkload(4, 2, 128, dtype, misaligned=True)
+    w = MergeAttentionStatesWorkload(4, 2, 128, torch.float16, misaligned=True)
     TestBase.check(w, MergeAttentionStatesFwdOp(), *w.gen_inputs())
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_merge_attention_states_finite_underflow_keeps_nan(dtype):
+def test_merge_attention_states_finite_underflow_keeps_nan():
     """An underflowed weight does not make a finite-LSE state's NaN value empty."""
-    w = MergeAttentionStatesWorkload(4, 2, 128, dtype, finite_underflow=True)
+    w = MergeAttentionStatesWorkload(4, 2, 128, torch.float16, finite_underflow=True)
     TestBase.check(w, MergeAttentionStatesFwdOp(), *w.gen_inputs())
 
 

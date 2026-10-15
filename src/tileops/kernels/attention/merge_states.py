@@ -17,13 +17,10 @@ __all__ = ["MergeAttentionStatesKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _merge_states_kernel(dim, dtype, element_bytes):
+def _merge_states_kernel(dim, dtype, cols, vector):
     @tilelang.jit(out_idx=[4, 5], compile_flags=["--use_fast_math"])
     def _func(block_rows, threads):
         rows = T.dynamic("rows")
-        cols = tilelang.next_power_of_2(max(1, dim))
-        lanes = VECTOR_ACCESS_BYTES // element_bytes
-        vector = lanes if dim and dim % lanes == 0 else 1
         # Adjacent threads load adjacent vectors of a row; inference from the
         # one-dimensional weights alone would serialize the value columns.
         layout = T.Fragment(
@@ -88,7 +85,7 @@ def _merge_states_kernel(dim, dtype, element_bytes):
 
 
 class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
-    """One coalesced pass; rows are dynamic and only the value width is specialized."""
+    """One coalesced pass; rows are dynamic, value width and dtype are specialized."""
 
     @classmethod
     def entry_for(cls, call: MergeAttentionStatesCall) -> Entry:
@@ -99,7 +96,11 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         super().__init__(device_index=device_index)
         self.dtype = dtype
         self.dim = dim
-        self.kernel = _merge_states_kernel(dim, self.dtype_str, dtype.itemsize)
+        # The fragment layout and launch shape share this geometry.
+        lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
+        self._vector = lanes if dim and dim % lanes == 0 else 1
+        self._cols = tilelang.next_power_of_2(max(1, dim))
+        self.kernel = _merge_states_kernel(dim, self.dtype_str, self._cols, self._vector)
         self.init_config(config)
 
     @property
@@ -107,10 +108,7 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         # Four warps process two value vectors per lane to amortize CTA scheduling.
         # Keep at least eight rows for wide heads; narrow heads use more rows.
         threads = 128
-        lanes = VECTOR_ACCESS_BYTES // self.dtype.itemsize
-        vector = lanes if self.dim and self.dim % lanes == 0 else 1
-        cols = tilelang.next_power_of_2(max(1, self.dim))
-        return {"block_rows": max(8, 2 * threads * vector // cols), "threads": threads}
+        return {"block_rows": max(8, 2 * threads * self._vector // self._cols), "threads": threads}
 
     def forward(self, v_a, s_a, v_b, s_b):
         tokens, heads, dim = v_a.shape
