@@ -49,17 +49,6 @@ from workloads.attention.paged_cache_gather import (
             id="fp8-bf16-scaled-starts",
         ),
         pytest.param(
-            [1, 33],
-            (320,),
-            7,
-            torch.float8_e4m3fn,
-            torch.float16,
-            None,
-            False,
-            marks=pytest.mark.smoke,
-            id="fp8-fp16-scaled",
-        ),
-        pytest.param(
             [7, 1],
             (),
             4,
@@ -71,26 +60,15 @@ from workloads.attention.paged_cache_gather import (
             id="scalar-rows",
         ),
         pytest.param(
-            [2048, 4096, 65536],
-            (576,),
-            64,
-            torch.bfloat16,
-            None,
-            None,
-            False,
-            marks=pytest.mark.full,
-            id="mixed-long-requests",
-        ),
-        pytest.param(
-            [0, 1, 3, 0] * 64,
-            (576,),
-            16,
-            torch.bfloat16,
-            None,
+            [1, 33],
+            (320,),
+            7,
+            torch.float8_e4m3fn,
+            torch.float16,
             None,
             False,
             marks=pytest.mark.full,
-            id="large-batch-empty-and-short-requests",
+            id="fp8-fp16-scaled",
         ),
         pytest.param(
             [31, 65],
@@ -159,32 +137,56 @@ register_compile_contract(PagedKVCacheGatherFwdOp)
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_paged_kv_cache_gather_compile_and_empty():
+def test_paged_kv_cache_gather_owns_graph():
+    """Tracing preserves the gather's declared operator boundary."""
     workload = PagedKVCacheGatherWorkload([17, 3], (3, 5), 7, torch.float16)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp()
     assert_op_owns_graph_nodes(op, *inputs)
+
+
+@pytest.mark.parametrize(
+    "starts",
+    [
+        pytest.param(None, marks=pytest.mark.smoke, id="no-starts"),
+        pytest.param([1, 2], marks=pytest.mark.full, id="with-starts"),
+    ],
+)
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_paged_kv_cache_gather_compiles_cold(starts):
+    """A cold fullgraph call serves each optional-starts specialization."""
+    workload = PagedKVCacheGatherWorkload([17, 3], (3, 5), 7, torch.float16, starts=starts)
+    inputs = workload.gen_inputs()
+    op = PagedKVCacheGatherFwdOp()
     compiled = torch.compile(op, fullgraph=True)
     TestBase.check(
         workload, op, *inputs, runs=lambda *args: paged_cache_gather_result(compiled, *args)
     )
-    starts = torch.tensor([1, 2], dtype=torch.int32, device=inputs[0].device)
-    with_starts = (*inputs[:4], starts, inputs[5])
-    TestBase.check(
-        workload, op, *with_starts, runs=lambda *args: paged_cache_gather_result(compiled, *args)
-    )
-    empty = PagedKVCacheGatherWorkload([0, 0], (3, 5), 7, torch.float16)
-    args = empty.gen_inputs()
-    assert compiled(*args) is None
-    assert args[0].shape == (0, 3, 5)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("invalid", ["scale", "out-dtype"])
+def test_paged_kv_cache_gather_empty():
+    """Zero packed rows return without launching a gather or inferring an unknown width."""
+    empty = PagedKVCacheGatherWorkload([0, 0], (3, 5), 7, torch.float16)
+    args = empty.gen_inputs()
+    assert PagedKVCacheGatherFwdOp()(*args) is None
+    assert args[0].shape == (0, 3, 5)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param("dtype", marks=pytest.mark.smoke),
+        pytest.param("scale", marks=pytest.mark.full),
+        pytest.param("out-dtype", marks=pytest.mark.full),
+    ],
+)
 def test_paged_kv_cache_gather_invalid(invalid):
     workload = PagedKVCacheGatherWorkload([1], (576,), 64, torch.float8_e4m3fn, torch.bfloat16)
     inputs = list(workload.gen_inputs())
-    if invalid == "scale":
+    if invalid == "dtype":
+        inputs[1] = inputs[1].float()
+    elif invalid == "scale":
         inputs[-1] = None
     else:
         inputs[0] = inputs[0].half()

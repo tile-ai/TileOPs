@@ -19,7 +19,6 @@ from workloads.attention.mha import MHADecodePagedCall
 from workloads.attention.mla import MLADecodeCall
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
 from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall, paged_cache_gather_result
-
 from workloads.attention.paged_cache_write import (
     PagedKVCacheWriteCall,
     paged_cache_write_result,
@@ -53,6 +52,7 @@ def _gqa_paged_append_binder(op: Any, case: Any) -> Implementation:
 def _paged_cache_gather_binder(op, case):
     """Time the write-only gather on its private destination."""
     return private_inputs(lambda *args: paged_cache_gather_result(op, *args), case.inputs, 0)
+
 
 def _paged_cache_write_binder(op: Any, case: Any) -> Implementation:
     """The op on private pages it scatters k and v into, returning both caches."""

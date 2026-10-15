@@ -46,6 +46,11 @@ from tileops.kernels.attention.nsa.compressed_varlen import (
 )
 from tileops.kernels.attention.nsa.topk_varlen import NSATopKVarlenKernel
 from tileops.kernels.attention.nsa.varlen import NSAFwdVarlenKernel, NSAFwdVarlenTMAKernel
+from tileops.kernels.attention.paged_cache_gather import (
+    PagedKVCacheGatherCall,
+    PagedKVCacheGatherFwdInterface,
+    PagedKVCacheGatherKernel,
+)
 from tileops.kernels.attention.paged_cache_write import PagedKVCacheWriteKernel
 from tileops.kernels.attention.topk_select import (
     TopKSelectCall,
@@ -98,6 +103,9 @@ __all__ = [
     "NSAFwdVarlenKernel",
     "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
+    "PagedKVCacheGatherCall",
+    "PagedKVCacheGatherFwdInterface",
+    "PagedKVCacheGatherKernel",
     "PagedKVCacheWriteKernel",
     "TopKSelectCall",
     "TopKSelectFwdInterface",

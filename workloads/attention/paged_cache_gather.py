@@ -63,7 +63,7 @@ class PagedKVCacheGatherWorkload(WorkloadBase):
         return dst, cache, table, make_cu_seqlens(self.seq_lens), starts, scale
 
     def ref_program(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None):
-        """Index logical slots independently of the kernel's per-request tile scheduling."""
+        """Index each request's logical slots independently of the packed-row kernel."""
         offsets = cu_seq_lens.tolist()
         starts = seq_starts.tolist() if seq_starts is not None else [0] * (len(offsets) - 1)
         slots = []

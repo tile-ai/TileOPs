@@ -1,5 +1,6 @@
 """Gather ragged rows from a caller-owned paged cache."""
 
+import math
 from typing import ClassVar, Mapping, Optional
 
 import torch
@@ -17,7 +18,12 @@ __all__ = ["PagedKVCacheGatherFwdOp"]
 
 
 class PagedKVCacheGatherFwdOp(Op):
-    """Copy ragged logical cache ranges into a packed destination, optionally dequantizing FP8."""
+    """Copy ragged logical cache ranges into a packed destination, optionally dequantizing FP8.
+
+    FP8 values are dequantized by one FP32 multiply and rounded once to the destination
+    dtype. A non-contiguous destination uses a contiguous staging buffer and a copy back
+    into the caller's view; its previous contents are never read.
+    """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "paged_cache_gather_kernel": PagedKVCacheGatherKernel
@@ -70,22 +76,20 @@ class PagedKVCacheGatherFwdOp(Op):
             if dst.is_contiguous()
             else torch.empty_like(dst, memory_format=torch.contiguous_format)
         )
-        flat_dst = output.view(output.shape[0], -1)
-        flat_cache = cache.view(cache.shape[0] * cache.shape[1], -1)
         call = PagedKVCacheGatherCall(
             batch=block_table.shape[0],
             num_pages=cache.shape[0],
             page_size=cache.shape[1],
             table_width=block_table.shape[1],
-            row_width=flat_dst.shape[1],
+            row_width=math.prod(dst.shape[1:]),
             dtype=cache.dtype,
             out_dtype=dst.dtype,
             has_starts=seq_starts is not None,
             device=dst.device,
         )
         self.kernel_for("paged_cache_gather", call)(
-            flat_dst,
-            flat_cache,
+            output,
+            cache,
             block_table.contiguous(),
             cu_seq_lens.contiguous(),
             seq_starts.contiguous() if seq_starts is not None else None,
