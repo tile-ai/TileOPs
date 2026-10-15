@@ -399,10 +399,17 @@ def _gemm_w4a16_kernel(
         stream_two_way = stream_k and stream_ctas == 2 * tiles_n
 
         def centered_weight(word, zero, j, v):
-            """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16."""
+            """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16.
+
+            The decode tile's consumer is bound by the instructions it issues, so it
+            decodes with one shift a word; wider tiles wait on the tensor core and keep
+            three.
+            """
             return T.call_extern(
                 dtype,
-                "tileops::w4a16_dequant_word",
+                "tileops::w4a16_dequant_word_one_shift"
+                if _narrow_tile(block_m)
+                else "tileops::w4a16_dequant_word",
                 word,
                 T.cast(fp16_nibble_bias + T.cast(zero, "int32"), dtype),
                 j,
@@ -520,16 +527,19 @@ def _gemm_w4a16_kernel(
                     )
                     buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
                     buf.zero_shared[i, g] = weight_zero[n_start + i, g_src]
-            T.copy(
-                activation[m_start : m_start + block_m, k_start : k_start + block_k],
-                buf.activation_shared,
-            )
+            # The producer issues these loads in this order, each after its stage frees.
+            # The weight's stage frees once the decode has read it, before the K tile's
+            # WGMMA, so its load from DRAM goes out ahead of the activation's.
             T.copy(
                 packed_weight[
                     n_start : n_start + block_n,
                     k_start // 8 : k_start // 8 + packed_k // 4,
                 ],
                 buf.packed_shared,
+            )
+            T.copy(
+                activation[m_start : m_start + block_m, k_start : k_start + block_k],
+                buf.activation_shared,
             )
             frag_a, frag_b, frag_c, frag_d = buf.frag_a, buf.frag_b, buf.frag_c, buf.frag_d
             tmp_0, tmp_1, tmp_2, tmp_3 = buf.tmps
