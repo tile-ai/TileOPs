@@ -84,7 +84,10 @@ def test_a_destructured_assignment_reports_every_name_it_binds(tmp_path: Path) -
 def test_the_message_names_the_file_the_line_and_the_constant(tmp_path: Path) -> None:
     (found,) = _findings(tmp_path, "BLOCK_SIZE = 1\nblock_n = 128\n")
 
-    assert found.endswith("probe.py:2: module constant block_n is not UPPER_SNAKE")
+    assert found.endswith(
+        "probe.py:2: module constant block_n is not UPPER_SNAKE — rename it, or add "
+        '"# lint: module-constant allow: <reason>" on the line'
+    )
 
 
 @pytest.mark.smoke
@@ -122,7 +125,10 @@ def test_a_constant_with_one_reader_is_reported(tmp_path: Path, source: str) -> 
 def test_a_constant_with_no_reader_is_reported(tmp_path: Path) -> None:
     (found,) = _reader_findings(tmp_path, "LIMIT = 4\n")
 
-    assert found.endswith("probe.py:1: module constant LIMIT has no reader — delete it")
+    assert found.endswith(
+        "probe.py:1: module constant LIMIT has no reader — delete it, or add "
+        '"# lint: module-constant allow: <reason>" on the line'
+    )
 
 
 SHADOWS = [
@@ -195,9 +201,9 @@ def test_an_exported_constant_is_left_alone(tmp_path: Path) -> None:
 
 @pytest.mark.smoke
 def test_only_a_constant_bound_on_an_added_line_is_judged(tmp_path: Path) -> None:
-    assert _reader_findings(tmp_path, "LIMIT = 4\nOTHER = 2\n", added={2}) == [
-        "probe.py:2: module constant OTHER has no reader — delete it"
-    ]
+    (found,) = _reader_findings(tmp_path, "LIMIT = 4\nOTHER = 2\n", added={2})
+
+    assert found.startswith("probe.py:2: module constant OTHER has no reader")
 
 
 def _package(tmp_path: Path, other: str, name: str = "b.py") -> Path:
@@ -240,3 +246,138 @@ def test_a_constant_another_module_exports_is_left_alone(tmp_path: Path) -> None
     init = 'from pkg.a import LIMIT\n\n__all__ = ["LIMIT"]\n'
 
     assert lint.reader_findings(_package(tmp_path, init, "__init__.py"), None, root=tmp_path) == []
+
+
+# A grouped table whose values an outside ABI fixes, each entry with no reader in the repository.
+ALLOWED = [
+    pytest.param(
+        "TMA_SWIZZLE_64B = 1  # lint: module-constant allow: CUDA tensor-map ABI encoding\n",
+        id="tma-descriptor-field",
+    ),
+    pytest.param(
+        "# CUtensorMap encodings.\n"
+        "TMA_SWIZZLE_64B = 1  # lint: module-constant allow: CUDA tensor-map ABI encoding\n"
+        "TMA_L2_PROMOTION_256B = 3  # lint: module-constant allow: CUDA tensor-map ABI encoding\n",
+        id="grouped-tma-table",
+    ),
+    pytest.param(
+        "LIMIT = 4  # LINT: module-constant ALLOW: fixed by the launcher\n\n\n"
+        "def f():\n    return LIMIT\n",
+        id="one-reader-upper-case-marker",
+    ),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("source", ALLOWED)
+def test_a_constant_allowed_on_its_line_is_left_alone(tmp_path: Path, source: str) -> None:
+    assert _reader_findings(tmp_path, source) == [], source
+
+
+@pytest.mark.smoke
+def test_an_allowed_lowercase_constant_passes_the_spelling_rule(tmp_path: Path) -> None:
+    source = "tma_swizzle_64b = 1  # lint: module-constant allow: CUDA tensor-map ABI encoding\n"
+
+    assert _findings(tmp_path, source) == []
+
+
+NOT_ALLOWED = [
+    pytest.param("TMA_SWIZZLE_64B = 1  # lint: module-constant allow:\n", id="bare-marker"),
+    pytest.param(
+        "TMA_SWIZZLE_64B = 1  # lint: narration allow: CUDA tensor-map ABI encoding\n",
+        id="another-rule-marker",
+    ),
+    pytest.param(
+        "# lint: module-constant allow: CUDA tensor-map ABI encoding\nTMA_SWIZZLE_64B = 1\n",
+        id="marker-on-the-line-above",
+    ),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("source", NOT_ALLOWED)
+def test_a_marker_off_the_line_or_without_a_reason_does_not_suppress(
+    tmp_path: Path, source: str
+) -> None:
+    (found,) = _reader_findings(tmp_path, source)
+
+    assert "module constant TMA_SWIZZLE_64B has no reader" in found
+
+
+RESOLVED_IMPORT_READERS = [
+    pytest.param("from .a import LIMIT\n\n\ndef g():\n    return LIMIT\n", id="relative-name"),
+    pytest.param(
+        "from pkg.a import LIMIT as CAP\n\n\ndef g():\n    return CAP\n", id="aliased-name"
+    ),
+    pytest.param("from . import a\n\n\ndef g():\n    return a.LIMIT\n", id="relative-module"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("other", RESOLVED_IMPORT_READERS)
+def test_an_import_that_resolves_to_the_defining_module_counts(tmp_path: Path, other: str) -> None:
+    (found,) = lint.reader_findings(_package(tmp_path, other), None, root=tmp_path)
+
+    assert "module constant LIMIT is shared by 2 readers" in found
+
+
+OTHER_MODULE_IMPORTS = [
+    pytest.param("from other.config import LIMIT\n\n\ndef g():\n    return LIMIT\n", id="absolute"),
+    pytest.param("from .config import LIMIT\n\n\ndef g():\n    return LIMIT\n", id="relative"),
+    pytest.param("from pkg import LIMIT\n\n\ndef g():\n    return LIMIT\n", id="the-package"),
+    pytest.param(
+        "from .. import LIMIT\n\n\ndef g():\n    return LIMIT\n", id="relative-past-the-root"
+    ),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("other", OTHER_MODULE_IMPORTS)
+def test_the_same_name_imported_from_another_module_does_not_count(
+    tmp_path: Path, other: str
+) -> None:
+    (found,) = lint.reader_findings(_package(tmp_path, other), None, root=tmp_path)
+
+    assert "has one reader, f" in found
+
+
+def _through(tmp_path: Path, mid: str, other: str) -> list[str]:
+    """Reader findings for ``pkg.a.LIMIT`` when ``pkg/mid.py`` holds *mid* and ``b.py`` *other*."""
+    path = _package(tmp_path, other)
+    (path.parent / "mid.py").write_text(mid)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    return lint.reader_findings(path, None, root=tmp_path)
+
+
+RE_EXPORTS = [
+    pytest.param("from pkg.a import LIMIT\n", "from pkg.mid import LIMIT\n", id="absolute"),
+    pytest.param("from .a import LIMIT\n", "from .mid import LIMIT\n", id="relative"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("mid", "head"), RE_EXPORTS)
+def test_an_import_through_a_module_that_re_exports_the_constant_counts(
+    tmp_path: Path, mid: str, head: str
+) -> None:
+    (found,) = _through(tmp_path, mid, head + "\n\ndef g():\n    return LIMIT\n")
+
+    assert "module constant LIMIT is shared by 2 readers" in found
+
+
+NOT_RE_EXPORTS = [
+    pytest.param("from pkg.a import LIMIT as CAP\n", id="renamed"),
+    pytest.param("def h():\n    from pkg.a import LIMIT\n", id="function-local"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("mid", NOT_RE_EXPORTS)
+def test_an_import_through_a_module_that_does_not_bind_the_constant_does_not_count(
+    tmp_path: Path, mid: str
+) -> None:
+    (found,) = _through(
+        tmp_path, mid, "from pkg.mid import LIMIT\n\n\ndef g():\n    return LIMIT\n"
+    )
+
+    assert "has one reader, f" in found

@@ -130,3 +130,15 @@ def test_an_invalid_environment_base_is_an_error(repo: Path) -> None:
 def test_a_base_without_a_merge_base_raises(repo: Path) -> None:
     with pytest.raises(lint_diff.NoMergeBaseError, match="no merge base of missing and HEAD"):
         lint_diff.added_lines(["kept.py"], "missing", repo)
+
+
+def test_ci_skips_on_push_exactly_the_hooks_that_take_a_base() -> None:
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((root / ".pre-commit-config.yaml").read_text())
+    workflow = yaml.safe_load((root / ".github" / "workflows" / "preflight.yml").read_text())
+    hooks = [h for repo in config["repos"] for h in repo["hooks"]]
+
+    skipped = workflow["jobs"]["pre-commit"]["env"]["DIFF_AWARE_HOOKS"].split(",")
+
+    assert sorted(skipped) == sorted(h["id"] for h in hooks if "--base" in h.get("entry", ""))

@@ -8,8 +8,9 @@ They are read once, by the person who made it, and then mislead everyone after. 
 lists the path forms, each with what it marks.
 
 A file that matches a form and still belongs is allowed in one of two ways: ``ALLOWED`` below
-maps its path to the reason, or the file carries the comment ``lint: file-set allow``
-(after ``#``, ``//`` or ``<!--``) with the reason beside it.
+maps its path to the reason, or the file carries the comment ``lint: file-set allow: <reason>``
+(after ``#``, ``//`` or ``<!--``). In Markdown the comment counts only outside a fenced code
+block (```` ``` ```` or ``~~~``), since a fence quotes text rather than stating it.
 
 Every path is checked, not only new ones: the tree holds no unallowed match, so a new file
 is the only way to add one.
@@ -54,14 +55,34 @@ ALLOWED = {
     ),
 }
 
-_MARKER = re.compile(rb"(?:#|//|<!--)\s*lint: file-set allow:\s*\w")
+_MARKER = re.compile(r"(?:#|//|<!--)\s*lint: file-set allow:\s*\w")
+_FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})")
+
+
+def _unfenced(text: str) -> str:
+    """The lines of Markdown *text* outside its fenced code blocks."""
+    kept, fence = [], None
+    for line in text.splitlines():
+        match = _FENCE.match(line)
+        if fence is None and match:
+            fence = match.group(1)
+        elif fence is not None:
+            closes = match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence)
+            if closes and not line[match.end() :].strip():
+                fence = None
+        else:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _marked(path: Path) -> bool:
     try:
-        return bool(_MARKER.search(path.read_bytes()))
+        text = path.read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return False
+    if path.suffix.lower() in {".md", ".markdown"}:
+        text = _unfenced(text)
+    return bool(_MARKER.search(text))
 
 
 def findings(path: str, root: Path = REPO_ROOT) -> list[str]:
@@ -72,7 +93,8 @@ def findings(path: str, root: Path = REPO_ROOT) -> list[str]:
         if form.search(path) and not _marked(root / path):
             return [
                 f"{path}: {label} — keep it out of the repository, or allow it with a reason "
-                "in file_set_lint.ALLOWED or a `lint: file-set allow` comment"
+                'in file_set_lint.ALLOWED or a "lint: file-set allow: <reason>" comment in the '
+                "file"
             ]
     return []
 

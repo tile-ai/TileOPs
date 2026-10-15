@@ -15,9 +15,16 @@ function reads is a local of that function, beside its reason; a module constant
 value several readers must agree on, and the comment above it, or above the run of
 constants it opens, says why they share it. A reader is a top-level function or class, or
 the module's own top-level code, that loads the name: in the defining module, or in another
-module that imports the name or reaches it as an attribute of the defining module. Every
-tracked ``.py`` file in the repository is searched. A name some ``__all__`` lists is public
-API, read by callers outside the repository, and is not judged by its readers.
+module that imports the name from the defining module or reaches it as an attribute of it.
+A module that imports the name under its own name at module scope binds it too, and an
+import from that module counts the same; a relative import is resolved against the module
+that makes it. Every tracked ``.py`` file in the repository is searched. A name some
+``__all__`` lists is public API, read by callers outside the repository, and is not judged
+by its readers.
+
+A constant whose binding line carries ``lint: module-constant allow: <reason>`` is exempt
+from both rules, for a value whose form an outside contract fixes, such as one field of an
+ABI encoding table.
 
 Usage: ``module_constant_lint.py [--base REF] [FILE ...]``. With no files, scans
 ``src/tileops/``. The reader rule judges a constant a diff adds, so it runs only with
@@ -34,7 +41,9 @@ import subprocess
 import sys
 import tokenize
 from pathlib import Path
+from typing import NamedTuple
 
+from comment_lines import allowed_lines
 from lint_diff import BASE_ENV, NoMergeBaseError, added_lines, relative, resolve_base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,13 +159,21 @@ def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
 
 
+# The escape every finding of both rules names.
+_ALLOW = 'or add "# lint: module-constant allow: <reason>" on the line'
+
+
 def findings(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    allowed = allowed_lines(source, "module-constant")
     rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
     return [
-        f"{rel}:{line}: module constant {name} is not UPPER_SNAKE"
+        f"{rel}:{line}: module constant {name} is not UPPER_SNAKE — rename it, {_ALLOW}"
         for name, line in _candidates(tree)
-        if not _is_dunder(name) and name.lstrip("_") != name.lstrip("_").upper()
+        if line not in allowed
+        and not _is_dunder(name)
+        and name.lstrip("_") != name.lstrip("_").upper()
     ]
 
 
@@ -356,6 +373,27 @@ def _module_name(path: Path, root: Path) -> str | None:
     return ".".join(parts)
 
 
+def _package(path: Path, root: Path) -> str | None:
+    """The package a relative import in *path* starts from; None outside ``src/``."""
+    module = _module_name(path, root)
+    if module is None or path.name == "__init__.py":
+        return module
+    return module.rpartition(".")[0]
+
+
+def _imported_module(node: ast.ImportFrom, package: str | None) -> str | None:
+    """The absolute module *node* imports from; None when a relative one cannot resolve."""
+    if not node.level:
+        return node.module
+    if package is None:
+        return None
+    parts = package.split(".") if package else []
+    if node.level - 1 > len(parts):
+        return None
+    base = parts[: len(parts) - (node.level - 1)]
+    return ".".join([*base, *([node.module] if node.module else [])]) or None
+
+
 def _exports(tree: ast.Module, name: str) -> bool:
     """Whether an ``__all__`` binding in *tree* lists *name*."""
     for node in ast.walk(tree):
@@ -374,20 +412,69 @@ def _exports(tree: ast.Module, name: str) -> bool:
     return False
 
 
-def _readers_in(tree: ast.Module, name: str, module: str | None, own: bool) -> set[str]:
-    """The readers of *name* in one module; *own* is whether that module defines it."""
+class _Module(NamedTuple):
+    """One parsed module that may read a constant."""
+
+    path: Path
+    tree: ast.Module
+    # Its dotted name, and the package its relative imports start from; None outside src/.
+    name: str | None
+    package: str | None
+
+
+def _homes(name: str, module: str | None, others: list[_Module]) -> set[str]:
+    """The modules whose namespace binds the constant *name* that *module* defines.
+
+    *module* is one; so is every module of *others* whose module-scope
+    ``from <home> import name`` takes the constant, under its own name, from a home.
+    """
+    if module is None:
+        return set()
+    homes, grew = {module}, True
+    while grew:
+        grew = False
+        for other in others:
+            if other.name is None or other.name in homes:
+                continue
+            if any(
+                isinstance(node, ast.ImportFrom)
+                and _imported_module(node, other.package) in homes
+                and any(a.name == name and a.asname in (None, name) for a in node.names)
+                for node in _module_statements(other.tree.body)
+            ):
+                homes.add(other.name)
+                grew = True
+    return homes
+
+
+def _readers_in(
+    tree: ast.Module, name: str, homes: set[str], own: bool, package: str | None = None
+) -> set[str]:
+    """The readers of *name* in one module.
+
+    Args:
+        tree: The module read.
+        name: The constant.
+        homes: The modules whose namespace binds the constant (``_homes``).
+        own: Whether *tree* is the module defining it.
+        package: The package *tree*'s relative imports start from.
+
+    Returns:
+        The top-level owners in *tree* that read *name*.
+    """
     local = {name} if own else set()
     modules = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
+            source = _imported_module(node, package)
             for alias in node.names:
-                if alias.name == name:
+                if alias.name == name and source in homes:
                     local.add(alias.asname or name)
-                elif module and f"{node.module}.{alias.name}" == module:
+                elif source and f"{source}.{alias.name}" in homes:
                     modules.add(alias.asname or alias.name)
-        elif isinstance(node, ast.Import) and module:
+        elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == module:
+                if alias.name in homes:
                     modules.add(alias.asname or alias.name)
 
     readers = set()
@@ -455,15 +542,17 @@ def reader_findings(path: Path, added: set[int] | None = None, root: Path = REPO
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     module = _module_name(path, root)
+    allowed = allowed_lines(source, "module-constant")
     rel = path.relative_to(root) if path.is_relative_to(root) else path
     out = []
     for name, line in _candidates(tree):
-        if not _is_constant_name(name) or (added is not None and line not in added):
+        if not _is_constant_name(name) or line in allowed:
+            continue
+        if added is not None and line not in added:
             continue
         if _exports(tree, name):
             continue
-        readers = _readers_in(tree, name, module, own=True)
-        exported = False
+        others, exported = [], False
         for other in _grep(name, root):
             if other.resolve() == path.resolve():
                 continue
@@ -474,24 +563,30 @@ def reader_findings(path: Path, added: set[int] | None = None, root: Path = REPO
             if _exports(other_tree, name):
                 exported = True
                 break
-            readers |= {
-                f"{other.relative_to(root)}:{r}"
-                for r in _readers_in(other_tree, name, module, own=False)
-            }
+            others.append(
+                _Module(other, other_tree, _module_name(other, root), _package(other, root))
+            )
         if exported:
             continue
+        homes = _homes(name, module, others)
+        readers = _readers_in(tree, name, homes, own=True)
+        for other in others:
+            readers |= {
+                f"{other.path.relative_to(root)}:{r}"
+                for r in _readers_in(other.tree, name, homes, own=False, package=other.package)
+            }
         if not readers:
-            out.append(f"{rel}:{line}: module constant {name} has no reader — delete it")
+            out.append(f"{rel}:{line}: module constant {name} has no reader — delete it, {_ALLOW}")
         elif len(readers) == 1:
             (reader,) = readers
             out.append(
                 f"{rel}:{line}: module constant {name} has one reader, {reader} — "
-                f"make it a local of {reader}"
+                f"make it a local of {reader}, {_ALLOW}"
             )
         elif not _explained(source, tree, line):
             out.append(
                 f"{rel}:{line}: module constant {name} is shared by {len(readers)} readers "
-                "and no comment above it says why they share it"
+                f"and no comment above it says why they share it — add one, {_ALLOW}"
             )
     return out
 

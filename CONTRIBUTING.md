@@ -27,6 +27,13 @@ Read the document for the area before changing it, and review against the same o
 
 A rule that can be checked mechanically is a hook, not a line in a document. Run
 `pre-commit run --all-files` before pushing; CI runs the same set, and what it says is the rule.
+A justified exception carries `# lint: <rule> allow: <reason>`, with the rule its finding names,
+on the line the finding points at (a constant's or a manifest row's first line); it exempts that
+line from that hook only, and a marker without a reason exempts nothing. A file the `file-set`
+hook rejects carries `lint: file-set allow: <reason>` in a comment, outside any Markdown code
+fence. The narration and test-placement hooks and the module-constant reader rule judge only the
+lines a branch adds since its merge base with `tile-ai/TileOPs` `main`; `TILEOPS_LINT_BASE` names
+another base ref.
 
 ## Naming
 

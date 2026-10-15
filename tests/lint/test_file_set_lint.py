@@ -52,6 +52,69 @@ def test_a_file_carrying_a_bare_allow_comment_is_reported(tmp_path: Path) -> Non
     assert lint.findings("notes/plan.md", tmp_path)
 
 
+def test_the_message_names_the_allow_comment(tmp_path: Path) -> None:
+    (found,) = lint.findings("notes/plan.md", tmp_path)
+
+    assert found.endswith('or a "lint: file-set allow: <reason>" comment in the file')
+
+
+_NOTE = "docs/w4a16-m1-research.md"
+
+
+def _research_note(tmp_path: Path, text: str) -> list[str]:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / _NOTE).write_text(text)
+    return lint.findings(_NOTE, tmp_path)
+
+
+FENCED_ONLY = [
+    pytest.param("# Note\n\n```python\n# lint: file-set allow: fine\n```\n", id="backtick-fence"),
+    pytest.param("~~~\n<!-- lint: file-set allow: fine -->\n~~~\n", id="tilde-fence"),
+    pytest.param(
+        "````md\n```\n<!-- lint: file-set allow: fine -->\n```\n````\n",
+        id="shorter-fence-inside-a-longer-one",
+    ),
+    pytest.param(
+        "```\n<!-- lint: file-set allow: fine -->\n~~~\n```\n", id="other-fence-char-inside"
+    ),
+    pytest.param("```\ntext\n```\n```\n<!-- lint: file-set allow: fine -->\n", id="unclosed"),
+    pytest.param(
+        "- step\n\n    ```\n    <!-- lint: file-set allow: fine -->\n    ```\n",
+        id="fence-in-a-list-item",
+    ),
+]
+
+
+@pytest.mark.parametrize("text", FENCED_ONLY)
+def test_a_note_whose_only_allow_comment_is_fenced_is_reported(tmp_path: Path, text: str) -> None:
+    assert _research_note(tmp_path, text), text
+
+
+UNFENCED = [
+    pytest.param(
+        "<!-- lint: file-set allow: the index -->\n```\nx = 1\n```\n", id="before-a-fence"
+    ),
+    pytest.param("```\nx = 1\n```\n<!-- lint: file-set allow: the index -->\n", id="after-a-fence"),
+    pytest.param(
+        "Inline `` ``` `` code.\n<!-- lint: file-set allow: the index -->\n",
+        id="backticks-mid-line",
+    ),
+]
+
+
+@pytest.mark.parametrize("text", UNFENCED)
+def test_a_note_with_an_allow_comment_outside_a_fence_is_left_alone(
+    tmp_path: Path, text: str
+) -> None:
+    assert _research_note(tmp_path, text) == [], text
+
+
+def test_a_fence_in_a_file_that_is_not_markdown_does_not_hide_the_comment(tmp_path: Path) -> None:
+    (tmp_path / "run.log").write_text("```\n# lint: file-set allow: fixture for the parser\n```\n")
+
+    assert lint.findings("run.log", tmp_path) == []
+
+
 def test_every_allowlisted_path_is_in_the_tree() -> None:
     repo_root = Path(__file__).resolve().parents[2]
 

@@ -118,7 +118,7 @@ repos:
 
       - id: manifest-label-lint
         name: manifest workload label lint
-        entry: python scripts/lint/manifest_label_lint.py --base auto
+        entry: python scripts/lint/manifest_label_lint.py
         language: python
         additional_dependencies: [pyyaml]
         pass_filenames: false

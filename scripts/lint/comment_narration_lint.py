@@ -5,8 +5,9 @@ A comment states what the code promises and what its input must satisfy. How it 
 (what the author attempted or which version came before) is history: it is true of the pull
 request, not of the code, and it goes stale with the next edit. ``_NARRATION`` contains only
 high-confidence forms of that history; words such as "measured", "step" and "phase" also
-have stable domain meanings and are not findings on their own, while a sentence that starts
-"measured on/at" records the run that produced a result rather than a code contract.
+have stable domain meanings and are not findings on their own. Where a threshold or config
+was measured ("Measured on H200: ...") is the reason ``.claude/rules/code-style.md`` asks to
+sit beside a tuned value, so it is a contract, not history.
 
 Only ``#`` comments and docstrings are read, so an identifier such as ``phase`` in barrier
 code or ``measured_ms`` is never a finding. A line that must state history carries
@@ -34,7 +35,6 @@ _NARRATION = re.compile(
     r"\b(?:we|i)\s+(?:have\s+)?(?:tried|measured)\b"
     r"|^\s*(?:\#\s*|['\"]{3}\s*)?tried\b"
     r"|\b(?:this|that|it|we)\s+used to\b"
-    r"|(?:^\s*(?:\#\s*|['\"]{3}\s*)?|(?<=[.;:])\s*)measured\s+(?:on|at)\b"
     r"|\b(?:as before|earlier version|previous version|after measuring)\b",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -55,7 +55,8 @@ def findings(path: Path, added: set[int] | None = None) -> list[str]:
         for phrase in _narration(prose.text):
             out.append(
                 f"{path}:{prose.line}: {prose.kind} narrates history ({phrase!r}) — state what "
-                "the code promises and what its input must satisfy"
+                "the code promises and what its input must satisfy, or add "
+                '"# lint: narration allow: <reason>" on the line'
             )
     return out
 
