@@ -21,6 +21,7 @@ from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
+    make_sink_scale,
 )
 from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
@@ -60,12 +61,13 @@ def _gqa_prefill_varlen_fwd_kernel(
     rotary_dim: int = 0,
     rope_layout: str = "neox",
     rope_dtype: str = "",
+    has_sinks: bool = False,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     has_left = window_size_left >= 0
     has_right = window_size_right >= 0
-    scale = LOG2E if use_softcap else score_scale * LOG2E
+    scale = LOG2E if use_softcap or score_scale <= 0 else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
@@ -103,9 +105,11 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
 
+        sink_scale = make_sink_scale(scale, accum_dtype, block_m)
+
         @T.macro
         def attend(
-            q, k, v, cu_seqlens_q, cu_seqlens_kv, output, q_tile, by,
+            q, k, v, cu_seqlens_q, cu_seqlens_kv, output, sinks, q_tile, by,
             rope_cos=None, rope_sin=None,
         ):  # fmt: skip
             """The scan, with the query tile rotated in place when the tables are passed."""
@@ -242,6 +246,13 @@ def _gqa_prefill_varlen_fwd_kernel(
                     )
                     if use_softcap:
                         apply_softcap(acc_s)
+                    elif score_scale <= 0:
+                        for i, j in T.Parallel(block_m, block_n):
+                            acc_s[i, j] = T.if_then_else(
+                                acc_s[i, j] == -T.infinity(accum_dtype),
+                                -T.infinity(accum_dtype),
+                                acc_s[i, j] * score_scale,
+                            )
                     online_softmax(
                         acc_s,
                         scores_max,
@@ -254,35 +265,33 @@ def _gqa_prefill_varlen_fwd_kernel(
                     rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
+                for i in T.Parallel(block_m):
+                    inv_logsum[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
+                if has_sinks:
+                    sink_scale(scores_max, logsum, sinks, by, inv_logsum)
                 if q_row[0] + block_m <= q_len:
-                    for i in T.Parallel(block_m):
-                        inv_logsum[i] = T.if_then_else(
-                            logsum[i] > 0,
-                            T.cast(1, accum_dtype) / logsum[i],
-                            T.cast(0, accum_dtype),
-                        )
                     # The query tile is dead after the last key tile, so the output
                     # goes through its shared buffer and leaves as whole rows.
                     for i, j in T.Parallel(block_m, dim):
-                        q_shared[i, j] = acc_o[i, j] * inv_logsum[i]
+                        q_shared[i, j] = (
+                            T.if_then_else(inv_logsum[i] > 0, acc_o[i, j] * inv_logsum[i], 0)
+                            if has_sinks
+                            else acc_o[i, j] * inv_logsum[i]
+                        )
                     T.copy(
                         q_shared,
                         output[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
                         disable_tma=True,
                     )
                 else:
-                    for i in T.Parallel(block_m):
-                        q_pos = q_row[0] + i
-                        if q_pos < q_len:
-                            inv_logsum[i] = T.if_then_else(
-                                logsum[i] > 0,
-                                T.cast(1, accum_dtype) / logsum[i],
-                                T.cast(0, accum_dtype),
-                            )
                     for i, j in T.Parallel(block_m, dim):
                         q_pos = q_row[0] + i
                         if q_pos < q_len:
-                            output[q_start + q_pos, by, j] = acc_o[i, j] * inv_logsum[i]
+                            output[q_start + q_pos, by, j] = (
+                                T.if_then_else(inv_logsum[i] > 0, acc_o[i, j] * inv_logsum[i], 0)
+                                if has_sinks
+                                else acc_o[i, j] * inv_logsum[i]
+                            )
 
         if fuse_rope:
             half = rotary_dim // 2
@@ -298,10 +307,11 @@ def _gqa_prefill_varlen_fwd_kernel(
                 rope_cos: T.Tensor([max_position, half], table_dtype),  # type: ignore
                 rope_sin: T.Tensor([max_position, half], table_dtype),  # type: ignore
                 output: T.Tensor(q_shape, dtype),  # type: ignore
+                sinks: T.Tensor([heads], "float32"),  # type: ignore
             ) -> None:
                 with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
                     attend(
-                        q, k, v, cu_seqlens_q, cu_seqlens_kv, output, q_tile, by,
+                        q, k, v, cu_seqlens_q, cu_seqlens_kv, output, sinks, q_tile, by,
                         rope_cos, rope_sin,
                     )  # fmt: skip
 
@@ -315,9 +325,10 @@ def _gqa_prefill_varlen_fwd_kernel(
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
             cu_seqlens_kv: T.Tensor([batch + 1], T.int32),  # type: ignore
             output: T.Tensor(q_shape, dtype),  # type: ignore
+            sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
-                attend(q, k, v, cu_seqlens_q, cu_seqlens_kv, output, q_tile, by)
+                attend(q, k, v, cu_seqlens_q, cu_seqlens_kv, output, sinks, q_tile, by)
 
         return _gqa_prefill_varlen_fwd_main
 
@@ -380,6 +391,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             self.rotary_dim,
             self.rope_layout,
             self.rope_table_dtype_str,
+            self.has_sinks,
         )
 
     @property
@@ -423,6 +435,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         program = self.kernel(
             self.config["block_m"],
@@ -431,6 +444,22 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             self.config["threads"],
         )
         if self.key_rope is None:
-            return program(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+            return program(
+                q,
+                k,
+                v,
+                cu_seqlens_q,
+                cu_seqlens_kv,
+                sinks if self.has_sinks else self._unused_sinks,
+            )
         k_rot = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
-        return program(q, k_rot, v, cu_seqlens_q, cu_seqlens_kv, rope_cos, rope_sin)
+        return program(
+            q,
+            k_rot,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            rope_cos,
+            rope_sin,
+            sinks if self.has_sinks else self._unused_sinks,
+        )

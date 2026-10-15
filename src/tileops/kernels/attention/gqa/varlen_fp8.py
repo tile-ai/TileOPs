@@ -33,6 +33,7 @@ from tileops.kernels.attention.fp8_fa3_layouts import (
 from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
+    make_sink_scale,
 )
 from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
@@ -68,6 +69,7 @@ def _gqa_varlen_fp8_fwd_kernel(
     out_dtype: str = "float16",
     window_size_left: int = -1,
     window_size_right: int = -1,
+    has_sinks: bool = False,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -101,6 +103,8 @@ def _gqa_varlen_fp8_fwd_kernel(
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
+        sink_scale = make_sink_scale(1.0, accum_dtype, block_m)
+
         @T.prim_func
         def _gqa_varlen_fp8_fwd_main(
             q: T.Tensor(q_shape, _FP8_DTYPE),  # type: ignore
@@ -112,6 +116,7 @@ def _gqa_varlen_fp8_fwd_kernel(
             k_descale: T.Tensor(scale_shape, accum_dtype),  # type: ignore
             v_descale: T.Tensor(scale_shape, accum_dtype),  # type: ignore
             output: T.Tensor(q_shape, out_dtype),  # type: ignore
+            Sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
                 q_shared = T.alloc_shared([block_m, dim], _FP8_DTYPE)
@@ -257,6 +262,10 @@ def _gqa_varlen_fp8_fwd_kernel(
                             value_scale / logsum[i],
                             T.cast(0, accum_dtype),
                         )
+                    if has_sinks:
+                        sink_scale(scores_max, logsum, Sinks, by, inv_logsum)
+                        for i in T.Parallel(block_m):
+                            inv_logsum[i] *= value_scale
                     if q_row[0] + block_m <= q_len:
                         for i, j in T.Parallel(block_m, dim):
                             o_shared[i, j] = T.cast(acc_o[i, j] * inv_logsum[i], out_dtype)
@@ -298,6 +307,7 @@ def _gqa_varlen_fp8_ws_kernel(
     rope_placeholder_width: int,
     num_ctas: int,
     claim_slots: int,
+    has_sinks: bool = False,
 ) -> Callable:
     """Build the warp-specialized FP8 packed-varlen program.
 
@@ -412,6 +422,27 @@ def _gqa_varlen_fp8_ws_kernel(
             for i in T.Parallel(half_m):
                 logsum[i] = logsum[i] + ssum[i]
 
+        sink_scale = make_sink_scale(
+            capped_softmax_scale if use_softcap else scale,
+            accum_dtype,
+            half_m,
+            positions_per_half,
+        )
+
+        @T.macro
+        def apply_sink(Sinks, head_base, sm, logsum, row_scale, scale_shared, acc_o):
+            """Apply the shared normalizer before the layout-specific output store."""
+            sink_scale(sm, logsum, Sinks, head_base, row_scale)
+            # The accumulator is normalized now; the store only applies V's descale.
+            T.fill(logsum, 1)
+            T.copy(row_scale, scale_shared)
+            T.call_extern(
+                "handle",
+                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                acc_o.data,
+                scale_shared.access_ptr("r"),
+            )
+
         @T.macro
         def transpose_value_tile(slot, v_smem, v_raw_full, v_full, phase):
             """Turn the staged value tile into the K-major operand the WGMMA reads.
@@ -495,6 +526,7 @@ def _gqa_varlen_fp8_ws_kernel(
             RopeSin: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
             Claim: T.Tensor([claim_slots], "int32"),  # type: ignore
             O: T.Tensor([total_q, heads, dim], out_dtype),  # type: ignore
+            Sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             # A CTA's items come off the claim counter, so the block index names nothing.
             with T.Kernel(num_ctas, threads=3 * WARPGROUP_THREADS) as _cta:
@@ -798,6 +830,12 @@ def _gqa_varlen_fp8_ws_kernel(
                         for i in T.Parallel(half_m):
                             ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
                             ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
+                        if has_sinks:
+                            apply_sink(Sinks, head_base, sm_1, ls_1, ss_1, ss_shared_1, acc_o_1)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_1[i] = T.if_then_else(ls_1[i] > 0, ls_1[i], 1)
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
@@ -969,6 +1007,12 @@ def _gqa_varlen_fp8_ws_kernel(
                         for i in T.Parallel(half_m):
                             ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
                             ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
+                        if has_sinks:
+                            apply_sink(Sinks, head_base, sm_2, ls_2, ss_2, ss_shared_2, acc_o_2)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_2[i] = T.if_then_else(ls_2[i] > 0, ls_2[i], 1)
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",
@@ -1066,6 +1110,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         device_index: Optional[int] = None,
+        has_sinks: bool = False,
     ) -> None:
         if dtype not in ATTENTION_DTYPES:
             raise ValueError("FP8 packed-varlen GQA outputs float16 or bfloat16")
@@ -1088,6 +1133,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             rotary_dim=rotary_dim,
             rope_layout=rope_layout,
             device_index=device_index,
+            has_sinks=has_sinks,
         )
 
     def _rope_tables(
@@ -1130,6 +1176,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             self.dtype_str,
             self.window_size_left,
             self.window_size_right,
+            self.has_sinks,
         )
 
     def _make_supply_prog(self) -> Callable:
@@ -1143,10 +1190,10 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         total = batch * tokens_per_request
 
         def supply_prog(params):
-            if len(params) != 8:
+            if len(params) != 9:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, k, v, two cumulative-length "
-                    f"inputs and three scales, got {len(params)} parameters"
+                    f"inputs, three scales and a sink vector, got {len(params)} parameters"
                 )
             device = get_current_device()
             cu_seqlens = torch.arange(
@@ -1159,7 +1206,13 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             scales = [
                 torch.ones(batch, heads_kv, dtype=torch.float32, device=device) for _ in range(3)
             ]
-            return [*fp8, cu_seqlens, cu_seqlens.clone(), *scales]
+            return [
+                *fp8,
+                cu_seqlens,
+                cu_seqlens.clone(),
+                *scales,
+                torch.randn(heads, dtype=torch.float32, device=device),
+            ]
 
         return supply_prog
 
@@ -1199,6 +1252,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
@@ -1209,7 +1263,17 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-        )(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
+        )(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            sinks if self.has_sinks else self._unused_sinks,
+        )
 
 
 class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
@@ -1276,6 +1340,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             self._ROPE_PLACEHOLDER_WIDTH,
             get_sm_count(self.device_index),
             self._CLAIM_SLOTS,
+            self.has_sinks,
         )
 
     @property
@@ -1298,6 +1363,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
@@ -1320,5 +1386,6 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             sin,
             self._claim,
             out,
+            sinks if self.has_sinks else self._unused_sinks,
         )
         return out
