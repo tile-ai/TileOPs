@@ -3240,7 +3240,15 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             "split_k": 1,
         }
         scored = best_config(
-            self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count, self.device_name
+            self.m,
+            self.n,
+            self.k,
+            self.trans_a,
+            self.trans_b,
+            self.sm_count,
+            self.device_name,
+            # The raster group of a persistent tile depends on what L2 holds.
+            l2_bytes=torch.cuda.get_device_properties(self.device_index).L2_cache_size,
         )
         return scored if scored is not None else modal
 
