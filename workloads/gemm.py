@@ -371,6 +371,68 @@ def unpack_signed_int4(packed: torch.Tensor) -> torch.Tensor:
     return ((nibbles ^ 8) - 8).reshape(packed.shape[0], 2 * packed.shape[1])
 
 
+def _w4a8_row_blocks(n: int) -> list[tuple[int, int]]:
+    """``(first row, rows)`` of each 64-row block; the last holds ``N % 64`` rows if nonzero."""
+    blocks = [(start, 64) for start in range(0, n - n % 64, 64)]
+    if n % 64:
+        blocks.append((n - n % 64, n % 64))
+    return blocks
+
+
+def repack_w4a8_weight(packed: torch.Tensor) -> torch.Tensor:
+    """Reorder and re-encode a row-major ``[N, K/2]`` signed INT4 weight for W4A8 GEMM.
+
+    Each INT4 ``q`` is stored as code ``q - 1`` for ``q`` in ``[1, 7]``, ``7`` for ``q = 0``
+    and ``8 | (-q - 1)`` for ``q < 0``. Row ``16w + 8hr + r`` and K ``128g + 64h + 32p + 16s
+    + 4t + i`` of a 64-row block go to nibble ``4s + i`` of word ``2p + hr`` of lane
+    ``4r + t`` of the 512-byte unit ``(g, h, w)``; units are ordered ``[g][h][w]`` inside a
+    block and blocks follow N. A last block of ``N % 64`` rows holds ``(N % 64) / 16`` units
+    per ``(g, h)`` and is stored without padding.
+
+    Args:
+        packed: Row-major packed weights, ``[N, K/2]``, ``torch.uint8``, even K in the low
+            nibble, two's complement; ``N % 16 == 0`` and ``K % 128 == 0``.
+
+    Returns:
+        A contiguous ``[N, K/2]`` ``torch.uint8`` tensor in the prepacked order.
+    """
+    n, k = packed.shape[0], 2 * packed.shape[1]
+    if n % 16 or k % 128:
+        raise ValueError(f"N={n} must be a multiple of 16 and K={k} of 128")
+    q = unpack_signed_int4(packed)
+    code = torch.where(q > 0, q - 1, torch.where(q == 0, 7, 8 | (-q - 1)))
+    parts = []
+    for start, rows in _w4a8_row_blocks(n):
+        # Source axes w, hr, r, g, h, p, s, t, i; target g, h, w, r, t, p, hr, s, i.
+        block = code[start : start + rows].reshape(rows // 16, 2, 8, k // 128, 2, 2, 2, 4, 4)
+        nibbles = block.permute(3, 4, 0, 2, 7, 5, 1, 6, 8).reshape(-1, 2)
+        parts.append((nibbles[:, 0] | (nibbles[:, 1] << 4)).to(torch.uint8))
+    return torch.cat(parts).reshape(n, k // 2)
+
+
+def unrepack_w4a8_weight(prepacked: torch.Tensor) -> torch.Tensor:
+    """Invert :func:`repack_w4a8_weight`: the row-major ``[N, K/2]`` packing of a prepacked weight.
+
+    Args:
+        prepacked: Prepacked weights, ``[N, K/2]``, ``torch.uint8``.
+
+    Returns:
+        The row-major packed weights, two's complement, even K in the low nibble.
+    """
+    n, k = prepacked.shape[0], 2 * prepacked.shape[1]
+    flat = prepacked.contiguous().reshape(-1)
+    blocks = []
+    for start, rows in _w4a8_row_blocks(n):
+        chunk = flat[start * k // 2 : (start + rows) * k // 2].to(torch.int16)
+        nibbles = torch.stack((chunk & 0xF, chunk >> 4), dim=-1)
+        # Source axes g, h, w, r, t, p, hr, s, i; target w, hr, r, g, h, p, s, t, i.
+        block = nibbles.reshape(k // 128, 2, rows // 16, 8, 4, 2, 2, 2, 4)
+        blocks.append(block.permute(2, 6, 3, 0, 1, 5, 7, 4, 8).reshape(rows, k))
+    code = torch.cat(blocks)
+    q = torch.where(code >= 8, -(code & 7) - 1, torch.where(code == 7, 0, code + 1))
+    return ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
+
+
 class GemmW4A8Workload(WorkloadBase):
     """FP8 activations times signed INT4 weights with a group, a channel and a token scale.
 
@@ -481,6 +543,20 @@ class GemmW4A8Workload(WorkloadBase):
                 NegativeControl("weight-unrounded", weight_unrounded),
             ),
         )
+
+
+class GemmW4A8MixedSignWorkload(GemmW4A8Workload):
+    """:class:`GemmW4A8Workload` with the sign of each group scale drawn at random.
+
+    The signature admits a group scale of either sign; the magnitudes, and so the
+    verification, are :class:`GemmW4A8Workload`'s.
+    """
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        activation, packed, group_scale, channel_scale, token_scale = super().gen_inputs()
+        negative = torch.rand(group_scale.shape, device=group_scale.device) < 0.5
+        signed = torch.where(negative, -group_scale.float(), group_scale.float())
+        return activation, packed, signed.to(torch.float8_e4m3fn), channel_scale, token_scale
 
 
 class BmmWorkload(WorkloadBase):
