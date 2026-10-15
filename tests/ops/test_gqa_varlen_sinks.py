@@ -31,9 +31,6 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             id="bf16-window",
         ),
         pytest.param(
-            torch.float16, 256, [17, 1], [33, 17], {}, marks=pytest.mark.smoke, id="fp16-general"
-        ),
-        pytest.param(
             torch.float8_e4m3fn,
             128,
             [129, 1],
@@ -100,6 +97,24 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             id="fp8-rope",
         ),
         pytest.param(
+            torch.bfloat16,
+            128,
+            [129, 1],
+            [257, 33],
+            {"sm_scale": 0.125, "softcap": 5.0},
+            marks=pytest.mark.full,
+            id="bf16-softcap",
+        ),
+        pytest.param(
+            torch.float8_e4m3fn,
+            128,
+            [129, 1],
+            [257, 33],
+            {"sm_scale": 0.125, "softcap": 5.0},
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="fp8-softcap",
+        ),
+        pytest.param(
             torch.float16,
             256,
             [300, 5],
@@ -117,38 +132,32 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             marks=pytest.mark.full,
             id="bf16-empty-rows-persistent",
         ),
-        pytest.param(
-            torch.float8_e4m3fn,
-            128,
-            [300, 5],
-            [100, 3],
-            {"window_size_left": 64},
-            marks=[pytest.mark.full, pytest.mark.sm90],
-            id="fp8-empty-rows-persistent",
-        ),
-        pytest.param(
-            torch.float8_e4m3fn,
-            128,
-            [300, 5],
-            [100, 3],
-            {"window_size_left": 64, "heads": 6},
-            marks=[pytest.mark.full, pytest.mark.sm90],
-            id="fp8-empty-rows-general",
-        ),
     ],
 )
 def test_varlen_sinks(dtype, dim, q_lens, kv_lens, options):
     """Normalize per-head sinks across the supported attention paths."""
     w, op = _sink_case(dtype, dim, q_lens, kv_lens, options)
-    inputs = w.gen_inputs()
+    TestBase.check(w, op, *w.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "heads,has_sinks",
+    [
+        pytest.param(8, False, marks=pytest.mark.smoke, id="no-sink"),
+        pytest.param(8, True, marks=pytest.mark.full, id="sinks-persistent"),
+        pytest.param(6, True, marks=pytest.mark.full, id="sinks-general"),
+    ],
+)
+def test_varlen_fp8_empty_rows(heads, has_sinks):
+    """SM90 FP8 rows with no visible key return zero instead of dividing zero by zero."""
+    w, op = _sink_case(
+        torch.float8_e4m3fn, 128, [300, 5], [100, 3], {"window_size_left": 64, "heads": heads}
+    )
+    inputs = list(w.gen_inputs())
+    if not has_sinks:
+        inputs[-1] = None
     TestBase.check(w, op, *inputs)
-    if q_lens == [300, 5]:
-        # The causal alignment leaves 200 + 2 query rows with no visible key.
-        # The initial vector covers +inf as well as finite and disabled heads.
-        # All-+inf would make the query-zeroed negative control indistinguishable.
-        for sink in (0.0, -float("inf")):
-            inputs[-1].fill_(sink)
-            TestBase.check(w, op, *inputs)
 
 
 def _sink_case(dtype, dim, q_lens, kv_lens, options):

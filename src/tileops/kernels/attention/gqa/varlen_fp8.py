@@ -832,6 +832,10 @@ def _gqa_varlen_fp8_ws_kernel(
                             ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
                         if has_sinks:
                             apply_sink(Sinks, head_base, sm_1, ls_1, ss_1, ss_shared_1, acc_o_1)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_1[i] = T.if_then_else(ls_1[i] > 0, ls_1[i], 1)
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
@@ -1005,6 +1009,10 @@ def _gqa_varlen_fp8_ws_kernel(
                             ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
                         if has_sinks:
                             apply_sink(Sinks, head_base, sm_2, ls_2, ss_2, ss_shared_2, acc_o_2)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_2[i] = T.if_then_else(ls_2[i] > 0, ls_2[i], 1)
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",

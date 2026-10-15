@@ -22,17 +22,21 @@ __all__ = [
 ]
 
 
-def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0):
+def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0, head_group=0):
     """Normalize with raw per-head sinks, guarding empty rows and infinite sinks.
 
-    Return the multiplier for the unnormalized output accumulator. ``rows_per_head``
-    describes tiles that pack several query heads; zero means one head per tile.
+    ``rows_per_head`` describes consecutive query rows of each head; ``head_group``
+    describes rows interleaving a query-head group. Both zero means one head per tile.
+    The sink is combined after the key reduction in the same stable max/exp frame.
     """
 
     @T.macro
-    def sink_scale(scores_max, logsum, sinks, head, row_scale):
+    def sink_scale(scores_max, logsum, sinks, head, row_scale, row_offset=0):
         for i in T.Parallel(block_rows):
-            sink_head = head + i // rows_per_head if rows_per_head else head
+            if head_group:
+                sink_head = head + (row_offset + i) % head_group
+            else:
+                sink_head = head + i // rows_per_head if rows_per_head else head
             sink = sinks[sink_head] * LOG2E
             maximum = T.max(scores_max[i] * scale, sink)
             weight = T.exp2(scores_max[i] * scale - maximum)
