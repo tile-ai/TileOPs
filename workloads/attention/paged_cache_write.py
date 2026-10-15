@@ -122,6 +122,8 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
             flat = pages.view(-1, *pages.shape[2:])
             stored = new[written]
             if scale is not None:
+                # Express saturation explicitly: some torch FP8 casts turn overflow
+                # into NaN. torch.clamp preserves NaN while bounding other values.
                 limit = torch.finfo(pages.dtype).max
                 stored = (stored.float() / scale[0]).clamp(-limit, limit).to(pages.dtype)
             flat[rows] = stored
@@ -147,7 +149,7 @@ class PagedKVCacheWriteCall(CallWorkload, PagedKVCacheWriteWorkload):
             num_pages=call.indices["NP"],
             dtype=getattr(torch, call.tensors["k"][1]),
             cache_dtype=getattr(torch, call.tensors["k_pages"][1]),
-            slots=call.metadata_values("slot_mapping") if call.present("slot_mapping") else None,
+            slots=call.metadata_values("slot_mapping"),
         )
 
     gen_inputs = PagedKVCacheWriteWorkload.gen_inputs

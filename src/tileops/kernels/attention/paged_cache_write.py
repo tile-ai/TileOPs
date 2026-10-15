@@ -153,7 +153,7 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
 
     @property
     def default_config(self):
-        # A modest row tile exposes parallelism on small pools; a 128-column tile
+        # A modest row tile exposes parallelism for small token counts; a 128-column tile
         # keeps contiguous stores while masking narrower rows.
         return {"block_rows": 16, "block_cols": 128, "threads": 128}
 

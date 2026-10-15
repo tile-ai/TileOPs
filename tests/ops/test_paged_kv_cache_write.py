@@ -53,7 +53,7 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
             2,
             torch.bfloat16,
             torch.float8_e4m3fn,
-            [1, 17, 31],
+            [1, -1, 31],
             False,
             marks=pytest.mark.smoke,
             id="fp8-bf16-scaled",
@@ -163,22 +163,16 @@ def test_paged_kv_cache_write_saturates_fp8_overflow():
 
 
 @pytest.mark.smoke
-def test_paged_kv_cache_write_leaves_rows_no_slot_names():
-    """A row outside the call's slots keeps what it held, a sentinel written pool included."""
-    workload = PagedKVCacheWriteTest(3, 2, 64, 7, 4, torch.bfloat16, slots=[1, -1, 27])
+def test_paged_kv_cache_write_skips_every_token():
+    """All-negative slots leave both sentinel-filled page pools unchanged."""
+    workload = PagedKVCacheWriteTest(3, 2, 64, 7, 4, torch.bfloat16, slots=[-1, -1, -1])
     k, v, k_pages, v_pages, slots, k_scale, v_scale = workload.gen_inputs()
     k_pages.fill_(3.0)
     v_pages.fill_(-2.0)
     before = (k_pages.clone(), v_pages.clone())
-    rows, row = workload.physical_tokens, (workload.heads_kv, workload.dim)
     op = PagedKVCacheWriteFwdOp()
     assert op(k, v, k_pages, v_pages, slots, k_scale, v_scale) is None
-    unnamed = torch.ones(rows, dtype=torch.bool, device=k_pages.device)
-    unnamed[torch.tensor([1, 27], dtype=torch.int64, device=k_pages.device)] = False
-    written = k_pages.view(rows, *row)
-    sentinel = before[0].view(rows, *row)
-    assert torch.equal(written[unnamed], sentinel[unnamed])
-    assert not torch.equal(written[~unnamed], sentinel[~unnamed])
+    assert torch.equal(k_pages, before[0]) and torch.equal(v_pages, before[1])
     TestBase.check(
         workload,
         op,
@@ -204,19 +198,30 @@ def test_paged_kv_cache_write_of_no_tokens_writes_nothing():
     assert torch.equal(k_pages, before[0]) and torch.equal(v_pages, before[1])
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("invalid", ["scale-missing", "scale-present"])
-def test_paged_kv_cache_write_refuses_a_cache_the_scales_do_not_match(invalid):
-    """The cache dtype and the scale presence must agree, whichever way they disagree."""
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param("scale-missing", marks=pytest.mark.smoke),
+        pytest.param("scale-present", marks=pytest.mark.smoke),
+        pytest.param("input-dtype", marks=pytest.mark.full),
+        pytest.param("cache-dtype", marks=pytest.mark.full),
+    ],
+)
+def test_paged_kv_cache_write_refuses_an_invalid_tensor_contract(invalid):
+    """Unsupported input/cache dtypes and incompatible scale presence are rejected."""
     cache_dtype = torch.float8_e4m3fn if invalid == "scale-missing" else torch.bfloat16
     workload = PagedKVCacheWriteTest(2, 2, 64, 16, 2, torch.bfloat16, cache_dtype)
     inputs = list(workload.gen_inputs())
     if invalid == "scale-missing":
         inputs[5] = inputs[6] = None
-    else:
+    elif invalid == "scale-present":
         inputs[5] = torch.ones(1, dtype=torch.float32, device=inputs[0].device)
         inputs[6] = inputs[5].clone()
-    with pytest.raises(ValueError):
+    elif invalid == "input-dtype":
+        inputs[0], inputs[1] = inputs[0].float(), inputs[1].float()
+    else:
+        inputs[2], inputs[3] = inputs[2].float(), inputs[3].float()
+    with pytest.raises(ValueError, match="dtype" if invalid.endswith("dtype") else None):
         PagedKVCacheWriteFwdOp()(*inputs)
 
 

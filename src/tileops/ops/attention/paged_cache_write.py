@@ -28,9 +28,9 @@ class PagedKVCacheWriteFwdOp(Op):
     need not belong to one request: a prefix-caching server reuses a page it already holds
     and a chunked prefill writes the pages it was just given. Distinct non-negative slots
     are the caller's obligation, and a call writes nothing outside the slots it names.
-    With an FP8 cache the rows are divided by their scale and cast with saturation, so a
-    value outside the E4M3 range stores the largest magnitude the format holds rather than
-    an infinity.
+    With an FP8 cache the rows are divided by their scale and cast to E4M3FN. NaN is
+    preserved; finite overflow and infinities saturate to the largest finite magnitude
+    with the same sign.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

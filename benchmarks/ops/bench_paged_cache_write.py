@@ -1,10 +1,16 @@
-"""Benchmark the TileOPs paged KV cache write, one case per manifest call, against vLLM and the reference."""
+"""Benchmark paged KV cache writes against vLLM, FlashInfer and the shared reference."""
 
 import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import VLLM_TAG, private_inputs, vllm_op
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    VLLM_TAG,
+    flashinfer_op,
+    private_inputs,
+    vllm_op,
+)
 from tileops.ops import PagedKVCacheWriteFwdOp
 
 
@@ -40,6 +46,28 @@ def _vllm_write(inputs):
     return private_inputs(run, inputs, 2, 3)
 
 
+def _flashinfer_write(inputs):
+    """Represent each physical slot as one request's single page and append position.
+
+    This adapter covers same-dtype 16-bit writes with no skipped tokens. Request
+    metadata is prepared outside timing; K/V data and the page pools pass through.
+    """
+    write = flashinfer_op("append_paged_kv_cache")
+    slots = inputs[4]
+    page_size = inputs[2].shape[1]
+    batch_indices = torch.arange(slots.numel(), dtype=torch.int32, device=slots.device)
+    indptr = torch.arange(slots.numel() + 1, dtype=torch.int32, device=slots.device)
+    indices = (slots // page_size).to(torch.int32)
+    positions = (slots % page_size).to(torch.int32)
+    last_page_len = positions + 1
+
+    def run(k, v, k_pages, v_pages, slots, k_scale, v_scale):
+        write(k, v, batch_indices, positions, (k_pages, v_pages), indices, indptr, last_page_len)
+        return k_pages, v_pages
+
+    return private_inputs(run, inputs, 2, 3)
+
+
 @pytest.mark.parametrize("case", bench.cases(PagedKVCacheWriteFwdOp), ids=lambda case: case.id)
 def test_paged_kv_cache_write_bench(case) -> None:
     inputs = case.inputs
@@ -51,4 +79,7 @@ def test_paged_kv_cache_write_bench(case) -> None:
         # it was handed and needs no private copies; it is the oracle for this case.
         "torch-ref": case.reference,
     }
+    # FlashInfer has no independent quantization scales or negative-slot skip input.
+    if inputs[2].dtype != torch.float8_e4m3fn and bool((inputs[4] >= 0).all()):
+        implementations[FLASHINFER_TAG] = _flashinfer_write(inputs)
     bench.Runner(op, case).compare(implementations)
