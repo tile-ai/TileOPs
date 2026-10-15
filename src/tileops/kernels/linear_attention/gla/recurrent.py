@@ -31,8 +31,6 @@ from tileops.kernels.linear_attention.call_spec import (
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
-_DEFAULT_K_TILE = 16
-
 
 # Low-precision decode kernel — bf16 / fp16, fp32 accumulation
 
@@ -43,13 +41,22 @@ def _gla_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     dtype: str = "float32",
     scale: float = -1.0,
 ):
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
+    load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
         scale = dim_k**-0.5
@@ -101,7 +108,11 @@ def _gla_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0],
+                        h_tile_o,
+                        disable_tma=load_state_without_tma,
+                    )
                     for kk in T.Serial(k_tile):
                         gk_val = gk_shared[kt * k_tile + kk]
                         alpha_i = T.exp2(gk_val * LOG2E)
@@ -126,7 +137,9 @@ def _gla_decode_tl(
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E)
@@ -164,6 +177,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into.
+    _DEFAULT_K_TILE = 16
     general = True
 
     @classmethod
@@ -263,7 +278,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(
@@ -286,7 +301,7 @@ def _gla_decode_fp32_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     scale: float = -1.0,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
@@ -300,6 +315,15 @@ def _gla_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
+    load_state_without_tma = k_tile == dim_k
 
     if scale <= 0:
         scale = dim_k**-0.5
@@ -365,7 +389,9 @@ def _gla_decode_fp32_tl(
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E) * h_tile[kk, j]
@@ -386,6 +412,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into.
+    _DEFAULT_K_TILE = 16
 
     @classmethod
     def refusal(cls, call: GLADecodeCall) -> "str | None":
@@ -480,7 +508,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(

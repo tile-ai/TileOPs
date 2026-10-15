@@ -35,15 +35,11 @@ __all__ = [
     "DeltaNetDecodeRawCudaFlaStyleKernel",
 ]
 
-# The key-dimension tile the decode programs below fall back to when no tuned candidate
-# divides the key dim, so it is what decides which key dims are served.
-_DEFAULT_K_TILE = 16
 
-
-def _k_tile_refusal(dim_k: int) -> Optional[str]:
-    """Why no decode program here can split this key dim into tiles, or ``None``."""
-    if dim_k % _DEFAULT_K_TILE != 0:
-        return f"requires dim_k a multiple of {_DEFAULT_K_TILE}, got {dim_k}"
+def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
+    """Why a decode program with this default key tile cannot split this key dim, or ``None``."""
+    if dim_k % k_tile != 0:
+        return f"requires dim_k a multiple of {k_tile}, got {dim_k}"
     return None
 
 
@@ -151,12 +147,21 @@ def _deltanet_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
     dtype: str = "float32",
 ):
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
+    load_state_without_tma = k_tile == dim_k
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -193,7 +198,11 @@ def _deltanet_decode_tl(
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0],
+                        h_tile_o,
+                        disable_tma=load_state_without_tma,
+                    )
                     for kk in T.Serial(k_tile):
                         k_val = T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
                         q_val = T.cast(q[bid, hid, kt * k_tile + kk], accum_dtype)
@@ -221,7 +230,9 @@ def _deltanet_decode_tl(
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.cast(h_tile[kk, j], accum_dtype)
@@ -268,11 +279,14 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into, so it is
+    # what decides which key dims this kernel serves.
+    _DEFAULT_K_TILE = 16
     general = True
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
-        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
+        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -363,7 +377,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(
@@ -531,7 +545,7 @@ def _deltanet_decode_fp32_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int = _DEFAULT_K_TILE,
+    k_tile: int,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
 
@@ -544,6 +558,15 @@ def _deltanet_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
+    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
+    #
+    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
+    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
+    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
+    #      warp specialization, so the first launch hangs.
+    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
+    #          tile-ai/tilelang#2737.
+    load_state_without_tma = k_tile == dim_k
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -600,7 +623,9 @@ def _deltanet_decode_fp32_tl(
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(
+                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
+                    )
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             h_tile[kk, j] + k[bid, hid, kt * k_tile + kk] * v_new[j]
@@ -620,12 +645,15 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    # The key-dimension tile the untuned decode program splits the state into, so it is
+    # what decides which key dims this kernel serves.
+    _DEFAULT_K_TILE = 16
 
     @classmethod
     def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
         if call.dtype != torch.float32:
             return "requires float32"
-        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k)
+        return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -710,7 +738,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         return {
             "num_stages": 2,
             "threads": 128,
-            "k_tile": _DEFAULT_K_TILE,
+            "k_tile": self._DEFAULT_K_TILE,
         }
 
     def forward(

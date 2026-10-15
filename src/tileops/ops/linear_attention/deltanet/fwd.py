@@ -8,6 +8,7 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
     DeltaNetCall,
+    DeltaNetChunkPrefillFwdKernel,
     DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdInterface,
@@ -26,13 +27,15 @@ class DeltaNetFwdOp(Op):
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
     while ``(o, final_state)`` is always returned.
 
-    The in-tree implementations serve SM90. Prefill runs over a 64- or
-    128-wide square state in float16 or bfloat16, equal-length or packed, with
-    a sequence that is not a whole number of 64-token chunks, and with or
-    without ``use_qk_l2norm_in_kernel``. Decode runs one token over a 128-wide
-    square state with Q and K already normalized. A key width that is neither
-    64 nor 128, or one that differs from the value width, has no in-tree
-    kernel and needs an external target implementation.
+    The in-tree implementations serve a 64- or 128-wide square state in
+    float16 or bfloat16, with an even or single head count, and with or
+    without ``use_qk_l2norm_in_kernel``. Prefill runs on SM89 and SM90,
+    equal-length or packed, with a sequence that is not a whole number of
+    64-token chunks. On SM89, shared memory holds the offsets of at most 703
+    packed sequences over a 128-wide state. Decode runs one token per
+    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``. A key
+    width that is neither 64 nor 128, or one that differs from the value
+    width, has no in-tree kernel and needs an external target implementation.
 
     ``beta`` contains the already-transformed update strength. This Op does
     not apply a sigmoid or another beta transform.
@@ -41,6 +44,7 @@ class DeltaNetFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_dense_decode": DeltaNetDenseDecodeFwdKernel,
         "deltanet_dense_prefill": DeltaNetDensePrefillFwdKernel,
+        "deltanet_chunk_prefill": DeltaNetChunkPrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"deltanet": DeltaNetFwdInterface}
 

@@ -18,6 +18,7 @@ from tileops.ops.attention.nsa import (
     NSAVarlenFwdOp,
 )
 from tileops.ops.attention.paged_cache_gather import PagedKVCacheGatherFwdOp
+from tileops.ops.attention.paged_cache_write import PagedKVCacheWriteFwdOp
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
     "PagedKVCacheGatherFwdOp",
+    "PagedKVCacheWriteFwdOp",
     "TopKSelectFwdOp",
 ]

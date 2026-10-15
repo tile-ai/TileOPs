@@ -157,8 +157,10 @@ class GQADensePrefillWorkload(WorkloadBase):
             (self.batch, self.seq_len_kv, self.heads_kv, self.dim),
         )
         if self.dtype == torch.float8_e4m3fn:
-            # FP8 saturates near 448; 0.2 keeps the products in range.
-            q, k, v = ((torch.randn(s, device=run_device()) * 0.2).to(self.dtype) for s in shapes)
+            # As in the packed FP8 workload, Q and K at 2.0 spread the scores by 4 standard
+            # deviations, so a row's output depends on which keys and which scales it reads.
+            q, k = ((torch.randn(s, device=run_device()) * 2.0).to(self.dtype) for s in shapes[:2])
+            v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(self.dtype)
             # Not one: a kernel that never reads a scale must not agree.
             scales = tuple(
                 torch.rand(self.batch, self.heads_kv, device=run_device(), dtype=torch.float32)
@@ -237,6 +239,11 @@ class GQADensePrefillWorkload(WorkloadBase):
         )
 
     def verification(self, *inputs):
+        if inputs[0].dtype == torch.float8_e4m3fn and self.rotary_dim is not None:
+            from workloads.numerics import Exact
+
+            # Fused rotation rounds Q and K to e4m3 once more, as in the packed workload.
+            return Exact(atol=0.12, rtol=0.04)
         return dense_gqa_verification(inputs[0].dtype)
 
 

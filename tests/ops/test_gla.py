@@ -151,6 +151,11 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 64, 192, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 128, 128, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(
+                    1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
+                ),
             ],
         ),
     ]
@@ -566,6 +571,10 @@ class GLADecodeFixture(FixtureBase):
                 pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                # A key dim the default key tile covers in one tile, whose state load hung
+                # on SM90 when lowered to a TMA bulk copy.
+                pytest.param(1, 4, 16, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 4, 16, 64, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]

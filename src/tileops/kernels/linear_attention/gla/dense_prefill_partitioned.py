@@ -173,6 +173,7 @@ def _gla_fwd_h0_scan_kernel(
     dim_k: int,
     dim_v: int,
     block_v: int = 32,
+    has_initial_state: bool = True,
 ) -> Callable:
     """Scan affine partition summaries into the true partition start states."""
     accum_dtype = "float32"
@@ -183,6 +184,7 @@ def _gla_fwd_h0_scan_kernel(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
     )
     def _scan_func(threads=128):
+        initial_shape = [batch, heads, dim_k, dim_v] if has_initial_state else [1]
         summary_shape = [batch, num_partitions, heads, dim_k, dim_v]
         decay_shape = [batch, num_partitions, heads, dim_k]
 
@@ -190,14 +192,17 @@ def _gla_fwd_h0_scan_kernel(
         def _main(
             summaries: T.Tensor(summary_shape, accum_dtype),
             log_decays: T.Tensor(decay_shape, accum_dtype),
-            initial_state: T.Tensor([batch, heads, dim_k, dim_v], accum_dtype),
+            initial_state: T.Tensor(initial_shape, accum_dtype),
             initial_states: T.Tensor(summary_shape, accum_dtype),
         ):
             with T.Kernel(num_v_tiles, batch, heads, threads=threads) as (i_vt, i_b, i_h):
                 v_offset = i_vt * block_v
                 h_s = T.alloc_shared([dim_k, block_v], accum_dtype)
                 summary_s = T.alloc_shared([dim_k, block_v], accum_dtype)
-                T.copy(initial_state[i_b, i_h, :, v_offset : v_offset + block_v], h_s)
+                if has_initial_state:
+                    T.copy(initial_state[i_b, i_h, :, v_offset : v_offset + block_v], h_s)
+                else:
+                    T.clear(h_s)
 
                 for i_p in T.Pipelined(num_partitions, num_stages=2):
                     for i_k, i_v in T.Parallel(dim_k, block_v):
@@ -383,19 +388,18 @@ class _PartitionFit(NamedTuple):
     min_ctas: int
 
 
-# A partition creates enough independent CTAs only for long calls. A board without an
-# entry keeps the serial-state kernel.
-_PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
-
-
 class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]
 
+    # A partition creates enough independent CTAs only for long calls. A board without an
+    # entry keeps the serial-state kernel.
+    _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
+
     @classmethod
     def refusal(cls, call: GLACall) -> Optional[str]:
-        fit = _PARTITION_FITS.get(call.calibration)
+        fit = cls._PARTITION_FITS.get(call.calibration)
         if fit is None:
             return "has no partition fit for this board"
         reason = dense_refusal(call)
@@ -419,6 +423,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             heads=call.heads,
             dim_k=call.dim_k,
             dim_v=call.dim_v,
+            has_initial_state=call.has_initial_state,
         )
 
     def __init__(
@@ -430,9 +435,10 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         dim_v: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
-        del device_index
+        self.has_initial_state = has_initial_state
         if seq_len % (64 * 16):
             raise ValueError("partitioned GLA requires T divisible by 1024")
         if dim_k not in (64, 128) or dim_v not in (64, 128):
@@ -447,6 +453,10 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             scale=scale,
             output_final_state=True,
             dtype=dtype,
+        )
+
+        self._unread_state = torch.empty(
+            1, dtype=torch.float32, device=torch.device("cuda", device_index)
         )
 
     @property
@@ -499,6 +509,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             self.seq_len // (64 * partition_chunks),
             self.dim_k,
             self.dim_v,
+            has_initial_state=self.has_initial_state,
         )(config["scan_threads"])
         self._a_fn = gla_fwd_a_kernel(
             self.batch,
@@ -535,18 +546,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")
-        state = (
-            initial_state
-            if initial_state is not None
-            else torch.zeros(
-                self.batch,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                dtype=torch.float32,
-                device=q.device,
-            )
-        )
+        state = initial_state if self.has_initial_state else self._unread_state
         gate = self._g_fn(g)
         summaries, log_decays = self._summary_fn(k, v, gate)
         partition_states = self._scan_fn(summaries, log_decays, state)

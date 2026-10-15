@@ -5,12 +5,31 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
 from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
 __all__ = ["AvgPool3dKernel"]
+
+# Every kernel here reads through the same csrc header, so one flag list keys their caches.
+_JIT_FLAGS = ["-O3", "-DENABLE_BF16", *csrc_include("streaming_load.h")]
+
+
+def _by_divisor(total, divisor: int):
+    """``total / divisor`` as the float32 IEEE divide rounds it, without its slow-path branch.
+
+    A power of two is an exact multiply, which the compiler makes of the divide. Up to 97 in
+    magnitude, the float64 product with ``1 / divisor`` rounds to the IEEE quotient: checked
+    bit for bit for every float32 numerator on H200 at divisors 1 to 97. 98 is the first
+    divisor that differs: 39,896 positive numerators round differently, about half of them
+    normal and half subnormal. The divide's slow-path branch cost the ``divisor`` row
+    (2x24x10x20x22 bfloat16, divisor 7) one 32 ns tick on H200: 1.664 us against 1.632.
+    """
+    if abs(divisor) & (abs(divisor) - 1) == 0 or abs(divisor) > 97:
+        return total / T.cast(divisor, ACCUM_DTYPE)
+    return T.cast(T.cast(total, "float64") * T.cast(1.0 / divisor, "float64"), ACCUM_DTYPE)
 
 
 class _WideRun(NamedTuple):
@@ -66,16 +85,19 @@ def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
     one_divisor = window.whole_window_divides or window.divisor_override is not None
     divisor = window.divisor
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=_JIT_FLAGS)
     def _avg_pool3d_func(threads: int):
         # A compile-time truth when the launch divides, and the tail test drops out.
         block_full = total % threads == 0
+        # The clamped taps unroll, so a window past 32 of them keeps the serial loop; the
+        # window measured below has 12.
+        clamped_taps = not window_inside and one_divisor and kernel_d * kernel_h * kernel_w <= 32
 
         @T.macro
         def _store(total_val, od, oh, ow, out, row):
             """Store one output, taking its divisor from wherever this shape has it."""
             if one_divisor:
-                out[row, od, oh, ow] = T.cast(total_val / T.cast(divisor, ACCUM_DTYPE), dtype)
+                out[row, od, oh, ow] = T.cast(_by_divisor(total_val, divisor), dtype)
             else:
                 front = od * stride_d - pad_d
                 top = oh * stride_h - pad_h
@@ -109,23 +131,59 @@ def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
                         left = ow * stride_w - pad_w
                         total_val = T.alloc_var(T.float32)
                         total_val = T.cast(0.0, ACCUM_DTYPE)
-                        for kd in T.serial(kernel_d):
-                            for kh in T.serial(kernel_h):
-                                for kw in T.serial(kernel_w):
-                                    id_ = front + kd
-                                    ih = top + kh
-                                    iw = left + kw
-                                    # Tested where it is read, so the test predicates the
-                                    # load; hoisting it per axis makes it a branch.
-                                    if window_inside or (
-                                        (id_ >= 0)
-                                        and (id_ < d_in)
-                                        and (ih >= 0)
-                                        and (ih < h_in)
-                                        and (iw >= 0)
-                                        and (iw < w_in)
-                                    ):
-                                        total_val += T.cast(x[row, id_, ih, iw], ACCUM_DTYPE)
+                        if clamped_taps:
+                            # Every tap reads a clamped address, evict-last as Inductor's
+                            # loads are, and a select drops the outside ones: no load waits
+                            # on a predicate. With the branch-free divide, divisor
+                            # (2x24x10x20x22 bfloat16) took 1.632 us against 1.792 with
+                            # predicated loads (H200). ceil-video, whose divisor each output
+                            # computes, took 3.104 against 2.912 this way.
+                            for kd in T.unroll(kernel_d):
+                                for kh in T.unroll(kernel_h):
+                                    for kw in T.unroll(kernel_w):
+                                        id_ = front + kd
+                                        ih = top + kh
+                                        iw = left + kw
+                                        tap = T.call_extern(
+                                            dtype,
+                                            "tileops::load_evict_last",
+                                            T.address_of(
+                                                x[
+                                                    row,
+                                                    T.min(T.max(id_, 0), d_in - 1),
+                                                    T.min(T.max(ih, 0), h_in - 1),
+                                                    T.min(T.max(iw, 0), w_in - 1),
+                                                ]
+                                            ),
+                                        )
+                                        total_val += T.if_then_else(
+                                            (id_ >= 0)
+                                            and (id_ < d_in)
+                                            and (ih >= 0)
+                                            and (ih < h_in)
+                                            and (iw >= 0)
+                                            and (iw < w_in),
+                                            T.cast(tap, ACCUM_DTYPE),
+                                            T.cast(0.0, ACCUM_DTYPE),
+                                        )
+                        else:
+                            for kd in T.serial(kernel_d):
+                                for kh in T.serial(kernel_h):
+                                    for kw in T.serial(kernel_w):
+                                        id_ = front + kd
+                                        ih = top + kh
+                                        iw = left + kw
+                                        # Tested where it is read, so the test predicates the
+                                        # load; hoisting it per axis makes it a branch.
+                                        if window_inside or (
+                                            (id_ >= 0)
+                                            and (id_ < d_in)
+                                            and (ih >= 0)
+                                            and (ih < h_in)
+                                            and (iw >= 0)
+                                            and (iw < w_in)
+                                        ):
+                                            total_val += T.cast(x[row, id_, ih, iw], ACCUM_DTYPE)
                         _store(total_val, od, oh, ow, out, row)
 
         return _avg_pool3d_main
@@ -149,7 +207,7 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
     # The jit builder below may close over scalars only.
     run, vector_elems = _wide_run(window, dtype)
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=_JIT_FLAGS)
     def _avg_pool3d_wide_func(threads: int):
         span = run * stride_w
         groups = span // vector_elems
@@ -157,6 +215,30 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
         items = rows * out_d * out_h * runs_per_row
         # A compile-time truth when the launch divides, and the tail test drops out.
         block_full = items % threads == 0
+        whole_vector = vector_elems * dtype_itemsize(dtype) == VECTOR_ACCESS_BYTES
+        # Every (kd, kh) row of the run is read before the first add, so the reads are in
+        # flight together: video-2x2x2 float32 (1x32x16x56x56) took 3.775 us against 3.968
+        # reading a row at a time (H200). The rows a thread holds bound the registers, so a
+        # window past 64 elements of them keeps reading a row at a time.
+        hoisted = kernel_d * kernel_h * span <= 64
+
+        @T.macro
+        def _load_row(held, base, x, row, d, h, left):
+            """One (d, h) row of the run into ``held`` from ``base``, evict-last in L2 where
+            a group is a whole 16-byte vector."""
+            for g in T.serial(groups):
+                if whole_vector:
+                    T.call_extern(
+                        "handle",
+                        "tileops::load16_evict_last",
+                        T.address_of(held[base + g * vector_elems]),
+                        T.address_of(x[row, d, h, left + g * vector_elems]),
+                    )
+                else:
+                    for v in T.vectorized(vector_elems):
+                        held[base + g * vector_elems + v] = x[
+                            row, d, h, left + g * vector_elems + v
+                        ]
 
         @T.prim_func
         def _avg_pool3d_main(
@@ -164,7 +246,7 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
             out: T.Tensor((rows, out_d, out_h, out_w), dtype),  # type: ignore
         ):
             with T.Kernel(T.ceildiv(items, threads), threads=threads) as tile:
-                held = T.alloc_local((span,), dtype)
+                held = T.alloc_local(((kernel_d * kernel_h if hoisted else 1) * span,), dtype)
                 sums = T.alloc_local((run,), ACCUM_DTYPE)
                 for i in T.Parallel(threads):
                     idx = tile * threads + i
@@ -180,24 +262,38 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
                         left = jr * span
                         for j in T.serial(run):
                             sums[j] = T.cast(0.0, ACCUM_DTYPE)
-                        for kd in T.serial(kernel_d):
-                            for kh in T.serial(kernel_h):
-                                # The run covers one contiguous stretch of the row, so
-                                # each (kd, kh) row it reads is one group of accesses.
-                                for g in T.serial(groups):
-                                    for v in T.vectorized(vector_elems):
-                                        held[g * vector_elems + v] = x[
-                                            row,
-                                            front + kd,
-                                            top + kh,
-                                            left + g * vector_elems + v,
-                                        ]
-                                for j in T.serial(run):
-                                    for kw in T.serial(kernel_w):
-                                        sums[j] += T.cast(held[j * stride_w + kw], ACCUM_DTYPE)
+                        if hoisted:
+                            for kd in T.unroll(kernel_d):
+                                for kh in T.unroll(kernel_h):
+                                    _load_row(
+                                        held,
+                                        (kd * kernel_h + kh) * span,
+                                        x,
+                                        row,
+                                        front + kd,
+                                        top + kh,
+                                        left,
+                                    )
+                            for kd in T.unroll(kernel_d):
+                                for kh in T.unroll(kernel_h):
+                                    for j in T.unroll(run):
+                                        for kw in T.unroll(kernel_w):
+                                            sums[j] += T.cast(
+                                                held[
+                                                    (kd * kernel_h + kh) * span + j * stride_w + kw
+                                                ],
+                                                ACCUM_DTYPE,
+                                            )
+                        else:
+                            for kd in T.serial(kernel_d):
+                                for kh in T.serial(kernel_h):
+                                    _load_row(held, 0, x, row, front + kd, top + kh, left)
+                                    for j in T.serial(run):
+                                        for kw in T.serial(kernel_w):
+                                            sums[j] += T.cast(held[j * stride_w + kw], ACCUM_DTYPE)
                         for j in T.serial(run):
                             out[row, od, oh, jr * run + j] = T.cast(
-                                sums[j] / T.cast(divisor, ACCUM_DTYPE), dtype
+                                _by_divisor(sums[j], divisor), dtype
                             )
 
         return _avg_pool3d_main

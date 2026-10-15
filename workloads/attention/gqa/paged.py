@@ -43,6 +43,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         pos_encoding_mode: str = "none",
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
     ) -> None:
         self.heads = heads
         self.heads_kv = heads_kv
@@ -62,6 +63,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.has_sinks = has_sinks
 
     @property
     def batch(self) -> int:
@@ -94,6 +96,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
             None,
             cos,
             sin,
+            torch.randn(self.heads, dtype=torch.float32, device=device) if self.has_sinks else None,
         )
 
     def ref_program(
@@ -109,6 +112,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         v_scale: torch.Tensor | None = None,
         rope_cos: torch.Tensor | None = None,
         rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Materialize each request's cached keys, then attend in FP32.
 
@@ -153,7 +157,9 @@ class GQAPagedFwdWorkload(WorkloadBase):
             if self.window_size_right >= 0:
                 visible &= k_pos[None, :] <= q_pos[:, None] + self.window_size_right
             scores = scores.masked_fill(~visible, float("-inf"))
-            probs = torch.softmax(scores, dim=-1).nan_to_num(0.0)
+            if sinks is not None:
+                scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
+            probs = torch.softmax(scores, dim=-1).nan_to_num(0.0)[..., :kv_len]
             outputs.append(torch.matmul(probs, v_b).transpose(0, 1))
         return torch.cat(outputs).to(self.out_dtype or q.dtype).contiguous()
 
@@ -195,6 +201,7 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
             pos_encoding_mode=params["pos_encoding_mode"],
             rotary_dim=params["rotary_dim"],
             rope_layout=params["rope_layout"],
+            has_sinks=call.present("sinks"),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:

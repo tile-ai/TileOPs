@@ -21,8 +21,10 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, vector_aligned
 from tileops.kernels.norm._config import (
+    _SHIFT_READ_WIDTH,
     make_row_reduce,
     make_shifted_row_reduce,
+    make_warp_row_norm,
     row_padding,
     select_row_config_by_width,
 )
@@ -31,7 +33,11 @@ from tileops.kernels.norm.call_spec import (
     InstanceNormFwdInterface,
     InstanceNormTrainFwdInterface,
 )
-from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.group_norm import (
+    GroupNormKernel,
+    GroupNormNoAffineKernel,
+)
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "InstanceNormFwdTrainKernel",
@@ -88,9 +94,97 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterfa
         return super().forward(x, weight, bias)
 
 
+def _instance_norm_train_warp_rows(
+    N, C, D, block_m, vec, eps, momentum, dtype, has_weight, has_bias
+):
+    """`_instance_norm_train_kernel`'s program with one warp a sample; see `make_warp_row_norm`.
+
+    The input is the ``(N * C, D)`` view: warp ``i`` of block ``(c, s)`` normalizes row
+    ``(s * block_m + i) * C + c``. A warp past the batch normalizes the last sample, stores
+    nothing and adds zero to the block's sums.
+    """
+    accum_dtype = "float32"
+    unbiased = D / (D - 1)
+    splits = -(-N // block_m)
+    held_n, reduce_row, write_row = make_warp_row_norm(D, dtype, eps, vec, True)
+
+    @T.prim_func
+    def main(
+        x: T.Tensor[(N * C, D), dtype],
+        running_mean: T.Tensor[(C,), accum_dtype],
+        running_var: T.Tensor[(C,), accum_dtype],
+        weight: T.Tensor[(C,), dtype],
+        bias: T.Tensor[(C,), dtype],
+        partial: T.Tensor[(splits, 2, C), accum_dtype],
+        y: T.Tensor[(N * C, D), dtype],
+    ):
+        with T.Kernel(C, splits, threads=block_m * WARP_LANES) as (c, s):
+            tx = T.get_thread_binding()
+            n = s * block_m + tx // WARP_LANES
+            row = T.min(n, N - 1) * C + c
+            scale = T.alloc_local((1,), accum_dtype)
+            shift = T.alloc_local((1,), accum_dtype)
+            old_mean = T.alloc_local((1,), accum_dtype)
+            old_var = T.alloc_local((1,), accum_dtype)
+            held = T.alloc_local((held_n,), dtype)
+            stats = T.alloc_local((4,), accum_dtype)
+            update = T.alloc_local((2,), accum_dtype)
+            block_sums = T.alloc_shared((2, block_m), accum_dtype)
+            # Ahead of the row load, so these reads are in flight while it runs.
+            scale[0] = T.cast(weight[c], accum_dtype) if has_weight else T.float32(1.0)
+            shift[0] = T.cast(bias[c], accum_dtype) if has_bias else T.float32(0.0)
+            old_mean[0] = T.cast(T.cast(running_mean[c], dtype), accum_dtype)
+            old_var[0] = T.cast(T.cast(running_var[c], dtype), accum_dtype)
+            reduce_row(x, row, held, stats)
+            # This sample's update, rounded as the running statistics are, ahead of the
+            # output pass: computed after it, the compiler moved the two running-statistics
+            # loads down to here, a DRAM round trip on every block's last path.
+            update[0] = T.if_then_else(
+                n < N,
+                T.cast(
+                    T.cast(
+                        momentum * (stats[0] + stats[1]) + (1.0 - momentum) * old_mean[0], dtype
+                    ),
+                    accum_dtype,
+                ),
+                T.float32(0.0),
+            )
+            update[1] = T.if_then_else(
+                n < N,
+                T.cast(
+                    T.cast(momentum * unbiased * stats[2] + (1.0 - momentum) * old_var[0], dtype),
+                    accum_dtype,
+                ),
+                T.float32(0.0),
+            )
+            write_row(y, row, n < N, held, stats, scale, shift)
+
+            # After the output pass: placed before it, the barrier holds back every warp's
+            # stores.
+            if tx % WARP_LANES == 0:
+                block_sums[0, tx // WARP_LANES] = update[0]
+                block_sums[1, tx // WARP_LANES] = update[1]
+            T.sync_threads()
+            if tx == 0:
+                total_mean = T.alloc_var(accum_dtype, init=0.0)
+                total_var = T.alloc_var(accum_dtype, init=0.0)
+                for i in T.unroll(block_m):
+                    total_mean = total_mean + block_sums[0, i]
+                    total_var = total_var + block_sums[1, i]
+                if splits == 1:
+                    # The batch mean as torch's mean takes it, by the reciprocal.
+                    running_mean[c] = T.cast(T.cast(total_mean * (1.0 / N), dtype), accum_dtype)
+                    running_var[c] = T.cast(T.cast(total_var * (1.0 / N), dtype), accum_dtype)
+                else:
+                    partial[s, 0, c] = total_mean
+                    partial[s, 1, c] = total_var
+
+    return main
+
+
 @functools.lru_cache(maxsize=32)
 def _instance_norm_train_kernel(
-    N, C, D, block_m, register_direct, eps, momentum, dtype, has_weight, has_bias
+    N, C, D, block_m, register_direct, warp_vec, eps, momentum, dtype, has_weight, has_bias
 ):
     """Build the kernel normalizing by instance statistics and updating the running ones.
 
@@ -104,6 +198,8 @@ def _instance_norm_train_kernel(
         D: Elements per instance, ``prod(spatial)``; above one.
         block_m: Samples of one channel one block normalizes.
         register_direct: Whether a row is read from global memory into fragments.
+        warp_vec: Vector width of the one-warp-a-sample program, or ``None``. That program
+            takes the ``(N * C, D)`` view of the input and returns that of the output.
         eps: Epsilon for numerical stability.
         momentum: Weight of an instance's statistics in its update.
         dtype: TileLang dtype string of the input.
@@ -116,6 +212,10 @@ def _instance_norm_train_kernel(
 
     @tilelang.jit(out_idx=[6])
     def _func(threads):
+        if warp_vec is not None:
+            return _instance_norm_train_warp_rows(
+                N, C, D, block_m, warp_vec, eps, momentum, dtype, has_weight, has_bias
+            )
         splits = -(-N // block_m)
         guarded = D_padded != D or N % block_m != 0
         # Row i of the (block_m, D_padded) fragment lives on its own group of
@@ -131,7 +231,8 @@ def _instance_norm_train_kernel(
             forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
             forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
         )
-        if register_direct:
+        shifted = register_direct and D_padded < _SHIFT_READ_WIDTH
+        if shifted:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:
             row_reduce = make_row_reduce(block_m, D, D_padded, eps)
@@ -150,8 +251,9 @@ def _instance_norm_train_kernel(
                 if register_direct:
                     centered_row = T.alloc_fragment((block_m, D_padded), accum_dtype)
                     squares = T.alloc_fragment((block_m, D_padded), accum_dtype)
-                    shift = T.alloc_fragment((block_m,), accum_dtype)
-                    acc_squares = T.alloc_fragment((block_m,), accum_dtype)
+                    if shifted:
+                        shift = T.alloc_fragment((block_m,), accum_dtype)
+                        acc_squares = T.alloc_fragment((block_m,), accum_dtype)
                     T.annotate_layout({centered_row: row_layout, squares: row_layout})
                 else:
                     shared_buf = T.alloc_shared((block_m, D_padded), dtype)
@@ -173,23 +275,30 @@ def _instance_norm_train_kernel(
                 if register_direct:
                     # The shift the one-pass reduction needs; a row past the last
                     # sample reads the last one.
-                    for i in T.Parallel(block_m):
-                        shift[i] = T.cast(x[T.min(s * block_m + i, N - 1), c, 0], accum_dtype)
+                    if shifted:
+                        for i in T.Parallel(block_m):
+                            shift[i] = T.cast(x[T.min(s * block_m + i, N - 1), c, 0], accum_dtype)
                     if guarded:
                         for i, j in T.Parallel(block_m, D_padded):
                             v = T.if_then_else(
                                 T.And(s * block_m + i < N, j < D),
-                                T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i],
+                                T.cast(x[s * block_m + i, c, j], accum_dtype)
+                                - (shift[i] if shifted else 0.0),
                                 T.cast(0.0, accum_dtype),
                             )
                             centered_row[i, j] = v
-                            squares[i, j] = v * v
+                            squares[i, j] = v * v if shifted else v
                     else:
                         for i, j in T.Parallel(block_m, D_padded):
-                            v = T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i]
+                            v = T.cast(x[s * block_m + i, c, j], accum_dtype) - (
+                                shift[i] if shifted else 0.0
+                            )
                             centered_row[i, j] = v
-                            squares[i, j] = v * v
-                    row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
+                            squares[i, j] = v * v if shifted else v
+                    if shifted:
+                        row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
+                    else:
+                        row_reduce(squares, acc, mean_val, rstd)
                 else:
                     for i, j in T.Parallel(block_m, D_padded):
                         shared_buf[i, j] = T.if_then_else(
@@ -218,7 +327,7 @@ def _instance_norm_train_kernel(
                         )
 
                 for i in T.Parallel(block_m):
-                    if register_direct:
+                    if shifted:
                         mean_i = shift[i] + mean_val[i]
                         var_i = acc_squares[i] / float(D) - mean_val[i] * mean_val[i]
                     else:
@@ -253,8 +362,9 @@ def _instance_norm_train_kernel(
                         total_mean = total_mean + block_sums[0, i]
                         total_var = total_var + block_sums[1, i]
                     if splits == 1:
-                        running_mean[c] = T.cast(T.cast(total_mean / float(N), dtype), accum_dtype)
-                        running_var[c] = T.cast(T.cast(total_var / float(N), dtype), accum_dtype)
+                        # The batch mean as torch's mean takes it, by the reciprocal.
+                        running_mean[c] = T.cast(T.cast(total_mean * (1.0 / N), dtype), accum_dtype)
+                        running_var[c] = T.cast(T.cast(total_var * (1.0 / N), dtype), accum_dtype)
                     else:
                         partial[s, 0, c] = total_mean
                         partial[s, 1, c] = total_var
@@ -295,8 +405,9 @@ def _instance_norm_stats_kernel(N, C, splits, dtype):
                     for s in T.serial(splits):
                         total_mean = total_mean + partial[s, 0, c]
                         total_var = total_var + partial[s, 1, c]
-                    running_mean[c] = T.cast(T.cast(total_mean / float(N), dtype), accum_dtype)
-                    running_var[c] = T.cast(T.cast(total_var / float(N), dtype), accum_dtype)
+                    # The batch mean as torch's mean takes it, by the reciprocal.
+                    running_mean[c] = T.cast(T.cast(total_mean * (1.0 / N), dtype), accum_dtype)
+                    running_var[c] = T.cast(T.cast(total_var * (1.0 / N), dtype), accum_dtype)
 
         return main
 
@@ -333,13 +444,17 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         """Samples of one channel one block normalizes: a power of two, at most the batch.
 
         One for a shared-staged row: a staged block of several rows collapses its layout.
+        A row one warp holds takes one warp.
         """
         padded = row_padding(spatial, dtype.itemsize)
         if not cls._holds_row_in_registers(spatial, padded):
             return 1
-        row_threads = select_row_config_by_width(padded, cls._row_widths_for(spatial, padded))[
-            "threads"
-        ]
+        if cls._warp_row_vector_for(spatial, dtype) is not None:
+            row_threads = WARP_LANES
+        else:
+            row_threads = select_row_config_by_width(padded, cls._row_widths_for(spatial, padded))[
+                "threads"
+            ]
         cap = min(n, cls._MAX_BLOCK_M, cls._MAX_THREADS // row_threads)
         block_m = 1
         while block_m * 2 <= cap:
@@ -382,10 +497,15 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
 
     @property
     def default_config(self) -> dict:
+        if self._warp_row_vector() is not None:
+            return {"threads": self.block_m * WARP_LANES}
         return {"threads": self.block_m * super().default_config["threads"]}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self._warp_row_vector() is not None:
+            # One warp a sample; the block holds block_m of them.
+            return [self.default_config]
         return [
             {"threads": self.block_m * t}
             for t in self._row_widths
@@ -403,12 +523,17 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
             placeholder = torch.empty(self.C, dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight
             bias = placeholder if bias is None else bias
+        warp_vec = self._warp_row_vector()
+        shape = x.shape
+        if warp_vec is not None:
+            x = x.reshape(-1, self.D)
         self.kernel = _instance_norm_train_kernel(
             self.N,
             self.C,
             self.D,
             self.block_m,
             self._holds_row_in_registers(self.D, self.D_padded),
+            warp_vec,
             self.eps,
             self.momentum,
             self.dtype_str,
@@ -421,7 +546,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         splits = -(-self.N // self.block_m)
         partial = torch.empty((splits, 2, self.C), dtype=torch.float32, device=x.device)
         y = self.kernel(**self.config)(x, running_mean, running_var, weight, bias, partial)
-        return y, partial
+        return y.reshape(shape), partial
 
     def forward(
         self,

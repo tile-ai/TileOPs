@@ -10,6 +10,28 @@ from workloads.workload_base import WorkloadBase
 W4A16_GROUP_SIZE = 128
 
 
+def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GemmFwdOp`` accumulates.
+
+    torch lets cuBLAS reduce split-K partials in the 16-bit input dtype by default; on
+    256x21843x1024 bf16 that put 23% of outputs more than one ulp off the exact product.
+    """
+    flags = torch.backends.cuda.matmul
+    saved = (
+        flags.allow_fp16_reduced_precision_reduction,
+        flags.allow_bf16_reduced_precision_reduction,
+    )
+    flags.allow_fp16_reduced_precision_reduction = False
+    flags.allow_bf16_reduced_precision_reduction = False
+    try:
+        return torch.matmul(a, b)
+    finally:
+        (
+            flags.allow_fp16_reduced_precision_reduction,
+            flags.allow_bf16_reduced_precision_reduction,
+        ) = saved
+
+
 class GemmWorkload(WorkloadBase):
     def __init__(
         self,
@@ -52,7 +74,7 @@ class GemmWorkload(WorkloadBase):
             a = a.T
         if self.trans_b:
             b = b.T
-        return torch.matmul(a, b)
+        return matmul_fp32_reduction(a, b)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact

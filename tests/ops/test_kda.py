@@ -121,15 +121,16 @@ def test_kda_prefill_scans_independent_value_tiles() -> None:
 
 @pytest.mark.sm89
 @pytest.mark.in_tree_kernels
-def test_kda_prefill_refuses_offsets_99_kb_cannot_hold() -> None:
-    """SM89 gives a block 99 KB of opt-in shared memory, and the programs hold every
-    sequence's offset, so 2048 sequences at head dim 128 are refused before anything is built."""
+def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
+    """Fused blocks read their own boundaries without staging every sequence offset."""
+    from tileops.kernels.linear_attention.kda.prefill_fused import KDAFusedPrefillFwdKernel
+
+    torch.manual_seed(42)
     test = KDAFwdTest(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(4,) * 2048)
     op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
-    with pytest.raises(ValueError, match="bytes of shared memory for 2048 sequences"):
-        op(*test.gen_inputs())
-    for interface in KDAFwdOp.interfaces:
-        assert not op.built_entries(interface)
+    test.check(op, *test.gen_inputs())
+    kernels = list(op.iter_kernels())
+    assert kernels and all(isinstance(kernel, KDAFusedPrefillFwdKernel) for kernel in kernels)
 
 
 @pytest.mark.sm90
@@ -166,3 +167,39 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
     )
     with pytest.raises(ValueError, match=reason):
         KDAFwdOp().key_for("kda", call)
+
+
+@pytest.mark.sm89
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("dim", [64, 128])
+def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
+    """Cover the device with fused blocks while checking output and carried state."""
+    from tileops.kernels.linear_attention.kda.prefill_fused import KDAFusedPrefillFwdKernel
+
+    torch.manual_seed(42)
+    test = KDAFwdTest(16, 256, 16, dim, dtype)
+    op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
+    test.check(op, *test.gen_inputs())
+    kernels = list(op.iter_kernels())
+    assert kernels and all(isinstance(kernel, KDAFusedPrefillFwdKernel) for kernel in kernels)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("batch,heads", [(1, 4), (16, 16)], ids=["chunk", "fused"])
+def test_kda_prefill_correlated_keys(dtype, batch, heads):
+    """Repeated keys must not destabilize the inverse, including a partial chunk."""
+    torch.manual_seed(42)
+    workload = KDAFwdTest(batch, 65, heads, 128, dtype)
+    q, k, v, g, beta, state = workload.gen_inputs()
+    inputs = (
+        q,
+        k[:, :1].expand_as(k).contiguous(),
+        v,
+        torch.full_like(g, -0.01),
+        torch.full_like(beta, 0.95),
+        state,
+    )
+    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)

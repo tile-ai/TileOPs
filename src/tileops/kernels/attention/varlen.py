@@ -33,6 +33,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
             max_position=call.max_position if call.max_position is not None else 1,
             rotary_dim=call.rotary_dim if call.rotary_dim else call.dim,
             rope_layout=call.rope_layout,
+            has_sinks=call.has_sinks,
             device_index=call.device.index if call.device is not None else None,
         )
         return tuple(args.values()), lambda: cls(**args)
@@ -57,10 +58,17 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         config: Optional[dict] = None,
         *,
         device_index: Optional[int] = None,
+        has_sinks: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
+        self.has_sinks = has_sinks
+        self._unused_sinks = (
+            torch.empty(heads, dtype=torch.float32, device=torch.device("cuda", self.device_index))
+            if not has_sinks
+            else None
+        )
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -115,8 +123,12 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         """Return the dynamic TileLang program factory owned by this kernel."""
         raise NotImplementedError
 
-    def _make_supply_prog(self) -> Callable:
-        """Supply valid packed tensors and cumulative lengths while autotuning."""
+    def _make_supply_prog(self, *, with_sink_input: bool = True) -> Callable:
+        """Supply valid packed tensors matching the program's input interface.
+
+        Sink-capable programs retain their sink input even when the call omits sinks.
+        A program without that parameter opts out independently of ``has_sinks``.
+        """
         from tilelang.utils.device import get_current_device
 
         batch = self.batch
@@ -131,13 +143,12 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         total = batch * tokens_per_request
         rope_rows = self.max_position
         rope_half = self.rotary_dim // 2
-        expected = 7 if self.fuse_rope else 5
+        expected = 5 + 2 * int(self.fuse_rope) + int(with_sink_input)
 
         def supply_prog(params):
             if len(params) != expected:
                 raise RuntimeError(
-                    f"autotuning {type(self).__name__} expects q, k, v, two "
-                    f"cumulative-length inputs and the RoPE tables it was built with, "
+                    f"autotuning {type(self).__name__} expects {expected} input parameters, "
                     f"got {len(params)} parameters"
                 )
             device = get_current_device()
@@ -155,9 +166,11 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
                 cu_seqlens,
                 cu_seqlens.clone(),
             ]
-            if expected == 7:
+            if self.fuse_rope:
                 angles = torch.randn(rope_rows, rope_half, device=device)
                 supplied += [angles.cos().to(dtype), angles.sin().to(dtype)]
+            if with_sink_input:
+                supplied.append(torch.randn(heads, dtype=torch.float32, device=device))
             return supplied
 
         return supply_prog

@@ -401,7 +401,7 @@ def decode_verification(dtype):
 
 
 def inference_verification(dtype, *, decode=False, l2norm=False):
-    from workloads.numerics import Custom, assert_close, assert_rounded
+    from workloads.numerics import Custom, assert_close, assert_normalized_error, assert_rounded
 
     # FLA materializes normalized Q/K in the input dtype; our fused decode
     # keeps them in FP32. That path includes input rounding, even for one token.
@@ -423,6 +423,10 @@ def inference_verification(dtype, *, decode=False, l2norm=False):
     def validate(got, expected):
         assert_close(got[0], expected[0], atol=tol, rtol=tol)
         assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
+        if not decode:
+            # The bfloat16 bound exceeds the small prefill outputs, so a zeroed output
+            # would pass it; the normalized-error budget rejects a cleared tensor.
+            assert_normalized_error(got, expected)
 
     return Custom(validate, "output and accumulated FP32 state")
 

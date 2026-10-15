@@ -45,14 +45,7 @@ from tileops.kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumFw
 
 __all__ = ["SSDChunkCumsumFwdKernel"]
 
-_ROW_PAD = 4
-_MAX_SHARED_BYTES = STATIC_SHARED_BYTES
 _DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
-
-
-def _shared_bytes(block_h: int, chunk_len: int) -> int:
-    """Bytes a block's shared tiles take, bounding the run sums by a quarter row."""
-    return block_h * ((chunk_len + _ROW_PAD) * 4 + chunk_len)
 
 
 @functools.lru_cache(maxsize=32)
@@ -63,6 +56,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     n_heads: int,
     seq_len: int,
     dtype: str,
+    row_pad: int,
     dt_softplus: bool = False,
     has_dt_bias: bool = False,
     dt_min: float = 0.0,
@@ -82,7 +76,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     Rows past ``n_heads`` read a clamped head and are never stored.
 
     ``block_h`` (heads per CTA) and ``threads`` are supplied by the returned
-    ``kernel_func``.
+    ``kernel_func``; ``row_pad`` is the shared row's pad past ``chunk_len``.
     """
     accum_dtype = "float"
 
@@ -91,7 +85,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     Q = chunk_len
     H = n_heads
     S = seq_len
-    row_stride = Q + _ROW_PAD
+    row_stride = Q + row_pad
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
@@ -191,8 +185,16 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
     """
 
-    @staticmethod
-    def _head_tile(n_heads: int, chunk_len: int) -> int:
+    # Pad of a shared row past chunk_len, a multiple of 4; ``_head_tile`` says why.
+    _ROW_PAD = 4
+
+    @classmethod
+    def _shared_bytes(cls, block_h: int, chunk_len: int) -> int:
+        """Bytes a block's shared tiles take, bounding the run sums by a quarter row."""
+        return block_h * ((chunk_len + cls._ROW_PAD) * 4 + chunk_len)
+
+    @classmethod
+    def _head_tile(cls, n_heads: int, chunk_len: int) -> int:
         """Widest power-of-two head tile the heads and the shared budget allow, at most eight.
 
         A row stride of ``chunk_len + _ROW_PAD`` puts head ``h`` and position ``p`` on bank
@@ -201,7 +203,9 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         row keeps its 16-byte vectors.
         """
         tile = 8
-        while tile > 1 and (tile > n_heads or _shared_bytes(tile, chunk_len) > _MAX_SHARED_BYTES):
+        while tile > 1 and (
+            tile > n_heads or cls._shared_bytes(tile, chunk_len) > STATIC_SHARED_BYTES
+        ):
             tile //= 2
         return tile
 
@@ -266,6 +270,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
             n_heads,
             seq_len,
             self.dtype_str,
+            self._ROW_PAD,
             dt_softplus,
             has_dt_bias,
             dt_min,
@@ -285,7 +290,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         for bh in [1, 2, 4, 8, 16]:
             if bh > self.n_heads:
                 break
-            if _shared_bytes(bh, self.chunk_len) > _MAX_SHARED_BYTES:
+            if self._shared_bytes(bh, self.chunk_len) > STATIC_SHARED_BYTES:
                 break
             for threads in [128, 256, 512, 1024]:
                 if threads > bh * self.chunk_len:

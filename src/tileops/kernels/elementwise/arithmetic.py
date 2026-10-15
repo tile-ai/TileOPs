@@ -13,6 +13,7 @@ from tileops.kernels.elementwise._base import (
     BinaryKernel,
     MultiInputElementwiseKernel,
 )
+from tileops.kernels.elementwise._division import float32_quotient, full_range_fdiv
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
@@ -75,47 +76,11 @@ class MulFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return a * b
 
 
-def _approx_fdiv(num, den):
-    """CUDA's ``__fdividef``: one ``div.approx.f32``, two ulp, defined for a
-    divisor in ``[2**-126, 2**126]``.
-
-    float16 spans ``[2**-24, 2**16]`` and rounds its result to eleven bits, so
-    it meets both bounds. bfloat16 carries float32's exponent and a float32
-    result keeps all 24 bits.
-    """
-    return T.call_extern("float32", "__fdividef", num, den)
-
-
-def _full_range_fdiv(num, den):
-    """PTX's ``div.full.f32``: two ulp for every float32 divisor.
-
-    It runs ``_approx_fdiv`` on both operands scaled by a power of two that brings
-    the divisor into that function's range. Rounded to bfloat16 it gives the IEEE
-    quotient's bfloat16 for every pair of bfloat16 operands, all 2**32 checked
-    against torch. An IEEE divide costs a range check and a branch per element.
-    """
-
-    def scaled(magnitude):
-        big = T.cast(2.0**126, "float32")
-        scale = tirx.Select(
-            magnitude > big,
-            T.cast(0.25, "float32"),
-            tirx.Select(
-                magnitude < T.cast(2.0**-126, "float32"),
-                T.cast(2.0**24, "float32"),
-                T.cast(1.0, "float32"),
-            ),
-        )
-        return bound(scale, lambda s: _approx_fdiv(num * s, den * s))
-
-    return bound(T.abs(den), scaled)
-
-
 class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
-    float16 takes ``_approx_fdiv`` and bfloat16 ``_full_range_fdiv``.
+    float16 takes ``approx_fdiv`` and bfloat16 ``full_range_fdiv``.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -134,11 +99,7 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     @staticmethod
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)
-        if str(a.dtype) == "float16":
-            return T.Cast(a.dtype, _approx_fdiv(num, den))
-        if str(a.dtype) == "bfloat16":
-            return T.Cast(a.dtype, _full_range_fdiv(num, den))
-        return T.Cast(a.dtype, num / den)
+        return T.Cast(a.dtype, float32_quotient(str(a.dtype), num, den))
 
 
 class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
@@ -147,7 +108,7 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     torch rounds the quotient to the input dtype before truncating it, so a
     float16 ``299.9`` is ``300`` and truncates to ``300``. A float32 divide is IEEE:
     fast math's would leave an exact whole quotient one ulp short of it. A 16-bit
-    one takes ``_full_range_fdiv``: truncated, it matches torch for all 2**32
+    one takes ``full_range_fdiv``: truncated, it matches torch for all 2**32
     operand pairs of either dtype.
     """
 
@@ -167,7 +128,7 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     @staticmethod
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)
-        divide = T.ieee_fdiv if str(a.dtype) == "float32" else _full_range_fdiv
+        divide = T.ieee_fdiv if str(a.dtype) == "float32" else full_range_fdiv
         quotient = T.Cast(a.dtype, divide(num, den))
         return T.Cast(a.dtype, T.trunc(T.Cast("float32", quotient)))
 
@@ -206,8 +167,6 @@ def _floored_quotient(num, den, limit, fast_body):
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
 _NUDGED_QUOTIENT = {"float16": float(1 << 8), "bfloat16": float(1 << 11)}
-# Twice the relative error of ``_approx_fdiv``.
-_NUDGE = 2.0**-21
 
 
 def _nudged_floor(num, den, dtype, fast_body):
@@ -224,6 +183,8 @@ def _nudged_floor(num, den, dtype, fast_body):
     ``T.fast_rcp`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
+    # Twice the relative error of ``approx_fdiv``.
+    nudge = 2.0**-21
     # One reciprocal serves every element that shares b. ``T.fast_rcp`` is one MUFU.RCP,
     # two ulp for a normal b whose reciprocal is normal; it reads a subnormal b as a zero
     # and returns an infinity, and returns a zero for a reciprocal that would be
@@ -231,7 +192,7 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient = num * T.fast_rcp(den)
 
     def value(q):
-        nudged = T.ieee_fmaf(T.abs(q), T.cast(_NUDGE, "float32"), q)
+        nudged = T.ieee_fmaf(T.abs(q), T.cast(nudge, "float32"), q)
         return fast_body(T.floor(nudged), q)
 
     holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
@@ -352,12 +313,6 @@ class PowFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return T.Cast(a.dtype, T.if_then_else(expo == zero, one, out))
 
 
-# Below this quotient ``a - fmod(a, b)`` is a whole multiple of b exact in float32,
-# so torch's divide returns the whole quotient itself: its significand and b's fit
-# 24 bits together.
-_EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
-
-
 class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise floor division: y = floor(a / b), as torch defines it.
 
@@ -412,7 +367,11 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
             # ``floor(a / b)`` has the sign of ``a / b``, which ``q`` carries, zero included.
             return T.copysign(k, q)
 
-        limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
+        # Below this quotient ``a - fmod(a, b)`` is a whole multiple of b exact in float32,
+        # so torch's divide returns the whole quotient itself: its significand and b's fit
+        # 24 bits together.
+        exact_multiple_quotient = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
+        limit = exact_multiple_quotient.get(str(dtype), _FAST_QUOTIENT)
         return _floored_tiers(num, den, dtype, limit, whole), slow()
 
     SUPPORTED_DTYPES = FLOAT_DTYPES

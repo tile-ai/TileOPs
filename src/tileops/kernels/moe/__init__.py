@@ -7,6 +7,8 @@ from tileops.kernels.moe.call_spec import (
     IndexedRouteStatsFwdInterface,
     IndexedWeightedReduceFwdInterface,
     MGroupedGemmCall,
+    MGroupedGemmFP8Call,
+    MGroupedGemmFP8FwdInterface,
     MGroupedGemmFwdInterface,
     PermuteAlignCall,
     PermuteAlignFwdInterface,
@@ -26,6 +28,7 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedWeightedReduceKernel,
 )
 from tileops.kernels.moe.moe_grouped_gemm import MoEGroupedGemmKernel, MoEGroupedGemmMMAKernel
+from tileops.kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGemmFP8Kernel
 from tileops.kernels.moe.permute_align import MoEPermuteAlignKernel
 from tileops.kernels.moe.permute_contiguous import MoEPrePermuteContiguousKernel
 from tileops.kernels.moe.shared_expert_mlp import SharedExpertMLPKernel
@@ -46,7 +49,10 @@ __all__ = [
     "IndexedWeightedReduceFwdInterface",
     "IndexedWeightedReduceKernel",
     "MGroupedGemmCall",
+    "MGroupedGemmFP8Call",
+    "MGroupedGemmFP8FwdInterface",
     "MGroupedGemmFwdInterface",
+    "MoEGroupedGemmFP8Kernel",
     "MoEGroupedGemmKernel",
     "MoEGroupedGemmMMAKernel",
     "MoEPermuteAlignKernel",

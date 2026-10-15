@@ -16,6 +16,7 @@ from tileops.kernels.attention.gqa.decode_bs1 import GQADecodeBs1Kernel
 from tileops.kernels.attention.gqa.decode_fp8 import GQADenseFP8DecodeKernel
 from tileops.kernels.attention.gqa.dense import GQADenseSlidingWindowKernel, GQADenseWSKernel
 from tileops.kernels.attention.gqa.dense_fp8 import GQADenseFP8Kernel
+from tileops.kernels.attention.gqa.dense_prefill import GQADensePrefillFwdKernel
 from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
 from tileops.kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 from tileops.kernels.attention.gqa.paged_decode_bs1 import GQADecodePagedBs1Kernel
@@ -39,9 +40,13 @@ from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
 from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKernel
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
-from tileops.kernels.attention.nsa.compressed_varlen import NSACompressedFwdVarlenKernel
+from tileops.kernels.attention.nsa.compressed_varlen import (
+    NSACompressedFwdVarlenKernel,
+    NSACompressedFwdVarlenTMAKernel,
+)
 from tileops.kernels.attention.nsa.topk_varlen import NSATopKVarlenKernel
 from tileops.kernels.attention.nsa.varlen import NSAFwdVarlenKernel, NSAFwdVarlenTMAKernel
+from tileops.kernels.attention.paged_cache_write import PagedKVCacheWriteKernel
 from tileops.kernels.attention.topk_select import (
     TopKSelectCall,
     TopKSelectFwdInterface,
@@ -67,6 +72,7 @@ __all__ = [
     "GQADecodePagedKernel",
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
+    "GQADensePrefillFwdKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseWSKernel",
     "GQAPagedFwdKernel",
@@ -88,9 +94,11 @@ __all__ = [
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
     "NSACompressedFwdVarlenKernel",
+    "NSACompressedFwdVarlenTMAKernel",
     "NSAFwdVarlenKernel",
     "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
+    "PagedKVCacheWriteKernel",
     "TopKSelectCall",
     "TopKSelectFwdInterface",
     "TopKSelectKernel",

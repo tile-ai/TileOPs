@@ -32,11 +32,8 @@ __all__ = [
 # Blocks per SM a split aims for; under this the grid runs the device empty.
 SPLIT_BLOCKS_PER_SM = 2
 
-# Rows shorter than this cannot amortize the fold pass. Measured threshold,
-# not derived: below it the second launch outweighs the extra blocks.
-_SPLIT_MIN_AMORTIZED_COLS = 16384
-
-# Widest segment a partials block holds in its fragment.
+# Widest segment a partials block holds in its fragment. split_seg_n caps a segment
+# and edge_split_view admits a row by it, so the two must agree.
 _SPLIT_MAX_SEG_COLS = FRAGMENT_ELEMS_PER_THREAD * DEFAULT_THREADS
 
 
@@ -48,8 +45,11 @@ def split_seg_n(M: int, N: int, block_m: int, sm_count: int) -> int:
     count targets ``SPLIT_BLOCKS_PER_SM`` blocks per SM and the width stays aligned and
     within the fragment cap.
     """
+    # Rows shorter than this cannot amortize the fold pass. Measured threshold,
+    # not derived: below it the second launch outweighs the extra blocks.
+    split_min_amortized_cols = 16384
     target_blocks = SPLIT_BLOCKS_PER_SM * sm_count
-    if align_up(N, DEFAULT_ALIGNMENT) < _SPLIT_MIN_AMORTIZED_COLS:
+    if align_up(N, DEFAULT_ALIGNMENT) < split_min_amortized_cols:
         return 0
     if ceildiv_int(M, block_m) >= target_blocks:
         return 0

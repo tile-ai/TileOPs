@@ -30,6 +30,12 @@ __all__ = [
 ]
 
 
+# ``_RADIX_PLAN``, ``_FOUR_STEP_PLAN``, ``_FOUR_STEP_TILE`` and ``_NARROW_PLAN`` are the
+# inputs of ``FFT_PLANS`` and ``FFT_NARROW_PLANS``, which ``FFTC2COneCTAKernel`` and
+# ``FFTC2CFourStepKernel`` both select from: a (n, dtype) key in ``_FOUR_STEP_PLAN`` or
+# ``_NARROW_PLAN`` takes that length from the one-CTA kernel on the architectures the
+# decomposed record serves, so the tables must agree across both kernels.
+
 # n -> the radices of the one-CTA plan's passes.
 _RADIX_PLAN = {
     2: (2,),

@@ -19,20 +19,6 @@ __all__ = [
     "GroupedGemmKernel",
 ]
 
-# Default configs per layout variant (transpose_a, transpose_b)
-_DEFAULT_CONFIGS = {
-    (False, True): {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 128},
-    (False, False): {
-        "block_m": 128,
-        "block_n": 128,
-        "block_k": 32,
-        "num_stages": 2,
-        "threads": 128,
-    },
-    (True, False): {"block_m": 32, "block_n": 128, "block_k": 128, "num_stages": 2, "threads": 128},
-    (True, True): {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 128},
-}
-
 
 @functools.lru_cache(maxsize=32)
 def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b, dtype="float16"):
@@ -190,6 +176,37 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
+    # Default configs per layout variant (transpose_a, transpose_b)
+    _DEFAULT_CONFIGS = {
+        (False, True): {
+            "block_m": 64,
+            "block_n": 256,
+            "block_k": 64,
+            "num_stages": 2,
+            "threads": 128,
+        },
+        (False, False): {
+            "block_m": 128,
+            "block_n": 128,
+            "block_k": 32,
+            "num_stages": 2,
+            "threads": 128,
+        },
+        (True, False): {
+            "block_m": 32,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 2,
+            "threads": 128,
+        },
+        (True, True): {
+            "block_m": 64,
+            "block_n": 256,
+            "block_k": 64,
+            "num_stages": 2,
+            "threads": 128,
+        },
+    }
 
     @classmethod
     def entry_for(cls, call: GroupedGemmCall) -> Entry:
@@ -276,7 +293,7 @@ class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return _DEFAULT_CONFIGS[(self.transpose_a, self.transpose_b)]
+        return self._DEFAULT_CONFIGS[(self.transpose_a, self.transpose_b)]
 
     @property
     def autotune_configs(self) -> list[dict]:

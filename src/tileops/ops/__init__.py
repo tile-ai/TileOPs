@@ -15,6 +15,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSATopKVarlenFwdOp,
         NSAVarlenFwdOp,
         PagedKVCacheGatherFwdOp,
+        PagedKVCacheWriteFwdOp,
     )
     from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
     from tileops.ops.attention.topk_select import TopKSelectFwdOp
@@ -246,6 +247,7 @@ _LAZY = {
     "NSACompressedVarlenFwdOp": ".attention",
     "NSATopKVarlenFwdOp": ".attention",
     "NSAVarlenFwdOp": ".attention",
+    "PagedKVCacheWriteFwdOp": ".attention",
     "DSADecodeWithKVCacheFwdOp": ".attention",
     "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
     "TopKSelectFwdOp": ".attention.topk_select",

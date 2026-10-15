@@ -9,72 +9,10 @@ from tileops.kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
 )
-from tileops.kernels.linear_attention.kda.chunk_programs import (
-    chunk_prepare_program,
-    chunk_scan_program,
-)
-from tileops.kernels.tiling import align_up
-from tileops.utils import get_shared_memory_optin, get_sm_version
+from tileops.kernels.linear_attention.chunk_plan import _plan
+from tileops.kernels.linear_attention.chunk_prefill import run_chunk_prefill
 
 __all__ = ["KDAChunkPrefillFwdKernel"]
-
-
-def packed_offsets(
-    batch: int, seq_len: int, cu_seqlens: Optional[torch.Tensor], device: torch.device
-) -> torch.Tensor:
-    """The offsets both programs read their sequence boundaries from.
-
-    They take one packed token axis, so an equal-length call states the same
-    boundaries its shapes already state. Writing them out keeps one path through
-    the kernels rather than a second schedule for the equal-length case.
-    """
-    if cu_seqlens is not None:
-        return cu_seqlens
-    return torch.arange(0, (batch + 1) * seq_len, seq_len, dtype=torch.int64, device=device)
-
-
-CHUNK_SIZE = 64
-
-
-def _prepare_bytes(dim: int, element: int, sequences: int, lean: bool) -> int:
-    """Shared memory of the chunk-local program, for a K = V = *dim* state.
-
-    The default form holds every buffer at once. In the lean one TileLang main puts
-    the inverse's two tiles in the gated query's space once it is written out, and
-    what does not fit there past the other buffers.
-    """
-    tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE
-    inverse = 2 * CHUNK_SIZE * CHUNK_SIZE * element
-    if lean:
-        inverse = max(0, inverse - CHUNK_SIZE * dim * element)
-    return tiles + inverse + align_up(4 * (sequences + 1), 16)
-
-
-def _scan_bytes(dim: int, value_tile: int, element: int, sequences: int) -> int:
-    """Shared memory of the scan, every buffer, with *value_tile* state columns a CTA."""
-    tiles = dim * value_tile + 3 * CHUNK_SIZE * dim + CHUNK_SIZE * (CHUNK_SIZE + value_tile)
-    return tiles * element + align_up(4 * (sequences + 1), 16)
-
-
-def _plan(
-    dim: int, element: int, sequences: int, budget: int, arch: int
-) -> Optional[Tuple[bool, int]]:
-    """Whether the chunk-local program takes its lean form, and the scan's value tile.
-
-    The widest programs that fit *budget*, or ``None`` when none does. On SM90
-    TileLang rounds a program's shared memory up to 1 KB.
-    """
-
-    def fits(size: int) -> bool:
-        return (align_up(size, 1024) if arch == 90 else size) <= budget
-
-    lean = not fits(_prepare_bytes(dim, element, sequences, lean=False))
-    if lean and not fits(_prepare_bytes(dim, element, sequences, lean=True)):
-        return None
-    for value_tile in (dim, dim // 2):
-        if fits(_scan_bytes(dim, value_tile, element, sequences)):
-            return lean, value_tile
-    return None
 
 
 class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
@@ -160,21 +98,6 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.l2norm = l2norm
         self.dtype = dtype
 
-    def _scan_value_tile(self, value_tile: int, arch: int, *, total: int, num_seqs: int) -> int:
-        """Trade repeated key loads for more CTAs on sparse, long SM89 scans."""
-        minimum_tokens = 4096
-        sparse_heads = 8
-        narrow_value_tile = 16
-        if (
-            num_seqs == 1
-            and total >= minimum_tokens
-            and self.value_heads <= sparse_heads
-            and self.dim_k == 128
-            and arch == 89
-        ):
-            return min(value_tile, narrow_value_tile)
-        return value_tile
-
     def forward(
         self,
         q: torch.Tensor,
@@ -194,34 +117,17 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
-        total = batch * seq_len
-        offsets = packed_offsets(batch, seq_len, cu_seqlens, q.device)
-        num_seqs = offsets.numel() - 1
-
-        flat = lambda tensor, width: tensor.reshape(1, total, tensor.shape[2], width)  # noqa: E731
-        qf, kf = flat(q, K), flat(k, K)
-        vf, gf = flat(v, V), flat(g, K)
-        bf = beta.reshape(1, total, HV)
-        state = (
-            torch.zeros(num_seqs, HV, K, V, dtype=torch.float32, device=q.device)
-            if initial_state is None
-            else initial_state
+        call = KDACall(
+            batch=batch,
+            seq_len=seq_len,
+            heads=H,
+            value_heads=HV,
+            dim_k=K,
+            dim_v=V,
+            dtype=self.dtype,
+            scale=self.scale,
+            l2norm=self.l2norm,
+            device=q.device,
         )
-
-        name = self.dtype_to_str(self.dtype)
-        index = q.device.index
-        arch = get_sm_version(index)
-        plan = _plan(K, self.dtype.itemsize, num_seqs, get_shared_memory_optin(index), arch)
-        if plan is None:
-            raise ValueError(f"{num_seqs} sequences need more shared memory than the device has")
-        lean, value_tile = plan
-        value_tile = self._scan_value_tile(value_tile, arch, total=total, num_seqs=num_seqs)
-        prepare = chunk_prepare_program(
-            H, HV, K, V, CHUNK_SIZE, name, self.scale, self.l2norm, total, num_seqs, lean=lean
-        )
-        scan = chunk_scan_program(
-            HV, K, V, CHUNK_SIZE, name, total, num_seqs, value_tile=value_tile
-        )
-        w, u, qg, kg, aqk, dec = prepare(qf, kf, vf, gf, bf, offsets)
-        o, final_state = scan(w, u, qg, kg, aqk, dec, state, offsets)
-        return o.reshape(batch, seq_len, HV, V), final_state
+        inputs = (q, k, v, g, beta, initial_state, cu_seqlens, None, None)
+        return run_chunk_prefill(call, inputs, gate_mode="channel")

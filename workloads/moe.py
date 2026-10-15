@@ -11,10 +11,18 @@ class FusedTopKWorkload(CallWorkload):
     def ref_program(
         self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+        """Score, select ``top_k`` (on the biased scores when a bias is passed) inside the best
+        expert groups, renormalize, scale."""
         p = self.call.params
         return ref_fused_topk(
-            gating_output, correction_bias, p["top_k"], p["scoring_func"], p["renormalize"]
+            gating_output,
+            correction_bias,
+            p["top_k"],
+            p["scoring_func"],
+            p["renormalize"],
+            p["num_expert_group"],
+            p["topk_group"],
+            p["routed_scaling_factor"],
         )
 
     def verification(self, *inputs):
@@ -22,10 +30,10 @@ class FusedTopKWorkload(CallWorkload):
 
         gating_output, *bias = inputs
         correction_bias = bias[0] if bias else None
-        scoring_func, renormalize = (
-            self.call.params["scoring_func"],
-            self.call.params["renormalize"],
-        )
+        p = self.call.params
+        scoring_func, renormalize = p["scoring_func"], p["renormalize"]
+        num_groups, topk_group = p["num_expert_group"], p["topk_group"]
+        scale = p["routed_scaling_factor"]
 
         def validate(got, expected):
             weights, ids = got[:2]
@@ -38,69 +46,113 @@ class FusedTopKWorkload(CallWorkload):
             logits = gating_output.float()
             scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
             selection = scores if correction_bias is None else scores + correction_bias
+            rows = torch.ones(ids.shape[0], dtype=torch.bool, device=ids.device)
+            reference_selection = selection.gather(1, ref_ids.long())
+            if num_groups > 1:
+                # A group within the slack of the last kept one may be kept in its place: such a
+                # row passes when the returned experts are the top-k of some valid group set.
+                group_scores = ref_group_scores(selection, num_groups, correction_bias is not None)
+                ranked = group_scores.sort(-1, descending=True).values
+                last = ranked[:, topk_group - 1 : topk_group]
+                slack = 1e-5 * last.abs() + 1e-6
+                allowed = group_scores >= last - slack
+                group_size = selection.shape[-1] // num_groups
+                selected_groups = ids.long() // group_size
+                assert allowed.gather(1, selected_groups).all(), "expert in dropped group"
+                if topk_group < num_groups:
+                    rows = (ranked[:, topk_group : topk_group + 1] < last - slack).squeeze(-1)
+                    forced = group_scores > last + slack
+                    forced.scatter_(1, selected_groups, True)
+                    missing = topk_group - forced.sum(-1, keepdim=True)
+                    assert (missing >= 0).all(), "experts span more groups than are kept"
+                    best = selection.view(-1, num_groups, group_size).amax(-1)
+                    candidates = allowed & ~forced
+                    # Filling with the groups of lowest best expert finds a valid set if any exists.
+                    fill_rank = (
+                        best.masked_fill(~candidates, float("inf"))
+                        .argsort(dim=-1, stable=True)
+                        .argsort(-1)
+                    )
+                    kept = forced | (candidates & (fill_rank < missing))
+                    expert_mask = kept.repeat_interleave(group_size, dim=-1)
+                    within_kept = selection.masked_fill(~expert_mask, float("-inf"))
+                    ambiguous_reference = within_kept.topk(ids.shape[1], dim=-1).values
+                    reference_selection = torch.where(
+                        rows[:, None], reference_selection, ambiguous_reference
+                    )
             # Validate selected scores and per-expert weights independently of tie order.
             torch.testing.assert_close(
                 selection.gather(1, ids.long()).sort(-1).values,
-                selection.gather(1, ref_ids.long()).sort(-1).values,
+                reference_selection.sort(-1).values,
                 rtol=1e-5,
                 atol=0,
             )
             selected = scores.gather(1, ids.long())
             if renormalize:
                 selected = selected / selected.sum(-1, keepdim=True)
-            torch.testing.assert_close(weights, selected, rtol=1e-4, atol=0)
+            torch.testing.assert_close(weights, selected * scale, rtol=1e-4, atol=0)
 
-        return Custom(validate, "expert selection and weights independent of tie order")
+        return Custom(
+            validate,
+            "expert selection inside the kept groups and weights independent of tie order",
+        )
 
 
 class MoEPermuteAlignWorkload(CallWorkload):
     """The routing ids of one ``MoEPermuteAlignFwdOp`` call."""
 
     def ref_program(self, topk_ids):
+        """Routes in ascending index order within each expert's range, padded with ``numel``.
+
+        Blocks past the padded length hold ``num_experts``, one of the values that name no
+        expert.
+        """
         p = self.call.params
         ids, experts, count = ref_permute_align(topk_ids, p["block_size"], p["num_experts"])
         capacity = topk_ids.numel() + (p["num_experts"] + 1) * (p["block_size"] - 1)
         blocks = math.ceil(capacity / p["block_size"])
         return (
             torch.nn.functional.pad(ids, (0, capacity - ids.numel()), value=topk_ids.numel()),
-            torch.nn.functional.pad(experts, (0, blocks - experts.numel())),
+            torch.nn.functional.pad(experts, (0, blocks - experts.numel()), value=p["num_experts"]),
             count,
         )
 
     def verification(self, *inputs):
+        """Exact up to route order within each expert and the value past the padded length."""
         from workloads.numerics import Custom
 
+        num_experts = self.call.params["num_experts"]
         block_size = self.call.params["block_size"]
-        numel = inputs[0].numel()
+        flat = inputs[0].flatten().long()
+        counts = torch.bincount(flat, minlength=num_experts)
+        padded = (counts + block_size - 1) // block_size * block_size
+        starts = torch.cumsum(padded, 0) - padded
+        # Each route's slot when every expert's routes are in ascending index order.
+        rank = torch.arange(flat.numel(), device=flat.device) - (
+            torch.cumsum(counts, 0) - counts
+        ).repeat_interleave(counts)
+        group_start = starts.repeat_interleave(counts)
+        routed_slots = group_start + rank
 
         def validate(got, expected):
+            # compare_outputs has already matched every output's shape, dtype and device.
             tokens, experts, count = got
             ref_tokens, ref_experts, ref_count = expected
-            assert tokens.dtype == ref_tokens.dtype and experts.dtype == ref_experts.dtype
-            torch.testing.assert_close(count, ref_count, rtol=0, atol=0)
-            size = int(ref_count.item())
-            blocks = size // block_size
-            assert tokens.numel() >= size and experts.numel() >= blocks
-            torch.testing.assert_close(experts[:blocks], ref_experts[:blocks], rtol=0, atol=0)
-            tokens = tokens[:size].long()
-            assert ((tokens >= 0) & (tokens <= numel)).all(), "invalid padding/token id"
-            valid = tokens < numel
-            # Every route occurs exactly once, and belongs to its block's expert.
-            torch.testing.assert_close(
-                tokens[valid].sort().values,
-                torch.arange(numel, device=tokens.device),
-                rtol=0,
-                atol=0,
+            assert torch.equal(count, ref_count), "num_tokens_post_pad differs"
+            blocks = int(ref_count.item()) // block_size
+            assert torch.equal(experts[:blocks], ref_experts[:blocks]), "a block's owner differs"
+            tail = experts[blocks:]
+            assert ((tail < 0) | (tail >= num_experts)).all(), (
+                "a block past the end names an expert"
             )
-            owners = experts[:blocks].repeat_interleave(block_size)
-            torch.testing.assert_close(
-                inputs[0].flatten()[tokens[valid]],
-                owners[valid],
-                rtol=0,
-                atol=0,
-            )
+            # Sort each expert's routed slots, which may hold its routes in any order.
+            key = torch.arange(tokens.numel(), device=tokens.device)
+            key[routed_slots] = group_start
+            order = torch.sort(tokens, stable=True).indices
+            order = order[torch.sort(key[order], stable=True).indices]
+            assert torch.equal(tokens[order], ref_tokens), "sorted_token_ids differs"
 
-        return Custom(validate, "all valid routes and expert ownership; unused capacity ignored")
+        return Custom(validate, "exact up to route order within each expert's routed slots")
 
 
 class MoEPrePermuteWorkload(CallWorkload):
@@ -242,6 +294,57 @@ class MoEGroupedGemmWorkload(CallWorkload):
             )
 
         return Custom(validate, "defined rows of grouped expert layout")
+
+
+class MoEGroupedGemmFP8Workload(CallWorkload):
+    """FP8 masked slabs and weights, their block scales, and the layout's generated counts."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        a, a_scale, b, b_scale, metadata = super().gen_inputs()
+        # Values well inside e4m3's range, and positive scales of order one, as a
+        # quantizer would produce them.
+        return (
+            (a.float() * 0.25).to(a.dtype),
+            torch.rand_like(a_scale).add_(0.5),
+            (b.float() * 0.25).to(b.dtype),
+            torch.rand_like(b_scale).add_(0.5),
+            metadata,
+        )
+
+    def ref_program(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+    ) -> torch.Tensor:
+        """Each operand dequantized in fp32 under its block scales, then the masked GEMM."""
+        a_f = a.float() * a_scale.repeat_interleave(128, dim=-1)
+        b_f = b.float() * b_scale.repeat_interleave(128, dim=1).repeat_interleave(128, dim=2)
+        return ref_moe_grouped_gemm(
+            a_f, b_f, layout_metadata, self.call.params["layout"], torch.bfloat16
+        )
+
+    def verification(self, *inputs):
+        from workloads.gemm import fp8_matmul_verification
+        from workloads.numerics import Custom
+
+        a, metadata = inputs[0], inputs[-1]
+        tolerance = fp8_matmul_verification(a.shape[-1])
+        mask = valid_rows(
+            self.call.params["layout"], metadata, a.numel() // a.shape[-1], inputs[2].shape[0]
+        )
+
+        def validate(got, expected):
+            torch.testing.assert_close(
+                got.reshape(-1, got.shape[-1])[mask].float(),
+                expected.reshape(-1, expected.shape[-1])[mask].float(),
+                rtol=tolerance.rtol,
+                atol=tolerance.atol,
+            )
+
+        return Custom(validate, "valid rows of each masked expert slab, fp8 matmul bound")
 
 
 class MoEExpertMLPWorkload(CallWorkload):
@@ -394,21 +497,48 @@ class IndexedExpertMLPWorkload(MoEExpertsWorkload):
     """One ``IndexedExpertMLPFwdOp`` call: the same inputs and reference as the expert MLP."""
 
 
+def ref_group_scores(select: torch.Tensor, num_groups: int, biased: bool) -> torch.Tensor:
+    """``[T, num_groups]`` scores of consecutive expert groups: the sum of each group's two best
+    selection scores when the selection carries a bias, else its best one (vLLM
+    ``grouped_topk``)."""
+    grouped = select.view(select.shape[0], num_groups, -1)
+    if biased:
+        return grouped.topk(2, dim=-1).values.sum(dim=-1)
+    return grouped.max(dim=-1).values
+
+
 def ref_fused_topk(
     gating_output: torch.Tensor,
     correction_bias: torch.Tensor | None,
     top_k: int,
     scoring_func: str,
     renormalize: bool,
+    num_expert_group: int = 1,
+    topk_group: int = 1,
+    routed_scaling_factor: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+    """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize, scale.
+
+    With ``num_expert_group > 1`` the selection is restricted to the ``topk_group`` best groups
+    of :func:`ref_group_scores`, ties to the lower group index, as vLLM's ``grouped_topk``
+    torch fallback computes it in float32.
+    """
     logits = gating_output.float()
     scores = torch.softmax(logits, dim=-1) if scoring_func == "softmax" else logits.sigmoid()
     select = scores if correction_bias is None else scores + correction_bias
+    if num_expert_group > 1:
+        group_scores = ref_group_scores(select, num_expert_group, correction_bias is not None)
+        # A stable descending sort keeps equal groups in index order: the lower one is kept.
+        kept = group_scores.sort(dim=-1, descending=True, stable=True).indices[:, :topk_group]
+        group_mask = torch.zeros_like(group_scores, dtype=torch.bool).scatter_(1, kept, True)
+        expert_mask = group_mask.repeat_interleave(select.shape[-1] // num_expert_group, dim=-1)
+        select = select.masked_fill(~expert_mask, float("-inf"))
     topk_ids = torch.topk(select, top_k, dim=-1, sorted=False).indices
     topk_weights = scores.gather(1, topk_ids)
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    if routed_scaling_factor != 1.0:
+        topk_weights = topk_weights * routed_scaling_factor
     return topk_weights, topk_ids.int()
 
 
@@ -429,7 +559,16 @@ class FusedMoEWorkload(CallWorkload):
 
     def ref_routed(self, hidden, gating, w_gate_up, w_down, bias) -> torch.Tensor:
         p = self.call.params
-        weights, ids = ref_fused_topk(gating, bias, p["top_k"], p["scoring_func"], p["renormalize"])
+        # The routing returns unscaled weights: the experts apply the factor, once.
+        weights, ids = ref_fused_topk(
+            gating,
+            bias,
+            p["top_k"],
+            p["scoring_func"],
+            p["renormalize"],
+            p["num_expert_group"],
+            p["topk_group"],
+        )
         return ref_routed_experts(
             hidden, w_gate_up, w_down, weights, ids, p["activation"], p["routed_scaling_factor"]
         )

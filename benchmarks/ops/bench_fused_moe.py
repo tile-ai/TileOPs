@@ -1,10 +1,22 @@
-"""Routed and shared expert MLPs against vLLM, FlashInfer CUTLASS and QuACK."""
+"""Routed and shared expert MLPs against vLLM, FlashInfer CUTLASS and QuACK.
+
+Every routed baseline routes with vLLM: `fused_topk`, `fused_topk_bias` with a correction
+bias, and the fused CUDA `grouped_topk` for DeepSeek-V3 grouped routing
+(`num_expert_group > 1`), which requires a bias, so a grouped baseline is sigmoid with a
+bias. Each routes unscaled and scales the expert output once, as the op does.
+"""
 
 import pytest
 import torch.nn.functional as F
 
 from benchmarks import api as bench
-from benchmarks.baselines import QUACK_TAG, VLLM_TAG, quack_op, vllm_op
+from benchmarks.baselines import (
+    QUACK_TAG,
+    VLLM_GROUPED_TOPK_SIGMOID,
+    VLLM_TAG,
+    quack_op,
+    vllm_op,
+)
 from benchmarks.moe_baselines import flashinfer_experts
 from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 
@@ -14,9 +26,21 @@ def _routed_moe(op, experts):
     topk_bias = vllm_op(
         "fused_topk_bias", "model_executor.layers.fused_moe.router.fused_topk_bias_router"
     )
+    grouped_topk = vllm_op("grouped_topk")
 
     def run(hidden, gating, w1, w2, correction_bias):
-        if correction_bias is None:
+        if op.num_expert_group > 1:
+            weights, ids = grouped_topk(
+                gating,
+                op.num_expert_group,
+                op.topk_group,
+                op.top_k,
+                op.renormalize,
+                1.0,
+                correction_bias,
+                VLLM_GROUPED_TOPK_SIGMOID,
+            )
+        elif correction_bias is None:
             weights, ids, _ = topk(
                 hidden_states=hidden,
                 gating_output=gating,
@@ -40,7 +64,14 @@ def _routed_moe(op, experts):
     return run
 
 
-def _expert_backends(hidden, w1, w2, top_k):
+def _expert_backends(op, hidden, w1, w2, correction_bias):
+    """The routed baselines, or none for a grouped row vLLM cannot route.
+
+    vLLM's fused ``grouped_topk`` takes only a biased sigmoid.
+    """
+    if op.num_expert_group > 1 and (correction_bias is None or op.scoring_func != "sigmoid"):
+        return {}
+    top_k = op.top_k
     return {
         VLLM_TAG: vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe"),
         "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, top_k),
@@ -50,9 +81,12 @@ def _expert_backends(hidden, w1, w2, top_k):
 @pytest.mark.parametrize("case", bench.cases(FusedMoEFwdOp), ids=lambda case: case.id)
 def test_fused_moe_fwd_bench(case) -> None:
     op = FusedMoEFwdOp(**case.arguments)
-    hidden, _, w1, w2, _ = case.inputs
+    hidden, _, w1, w2, correction_bias = case.inputs
     bench.Runner(op, case).compare(
-        {tag: _routed_moe(op, fn) for tag, fn in _expert_backends(hidden, w1, w2, op.top_k).items()}
+        {
+            tag: _routed_moe(op, fn)
+            for tag, fn in _expert_backends(op, hidden, w1, w2, correction_bias).items()
+        }
     )
 
 
@@ -71,11 +105,11 @@ def _with_shared_expert(routed):
 @pytest.mark.parametrize("case", bench.cases(FusedMoESharedExpertFwdOp), ids=lambda case: case.id)
 def test_fused_moe_shared_expert_bench(case) -> None:
     op = FusedMoESharedExpertFwdOp(**case.arguments)
-    hidden, _, w1, w2, *_ = case.inputs
+    hidden, _, w1, w2, correction_bias, *_ = case.inputs
     bench.Runner(op, case).compare(
         {
             tag: _with_shared_expert(_routed_moe(op, fn))
-            for tag, fn in _expert_backends(hidden, w1, w2, op.top_k).items()
+            for tag, fn in _expert_backends(op, hidden, w1, w2, correction_bias).items()
         }
     )
 

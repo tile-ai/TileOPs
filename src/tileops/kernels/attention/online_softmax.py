@@ -18,7 +18,36 @@ __all__ = [
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
     "make_rescale",
+    "make_sink_scale",
 ]
+
+
+def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0, head_group=0):
+    """Normalize with raw per-head sinks, guarding empty rows and infinite sinks.
+
+    ``rows_per_head`` describes consecutive query rows of each head; ``head_group``
+    describes rows interleaving a query-head group. Both zero means one head per tile.
+    The sink is combined after the key reduction in the same stable max/exp frame.
+    """
+
+    @T.macro
+    def sink_scale(scores_max, logsum, sinks, head, row_scale, row_offset=0):
+        for i in T.Parallel(block_rows):
+            if head_group:
+                sink_head = head + (row_offset + i) % head_group
+            else:
+                sink_head = head + i // rows_per_head if rows_per_head else head
+            sink = sinks[sink_head] * LOG2E
+            maximum = T.max(scores_max[i] * scale, sink)
+            weight = T.exp2(scores_max[i] * scale - maximum)
+            row_scale[i] = T.if_then_else(
+                (logsum[i] > 0) & (sink < T.infinity(accum_dtype)),
+                weight / (logsum[i] * weight + T.exp2(sink - maximum)),
+                0,
+            )
+
+    return sink_scale
+
 
 # log2(e) -- used to convert exp(x) into exp2(x * log2(e))
 # which allows the compiler to fuse the multiply into an ffma instruction.

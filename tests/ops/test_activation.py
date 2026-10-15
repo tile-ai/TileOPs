@@ -12,6 +12,8 @@ from tileops.ops.elementwise import ReluFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
+    Exhaustive16BitWorkload,
+    GeluSignWorkload,
     GeluTailWorkload,
     ReluWorkload,
     UnaryActivationCase,
@@ -177,6 +179,43 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _extreme, SigmoidFwdOp)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
+    """Sigmoid gives torch's result bit for bit at every 16-bit input.
+
+    A two-ulp float32 divide alone moves two float16 results by one ulp, so float16
+    refines its reciprocal by one Newton step; bfloat16 rounds the fast divide to
+    torch's value everywhere.
+    """
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    workload = Exhaustive16BitWorkload("SigmoidFwdOp", dtype)
+    TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_sigmoid_partial_last_block() -> None:
+    """A last block that ends one vector in: of a thread's two vectors, the second is past N."""
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    # 2**18 float32 elements keep eight a thread, two 16-byte vectors; one more vector
+    # leaves a 1024-element block holding only it.
+    _make_activation_test(2**18 + 4, torch.float32, _randn, SigmoidFwdOp)
+
+
+@pytest.mark.smoke
+def test_sigmoid_input_off_a_vector_boundary() -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches the reference."""
+    from tileops.ops.elementwise import SigmoidFwdOp
+
+    test = UnaryActivationTest(4096, torch.float32, "SigmoidFwdOp", gen_fn=_randn)
+    (aligned,) = test.gen_inputs()
+    x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
+    x.copy_(aligned)
+    test.check(SigmoidFwdOp(), x)
+
+
 @ActivationEdgeFixture
 def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: tanh saturates to +/-1 for large inputs."""
@@ -203,6 +242,20 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import GeluFwdOp
 
     workload = GeluTailWorkload(dtype)
+    TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gelu_keeps_negative_inputs_nonpositive(dtype: torch.dtype) -> None:
+    """Edge: GELU of a negative input is never positive, at every 16-bit input.
+
+    The erf polynomial overshoots 1 by up to 3.2e-6 short of its clamp. There 1 + erf
+    turns negative unless clipped, and x / 2 scales it into a positive result.
+    """
+    from tileops.ops.elementwise import GeluFwdOp
+
+    workload = GeluSignWorkload(dtype)
     TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
 
 
@@ -322,6 +375,21 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     bad = torch.randn((2, 8, 4), device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_gelu_short_row(tune: bool) -> None:
+    """A row the grid-filling shrink reaches: two elements a thread, across a block and its tail."""
+    from tileops.ops.elementwise import GeluFwdOp
+
+    test = UnaryActivationTest(257, torch.float32, "GeluFwdOp", gen_fn=_randn)
+    op = GeluFwdOp()
+    if tune:
+        op.request_tune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize(

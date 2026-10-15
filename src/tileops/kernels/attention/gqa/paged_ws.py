@@ -23,6 +23,8 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
+from tileops.kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_prepare_kernel
+from tileops.kernels.attention.online_softmax import make_sink_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -54,9 +56,11 @@ __all__ = ["GQAPagedFwdWSKernel"]
 )
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
-    dtype, block_n, stages, num_ctas,
+    dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
+    has_window = window_left >= 0 or window_right >= 0
+    meta_count = 8 if has_window else 7
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else sm_scale * LOG2E
     group = heads // heads_kv
@@ -69,6 +73,7 @@ def _gqa_paged_ws_kernel(
     pool_rows = T.dynamic("pool_rows")
     # Row r of a tile is query r % span of head kv_head * group + r // span.
     span = block_m // group
+    sink_scale = make_sink_scale(scale, accum, half, rows_per_head=span)
     tiling = GroupTiling(batch, span)
     # A key tile is part of one page or a run of whole pages: one TMA copy per page.
     box = min(block_n, page_size)
@@ -94,6 +99,10 @@ def _gqa_paged_ws_kernel(
                 hidden = (key0 + j >= kv_len) | (key0 + j > q0 + (wg * half + i) % span + align)
             else:
                 hidden = key0 + j >= kv_len
+            if window_left >= 0:
+                hidden = hidden | (key0 + j < q0 + (wg * half + i) % span + align - window_left)
+            if window_right >= 0:
+                hidden = hidden | (key0 + j > q0 + (wg * half + i) % span + align + window_right)
             acc_s[i, j] = T.if_then_else(hidden, -T.infinity(accum), acc_s[i, j])
 
     @T.macro
@@ -110,7 +119,8 @@ def _gqa_paged_ws_kernel(
             if sm[i] != smp[i]:
                 alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
         for i, j in T.Parallel(half, block_n):
-            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+            maximum = T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i]) if has_window else sm[i]
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
         T.reduce_sum(acc_s, ss, dim=1, batch=2)
 
     @T.macro
@@ -169,7 +179,17 @@ def _gqa_paged_ws_kernel(
         # cannot leave the consumers waiting on a tile the producer never loads. The scan
         # stays unconditional: under a branch ptxas keeps the WGMMA descriptors out of
         # uniform registers.
-        meta[6] = T.max(1, T.ceildiv(key_end, block_n))
+        if window_right >= 0:
+            last_q = T.min(meta[3] - 1, meta[5] + span - 1) + meta[4] - meta[3]
+            key_end = T.min(key_end, last_q + window_right + 1)
+        if has_window:
+            first_key = T.alloc_var("int32", init=0)
+            if window_left >= 0:
+                first_key = T.max(0, meta[5] + meta[4] - meta[3] - window_left)
+            meta[7] = first_key // block_n
+            meta[6] = T.max(1, T.ceildiv(key_end, block_n) - meta[7])
+        else:
+            meta[6] = T.max(1, T.ceildiv(key_end, block_n))
 
     @T.macro
     def fetch(Sched, lane, work):
@@ -238,15 +258,15 @@ def _gqa_paged_ws_kernel(
             slot = loaded % 2
             T.mbarrier_wait_parity(qfree[slot], ((loaded // 2) % 2) ^ 1)
             # The consumers read the item's geometry here rather than decode it again.
-            for i in T.unroll(7):
+            for i in T.unroll(meta_count):
                 item_slot[slot, i] = meta[i]
-            item_slot[slot, 7] = work[0]
+            item_slot[slot, meta_count] = work[0]
             load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
             T.mbarrier_arrive(q_bar[slot])
             for k in T.serial(meta[6]):
                 n = issued + k
                 s = n % stages
-                key0 = k * block_n
+                key0 = (k + (meta[7] if has_window else 0)) * block_n
                 # Read before the wait, so the table's latency hides behind the consumers.
                 tile_rows(page_table, rows, req, key0, kv_len)
                 T.mbarrier_wait_parity(kfree[s], ((n // stages) % 2) ^ 1)
@@ -278,7 +298,7 @@ def _gqa_paged_ws_kernel(
             fetch(Sched, lane, work)
         # Stop the consumers, then leave the counters zeroed for the next launch.
         T.mbarrier_wait_parity(qfree[loaded % 2], ((loaded // 2) % 2) ^ 1)
-        item_slot[loaded % 2, 7] = -1
+        item_slot[loaded % 2, meta_count] = -1
         T.mbarrier_arrive(q_bar[loaded % 2])
         if lane == 0:
             finished = T.atomic_add(Sched[1], 1, return_prev=True)
@@ -288,7 +308,7 @@ def _gqa_paged_ws_kernel(
 
     @T.macro
     def consumer(
-        wg: int, Qs, Ks, Vs, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
+        wg: int, Qs, Ks, Vs, O, Sinks, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``wg*64`` onward of each claimed item's tile."""
         T.set_max_nreg(240, 1)
@@ -304,14 +324,16 @@ def _gqa_paged_ws_kernel(
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
         full = T.alloc_var("int32", init=0)
+        if has_window:
+            first_full = T.alloc_var("int32", init=0)
         # Finished key tiles and items: they carry the barrier phases.
         done = T.alloc_var("int32", init=0)
         served = T.alloc_var("int32", init=0)
         work = T.alloc_var("int32", init=0)
         T.mbarrier_wait_parity(q_bar[0], 0)
-        work = item_slot[0, 7]
+        work = item_slot[0, meta_count]
         while work >= 0:
-            for i in T.unroll(7):
+            for i in T.unroll(meta_count):
                 meta[i] = item_slot[served % 2, i]
             kv_head = meta[0]
             q_start = meta[2]
@@ -321,6 +343,7 @@ def _gqa_paged_ws_kernel(
             align = kv_len - q_len
             q0 = meta[5]
             eff = meta[6]
+            first_tile = meta[7] if has_window else 0
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(alpha, 1.0)
@@ -343,31 +366,56 @@ def _gqa_paged_ws_kernel(
             if is_causal:
                 # The warpgroup's first row holds its earliest query.
                 first_q = q0 + (wg * half) % span + align
-                full = T.min(eff, T.max(0, (first_q + 1) // block_n))
+                full = T.min(eff, T.max(0, (first_q + 1) // block_n - first_tile))
             else:
-                full = T.min(eff, kv_len // block_n)
-            if full < 1:
-                mask(acc_s, 0, q0, wg, align, kv_len)
+                full = T.min(eff, kv_len // block_n - first_tile)
+            if has_window:
+                first_full = 0
+                if window_left >= 0:
+                    # Every row must see the entire tile, including the latest query.
+                    last_q = q0 + T.min(span - 1, (wg * half) % span + half - 1) + align
+                    first_full = T.min(
+                        eff, T.max(0, T.ceildiv(last_q - window_left, block_n) - first_tile)
+                    )
+                if window_right >= 0:
+                    first_q = q0 + (wg * half) % span + align
+                    full = T.min(
+                        full, T.max(0, (first_q + window_right + 1) // block_n - first_tile)
+                    )
+                # When no tile is fully visible, keep the masked ranges disjoint.
+                full = T.max(first_full, full)
+            if full < 1 or (first_full > 0 if has_window else False):
+                mask(acc_s, first_tile * block_n, q0, wg, align, kv_len)
             if use_softcap:
                 apply_softcap(acc_s)
             T.reduce_max(acc_s, sm, dim=1, clear=False)
             for i, j in T.Parallel(half, block_n):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+                # Preserve -inf in the running max until a visible key arrives.
+                maximum = (
+                    T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i]) if has_window else sm[i]
+                )
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
             T.reduce_sum(acc_s, ss, dim=1, batch=2)
             for i in T.Parallel(half):
                 logsum[i] = ss[i]
             T.copy(acc_s, pcast)
 
             step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
-            for k in T.serial(1, T.max(1, full)):
+            if has_window:
+                for k in T.serial(1, T.max(1, first_full)):
+                    kv_step(
+                        Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                        k + first_tile, done + k, q0, wg, align, kv_len, True,
+                    )  # fmt: skip
+            for k in T.serial(T.max(1, first_full) if has_window else 1, T.max(1, full)):
                 kv_step(
                     Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                    k, done + k, q0, wg, align, kv_len, False,
+                    k + first_tile, done + k, q0, wg, align, kv_len, False,
                 )  # fmt: skip
             for k in T.serial(T.max(1, full), eff):
                 kv_step(
                     Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                    k, done + k, q0, wg, align, kv_len, True,
+                    k + first_tile, done + k, q0, wg, align, kv_len, True,
                 )  # fmt: skip
             # Every QK is done, so the producer may reload Q.
             T.mbarrier_arrive(qfree[served % 2])
@@ -381,9 +429,15 @@ def _gqa_paged_ws_kernel(
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
 
-            # Every row sees key 0, so its sum is positive.
-            for i in T.Parallel(half):
-                alpha[i] = 1.0 / logsum[i]
+            if has_sinks:
+                sink_scale(sm, logsum, Sinks, kv_head * group + wg * half // span, alpha)
+            else:
+                # Windowed padding rows can have no visible key.
+                for i in T.Parallel(half):
+                    if has_window:
+                        alpha[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
+                    else:
+                        alpha[i] = 1.0 / logsum[i]
             for i, d in T.Parallel(half, dim):
                 r = wg * half + i
                 if q0 + r % span < q_len:
@@ -393,7 +447,7 @@ def _gqa_paged_ws_kernel(
             done += eff
             served += 1
             T.mbarrier_wait_parity(q_bar[served % 2], (served // 2) % 2)
-            work = item_slot[served % 2, 7]
+            work = item_slot[served % 2, meta_count]
 
     @T.prim_func
     def main(
@@ -405,13 +459,14 @@ def _gqa_paged_ws_kernel(
         CuQ: T.Tensor([batch + 1], "int32"),
         O: T.Tensor([total_q, heads, dim], dtype),
         Sched: T.Tensor([2], "int32"),
+        Sinks: T.Tensor([heads], "float32"),
     ):
         with T.Kernel(num_ctas, threads=384):
             Qs = T.alloc_shared([2, 2, half, dim], dtype)
             Ks = T.alloc_shared([stages, block_n, dim], dtype)
             Vs = T.alloc_shared([stages, block_n, dim], dtype)
             tile_cum = T.alloc_shared([batch + 1], "int32")
-            item_slot = T.alloc_shared([2, 8], "int32")
+            item_slot = T.alloc_shared([2, meta_count + 1], "int32")
             T.annotate_layout(
                 {
                     Qs: make_swizzled_layout(Qs),
@@ -430,7 +485,7 @@ def _gqa_paged_ws_kernel(
             hi = T.alloc_local([1], "int32")
             q_row = T.alloc_local([1], "int32")
             request = T.alloc_local([1], "int32")
-            meta = T.alloc_local([7], "int32")
+            meta = T.alloc_local([meta_count], "int32")
 
             tiling.cumsum_offsets(CuQ, tile_cum)
             T.sync_threads()
@@ -443,7 +498,21 @@ def _gqa_paged_ws_kernel(
                     qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
                     tile_cum, lo, hi, request, q_row, meta, tx - consumers,
                 )  # fmt: skip
-            args = (Qs, Ks, Vs, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta)
+            args = (
+                Qs,
+                Ks,
+                Vs,
+                O,
+                Sinks,
+                item_slot,
+                q_bar,
+                qfree,
+                kready,
+                kfree,
+                vready,
+                vfree,
+                meta,
+            )
             with T.ws(0):
                 consumer(0, *args)
             with T.ws(1):
@@ -459,7 +528,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     rows, causal or bidirectional, with a positive scale and an optional softcap, when the
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
-    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan; so do a window, RoPE and FP8.
+    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
+    denominator-only mass. RoPE preprocesses private request pages without mutating the cache.
+    FP8 remains unsupported.
     """
 
     supported_archs: list[int] = [90]
@@ -474,6 +545,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     # The per-request tile prefix shares shared memory with the Q, K and V buffers, which take
     # 192 of the 227 KB at dimension 128; 4096 requests take 16 KB of the rest.
     _MAX_BATCH: int = 4096
+    # Bound temporary storage to 512 MiB per call, including each captured graph pool.
+    _MAX_ROPE_SCRATCH_BYTES: int = 512 * 1024 * 1024
 
     @staticmethod
     def block_n_for(page_size: int) -> Optional[int]:
@@ -489,6 +562,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 return block_n
         return None
 
+    @staticmethod
+    def rope_pages_for(width: int, page_size: int, positions: int) -> int:
+        """The rotary table bounds live cache lengths without reading device metadata."""
+        return min(width, tilelang.cdiv(positions, page_size))
+
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
@@ -500,16 +578,26 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return f"requires head dimension in {cls._DIMS}"
         if call.heads_kv <= 0 or call.heads // call.heads_kv not in cls._GROUPS:
             return f"requires a query group of {cls._GROUPS} heads"
-        if call.uses_sliding_window:
-            return "does not serve a window"
-        if call.fuse_rope:
-            return "does not serve RoPE"
         if call.sm_scale is not None and call.sm_scale <= 0.0:
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size) is None:
             return "requires a page size that is a multiple of 16 rows"
+        if not call.fuse_rope and call.uses_sliding_window:
+            return "requires unrestricted windows when RoPE is disabled"
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
+        if call.fuse_rope:
+            kv_elements = (
+                2
+                * call.batch
+                * cls.rope_pages_for(call.max_pages_per_req, call.page_size, call.max_position)
+                * call.page_size
+                * call.heads_kv
+                * call.dim
+            )
+            q_elements = call.max_seqlen_q * call.heads * call.dim
+            if (kv_elements + q_elements) * call.dtype.itemsize > cls._MAX_ROPE_SCRATCH_BYTES:
+                return f"RoPE preparation exceeds the {cls._MAX_ROPE_SCRATCH_BYTES} byte scratch budget"
         if call.batch > cls._MAX_BATCH:
             return f"serves at most {cls._MAX_BATCH} requests"
         return None
@@ -530,6 +618,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            window_size_left=call.window_size_left,
+            window_size_right=call.window_size_right,
+            has_sinks=call.has_sinks,
+            **call.rope_args,
         )
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
@@ -545,6 +637,13 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        has_sinks: bool = False,
+        fuse_rope: bool = False,
+        max_position: int = 1,
+        rotary_dim: int = 0,
+        rope_layout: str = "neox",
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
     ) -> None:
@@ -561,6 +660,24 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.window_size_left, self.window_size_right = window_size_left, window_size_right
+        self.has_sinks = has_sinks
+        self.fuse_rope, self.max_position = fuse_rope, max_position
+        self.rotary_dim, self.rope_layout = rotary_dim or dim, rope_layout
+        device = torch.device("cuda", self.device_index)
+        self._unused_sinks = torch.empty(heads, dtype=torch.float32, device=device)
+        self._rope_pages = (
+            self.rope_pages_for(max_pages_per_req, page_size, max_position)
+            if fuse_rope
+            else max_pages_per_req
+        )
+        self._rope_table = (
+            torch.arange(batch * self._rope_pages, dtype=torch.int32, device=device).reshape(
+                batch, self._rope_pages
+            )
+            if fuse_rope
+            else None
+        )
         # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
         self.init_config(config)
@@ -577,7 +694,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.heads_kv,
             self.dim,
             self.page_size,
-            self.max_pages_per_req,
+            self._rope_pages,
             self.is_causal,
             self.sm_scale,
             self.softcap,
@@ -585,6 +702,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.block_n_for(self.page_size),
             self._STAGES,
             get_sm_count(self.device_index),
+            self.window_size_left,
+            self.window_size_right,
+            self.has_sinks,
         )
 
     def forward(
@@ -597,7 +717,36 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if q.shape[0] == 0:
+            return torch.empty_like(q)
+        if self.fuse_rope:
+            prepare = _gqa_paged_rope_prepare_kernel(
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.dim,
+                self.page_size,
+                self.max_pages_per_req,
+                self._rope_pages,
+                get_sm_count(self.device_index),
+                self.max_position,
+                self.rotary_dim,
+                self.rope_layout,
+                self.dtype_str,
+            )
+            q, k_pool, v_pool = prepare(
+                q,
+                k_pool,
+                v_pool,
+                page_table,
+                cache_seqlens,
+                cu_seqlens_q,
+                rope_cos,
+                rope_sin,
+            )
+            page_table = self._rope_table
         if torch.cuda.is_current_stream_capturing():
             # Each captured graph owns a counter from its private pool.
             counter = torch.zeros(2, dtype=torch.int32, device=q.device)
@@ -608,5 +757,15 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
         out = torch.empty_like(q)
-        self.kernel(q, k_pool, v_pool, cache_seqlens, page_table, cu_seqlens_q, out, counter)
+        self.kernel(
+            q,
+            k_pool,
+            v_pool,
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+            out,
+            counter,
+            sinks if self.has_sinks else self._unused_sinks,
+        )
         return out

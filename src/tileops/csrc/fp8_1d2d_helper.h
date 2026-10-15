@@ -191,6 +191,43 @@ __device__ __forceinline__ void fp8_wave_wgmma_64xN(float* accumulator,
                                          b_stage);
 }
 
+// Fold one 64xN WGMMA partial into its accumulator under per-row A scales and
+// per-column B scales (1x128 ``scale_b``). ``row_scale`` holds this thread's
+// two rows' A scales; ``scale_b_col`` is the K-step's column of a [N][Group]
+// staging of ``scale_b``, so column j's scale sits Group floats past column j
+// - 1. Each column pair is read once, not once per accumulator element.
+template <int BlockN, int Group>
+__device__ __forceinline__ void fp8_wave_fold_per_column(
+    float* final_accum, float const* partial, float const* row_scale,
+    float const* scale_b_col) {
+  int const lane = static_cast<int>(threadIdx.x) & 31;
+#pragma unroll
+  for (int i = 0; i < BlockN / 8; ++i) {
+    int const col = i * 8 + (lane % 4) * 2;
+    float const b0 = scale_b_col[col * Group];
+    float const b1 = scale_b_col[(col + 1) * Group];
+    final_accum[i * 4 + 0] += partial[i * 4 + 0] * (row_scale[0] * b0);
+    final_accum[i * 4 + 1] += partial[i * 4 + 1] * (row_scale[0] * b1);
+    final_accum[i * 4 + 2] += partial[i * 4 + 2] * (row_scale[1] * b0);
+    final_accum[i * 4 + 3] += partial[i * 4 + 3] * (row_scale[1] * b1);
+  }
+}
+
+#define TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(N, G)                 \
+  __device__ __forceinline__ void fp8_wave_fold_per_column_##N##x##G( \
+      float* f, float const* p, float const* rs, float const* sb) {   \
+    fp8_wave_fold_per_column<N, G>(f, p, rs, sb);                     \
+  }
+
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(64, 4)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(64, 8)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(128, 4)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(128, 8)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(192, 4)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(192, 8)
+
+#undef TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN
+
 #define TILEOPS_DEFINE_FP8_WAVE_WGMMA(N)                 \
   __device__ __forceinline__ void fp8_wave_wgmma_64x##N( \
       float* acc, fp8_e4_t* a, fp8_e4_t* b) {            \

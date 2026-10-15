@@ -276,12 +276,15 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
         )
         rescale = make_rescale(block_H, dim)
 
+        # Each split's log-sum-exp is float32: bfloat16 steps by 0.5 between 64 and 128,
+        # which would misweigh the split in the combine. The partial outputs keep the
+        # storage dtype, half the traffic of float32, and the combine sums them in float32.
         @T.macro
         def _gqa_decode_split(
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
         ):
             with T.Kernel(batch, groups * blocks_per_kv, num_split, threads=threads) as (
@@ -405,13 +408,13 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
 
         @T.macro
         def combine(
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 #
-                glse_vec = T.alloc_fragment([num_split], dtype)
+                glse_vec = T.alloc_fragment([num_split], accum_dtype)
                 for k in T.Parallel(num_split):
                     glse_vec[k] = glse[bz, by, k]
                 lse_max = T.alloc_fragment([1], accum_dtype)
@@ -440,7 +443,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
-            glse: T.Tensor([batch, heads, num_split], dtype),
+            glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
@@ -510,7 +513,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
         The tuned or default ``num_split`` is only a ceiling: it shrinks until every split
         keeps at least one full KV tile, then to a candidate. ``1`` means the sequence is too
-        short to split and the no-split kernel runs.
+        short to fill two tiles.
         """
         limit = max(1, min(num_split, real_seqlen_kv // block_N))
         return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
@@ -522,19 +525,19 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return "does not serve this call"
         if call.fuse_rope and call.arch != 90:
             return "fuses RoPE on SM90 only"
-        return cls._limit_refusal(call.dim, call.seqlen_kv)
+        return cls._limit_refusal(call.dim, call.seqlen_kv, call.arch)
 
     @staticmethod
-    def _limit_refusal(dim: int, seq_len_kv: int) -> Optional[str]:
+    def _limit_refusal(dim: int, seq_len_kv: int, arch: int) -> Optional[str]:
         """Why the program cannot build this shape; read by the region and the constructor,
-        which a caller can reach directly. Past 128 the split-KV tile has no register layout.
+        which a caller can reach directly. D256 uses the narrow, one-stage tile.
         """
         if seq_len_kv <= 0:
             return "requires a non-empty KV cache"
-        # A 256-wide head is a real decode shape that no program here serves: Gemma-2B puts
-        # 8 query heads over one KV head at 256. The paged prefill kernels serve that width.
+        if dim == 256 and arch in (80, 89, 90):
+            return None
         if dim % 16 != 0 or not 16 <= dim <= 128:
-            return "requires head dimension a multiple of 16 in [16, 128]"
+            return "requires head dimension a multiple of 16 in [16, 128], or 256"
         return None
 
     @classmethod
@@ -601,6 +604,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
         arch = get_sm_version(device_index)
         self._is_sm90 = arch == 90
+        self._shared_memory_optin = get_shared_memory_optin(device_index)
         if fuse_rope and arch != 90:
             raise ValueError("fused RoPE decode currently requires SM90")
         self.use_ws_rope = fuse_rope
@@ -608,7 +612,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        reason = self._limit_refusal(dim, seq_len_kv)
+        reason = self._limit_refusal(dim, seq_len_kv, arch)
         if reason is not None:
             raise ValueError(f"{type(self).__name__} {reason}")
         self._use_batched_config = (
@@ -619,6 +623,9 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             and not self.fuse_rope
         )
 
+        # Without RoPE, the arguments match gqa_decode_no_split_run's, so both share one
+        # cached builder.
+        rope = (True, max_position, rotary_dim, rope_layout) if fuse_rope else ()
         self.no_split_jit = gqa_decode_no_split_kernel(
             self.batch,
             self.heads,
@@ -627,6 +634,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            *rope,
         )
         self.split_jit = _gqa_decode_split_kernel(
             self.batch,
@@ -637,8 +645,26 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.softcap,
             self.dtype_str,
         )
-        # autotune targets the split kernel; forward shrinks the tuned
-        # num_split to the runtime KV extent instead of gating dispatch on it
+        self.ws_rope_jit = None
+        if self.use_ws_rope:
+            # decode_bs1 imports this module.
+            from tileops.kernels.attention.gqa.decode_bs1 import gqa_decode_bs1_ctx_kernel
+
+            self.ws_rope_jit = gqa_decode_bs1_ctx_kernel(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.dim,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                True,
+                max_position,
+                rotary_dim,
+                rope_layout,
+            )
+        # Forward shrinks the tuned num_split to the runtime KV extent instead of gating
+        # dispatch on it; autotune times each candidate on the program forward launches.
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config)
@@ -670,6 +696,10 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        if self.dim == 256:
+            # The split program's query rows and one K and V tile of 64 keys: 98304 bytes.
+            # If the no-split output rows exceed the device limit, forward uses two splits.
+            return {"block_H": 64, "block_N": 64, "num_split": 16, "num_stages": 1, "threads": 128}
         if self._use_batched_config:
             head_ctas = self.batch * self.groups
             splits = max(1, (256 + head_ctas - 1) // head_ctas)
@@ -683,18 +713,56 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         wide = {"block_H": 64, "block_N": 128, "num_split": 16, "num_stages": 2, "threads": 128}
         # One stage of 64 keys where shared memory cannot hold two of 128 (SM89 holds 99 KB).
         narrow = {**wide, "block_N": 64, "num_stages": 1}
-        fits = self._shared_bytes(wide) <= get_shared_memory_optin(self.device_index)
-        return wide if fits else narrow
+        return wide if self._fits(wide, split=False) else narrow
 
-    def _shared_bytes(self, config: dict) -> int:
-        """Shared memory the no-split program, the larger of the two, allocates for *config*:
-        the query rows, a K and a V tile per stage, and the output rows."""
-        rows = (
-            config["block_H"]
-            + 2 * config["num_stages"] * config["block_N"]
-            + min(config["block_H"], self.heads // self.groups)
-        )
+    def _shared_bytes(self, config: dict, *, split: bool) -> int:
+        """Shared memory one program allocates for *config*: the query rows, a K and a V
+        tile per stage and, in the no-split program, the output rows.
+
+        Both programs stage their output rows. TileLang 0.1.12 places them in the query
+        rows' space, which the loop no longer reads, in the split program with two or more
+        splits and, for SM90, in the no-split program too; forward launches the split
+        program only with two or more.
+        """
+        rows = config["block_H"] + 2 * config["num_stages"] * config["block_N"]
+        if not split:
+            rows += min(config["block_H"], self.heads // self.groups)
         return rows * self.dim * getattr(torch, self.dtype_str).itemsize
+
+    def _fits(self, config: dict, *, split: bool) -> bool:
+        return self._shared_bytes(config, split=split) <= self._shared_memory_optin
+
+    def _launch_split(self, config: dict, seqlen_kv: int) -> int:
+        """The split count forward launches for *config* over *seqlen_kv* keys; ``1`` runs
+        the no-split program.
+
+        Where the no-split program's output rows do not fit, two splits run instead, the
+        second possibly empty.
+        """
+        num_split = self.effective_num_split(config["num_split"], config["block_N"], seqlen_kv)
+        if num_split == 1 and not self._fits(config, split=False):
+            return 2
+        return num_split
+
+    def _launched_program(self, config: dict, num_split: int) -> tuple[str, dict]:
+        """The program forward launches for *config* at *num_split* splits, and the
+        parameters it takes."""
+        if num_split == 1:
+            return "no_split", {key: value for key, value in config.items() if key != "num_split"}
+        if self.use_ws_rope:
+            # The warp-specialized program runs one warpgroup of 64 head rows and a
+            # producer warp; it takes only the tile length and the split count.
+            params = {"block_M": 64, "block_N": config["block_N"], "ctx_splits": num_split}
+            return "ws_rope", {**params, "threads": 160}
+        return "split", {**config, "num_split": num_split}
+
+    def _config_of(self, program: str, params: dict) -> dict:
+        """The kernel config whose launch runs *program* with *params*."""
+        if program == "no_split":
+            return {**params, "num_split": 1}
+        if program == "ws_rope":
+            return {**self.config, "block_N": params["block_N"], "num_split": params["ctx_splits"]}
+        return params
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -705,9 +773,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
-        # Every split keeps at least one full KV tile, so the autotuner never
-        # times a distribution the runtime cannot run; num_split=1 lets it
-        # compare the unsplit strategy, which degenerates to no-split.
+        # Every split keeps at least one full KV tile, and every candidate fits the
+        # shared memory of the program forward launches for it.
         configs = [
             {
                 "block_N": c[0],
@@ -719,7 +786,42 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             for c in _configs
             if c[2] <= max(1, self.seqlen_kv // c[0])
         ]
-        return configs
+        return [
+            config
+            for config in configs
+            if self._fits(config, split=self._launch_split(config, self.seqlen_kv) > 1)
+        ]
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        """Time each candidate on the program forward launches for it, and keep the fastest.
+
+        A candidate whose split count falls to one runs the no-split program; every other
+        candidate runs the split program, or with fused RoPE the warp-specialized one, at
+        the split count forward launches.
+        """
+        print(f"Start autotuning {self.__class__.__name__}...")
+        jits = {"no_split": self.no_split_jit, "split": self.split_jit, "ws_rope": self.ws_rope_jit}
+        programs: dict[str, list[dict]] = {program: [] for program in jits}
+        for config in self.tuning_candidates(self.autotune_configs):
+            program, params = self._launched_program(
+                config, self._launch_split(config, self.seqlen_kv)
+            )
+            if params not in programs[program]:
+                programs[program].append(params)
+
+        best_latency, best_config = float("inf"), None
+        for program, candidates in programs.items():
+            if not candidates:
+                continue
+            tuned = self.tune_jit_kernel(
+                jits[program], candidates, warmup=warmup, rep=rep, seed_config=candidates[0]
+            )
+            if tuned.latency < best_latency:
+                best_latency = tuned.latency
+                best_config = self._config_of(program, tuned.config)
+        if best_config is not None:
+            self.config = best_config
+        print(f"Best config: {self.config}")
 
     def forward(
         self,
@@ -744,24 +846,14 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         block_N = self.config["block_N"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
-        num_split = self.effective_num_split(self.config["num_split"], block_N, real_seqlen_kv)
+        num_split = self._launch_split(self.config, real_seqlen_kv)
 
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
             if self.fuse_rope:
-                output = gqa_decode_no_split_kernel(
-                    self.batch,
-                    self.heads,
-                    self.groups,
-                    self.dim,
-                    self.sm_scale,
-                    self.softcap,
-                    self.dtype_str,
-                    True,
-                    self.max_position,
-                    self.rotary_dim,
-                    self.rope_layout,
-                )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
+                output = self.no_split_jit(block_H, block_N, num_stages, threads)(
+                    Q, K, V, rope_cos, rope_sin
+                )
                 return output.unsqueeze(1)
             output = gqa_decode_no_split_run(
                 self.batch,
@@ -785,8 +877,6 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from tileops.kernels.attention.gqa.decode_bs1 import gqa_decode_bs1_ctx_kernel
-
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
             )
@@ -795,23 +885,14 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 dtype=torch.float32,
                 device=Q.device,
             )
-            output = gqa_decode_bs1_ctx_kernel(
-                self.batch,
-                self.heads,
-                self.groups,
-                self.dim,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-                True,
-                self.max_position,
-                self.rotary_dim,
-                self.rope_layout,
-            )(64, block_N, num_split, 160)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
+            _, params = self._launched_program(self.config, num_split)
+            output = self.ws_rope_jit(**params)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
             return output.unsqueeze(1)
 
         # Split path: the kernel partitions KV tiles from the runtime extent
-        glse = torch.empty((self.batch, self.heads, num_split), dtype=self.dtype, device=Q.device)
+        glse = torch.empty(
+            (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
+        )
         Output_partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )

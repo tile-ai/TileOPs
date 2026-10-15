@@ -26,16 +26,11 @@ from tileops.kernels.attention.gqa.decode_bs1_common import (
     RING_DEPTH,
     make_gqa_decode_bs1_combine,
 )
+from tileops.kernels.attention.online_softmax import make_apply_softcap
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeBs1Kernel"]
-
-_CONSUMER_THREADS = 128
-# TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
-# per kernel; this kernel's producer and consumer ranges take 3 and 4.
-_CONSUMER_BARRIER = 5
-_TMA_THREADS = 32
 
 
 def _make_dense_decode_split(
@@ -46,6 +41,8 @@ def _make_dense_decode_split(
     dim: int,
     dtype: str,
     scale: float,
+    score_scale: float,
+    softcap: float,
     kv_group_num: int,
     ctx_splits: int,
     threads: int,
@@ -58,6 +55,16 @@ def _make_dense_decode_split(
 ):
     """Create the Dense context-split schedule."""
     ring_depth = RING_DEPTH
+    consumer_threads = 128
+    # TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
+    # per kernel; this kernel's producer and consumer ranges take 3 and 4.
+    consumer_barrier = 5
+    tma_threads = 32
+    apply_softcap = (
+        make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+        if softcap > 0.0
+        else None
+    )
 
     @T.macro
     def consumer(
@@ -115,7 +122,7 @@ def _make_dense_decode_split(
                         Qs[i, j] = Q[bid, hid * kv_group_num + i, j]
                 else:
                     Qs[i, j] = 0
-            T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+            T.sync_threads(consumer_barrier, consumer_threads)
         else:
             T.copy(
                 Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
@@ -138,7 +145,7 @@ def _make_dense_decode_split(
                     sin = rope_sin[position, freq]
                     Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
                     Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+                T.sync_threads(consumer_barrier, consumer_threads)
             T.wgmma_gemm(
                 Qs,
                 Ks[k % ring_depth, :, :],
@@ -148,6 +155,8 @@ def _make_dense_decode_split(
                 clear_accum=True,
             )
             T.wait_wgmma(0)
+            if softcap > 0.0:
+                apply_softcap(acc_s)
             for i, j in T.Parallel(block_m, block_n):
                 acc_s[i, j] = T.if_then_else(
                     k * block_n + j < this_len,
@@ -225,11 +234,11 @@ def _make_dense_decode_split(
                     ps: tilelang.layout.make_swizzled_layout(ps),
                 }
             )
-            producer_threads = threads - _CONSUMER_THREADS
+            producer_threads = threads - consumer_threads
             ready = T.alloc_barrier([producer_threads] * RING_DEPTH)
-            free = T.alloc_barrier([_CONSUMER_THREADS] * RING_DEPTH)
+            free = T.alloc_barrier([consumer_threads] * RING_DEPTH)
             if tma_rope_pipeline:
-                loaded = T.alloc_barrier([_TMA_THREADS] * RING_DEPTH)
+                loaded = T.alloc_barrier([tma_threads] * RING_DEPTH)
             load_ready = loaded if tma_rope_pipeline else ready
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
@@ -255,13 +264,13 @@ def _make_dense_decode_split(
             loop_range = T.ceildiv(this_len, block_n)
             tx = T.get_thread_binding()
 
-            if tx >= _CONSUMER_THREADS:
+            if tx >= consumer_threads:
                 for k in T.serial(loop_range):
                     T.mbarrier_wait_parity(
                         free[k % RING_DEPTH],
                         ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
                     )
-                    if tx < _CONSUMER_THREADS + _TMA_THREADS:
+                    if tx < consumer_threads + tma_threads:
                         load_kv(
                             K,
                             V,
@@ -359,7 +368,7 @@ def gqa_decode_bs1_ctx_kernel(
     rope_layout="neox",
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
-    scale = score_scale * LOG2E
+    scale = LOG2E if softcap > 0.0 else score_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
 
@@ -400,6 +409,8 @@ def gqa_decode_bs1_ctx_kernel(
             dim,
             dtype,
             scale,
+            score_scale,
+            softcap,
             kv_group_num,
             ctx_splits,
             threads,

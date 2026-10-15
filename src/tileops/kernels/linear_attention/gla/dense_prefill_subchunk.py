@@ -256,6 +256,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             heads=call.heads,
             dim_k=call.dim_k,
             dim_v=call.dim_v,
+            has_initial_state=call.has_initial_state,
         )
 
     def __init__(
@@ -267,9 +268,10 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         dim_v: int,
         scale: float,
         dtype: torch.dtype,
+        has_initial_state: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
-        del device_index
+        self.has_initial_state = has_initial_state
         super().__init__(
             batch=batch,
             seq_len=seq_len,
@@ -280,6 +282,10 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             scale=scale,
             output_final_state=True,
             dtype=dtype,
+        )
+
+        self._unread_state = torch.empty(
+            1, dtype=torch.float32, device=torch.device("cuda", device_index)
         )
 
     def _build_kernels(self, config: dict) -> None:
@@ -299,6 +305,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             self.dim_v,
             64,
             self.dtype_name,
+            has_initial_state=self.has_initial_state,
             num_v_partitions=num_vp,
             num_k_partitions=num_kp,
         )(ns, thr_seq)
@@ -328,18 +335,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")
-        state = (
-            torch.zeros(
-                self.batch,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                dtype=torch.float32,
-                device=q.device,
-            )
-            if initial_state is None
-            else initial_state
-        )
+        state = initial_state if self.has_initial_state else self._unread_state
         gate = self._g_fn(g)
         h = self._h_fn(k, v, gate, state)
         a = self._a_fn(q, k, gate)

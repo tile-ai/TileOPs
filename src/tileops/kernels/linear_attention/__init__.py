@@ -30,6 +30,7 @@ from tileops.kernels.linear_attention.call_spec import (
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetChunkBwdKernel,
     DeltaNetChunkFwdKernel,
+    DeltaNetChunkPrefillFwdKernel,
     DeltaNetDenseDecodeFwdKernel,
     DeltaNetDensePrefillFwdKernel,
 )
@@ -39,13 +40,13 @@ from tileops.kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.kernels.linear_attention.gdn import (
+    GDNChunkPrefillFwdKernel,
     GDNDenseDecodeFwdKernel,
     GDNDensePrefillFwdKernel,
 )
 from tileops.kernels.linear_attention.gla import (
     GLAChunkBwdKernel,
     GLAChunkFwdKernel,
-    GLADensePrefillFwdKernel,
     GLADensePrefillSubchunkKernel,
 )
 from tileops.kernels.linear_attention.gla.recurrent import GLADecodeFP32Kernel, GLADecodeKernel
@@ -62,6 +63,7 @@ __all__ = [
     "DeltaNetChunkCall",
     "DeltaNetChunkFwdInterface",
     "DeltaNetChunkFwdKernel",
+    "DeltaNetChunkPrefillFwdKernel",
     "DeltaNetDecodeCall",
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeFwdInterface",
@@ -71,6 +73,7 @@ __all__ = [
     "DeltaNetDensePrefillFwdKernel",
     "DeltaNetFwdInterface",
     "GDNCall",
+    "GDNChunkPrefillFwdKernel",
     "GDNDenseDecodeFwdKernel",
     "GDNDensePrefillFwdKernel",
     "GDNFwdInterface",
@@ -83,7 +86,6 @@ __all__ = [
     "GLADecodeFP32Kernel",
     "GLADecodeFwdInterface",
     "GLADecodeKernel",
-    "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
     "KDACall",
     "KDAChunkPrefillFwdKernel",

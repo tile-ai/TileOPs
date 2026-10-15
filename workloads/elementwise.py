@@ -712,6 +712,44 @@ class GeluTailWorkload(ElementwiseWorkload):
         return Exact(atol=0, rtol=0)
 
 
+class GeluSignWorkload(ElementwiseWorkload):
+    """Every 16-bit input; GELU of a negative input is never positive."""
+
+    def __init__(self, dtype):
+        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+        super().__init__("GeluFwdOp", (codes.view(dtype),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        x = inputs[0]
+
+        def validate(got, expected):
+            assert torch.equal(got.isnan(), expected.isnan())
+            # Not ``got <= 0``: -inf gives NaN, as in torch.
+            assert not (got[x < 0] > 0).any()
+
+        return Custom(validate, "no positive result for a negative input over the 16-bit domain")
+
+
+class SiluAndMulGateSweepWorkload(ElementwiseWorkload):
+    """Every bfloat16 gate against a value of one; each result is torch's, bit for bit."""
+
+    def __init__(self):
+        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+        gate = codes.view(torch.bfloat16)
+        super().__init__("SiluAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            # Bit patterns, not values: zero tolerances still pass -0 for +0.
+            assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
+
+        return Custom(validate, "torch's bfloat16 bit pattern at every gate")
+
+
 class ErfRoundingWorkload(ElementwiseWorkload):
     """Exhaust the 16-bit domain; the polynomial must stay within one storage step."""
 
@@ -738,6 +776,22 @@ class ErfRoundingWorkload(ElementwiseWorkload):
             )
 
         return Custom(validate, "one storage step over the 16-bit domain; exact special values")
+
+
+class Exhaustive16BitWorkload(ElementwiseWorkload):
+    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit."""
+
+    def __init__(self, op_name, dtype):
+        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+        super().__init__(op_name, (codes.view(dtype),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
+
+        return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
 
 
 class LerpCancellationWorkload(ElementwiseWorkload):

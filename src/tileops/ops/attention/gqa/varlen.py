@@ -29,7 +29,10 @@ class GQAVarlenFwdOp(Op):
     covers both prefill and decode; tensor geometry and sequence metadata come
     from each call, while mask, score, out_dtype, and RoPE semantics are fixed at
     construction. The BUILTIN path implements 16-bit regular and sliding-window
-    attention, with or without fused RoPE.
+    attention, with or without fused RoPE. Optional float32 sinks contribute a
+    logit per query head to the softmax denominator only: they are not scaled or
+    softcapped; ``-inf`` disables a sink and ``+inf`` makes that head's output zero.
+    A query row with no visible key returns zero, including when its sink is disabled.
 
     ``float8_e4m3fn`` Q/K/V are dequantized by one ``q_scale``, ``k_scale`` and
     ``v_scale`` per request and KV head, and name a 16-bit ``out_dtype``; the FP8
@@ -103,7 +106,7 @@ class GQAVarlenFwdOp(Op):
 
     def varlen_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """Describe one packed call using tensor shapes and Op semantics."""
-        q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin = inputs
+        q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None and cu_q is not None
         _, heads, dim = q.shape
         _, heads_kv, _ = k.shape
@@ -121,6 +124,7 @@ class GQAVarlenFwdOp(Op):
             is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
             empty_kv=k.shape[0] == 0,
+            has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim)
@@ -174,6 +178,7 @@ class GQAVarlenFwdOp(Op):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
         if self.validate_inputs:
@@ -189,5 +194,6 @@ class GQAVarlenFwdOp(Op):
             v_scale,
             rope_cos,
             rope_sin,
+            sinks,
         )
         return self._get_kernel(inputs)(*inputs)

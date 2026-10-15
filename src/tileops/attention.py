@@ -14,6 +14,7 @@ from tileops.ops.attention import (
     NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
     PagedKVCacheGatherFwdOp,
+    PagedKVCacheWriteFwdOp,
     TopKSelectFwdOp,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "NSATopKVarlenFwdOp",
     "NSAVarlenFwdOp",
     "PagedKVCacheGatherFwdOp",
+    "PagedKVCacheWriteFwdOp",
     "TopKSelectFwdOp",
 ]

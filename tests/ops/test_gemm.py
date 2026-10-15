@@ -3,7 +3,9 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
+from tileops.kernels.gemm import GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.utils import get_sm_count
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFP8Workload,
@@ -287,6 +289,138 @@ class GemmFixture(FixtureBase):
                     id="full-bf16-coop2-mn-tail",
                 ),
                 pytest.param(
+                    1408,
+                    2112,
+                    256,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-coop2-176-wide",
+                ),
+                pytest.param(
+                    1400,
+                    2112,
+                    256,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-coop2-176-wide-m-tail",
+                ),
+                pytest.param(
+                    4000,
+                    2112,
+                    512,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-pingpong-176",
+                ),
+                pytest.param(
+                    2800,
+                    2112,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-176-m-tail",
+                ),
+                pytest.param(
+                    2840,
+                    2080,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-192-mn-tail",
+                ),
+                pytest.param(
+                    2048,
+                    6144,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-192-four-tiles",
+                ),
+                pytest.param(
+                    4000,
+                    2090,
+                    512,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-coop2-unaligned-n",
+                ),
+                pytest.param(
+                    192,
+                    6144,
+                    128,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-basic-192-one-wave",
+                ),
+                pytest.param(
+                    16,
+                    24576,
+                    512,
+                    torch.bfloat16,
+                    False,
+                    False,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-basic-192-one-wave-nn",
+                ),
+                pytest.param(
+                    16,
+                    24576,
+                    512,
+                    torch.bfloat16,
+                    True,
+                    False,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-basic-192-one-wave-tn",
+                ),
+                pytest.param(
+                    16,
+                    24576,
+                    512,
+                    torch.bfloat16,
+                    True,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-basic-192-one-wave-tt",
+                ),
+                pytest.param(
+                    256,
+                    2048,
+                    6144,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-coop2-splitk-short-wave",
+                ),
+                pytest.param(
                     64,
                     7168,
                     2048,
@@ -415,7 +549,7 @@ class GemmFP8Fixture(FixtureBase):
                     id="full-fp8-e4m3-per-tensor-gemv",
                 ),
                 pytest.param(
-                    128,
+                    256,
                     256,
                     6144,
                     torch.float8_e4m3fn,
@@ -426,7 +560,7 @@ class GemmFP8Fixture(FixtureBase):
                     id="full-fp8-e4m3-block128-split-k",
                 ),
                 pytest.param(
-                    128,
+                    256,
                     256,
                     6144,
                     torch.float8_e4m3fn,
@@ -605,6 +739,23 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n, k", [(64, 64, 128), (128, 256, 256)])
+def test_gemm_w4a16_k_tile_no_wider_than_k(m: int, n: int, k: int) -> None:
+    """A short K takes a K tile and a ring no wider than it.
+
+    The padding past K would be staged and multiplied for nothing.
+    """
+    test = GemmW4A16Test(m, n, k, torch.float16)
+    config = GemmW4A16Kernel(m, n, k, torch.float16).config
+    assert config["block_k"] <= k
+    # The shallowest ring the kernel builds is two stages, whatever K.
+    assert config["num_stages"] <= max(2, -(-k // config["block_k"]))
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
 def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
@@ -657,6 +808,64 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     """The shared-memory epilogue publishes the whole tile; the calibrated schedule for
     this decode shape takes it."""
     test = GemmFP8Test(128, 2112, 7168, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        pytest.param(4096, 576, 7168, id="one-wave"),
+        pytest.param(4096, 7168, 16384, id="two-wave"),
+    ],
+)
+def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
+    """A 1x128 ``scale_b`` on the H200 shapes calibrated for the wave kernel, one with
+    single-wave tiles and one with two-wave tiles: each column folds in under its own
+    scale."""
+    test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n, scale_mode",
+    [
+        pytest.param(1024, "per_tensor", id="per-tensor"),
+        pytest.param(576, "block128x128", id="block128x128"),
+    ],
+)
+def test_gemm_fp8_single_row_tile_matches_reference(n: int, scale_mode: str) -> None:
+    """Rows that fit one 128-row tile, run as two 64-row tiles of one consumer warpgroup
+    each, under a per-tensor and a 128x128 ``scale_b`` grid."""
+    test = GemmFP8Test(128, n, 7168, torch.float8_e4m3fn, scale_mode)
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
+    """A 64-row block128x128 tile whose ring is sized to the block's shared memory launches
+    and matches: its mbarriers and each buffer's alignment come out of the same budget."""
+    test = GemmFP8Test(128, 4096, 2560, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
+    """Per-tensor scaling on a grid whose 192-wide tiles fill one wave while the 128-wide
+    ones need two, with a 64-column N tail."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    # Two row tiles by ``sm_count // 2`` 192-wide column tiles fill one wave; the 128-wide
+    # tiles, half as many again, take two.
+    test = GemmFP8Test(256, 192 * (sm_count // 2) - 128, 256, torch.float8_e4m3fn, "per_tensor")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
@@ -734,6 +943,15 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test = GemmW4A16Test(1, 64, 32896, torch.float16)
     op = GemmW4A16FwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
+    """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile."""
+    test = GemmW4A16Test(128, 5120, 25600, torch.float16)
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.sm90

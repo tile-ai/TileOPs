@@ -21,10 +21,6 @@ from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_co
 GROUP_SIZE = 128
 
 
-# What identifies a tile shape, as opposed to how its K loop is sliced.
-_TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
-
-
 @dataclass(frozen=True)
 class W4A16Layout:
     """Constants fixed by the packed-weight ABI, not tuning parameters."""
@@ -51,6 +47,10 @@ class _Calibration:
     meta_staging_crossover_bytes: int = 48 * 1024
     # Stream-K is offered only when at least this fraction of the SMs would idle.
     stream_min_idle_fraction: float = 0.02
+    # A jointly scored tile and slicing replaces the tile-first choice only when the
+    # model puts it at least this much faster: its slicing error runs to about this
+    # size (predicted 3.5% faster, measured up to 2.4% slower).
+    joint_switch_margin: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,8 @@ W4A16_LAYOUT = W4A16Layout()
 # entry is warned.
 _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
+# One space for the enumeration, the cost model, the builder's register split and the
+# kernel's stream-K reduce, so the configs ranked are the configs built.
 _CONFIG_SPACE = _ConfigSpace()
 
 __all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MMAKernel", "W4A16Layout"]
@@ -117,12 +119,18 @@ def _w4a16_streamk_reduce_kernel(
     return build
 
 
-def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: int) -> bool:
+def _stage_meta_per_tile(
+    threads: int, block_m: int, block_k: int, block_n: int, all_groups: int
+) -> bool:
     """Whether a tile reloads scale and zero every K tile instead of staging all of K once.
 
-    Only 128-thread tiles are eligible. Narrow K tiles always reload; wide K tiles
-    reload when staging all metadata exceeds the calibrated crossover.
+    A 128-thread tile reloads on narrow K tiles, and on wide ones when staging all
+    metadata exceeds the calibrated crossover. A 256-thread tile reloads on 128-wide K
+    tiles of at most 128 rows, the ones measured to build and to run faster for it; a
+    256-row one fails to assemble.
     """
+    if threads == 256:
+        return block_m <= 128 and block_k == 128
     return threads == 128 and (
         block_k <= 256 or block_n * all_groups * 3 > _CALIBRATION.meta_staging_crossover_bytes
     )
@@ -147,7 +155,7 @@ def _smem_bytes(
     group_size: int,
 ) -> int:
     """Return dynamic shared memory required by one CTA."""
-    per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, k // group_size)
+    per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
     meta_groups = (
         block_k // group_size if per_tile_meta else -(-k // block_k) * (block_k // group_size)
     )
@@ -184,8 +192,14 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                 if block_n == 64 and threads > 128:
                     continue
                 for block_k in _CONFIG_SPACE.block_ks:
+                    # A K tile wider than K, or a ring deeper than K's tiles, only stages
+                    # padding.
+                    if block_k > max(k, _CONFIG_SPACE.block_ks[0]):
+                        continue
                     k_iters = -(-k // block_k)
                     for num_stages in _CONFIG_SPACE.stages:
+                        if num_stages > max(k_iters, _CONFIG_SPACE.stages[0]):
+                            continue
                         if (
                             _smem_bytes(
                                 block_m,
@@ -222,7 +236,9 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                                 and block_k == 512
                                 and -(-m // block_m) == 1
                                 and n % block_n == 0
-                                and _stage_meta_per_tile(threads, block_k, block_n, k // group_size)
+                                and _stage_meta_per_tile(
+                                    threads, block_m, block_k, block_n, k // group_size
+                                )
                                 and ctas < sms
                                 and sms <= (_CONFIG_SPACE.stream_slots - 1) * ctas
                                 and (sms - ctas) / sms >= _CALIBRATION.stream_min_idle_fraction
@@ -257,7 +273,16 @@ def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """Choose a tile shape, then its lowest-cost whole-K, split-K, or stream-K variant."""
+    """Choose a tile and its K slicing.
+
+    The whole-K costs pick a tile, the widest K tile within the tie window, and the
+    tile takes its cheapest slicing. For a tile of 64 rows or more, every tile of the
+    same rows is then scored with every slicing: a tile that loses whole-K can win once
+    split, as 128x128 at 256 threads does on 128 rows of K 25600, whose split-K grid
+    fills the SMs its 40 whole-K CTAs leave idle. That choice replaces the first only
+    past ``joint_switch_margin``. Fewer rows keep the first choice: split 256-thread
+    tiles there measured up to 12% slower than the model put them.
+    """
 
     def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
         """Modelled milliseconds for one launch of ``cfg``."""
@@ -286,15 +311,29 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
             cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
         return cost
 
+    def _cheapest(scored):
+        """The widest K tile within the tie window of the cheapest config."""
+        floor = min(cost for cost, _ in scored) * (1 + _CALIBRATION.tie_window)
+        tied = [(cost, cfg) for cost, cfg in scored if cost <= floor]
+        return min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
+
     legal = list(_legal_configs(m, n, k, group_size, sms))
-    scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
-    if not scored:
+    scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal]
+    whole_k = [(cost, cfg) for cost, cfg in scored if cfg["split_k"] == 1]
+    if not whole_k:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
-    floor = min(cost for cost, _ in scored) * (1 + _CALIBRATION.tie_window)
-    tied = [(cost, cfg) for cost, cfg in scored if cost <= floor]
-    tile = min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
-    slicings = [cfg for cfg in legal if all(cfg[key] == tile[key] for key in _TILE_KEYS)]
-    return min(slicings, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
+    tile = _cheapest(whole_k)
+    tile_keys = ("block_m", "block_n", "block_k", "num_stages", "threads")
+    slicings = [(cost, cfg) for cost, cfg in scored if all(cfg[k2] == tile[k2] for k2 in tile_keys)]
+    tile_first_cost, tile_first = min(slicings, key=lambda t: t[0])
+    if tile["block_m"] < 64:
+        return tile_first
+    same_rows = [(cost, cfg) for cost, cfg in scored if cfg["block_m"] == tile["block_m"]]
+    joint = _cheapest(same_rows)
+    joint_cost = _config_cost(m, n, k, joint, sms)
+    if joint_cost * (1 + _CALIBRATION.joint_switch_margin) <= tile_first_cost:
+        return joint
+    return tile_first
 
 
 @functools.lru_cache(maxsize=32)
@@ -342,7 +381,7 @@ def _gemm_w4a16_kernel(
         # need the clamp below.
         padded_groups = -(-k // block_k) * tile_groups
         # Per-K-tile staging frees shared budget at the cost of re-reading.
-        per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, all_groups)
+        per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, all_groups)
         meta_groups = tile_groups if per_tile_meta else padded_groups
         tiles_m = -(-m // block_m)
         tiles_n = -(-n // block_n)
@@ -360,10 +399,17 @@ def _gemm_w4a16_kernel(
         stream_two_way = stream_k and stream_ctas == 2 * tiles_n
 
         def centered_weight(word, zero, j, v):
-            """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16."""
+            """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16.
+
+            The decode tile's consumer is bound by the instructions it issues, so it
+            decodes with one shift a word; wider tiles wait on the tensor core and keep
+            three.
+            """
             return T.call_extern(
                 dtype,
-                "tileops::w4a16_dequant_word",
+                "tileops::w4a16_dequant_word_one_shift"
+                if _narrow_tile(block_m)
+                else "tileops::w4a16_dequant_word",
                 word,
                 T.cast(fp16_nibble_bias + T.cast(zero, "int32"), dtype),
                 j,
@@ -481,16 +527,19 @@ def _gemm_w4a16_kernel(
                     )
                     buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
                     buf.zero_shared[i, g] = weight_zero[n_start + i, g_src]
-            T.copy(
-                activation[m_start : m_start + block_m, k_start : k_start + block_k],
-                buf.activation_shared,
-            )
+            # The producer issues these loads in this order, each after its stage frees.
+            # The weight's stage frees once the decode has read it, before the K tile's
+            # WGMMA, so its load from DRAM goes out ahead of the activation's.
             T.copy(
                 packed_weight[
                     n_start : n_start + block_n,
                     k_start // 8 : k_start // 8 + packed_k // 4,
                 ],
                 buf.packed_shared,
+            )
+            T.copy(
+                activation[m_start : m_start + block_m, k_start : k_start + block_k],
+                buf.activation_shared,
             )
             frag_a, frag_b, frag_c, frag_d = buf.frag_a, buf.frag_b, buf.frag_c, buf.frag_d
             tmp_0, tmp_1, tmp_2, tmp_3 = buf.tmps

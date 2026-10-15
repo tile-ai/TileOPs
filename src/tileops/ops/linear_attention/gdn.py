@@ -6,6 +6,7 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention import (
     GDNCall,
+    GDNChunkPrefillFwdKernel,
     GDNDenseDecodeFwdKernel,
     GDNDensePrefillFwdKernel,
     GDNFwdInterface,
@@ -41,19 +42,20 @@ class GDNFwdOp(Op):
     the current inputs; in particular, ``T == 1`` is decode rather than a
     separate public Op.
 
-    The in-tree kernels cover SM90 prefill over a 64- or
-    128-wide square state in either layout -- equal-length or packed, with a
-    sequence that is not a whole number of 64-token chunks, with ``HV`` a
-    multiple of ``H``, and under any combination of the three input
-    transforms -- and single-token SM90 decode over a key-major 128-wide one
-    with matching recurrent head counts and the gate, the step size and the
-    Q/K normalization settled before the call. Other calls need an external
-    target implementation.
+    The in-tree kernels serve a 64- or 128-wide square state in either
+    layout, with ``HV`` a multiple of ``H``, an even or single head count, and
+    any combination of the three input transforms. Prefill runs on SM89 and
+    SM90, equal-length or packed, with a sequence that is not a whole number
+    of 64-token chunks. On SM89, shared memory holds the offsets of at most
+    703 packed sequences over a 128-wide state. Decode runs one token per
+    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``.
+    Other calls need an external target implementation.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gdn_dense_decode": GDNDenseDecodeFwdKernel,
         "gdn_dense_prefill": GDNDensePrefillFwdKernel,
+        "gdn_chunk_prefill": GDNChunkPrefillFwdKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gdn": GDNFwdInterface}
 

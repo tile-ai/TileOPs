@@ -20,6 +20,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
@@ -42,7 +43,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "SoftmaxKernel",
@@ -183,14 +184,91 @@ def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm
 # Single-tile kernel (N fits in shared memory) -- original fast path
 
 
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
+def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int):
+    """Softmax of one row a block, each thread holding ``N / threads`` elements in registers.
+
+    Thread ``t`` holds vectors ``k * threads + t``. Its loads are evict-last in L2: at
+    (32768, 8192) float16 on H200 that took 248.6 us against 259.8 with the fragment
+    kernel's default loads. Max and sum fold across a warp with shuffles, then across
+    warps through shared memory.
+    """
+    steps = N // (threads * vec)
+    held_n = steps * vec
+    num_warps = threads // WARP_LANES
+
+    @T.prim_func
+    def main(x: T.Tensor[(M, N), dtype], y: T.Tensor[(M, N), out_dtype]):
+        with T.Kernel(M, threads=threads) as row:
+            tx = T.get_thread_binding()
+            held = T.alloc_local((held_n,), dtype)
+            vals = T.alloc_local((held_n,), "float32")
+            out = T.alloc_local((held_n,), out_dtype)
+            part = T.alloc_local((1,), "float32")
+            warp_max = T.alloc_shared((num_warps,), "float32")
+            warp_sum = T.alloc_shared((num_warps,), "float32")
+
+            for k in T.unroll(steps):
+                _load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+            for i in T.unroll(held_n):
+                vals[i] = T.cast(held[i], "float32")
+
+            part[0] = vals[0]
+            for i in T.unroll(1, held_n):
+                part[0] = T.max(part[0], vals[i])
+            for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                part[0] = T.max(
+                    part[0],
+                    T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES),
+                )
+            if tx % WARP_LANES == 0:
+                warp_max[tx // WARP_LANES] = part[0]
+            T.sync_threads()
+            for w in T.unroll(num_warps):
+                part[0] = T.max(part[0], warp_max[w])
+
+            for i in T.unroll(held_n):
+                vals[i] = exp_shifted(vals[i], part[0])
+            part[0] = vals[0]
+            for i in T.unroll(1, held_n):
+                part[0] = part[0] + vals[i]
+            for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                part[0] = part[0] + T.shfl_xor(
+                    part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                )
+            if tx % WARP_LANES == 0:
+                warp_sum[tx // WARP_LANES] = part[0]
+            T.sync_threads()
+            part[0] = warp_sum[0]
+            for w in T.unroll(1, num_warps):
+                part[0] = part[0] + warp_sum[w]
+
+            part[0] = 1.0 / part[0]
+            for i in T.unroll(held_n):
+                out[i] = T.cast(vals[i] * part[0], out_dtype)
+            for k in T.unroll(steps):
+                for c in T.vectorized(vec):
+                    y[row, (k * threads + tx) * vec + c] = out[k * vec + c]
+
+    return main
+
+
 @functools.lru_cache(maxsize=64)
 def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str):
     """Build a single-tile softmax/log_softmax kernel (N fits in smem).
 
-    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
+    Accepts an ``(M, N)`` input tensor. A softmax row of whole thread-wide vectors, one a
+    block, runs ``_held_row``. Otherwise, when ``N`` is not a multiple of
     ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
     loads that substitute ``-inf`` for out-of-bounds columns (kernel-side
-    boundary handling).  When ``N`` is already aligned, the fast ``T.copy``
+    boundary handling), and when ``N`` is already aligned, the fast ``T.copy``
     path is used.
 
     softmax never reads the row again once it has exponentiated, so it goes global to
@@ -207,9 +285,22 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
     # the kernel dtype where needed inside the generated kernel.
     _neg_inf = float("-inf")
     _stages_row = op_kind == "log_softmax"
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
+        # A softmax row of whole thread-wide vectors is held in registers, read
+        # evict-last in L2 and reduced with warp shuffles; see ``_held_row``. On H200 it
+        # ran up to 64 elements a thread (16384 columns at 256 threads); past the fragment
+        # budget a thread's three held buffers would spill, so wider rows keep the tile.
+        if (
+            op_kind == "softmax"
+            and block_m == 1
+            and N % (threads * vec) == 0
+            and N // threads <= FRAGMENT_ELEMS_PER_THREAD
+        ):
+            return _held_row(M, N, dtype, out_dtype, threads, vec)
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -647,9 +738,10 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
     """Softmax / log-softmax of rows one shared-memory tile holds, ``block_m`` rows a block.
 
-    The general implementation: it runs where no specialised one applies. Each row is
-    normalized from its tile; non-aligned N is masked inside the kernel. Tunes
-    ``block_m`` and ``threads``.
+    The general implementation: it runs where no specialised one applies. A softmax row
+    of whole thread-wide vectors, one a block, is held in registers (``_held_row``); every
+    other row is normalized from its tile, and non-aligned N is masked inside the kernel.
+    Tunes ``block_m`` and ``threads``.
 
     ``forward`` takes the tensor the op declares and normalizes over ``call.axis``;
     moving that axis to the end, flattening to rows and putting the result back are

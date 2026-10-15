@@ -38,9 +38,6 @@ _COMPILE_FLAGS = [
 ]
 
 
-_NMMA = 256
-
-
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[4, 5], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_rope_qk_kernel(
@@ -225,6 +222,8 @@ def _gqa_dense_ws_kernel(
     groups = H // Hkv
     accum = "float"
     half = block_M // 2
+    # Threads of the two MMA consumer warpgroups.
+    nmma = 256
     Pol = T.GemmWarpPolicy.FullRow
     seq_len_q = T.dynamic("seq_len_q")
     seq_len_kv = T.dynamic("seq_len_kv")
@@ -263,9 +262,9 @@ def _gqa_dense_ws_kernel(
 
             q_bar = T.alloc_barrier([32])  # 1-warp producer (FlashInfer NUM_PRODUCER_THREADS=32)
             kready = T.alloc_barrier([32] * nsK)
-            kfree = T.alloc_barrier([_NMMA] * nsK)
+            kfree = T.alloc_barrier([nmma] * nsK)
             vready = T.alloc_barrier([32] * nsV)
-            vfree = T.alloc_barrier([_NMMA] * nsV)
+            vfree = T.alloc_barrier([nmma] * nsV)
 
             cv = by // groups
             q0 = bx * block_M
@@ -328,12 +327,12 @@ def _gqa_dense_ws_kernel(
                 pass  # WG0 goes first
 
                 # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, _NMMA)
+                T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[0, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
                 )
-                T.named_barrier_arrive(nxt_bar, _NMMA)
+                T.named_barrier_arrive(nxt_bar, nmma)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[0])
                 if is_causal and q0 + r0 + causal_offset < block_N - 1:
@@ -370,7 +369,7 @@ def _gqa_dense_ws_kernel(
                 for k in T.serial(1, nu):
                     sk = k % nsK
                     svp = (k - 1) % nsV
-                    T.sync_threads(my_bar, _NMMA)
+                    T.sync_threads(my_bar, nmma)
                     T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                     T.wgmma_gemm(
                         Qs[0, :, :],
@@ -384,7 +383,7 @@ def _gqa_dense_ws_kernel(
                         acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, _NMMA)
+                    T.named_barrier_arrive(nxt_bar, nmma)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
                     if use_softcap:
@@ -404,7 +403,7 @@ def _gqa_dense_ws_kernel(
                 for k in T.serial(nu, eff):
                     sk = k % nsK
                     svp = (k - 1) % nsV
-                    T.sync_threads(my_bar, _NMMA)
+                    T.sync_threads(my_bar, nmma)
                     T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                     T.wgmma_gemm(
                         Qs[0, :, :],
@@ -418,7 +417,7 @@ def _gqa_dense_ws_kernel(
                         acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, _NMMA)
+                    T.named_barrier_arrive(nxt_bar, nmma)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
                     if is_causal:
@@ -482,15 +481,15 @@ def _gqa_dense_ws_kernel(
                 T.fill(alpha, 1.0)
                 T.fill(sm, -T.infinity(accum))
                 T.mbarrier_wait_parity(q_bar, 0)
-                T.named_barrier_arrive(1, _NMMA)  # prime WG0
+                T.named_barrier_arrive(1, nmma)  # prime WG0
 
                 # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, _NMMA)
+                T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[1, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
                 )
-                T.named_barrier_arrive(nxt_bar, _NMMA)
+                T.named_barrier_arrive(nxt_bar, nmma)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[0])
                 if is_causal and q0 + r0 + causal_offset < block_N - 1:
@@ -527,7 +526,7 @@ def _gqa_dense_ws_kernel(
                 for k in T.serial(1, nu_wg1):
                     sk = k % nsK
                     svp_wg1 = (k - 1) % nsV
-                    T.sync_threads(my_bar, _NMMA)
+                    T.sync_threads(my_bar, nmma)
                     T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                     T.wgmma_gemm(
                         Qs[1, :, :],
@@ -541,7 +540,7 @@ def _gqa_dense_ws_kernel(
                         acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp_wg1], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp_wg1, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, _NMMA)
+                    T.named_barrier_arrive(nxt_bar, nmma)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
                     if use_softcap:
@@ -561,7 +560,7 @@ def _gqa_dense_ws_kernel(
                 for k in T.serial(nu_wg1, eff):
                     sk = k % nsK
                     svp_wg1_tail = (k - 1) % nsV
-                    T.sync_threads(my_bar, _NMMA)
+                    T.sync_threads(my_bar, nmma)
                     T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                     T.wgmma_gemm(
                         Qs[1, :, :],
@@ -577,7 +576,7 @@ def _gqa_dense_ws_kernel(
                     T.wgmma_gemm(
                         pcast, Vs[svp_wg1_tail, :, :], acc_o, policy=Pol, clear_accum=False
                     )
-                    T.named_barrier_arrive(nxt_bar, _NMMA)
+                    T.named_barrier_arrive(nxt_bar, nmma)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
                     if is_causal:

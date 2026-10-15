@@ -71,10 +71,6 @@ class _HeuristicPolicy:
         return self.max_stages * 8 * 2
 
 
-#: One instance for the process: nothing varies it per call.
-_POLICY = _HeuristicPolicy()
-
-
 @dataclasses.dataclass(frozen=True)
 class _CalibratedBands:
     """Selection bands fitted on one calibrated board; refit them as `_HeuristicPolicy` describes."""
@@ -84,17 +80,16 @@ class _CalibratedBands:
     staged_epilogue_stages: int = 4
     staged_epilogue_depth_cap: int = 6
     staged_epilogue_wave_limit: int = 20
+    # Waves from which a tight tile stops taking the two-buffer staged epilogue. Against
+    # the three-stage whole-width epilogue it measured faster at every shape up to 8
+    # waves, and slower at K = 7168 from 12 waves on.
+    buffered_epilogue_wave_limit: int = 9
 
     # The band where one tile beats whatever the cost function scores.
     short_group_rows: int = 32
     short_group_min_k: int = 1024
     short_group_unfused_max_n: int = 5120
     short_group_tile: tuple[int, int, int] = (64, 128, 128)
-
-
-#: The bands by calibrated board (``tileops.utils.calibration_key``). A board without an
-#: entry is served by the cost function alone.
-_CALIBRATED_BANDS = {"h200": _CalibratedBands()}
 
 
 class GemmType(str, enum.Enum):
@@ -153,6 +148,9 @@ PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PE
 # takes the widest tiles.
 # One full tile grid per group, and no M-grouping to constrain the tile.
 _FLAT_LIKE_TYPES = (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
+# The types whose staged epilogue alternates two buffers, each chunk's store left in
+# flight while the next stages: GroupedGemmFwdOp's M- and K-grouped layouts.
+_BUFFERED_EPILOGUE_TYPES = (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.K_GROUPED_CONTIGUOUS)
 
 
 class Major(str, enum.Enum):
@@ -188,6 +186,7 @@ class GroupedGemmSpec:
     num_sms: int
     activation: str = "none"
     epilogue_stage_n: int = 0
+    epilogue_buffers: int = 1
     swizzle_group_m: int = 0
 
     def __post_init__(self) -> None:
@@ -204,6 +203,19 @@ class GroupedGemmSpec:
                 )
             if c_tile_n % self.epilogue_stage_n:
                 raise ValueError("epilogue_stage_n must divide the output tile width")
+        if self.epilogue_buffers not in (1, 2):
+            raise ValueError(f"epilogue_buffers must be 1 or 2, got {self.epilogue_buffers}")
+        if self.epilogue_buffers == 2 and (
+            not self.epilogue_stage_n or self.gemm_type not in _BUFFERED_EPILOGUE_TYPES
+        ):
+            raise ValueError(
+                "two epilogue buffers take a staged epilogue (epilogue_stage_n) of a "
+                "K-grouped or tight psum GEMM"
+            )
+        if self.epilogue_buffers == 2 and (c_tile_n // self.epilogue_stage_n) % 2:
+            # Each tile restarts on the first buffer, so a tile's last store must leave
+            # from the second for the next tile's wait to cover it.
+            raise ValueError("two epilogue buffers take an even number of epilogue chunks")
         if self.swizzle_group_m and self.gemm_type is not GemmType.DENSE:
             raise ValueError("swizzle_group_m only supports dense GEMM")
         if self.swizzle_group_m < 0:
@@ -285,16 +297,23 @@ class GemmDesc:
     activation: str = "none"
     device_name: str = ""
 
+    # Unannotated, so neither is a dataclass field.
+    # One instance for the process: nothing varies it per call.
+    _POLICY = _HeuristicPolicy()
+    # The bands by calibrated board (``tileops.utils.calibration_key``). A board without an
+    # entry is served by the cost function alone.
+    _CALIBRATED_BANDS = {"h200": _CalibratedBands()}
+
     @property
     def policy(self) -> _HeuristicPolicy:
-        """The selector's constants. A module singleton, not per-descriptor state.
+        """The selector's constants. A class attribute, not per-descriptor state.
 
         A field would join this frozen dataclass's equality, and so the key of
         ``get_best_config``'s cache and of anything comparing two descriptors --
         which silently makes descriptors from two builds of the selector
         incomparable.
         """
-        return _POLICY
+        return self._POLICY
 
     @property
     def fused(self) -> bool:
@@ -303,7 +322,7 @@ class GemmDesc:
     @property
     def bands(self) -> "_CalibratedBands | None":
         """The bands fitted on this device's calibrated board, or ``None`` without one."""
-        return _CALIBRATED_BANDS.get(calibration_key(self.device_name))
+        return self._CALIBRATED_BANDS.get(calibration_key(self.device_name))
 
     @property
     def c_cols(self) -> int:
@@ -355,28 +374,36 @@ def _align(x: int, a: int) -> int:
     return (x + a - 1) // a * a
 
 
-def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> int:
+def _num_stages(
+    desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0, epilogue_buffers: int = 1
+) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
     c_width = epilogue_stage_n or (layout.block_n // 2 if desc.fused else layout.block_n)
-    smem_cd = _align(layout.block_m * c_width * cd_bytes, SHARED_BUFFER_ALIGN_BYTES)
+    smem_cd = epilogue_buffers * _align(
+        layout.block_m * c_width * cd_bytes, SHARED_BUFFER_ALIGN_BYTES
+    )
     prefix_ints = desc.num_groups + 2
     if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
         prefix_ints += desc.num_groups
     smem_prefix = _align(prefix_ints * 4, 128)
     policy = desc.policy
     per_stage = (layout.block_m + layout.block_n) * layout.block_k * policy.element_bytes
-    budget = (
-        policy.smem_capacity
-        - smem_cd
-        - policy.barrier_bytes
-        - (
-            0
-            if epilogue_stage_n and desc.gemm_type in (GemmType.DENSE, GemmType.BATCHED)
-            else policy.smem_alignment_slack
-        )
-        - smem_prefix
-    )
+    if epilogue_buffers == 2:
+        # Only the group prefix's padding to the buffers' 1 KB alignment is held back:
+        # the 128x256 four-stage tile allocates 230400 of 232448 bytes this way.
+        slack = SHARED_BUFFER_ALIGN_BYTES
+    elif epilogue_stage_n and desc.gemm_type in (GemmType.DENSE, GemmType.BATCHED):
+        slack = 0
+    else:
+        slack = policy.smem_alignment_slack
+    budget = policy.smem_capacity - smem_cd - policy.barrier_bytes - slack - smem_prefix
     return min(budget // per_stage, policy.max_stages)
+
+
+def _deep_enough(desc: GemmDesc, layout: _Layout) -> bool:
+    """Whether ``layout``'s ring is deep enough: three stages, four below a 128x192 tile."""
+    stages = _num_stages(desc, layout)
+    return stages >= 3 and not (layout.block_m * layout.block_n < 128 * 192 and stages < 4)
 
 
 def layout_candidates(desc: GemmDesc) -> list[_Layout]:
@@ -413,8 +440,7 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
             if block_m > 128 and block_n > 128:
                 continue
             layout = _Layout(block_m, block_n, policy.block_k)
-            stages = _num_stages(desc, layout)
-            if stages < 3 or (block_m * block_n < 128 * 192 and stages < 4):
+            if not _deep_enough(desc, layout):
                 continue
             candidates.append(layout)
     if not candidates:
@@ -428,6 +454,7 @@ def _spec(
     num_stages: int,
     *,
     epilogue_stage_n: int = 0,
+    epilogue_buffers: int = 1,
     swizzle_group_m: int = 0,
     num_math_wgs: int = 0,
 ) -> GroupedGemmSpec:
@@ -454,6 +481,7 @@ def _spec(
         num_sms=desc.num_sms,
         activation=desc.activation,
         epilogue_stage_n=epilogue_stage_n,
+        epilogue_buffers=epilogue_buffers,
         swizzle_group_m=swizzle_group_m,
     )
 
@@ -556,24 +584,79 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             and desc.k >= bands.short_group_min_k
             and (desc.activation != "none" or desc.n <= bands.short_group_unfused_max_n)
         ):
-            return _Layout(*bands.short_group_tile)
+            tile = _Layout(*bands.short_group_tile)
+            if desc.activation == "none":
+                return _fuller_short_group_layout(desc, tile)
+            return tile
         return None
+
+    def _fuller_short_group_layout(desc: GemmDesc, tile: _Layout) -> _Layout:
+        """``tile``, or its half-width where that fills the waves better.
+
+        A short group is one row tile, and a group with no rows runs none, so the
+        busy tiles are the groups with rows times the column tiles; the groups with
+        rows are estimated as ``min(num_groups, m)``, rows spread one a group before
+        any group takes two. Where the wide tiles run under two waves, the
+        half-width tile is taken if its ring is deep enough and its tiles fill their
+        waves strictly better; doubling a grid that fills no better only adds
+        per-tile cost, and over more waves a partial last one is a small share.
+        """
+
+        def _busy_tiles(block_n: int) -> int:
+            return min(desc.num_groups, desc.m) * math.ceil(desc.n / block_n)
+
+        def _wave_efficiency(block_n: int) -> float:
+            tiles = _busy_tiles(block_n)
+            return tiles / (math.ceil(tiles / desc.num_sms) * desc.num_sms)
+
+        narrow = _Layout(tile.block_m, tile.block_n // 2, tile.block_k)
+        busy = _busy_tiles(tile.block_n)
+        if (
+            0 < busy < 2 * desc.num_sms
+            and _deep_enough(desc, narrow)
+            and _wave_efficiency(narrow.block_n) > _wave_efficiency(tile.block_n)
+        ):
+            return narrow
+        return tile
+
+    def _filled_layout(desc: GemmDesc, layout: _Layout) -> _Layout:
+        """``layout``, or the half-width tile where ``layout``'s grid leaves SMs idle.
+
+        The cycle model prices bytes and reads the wide tile as cheaper even where its
+        grid does not fill one wave; the narrow one doubles the grid. Tight, unfused
+        groups only: a fused tile's width is its activation's pair.
+        """
+        if desc.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM or desc.fused:
+            return layout
+        if _layout_features(desc, layout).num_blocks >= desc.num_sms:
+            return layout
+        narrow = _Layout(layout.block_m, layout.block_n // 2, layout.block_k)
+        return narrow if narrow in layout_candidates(desc) else layout
 
     def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         """A spec that trades a narrower output staging buffer for a deeper mainloop.
 
         Returns ``None`` where the trade buys no stage, or where the mainloop is deep
         enough in waves not to need one, and so only costs the extra staging rounds.
-        The widest chunk that reaches the policy's depth wins.
+        The widest chunk that reaches the policy's depth wins. Where the type
+        alternates two staging buffers, both count against the ring.
         """
         bands = desc.bands
         if desc.activation != "none" or bands is None:
             return None
-        if desc.gemm_type in _TIGHT_TYPES:
+        buffers = 2 if desc.gemm_type in _BUFFERED_EPILOGUE_TYPES else 1
+        if desc.gemm_type in _TIGHT_TYPES and (
+            buffers == 1
+            or desc.m < desc.num_groups * layout.block_m
+            or _layout_features(desc, layout).num_waves >= bands.buffered_epilogue_wave_limit
+        ):
             # A tight group's last tile is ragged, and those rows are stored under a
             # row mask rather than in one wide store. Chunking makes them pay a
             # staging round each, for a store that was never going to widen; how many
-            # tiles are ragged is a property of the routing, not of the shape.
+            # tiles are ragged is a property of the routing, not of the shape. With
+            # two buffers a full tile's chunks no longer wait on each other's stores;
+            # the selector knows the routing only by its mean rows a group, and takes
+            # two buffers from a mean of block_m rows.
             return None
         if _num_stages(desc, layout) >= bands.staged_epilogue_depth_cap:
             return None
@@ -584,12 +667,16 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             return None
         base = _num_stages(desc, layout)
         for stage_n in (layout.block_n // 2, layout.block_n // 4):
-            stages = _num_stages(desc, layout, epilogue_stage_n=stage_n)
+            stages = _num_stages(desc, layout, stage_n, buffers)
             if stages > base and stages >= bands.staged_epilogue_stages:
-                return _spec(desc, layout, stages, epilogue_stage_n=stage_n)
+                return _spec(
+                    desc, layout, stages, epilogue_stage_n=stage_n, epilogue_buffers=buffers
+                )
         return None
 
-    best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
+    best = _short_group_layout(desc) or _filled_layout(
+        desc, _best_layout(desc, layout_candidates(desc))
+    )
     return _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
 
 
@@ -608,6 +695,7 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         "block_k",
         "num_stages",
         "epilogue_stage_n",
+        "epilogue_buffers",
         "swizzle_group_m",
         "num_math_wgs",
     }
@@ -623,7 +711,8 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
             f"{layout.block_m} does not fit m_alignment={desc.m_alignment}"
         )
     epilogue_stage_n = config.get("epilogue_stage_n", 0)
-    max_stages = _num_stages(desc, layout, epilogue_stage_n)
+    epilogue_buffers = config.get("epilogue_buffers", 1)
+    max_stages = _num_stages(desc, layout, epilogue_stage_n, epilogue_buffers)
     stages = config.get("num_stages", max_stages)
     if not 2 <= stages <= max_stages:
         raise ValueError(
@@ -636,6 +725,7 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         layout,
         stages,
         epilogue_stage_n=epilogue_stage_n,
+        epilogue_buffers=epilogue_buffers,
         swizzle_group_m=config.get(
             "swizzle_group_m", 16 if desc.gemm_type is GemmType.DENSE else 0
         ),
