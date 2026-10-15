@@ -5,7 +5,8 @@ A comment that points at a line elsewhere (``<file>.py:<n>``, ``line <n>``,
 ``<file>.py#L<n>``) goes stale with the first edit above that line, and nothing reports
 it. Which code enforces a stated invariant belongs in the pull request's report; the
 comment names the invariant, and a symbol (``_check_tiles``, ``:func:`check_tiles```)
-when it must point somewhere, since a symbol survives an edit.
+when it must point somewhere, since a symbol survives an edit. A line that must cite a
+location carries ``lint: code-ref allow: <reason>`` on that same line.
 
 A location is a source file name followed by ``:<n>``, ``#L<n>``, ``L<n>`` or
 ``line <n>``, or ``line <n>`` / ``lines <n>`` on its own. ``L2`` alone is a cache level,
@@ -20,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-from comment_lines import prose_lines
+from comment_lines import allowed_lines, prose_lines
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,8 +38,12 @@ _LOCATIONS = (
 
 def findings(path: Path) -> list[str]:
     """Every code-location citation in *path*'s comments and docstrings."""
+    source = path.read_text(encoding="utf-8")
+    allowed = allowed_lines(source, "code-ref")
     out = []
-    for prose in prose_lines(path.read_text(encoding="utf-8")):
+    for prose in prose_lines(source):
+        if prose.line in allowed:
+            continue
         for pattern in _LOCATIONS:
             match = pattern.search(prose.text)
             if match:

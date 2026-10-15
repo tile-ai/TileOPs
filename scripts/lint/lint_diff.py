@@ -6,15 +6,22 @@ base: a line counts as added when the diff of the two shows it with a ``+``. A p
 merge base does not hold adds every line, whether git tracks it yet or not. A rename is
 followed, so a moved file adds only the lines it changed on the way.
 
-A base that does not resolve raises `NoMergeBaseError`; the lints report it and fail, since
-a rule over added lines cannot hold for lines it never saw.
+An explicit base that does not resolve raises `NoMergeBaseError`. Hooks use the special
+base ``auto``: it finds a fetched remote for ``tile-ai/TileOPs`` and skips locally when a
+clone has none, while CI's upstream checkout remains authoritative.
 """
 
+import ast
+import os
 import re
 import subprocess
 from pathlib import Path
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_UPSTREAM_URL = re.compile(r"(?:^|[@/:])github\.com[/:]tile-ai/TileOPs(?:\.git)?/?$", re.IGNORECASE)
+
+# Every diff-aware hook names the same environment override in its skip guidance.
+BASE_ENV = "TILEOPS_LINT_BASE"
 
 
 class NoMergeBaseError(RuntimeError):
@@ -40,9 +47,59 @@ def merge_base(base: str, root: Path) -> str:
         ) from None
 
 
+def resolve_base(base: str, root: Path) -> str | None:
+    """Resolve *base*, discovering the TileOPs upstream when it is ``auto``.
+
+    An explicit ref, including one supplied through ``TILEOPS_LINT_BASE``, is strict.
+    Automatic discovery only considers remotes whose URL names ``tile-ai/TileOPs`` and
+    returns None when none has a fetched ``main`` ref. Local hooks may then skip while CI,
+    whose checkout has the upstream remote, remains authoritative.
+    """
+    if base != "auto":
+        merge_base(base, root)
+        return base
+    configured = os.environ.get(BASE_ENV)
+    if configured:
+        merge_base(configured, root)
+        return configured
+    try:
+        remotes = _git(root, "remote").splitlines()
+    except NoMergeBaseError:
+        return None
+    for remote in remotes:
+        try:
+            urls = _git(root, "remote", "get-url", "--all", remote).splitlines()
+        except NoMergeBaseError:
+            continue
+        if not any(_UPSTREAM_URL.search(url) for url in urls):
+            continue
+        candidate = f"{remote}/main"
+        try:
+            merge_base(candidate, root)
+        except NoMergeBaseError:
+            continue
+        return candidate
+    return None
+
+
+def _unquote_path(path: str) -> str:
+    """Decode a path from a git patch header, including C-style quoted paths."""
+    if not path.startswith('"'):
+        return path
+    try:
+        value = ast.literal_eval(path)
+    except (SyntaxError, ValueError):
+        return path
+    return value if isinstance(value, str) else path
+
+
 def files_at(commit: str, root: Path) -> set[str]:
     """Every path *commit* holds, relative to *root*."""
-    return set(_git(root, "ls-tree", "-r", "--name-only", commit).splitlines())
+    return {
+        path
+        for path in _git(root, "ls-tree", "-r", "-z", "--name-only", commit).split("\0")
+        if path
+    }
 
 
 def relative(path: Path | str, root: Path) -> str:
@@ -78,12 +135,12 @@ def added_lines(paths: list[Path | str], base: str, root: Path) -> dict[str, set
         elif line.startswith("diff --git "):
             current = None
         elif line.startswith("rename to "):
-            current = line.removeprefix("rename to ").strip('"')
+            current = _unquote_path(line.removeprefix("rename to "))
             renamed.add(current)
             hunks.setdefault(current, set())
         elif line.startswith("+++ "):
-            target = line.removeprefix("+++ ")
-            current = None if target == "/dev/null" else target.strip('"').removeprefix("b/")
+            target = _unquote_path(line.removeprefix("+++ "))
+            current = None if target == "/dev/null" else target.removeprefix("b/")
             if current is not None:
                 hunks.setdefault(current, set())
     out: dict[str, set[int] | None] = {}

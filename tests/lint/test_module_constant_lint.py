@@ -125,6 +125,43 @@ def test_a_constant_with_no_reader_is_reported(tmp_path: Path) -> None:
     assert found.endswith("probe.py:1: module constant LIMIT has no reader — delete it")
 
 
+SHADOWS = [
+    pytest.param("def g(LIMIT):\n    return LIMIT\n", id="parameter"),
+    pytest.param("def g():\n    LIMIT = 8\n    return LIMIT\n", id="assignment"),
+    pytest.param("def g():\n    for LIMIT in (8,):\n        return LIMIT\n", id="for-target"),
+    pytest.param(
+        "def g(manager):\n    with manager() as LIMIT:\n        return LIMIT\n", id="with-target"
+    ),
+    pytest.param("def g():\n    return [LIMIT for LIMIT in (8,)]\n", id="comprehension-target"),
+    pytest.param("def g():\n    from other import LIMIT\n    return LIMIT\n", id="import"),
+    pytest.param(
+        "def g():\n    LIMIT = 8\n    def nested():\n        return LIMIT\n    return nested()\n",
+        id="nested-closure",
+    ),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("shadow", SHADOWS)
+def test_a_shadowed_name_does_not_count_as_a_reader(tmp_path: Path, shadow: str) -> None:
+    source = "LIMIT = 4\n\n\ndef f():\n    return LIMIT\n\n\n" + shadow
+
+    (found,) = _reader_findings(tmp_path, source)
+
+    assert "has one reader, f" in found
+
+
+@pytest.mark.smoke
+def test_a_comprehension_iterable_can_still_read_the_module_constant(tmp_path: Path) -> None:
+    source = (
+        "# f and g share the domain.\nLIMIT = (4,)\n\n\n"
+        "def f():\n    return LIMIT\n\n\n"
+        "def g():\n    return [LIMIT for LIMIT in LIMIT]\n"
+    )
+
+    assert _reader_findings(tmp_path, source) == []
+
+
 # Two functions reading LIMIT, appended to every probe of the comment rule.
 _SHARED = "\n\ndef f():\n    return LIMIT\n\n\ndef g():\n    return LIMIT\n"
 

@@ -45,6 +45,13 @@ def test_a_file_carrying_the_allow_comment_is_left_alone(tmp_path: Path) -> None
     assert lint.findings("notes/plan.md", tmp_path) == []
 
 
+def test_a_file_carrying_a_bare_allow_comment_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "plan.md").write_text("<!-- lint: file-set allow: -->\n")
+
+    assert lint.findings("notes/plan.md", tmp_path)
+
+
 def test_every_allowlisted_path_is_in_the_tree() -> None:
     repo_root = Path(__file__).resolve().parents[2]
 

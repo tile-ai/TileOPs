@@ -100,13 +100,13 @@ repos:
 
       - id: module-constant-lint
         name: module constant name and reader lint
-        entry: python scripts/lint/module_constant_lint.py --base origin/main
+        entry: python scripts/lint/module_constant_lint.py --base auto
         language: python
         files: ^src/tileops/.*\.py$
 
       - id: comment-narration-lint
         name: comment and docstring narration lint
-        entry: python scripts/lint/comment_narration_lint.py --base origin/main
+        entry: python scripts/lint/comment_narration_lint.py --base auto
         language: python
         files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
 
@@ -118,7 +118,7 @@ repos:
 
       - id: manifest-label-lint
         name: manifest workload label lint
-        entry: python scripts/lint/manifest_label_lint.py --base origin/main
+        entry: python scripts/lint/manifest_label_lint.py --base auto
         language: python
         additional_dependencies: [pyyaml]
         pass_filenames: false
@@ -131,7 +131,7 @@ repos:
 
       - id: test-placement-lint
         name: tests/ops placement lint
-        entry: python scripts/lint/test_placement_lint.py --base origin/main
+        entry: python scripts/lint/test_placement_lint.py --base auto
         language: python
         files: ^tests/ops/.*\.py$
 

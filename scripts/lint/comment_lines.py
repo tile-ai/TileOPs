@@ -8,6 +8,7 @@ returned, delimiters included. Code is never returned, so a name such as ``phase
 
 import ast
 import io
+import re
 import tokenize
 from typing import NamedTuple
 
@@ -16,6 +17,12 @@ class ProseLine(NamedTuple):
     line: int
     text: str
     kind: str  # "comment" or "docstring"
+
+
+def allowed_lines(source: str, rule: str) -> set[int]:
+    """Lines carrying ``lint: <rule> allow: <reason>`` in their prose."""
+    marker = re.compile(rf"\blint:\s*{re.escape(rule)}\s+allow:\s*\w", re.IGNORECASE)
+    return {prose.line for prose in prose_lines(source) if marker.search(prose.text)}
 
 
 def prose_lines(source: str) -> list[ProseLine]:

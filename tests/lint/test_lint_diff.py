@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+from unittest import mock
 
 import lint_diff
 import pytest
@@ -61,6 +62,69 @@ def test_a_renamed_file_adds_only_the_lines_it_changed(repo: Path) -> None:
     _git(repo, "add", "moved.py")
 
     assert lint_diff.added_lines(["moved.py"], "base", repo) == {"moved.py": {4}}
+
+
+@pytest.mark.parametrize("name", ['quote".py', "back\\slash.py", "tab\tname.py", "line\nname.py"])
+def test_a_git_quoted_path_is_decoded(repo: Path, name: str) -> None:
+    path = repo / name
+    path.write_text("a = 1\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", "quoted base")
+    _git(repo, "branch", "-f", "base", "HEAD")
+    path.write_text("a = 2\n")
+
+    assert lint_diff.added_lines([name], "base", repo) == {name: {1}}
+
+
+def test_a_git_quoted_rename_is_decoded(repo: Path) -> None:
+    moved = 'moved"\\\t.py'
+    _git(repo, "mv", "kept.py", moved)
+    (repo / moved).write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
+    _git(repo, "add", moved)
+
+    assert lint_diff.added_lines([moved], "base", repo) == {moved: {4}}
+
+
+@pytest.mark.parametrize(
+    "url", ["https://github.com/tile-ai/TileOPs.git", "git@github.com:tile-ai/TileOPs.git"]
+)
+def test_auto_base_finds_the_official_remote_not_a_personal_origin(repo: Path, url: str) -> None:
+    _git(repo, "remote", "add", "origin", "git@github.com:someone/TileOPs.git")
+    _git(repo, "remote", "add", "company", url)
+    base = subprocess.run(
+        ["git", "rev-parse", "base"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _git(repo, "update-ref", "refs/remotes/company/main", base)
+
+    with mock.patch.dict(lint_diff.os.environ, {}, clear=True):
+        assert lint_diff.resolve_base("auto", repo) == "company/main"
+
+
+def test_auto_base_honors_the_environment(repo: Path) -> None:
+    with mock.patch.dict(lint_diff.os.environ, {lint_diff.BASE_ENV: "base"}, clear=True):
+        assert lint_diff.resolve_base("auto", repo) == "base"
+
+
+def test_auto_base_without_a_fetched_upstream_returns_none(repo: Path) -> None:
+    _git(repo, "remote", "add", "origin", "https://github.com/someone/TileOPs.git")
+
+    with mock.patch.dict(lint_diff.os.environ, {}, clear=True):
+        assert lint_diff.resolve_base("auto", repo) is None
+
+
+def test_auto_base_with_an_unfetched_official_remote_returns_none(repo: Path) -> None:
+    _git(repo, "remote", "add", "upstream", "https://github.com/tile-ai/TileOPs.git")
+
+    with mock.patch.dict(lint_diff.os.environ, {}, clear=True):
+        assert lint_diff.resolve_base("auto", repo) is None
+
+
+def test_an_invalid_environment_base_is_an_error(repo: Path) -> None:
+    with (
+        mock.patch.dict(lint_diff.os.environ, {lint_diff.BASE_ENV: "missing"}, clear=True),
+        pytest.raises(lint_diff.NoMergeBaseError, match="no merge base of missing and HEAD"),
+    ):
+        lint_diff.resolve_base("auto", repo)
 
 
 def test_a_base_without_a_merge_base_raises(repo: Path) -> None:

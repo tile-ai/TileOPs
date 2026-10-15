@@ -2,19 +2,20 @@
 """Lint comments and docstrings for narration of how the code came to be.
 
 A comment states what the code promises and what its input must satisfy. How it got there
-(what was attempted, which version came before, which step or phase of the work a line
-belongs to, which library it copies) is history: it is true of the pull request, not of the code,
-and it goes stale with the next edit. ``_NARRATION`` lists the phrases that mark it,
-matched case-insensitively as whole words.
+(what the author attempted or which version came before) is history: it is true of the pull
+request, not of the code, and it goes stale with the next edit. ``_NARRATION`` contains only
+high-confidence forms of that history; words such as "measured", "step" and "phase" also
+have stable domain meanings and are not findings on their own, while a sentence that starts
+"measured on/at" records the run that produced a result rather than a code contract.
 
 Only ``#`` comments and docstrings are read, so an identifier such as ``phase`` in barrier
-code or ``measured_ms`` is never a finding. ``_PASSIVE_USE`` leaves one form alone
-because it is not history: the passive of "use" followed by "to", after "is", "are" or
-"be", which names a purpose rather than a past habit.
+code or ``measured_ms`` is never a finding. A line that must state history carries
+``lint: narration allow: <reason>`` on that same line.
 
 Usage: ``comment_narration_lint.py [--base REF] [FILE ...]``. With ``--base``, only the
 lines added since the merge base of REF and HEAD are read (``lint_diff.py``); the hook
-passes ``--base origin/main``. Without it, every line is. With no files, scans
+passes ``--base auto`` to find the TileOPs upstream, overridable with
+``TILEOPS_LINT_BASE``. Without it, every line is. With no files, scans
 ``src/tileops/``, ``tests/``, ``benchmarks/`` and ``workloads/``. Exits 1 on a finding and
 2 when the base has no merge base with HEAD.
 """
@@ -24,34 +25,32 @@ import re
 import sys
 from pathlib import Path
 
-from comment_lines import prose_lines
-from lint_diff import NoMergeBaseError, added_lines, relative
+from comment_lines import allowed_lines, prose_lines
+from lint_diff import BASE_ENV, NoMergeBaseError, added_lines, relative, resolve_base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _NARRATION = re.compile(
-    r"\b(?:tried|measured|step [0-9]|used to|as before|earlier version|previous version"
-    r"|phase [0-9]|as (?:vllm|flashinfer|deepgemm|torch) does)\b",
-    re.IGNORECASE,
+    r"\b(?:we|i)\s+(?:have\s+)?(?:tried|measured)\b"
+    r"|^\s*(?:\#\s*|['\"]{3}\s*)?tried\b"
+    r"|\b(?:this|that|it|we)\s+used to\b"
+    r"|(?:^\s*(?:\#\s*|['\"]{3}\s*)?|(?<=[.;:])\s*)measured\s+(?:on|at)\b"
+    r"|\b(?:as before|earlier version|previous version|after measuring)\b",
+    re.IGNORECASE | re.MULTILINE,
 )
-_PASSIVE_USE = re.compile(r"\b(?:is|are|be)\s+$", re.IGNORECASE)
 
 
 def _narration(text: str) -> list[str]:
-    hits = []
-    for match in _NARRATION.finditer(text):
-        phrase = match.group(0)
-        if phrase.lower() == "used to" and _PASSIVE_USE.search(text[: match.start()]):
-            continue
-        hits.append(phrase)
-    return hits
+    return [match.group(0) for match in _NARRATION.finditer(text)]
 
 
 def findings(path: Path, added: set[int] | None = None) -> list[str]:
     """Narration in *path*'s comments and docstrings, on the lines in *added* (None: all)."""
+    source = path.read_text(encoding="utf-8")
+    allowed = allowed_lines(source, "narration")
     out = []
-    for prose in prose_lines(path.read_text(encoding="utf-8")):
-        if added is not None and prose.line not in added:
+    for prose in prose_lines(source):
+        if prose.line in allowed or (added is not None and prose.line not in added):
             continue
         for phrase in _narration(prose.text):
             out.append(
@@ -73,7 +72,15 @@ def main(argv: list[str]) -> int:
     added: dict[str, set[int] | None] = {}
     if args.base:
         try:
-            added = added_lines(paths, args.base, REPO_ROOT)
+            base = resolve_base(args.base, REPO_ROOT)
+            if base is None:
+                print(
+                    "comment_narration_lint: skipping diff-aware check: no fetched "
+                    f"tile-ai/TileOPs main remote; set {BASE_ENV} to a base ref",
+                    file=sys.stderr,
+                )
+                return 0
+            added = added_lines(paths, base, REPO_ROOT)
         except NoMergeBaseError as exc:
             print(f"comment_narration_lint: {exc}", file=sys.stderr)
             return 2

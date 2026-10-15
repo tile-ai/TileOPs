@@ -19,7 +19,8 @@ validator's (``tileops.manifest.workload``).
 Usage: ``manifest_label_lint.py [--base REF]``. Reads every manifest file
 ``tileops.manifest.manifest_files`` lists. With ``--base``, also compares each with its
 content at the merge base of REF and HEAD (``lint_diff.py``); the hook passes
-``--base origin/main``. Exits 1 on a finding and 2 when the base has no merge base with HEAD.
+``--base auto`` to find the TileOPs upstream, overridable with ``TILEOPS_LINT_BASE``.
+Exits 1 on a finding and 2 when an explicit base has no merge base with HEAD.
 """
 
 import argparse
@@ -30,7 +31,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import yaml
-from lint_diff import NoMergeBaseError, merge_base
+from lint_diff import BASE_ENV, NoMergeBaseError, merge_base, resolve_base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # The hook runs this script in an environment without the package installed, so the
@@ -170,7 +171,15 @@ def main(argv: list[str]) -> int:
     commit = None
     if args.base:
         try:
-            commit = merge_base(args.base, REPO_ROOT)
+            base = resolve_base(args.base, REPO_ROOT)
+            if base is None:
+                print(
+                    "manifest_label_lint: skipping base comparison: no fetched "
+                    f"tile-ai/TileOPs main remote; set {BASE_ENV} to a base ref",
+                    file=sys.stderr,
+                )
+            else:
+                commit = merge_base(base, REPO_ROOT)
         except NoMergeBaseError as exc:
             print(f"manifest_label_lint: {exc}", file=sys.stderr)
             return 2

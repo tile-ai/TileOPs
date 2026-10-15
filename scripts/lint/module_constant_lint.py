@@ -22,8 +22,9 @@ API, read by callers outside the repository, and is not judged by its readers.
 Usage: ``module_constant_lint.py [--base REF] [FILE ...]``. With no files, scans
 ``src/tileops/``. The reader rule judges a constant a diff adds, so it runs only with
 ``--base``, over the constants whose binding line is added since the merge base of REF and
-HEAD (``lint_diff.py``); the hook passes ``--base origin/main``. Exits 1 on a finding and 2
-when the base has no merge base with HEAD.
+HEAD (``lint_diff.py``); the hook passes ``--base auto`` to find the TileOPs upstream,
+overridable with ``TILEOPS_LINT_BASE``. Exits 1 on a finding and 2 when an explicit base
+has no merge base with HEAD.
 """
 
 import argparse
@@ -34,7 +35,7 @@ import sys
 import tokenize
 from pathlib import Path
 
-from lint_diff import NoMergeBaseError, added_lines, relative
+from lint_diff import BASE_ENV, NoMergeBaseError, added_lines, relative, resolve_base
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNED = "src/tileops"
@@ -164,18 +165,184 @@ def _is_constant_name(name: str) -> bool:
     return bool(bare) and not _is_dunder(name) and bare == bare.upper() and bare[0].isalpha()
 
 
-def _owners(tree: ast.Module) -> dict[int, str]:
-    """Each node's reader: the top-level function or class holding it, else ``<module>``."""
-    owner = {}
-    for statement in tree.body:
-        name = (
-            statement.name
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            else "<module>"
-        )
-        for node in ast.walk(statement):
-            owner[id(node)] = name
-    return owner
+class _Bindings(ast.NodeVisitor):
+    """Names local to one lexical scope, without descending into nested scopes."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.globals: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names.add(node.id)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        self.names.add(node.arg)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(alias.asname or alias.name for alias in node.names)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.globals.update(node.names)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        pass
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        pass
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        pass
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        pass
+
+
+def _scope_bindings(body: list[ast.stmt], args: ast.arguments | None = None) -> set[str]:
+    visitor = _Bindings()
+    if args is not None:
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            visitor.visit(arg)
+        if args.vararg:
+            visitor.visit(args.vararg)
+        if args.kwarg:
+            visitor.visit(args.kwarg)
+    for statement in body:
+        visitor.visit(statement)
+    return visitor.names - visitor.globals
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {name for element in target.elts for name in _target_names(element)}
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    return set()
+
+
+class _Reader(ast.NodeVisitor):
+    """Whether one top-level owner reads a module binding rather than a shadow."""
+
+    def __init__(self, local: set[str], modules: set[str], attribute: str) -> None:
+        self.local = local
+        self.modules = modules
+        self.attribute = attribute
+        self.scopes: list[set[str]] = []
+        self.found = False
+
+    def _shadowed(self, name: str) -> bool:
+        return any(name in scope for scope in self.scopes)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and node.id in self.local and not self._shadowed(node.id):
+            self.found = True
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        value = ast.unparse(node.value)
+        root = value.split(".", 1)[0]
+        if (
+            isinstance(node.ctx, ast.Load)
+            and node.attr == self.attribute
+            and value in self.modules
+            and not self._shadowed(root)
+        ):
+            self.found = True
+        self.generic_visit(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for expression in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
+            if expression is not None:
+                self.visit(expression)
+        if node.returns:
+            self.visit(node.returns)
+        self.scopes.append(_scope_bindings(node.body, node.args))
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for expression in (*node.args.defaults, *node.args.kw_defaults):
+            if expression is not None:
+                self.visit(expression)
+        self.scopes.append(_scope_bindings([], node.args))
+        self.visit(node.body)
+        self.scopes.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases):
+            self.visit(expression)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        bindings = _scope_bindings(node.body)
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.visit(statement)
+            else:
+                self.scopes.append(bindings)
+                self.visit(statement)
+                self.scopes.pop()
+
+    def _visit_comprehension(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp) -> None:
+        self.visit(node.generators[0].iter)
+        self.scopes.append(set())
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            self.scopes[-1] |= _target_names(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        self.visit(node.elt)
+        self.scopes.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self.visit(node.generators[0].iter)
+        self.scopes.append(set())
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            self.scopes[-1] |= _target_names(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        self.visit(node.key)
+        self.visit(node.value)
+        self.scopes.pop()
 
 
 def _module_name(path: Path, root: Path) -> str | None:
@@ -209,7 +376,6 @@ def _exports(tree: ast.Module, name: str) -> bool:
 
 def _readers_in(tree: ast.Module, name: str, module: str | None, own: bool) -> set[str]:
     """The readers of *name* in one module; *own* is whether that module defines it."""
-    owner = _owners(tree)
     local = {name} if own else set()
     modules = set()
     for node in ast.walk(tree):
@@ -224,17 +390,18 @@ def _readers_in(tree: ast.Module, name: str, module: str | None, own: bool) -> s
                 if alias.name == module:
                     modules.add(alias.asname or alias.name)
 
-    def reads(node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return isinstance(node.ctx, ast.Load) and node.id in local
-        return (
-            isinstance(node, ast.Attribute)
-            and node.attr == name
-            and isinstance(node.ctx, ast.Load)
-            and ast.unparse(node.value) in modules
+    readers = set()
+    for statement in tree.body:
+        owner = (
+            statement.name
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            else "<module>"
         )
-
-    return {owner.get(id(node), "<module>") for node in ast.walk(tree) if reads(node)}
+        visitor = _Reader(local, modules, name)
+        visitor.visit(statement)
+        if visitor.found:
+            readers.add(owner)
+    return readers
 
 
 def _explained(source: str, tree: ast.Module, line: int) -> bool:
@@ -342,7 +509,15 @@ def main(argv: list[str]) -> int:
     errors = [e for p in paths for e in findings(p)]
     if args.base:
         try:
-            added = added_lines(paths, args.base, REPO_ROOT)
+            base = resolve_base(args.base, REPO_ROOT)
+            if base is None:
+                print(
+                    "module_constant_lint: skipping reader check: no fetched "
+                    f"tile-ai/TileOPs main remote; set {BASE_ENV} to a base ref",
+                    file=sys.stderr,
+                )
+                return 1 if errors else 0
+            added = added_lines(paths, base, REPO_ROOT)
         except NoMergeBaseError as exc:
             print(f"module_constant_lint: {exc}", file=sys.stderr)
             return 2

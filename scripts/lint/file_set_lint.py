@@ -54,7 +54,7 @@ ALLOWED = {
     ),
 }
 
-_MARKER = re.compile(rb"(?:#|//|<!--)\s*lint: file-set allow")
+_MARKER = re.compile(rb"(?:#|//|<!--)\s*lint: file-set allow:\s*\w")
 
 
 def _marked(path: Path) -> bool:
