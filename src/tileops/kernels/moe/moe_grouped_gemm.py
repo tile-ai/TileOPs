@@ -95,13 +95,12 @@ def _moe_grouped_gemm_mma_kernel(
                             end = T.alloc_var("int32", init=0)
                             lo = T.alloc_var("int32", init=0)
                             hi = T.alloc_var("int32", init=m)
-                            for _ in T.serial(32):
-                                if lo < hi:
-                                    mid = (lo + hi) >> T.int32(1)
-                                    if layout[mid] <= g:
-                                        lo = mid + T.int32(1)
-                                    else:
-                                        hi = mid
+                            while lo < hi:
+                                mid = (lo + hi) >> T.int32(1)
+                                if layout[mid] <= g:
+                                    lo = mid + T.int32(1)
+                                else:
+                                    hi = mid
                             end = lo
                         start = (
                             prev_end[0] if tight else T.ceildiv(prev_end[0], alignment) * alignment
