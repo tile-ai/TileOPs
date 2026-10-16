@@ -318,6 +318,8 @@ def _gqa_dense_ws_kernel(
                 alpha = T.alloc_fragment([half], accum)
                 ss = T.alloc_fragment([half], accum)
                 logsum = T.alloc_fragment([half], accum)
+                # Split each row's local max into independent partial reductions.
+                red = T.alloc_fragment([half, 8], accum)
 
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
@@ -351,7 +353,7 @@ def _gqa_dense_ws_kernel(
                 T.reduce_max(acc_s, sm, dim=1, clear=False)
                 for i, j in T.Parallel(half, block_N):
                     acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
+                T.reduce_sum(acc_s, ss, dim=1, batch=2)
                 for i in T.Parallel(half):
                     logsum[i] = ss[i]
                 T.copy(acc_s, pcast)
@@ -379,8 +381,13 @@ def _gqa_dense_ws_kernel(
                         policy=Pol,
                         clear_accum=True,
                     )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                    rescale = T.alloc_var("int32", init=0)
+                    for i in T.Parallel(half):
+                        if alpha[i] != 1.0:
+                            rescale = 1
+                    if rescale == 1:
+                        for i, j in T.Parallel(half, D):
+                            acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.named_barrier_arrive(nxt_bar, nmma)
@@ -389,12 +396,13 @@ def _gqa_dense_ws_kernel(
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
+                    T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+                    T.reduce_max(red, sm, dim=1, clear=False, batch=2)
                     for i in T.Parallel(half):
                         alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    T.reduce_sum(acc_s, ss, dim=1, batch=2)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp])
                     for i in T.Parallel(half):
@@ -413,8 +421,13 @@ def _gqa_dense_ws_kernel(
                         policy=Pol,
                         clear_accum=True,
                     )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                    rescale = T.alloc_var("int32", init=0)
+                    for i in T.Parallel(half):
+                        if alpha[i] != 1.0:
+                            rescale = 1
+                    if rescale == 1:
+                        for i, j in T.Parallel(half, D):
+                            acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.named_barrier_arrive(nxt_bar, nmma)
@@ -436,12 +449,13 @@ def _gqa_dense_ws_kernel(
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
+                    T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+                    T.reduce_max(red, sm, dim=1, clear=False, batch=2)
                     for i in T.Parallel(half):
                         alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    T.reduce_sum(acc_s, ss, dim=1, batch=2)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp])
                     for i in T.Parallel(half):
@@ -475,6 +489,8 @@ def _gqa_dense_ws_kernel(
                 alpha = T.alloc_fragment([half], accum)
                 ss = T.alloc_fragment([half], accum)
                 logsum = T.alloc_fragment([half], accum)
+                # Split each row's local max into independent partial reductions.
+                red = T.alloc_fragment([half, 8], accum)
 
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
@@ -508,7 +524,7 @@ def _gqa_dense_ws_kernel(
                 T.reduce_max(acc_s, sm, dim=1, clear=False)
                 for i, j in T.Parallel(half, block_N):
                     acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
+                T.reduce_sum(acc_s, ss, dim=1, batch=2)
                 for i in T.Parallel(half):
                     logsum[i] = ss[i]
                 T.copy(acc_s, pcast)
@@ -536,8 +552,13 @@ def _gqa_dense_ws_kernel(
                         policy=Pol,
                         clear_accum=True,
                     )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                    rescale = T.alloc_var("int32", init=0)
+                    for i in T.Parallel(half):
+                        if alpha[i] != 1.0:
+                            rescale = 1
+                    if rescale == 1:
+                        for i, j in T.Parallel(half, D):
+                            acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp_wg1], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(pcast, Vs[svp_wg1, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.named_barrier_arrive(nxt_bar, nmma)
@@ -546,12 +567,13 @@ def _gqa_dense_ws_kernel(
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
+                    T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+                    T.reduce_max(red, sm, dim=1, clear=False, batch=2)
                     for i in T.Parallel(half):
                         alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    T.reduce_sum(acc_s, ss, dim=1, batch=2)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp_wg1])
                     for i in T.Parallel(half):
@@ -570,8 +592,13 @@ def _gqa_dense_ws_kernel(
                         policy=Pol,
                         clear_accum=True,
                     )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                    rescale = T.alloc_var("int32", init=0)
+                    for i in T.Parallel(half):
+                        if alpha[i] != 1.0:
+                            rescale = 1
+                    if rescale == 1:
+                        for i, j in T.Parallel(half, D):
+                            acc_o[i, j] *= alpha[i]
                     T.mbarrier_wait_parity(vready[svp_wg1_tail], ((k - 1) // nsV) % 2)
                     T.wgmma_gemm(
                         pcast, Vs[svp_wg1_tail, :, :], acc_o, policy=Pol, clear_accum=False
@@ -595,12 +622,13 @@ def _gqa_dense_ws_kernel(
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
+                    T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+                    T.reduce_max(red, sm, dim=1, clear=False, batch=2)
                     for i in T.Parallel(half):
                         alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    T.reduce_sum(acc_s, ss, dim=1, batch=2)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp_wg1_tail])
                     for i in T.Parallel(half):
