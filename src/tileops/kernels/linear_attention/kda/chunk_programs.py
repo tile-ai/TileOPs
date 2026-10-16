@@ -8,7 +8,7 @@ chunk's decay. ``chunk_scan`` is what is left: one CTA per (sequence, value
 head) walking that sequence's chunks in order.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Gate references rescale pre-exponentiated tiles without additional shared buffers.
+Channel gates use reference-centered tiles; head gates scale the dot product.
 """
 
 import functools
@@ -23,9 +23,7 @@ from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = ["chunk_prepare_program", "chunk_scan_program"]
 
-# One gate reference per this many rows keeps every exponent this kernel takes
-# inside float32, whatever the gate magnitude the caller supplies. The fused program
-# takes its gate references at the same stride, so it imports this value.
+# Channel-gate reference stride, also used by the fused program.
 REFERENCE_BLOCK = 16
 # Added under the square root of each row norm before taking its reciprocal. The
 # fused program normalizes the same rows, so it imports this value.
@@ -78,12 +76,13 @@ def chunk_prepare_program(
         invert = inverse_program(chunk_size=BT, block_size=BC, dtype=dtype)
 
         def gated_query(qa_s, gc_s, i, j):
-            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]), dtype)
+            reference = (i // BC) * BC + REF if gate_mode == "channel" else i
+            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[reference, j]), dtype)
 
         def gated_key(kb_s, gc_s, rows, i, j):
+            reference = (i // BC) * BC + REF if gate_mode == "channel" else i
             return T.cast(
-                T.cast(kb_s[i, j], accum)
-                * T.exp2(gc_s[rows - 1, j] - gc_s[(i // BC) * BC + REF, j]),
+                T.cast(kb_s[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[reference, j]),
                 dtype,
             )
 
@@ -200,53 +199,65 @@ def chunk_prepare_program(
                     )
                 T.sync_threads()
 
-                # Three exponentials serve both Gram matrices and all four
-                # reference blocks: every later factor is a rescale of these.
-                for i, j in T.Parallel(BT, K):
-                    kb_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum)
-                        * T.exp2(gc_s[(i // BC) * BC + REF, j] - gc_s[i, j]),
-                        dtype,
-                    )
-                T.sync_threads()
-                for i, j in T.Parallel(BT, K):
-                    ka_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum)
-                        * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
-                        dtype,
-                    )
-                    qa_s[i, j] = T.cast(
-                        T.cast(qa_s[i, j], accum)
-                        * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
-                        dtype,
-                    )
-                T.sync_threads()
-
                 if gate_mode == "channel":
-                    T.clear(akk)
-                T.clear(aq)
-                for sub in T.serial(NC):
+                    # Three exponentials serve both Gram matrices and all four
+                    # reference blocks: every later factor is a rescale of these.
                     for i, j in T.Parallel(BT, K):
-                        b_s[i, j] = T.cast(
-                            T.if_then_else(
-                                i // BC <= sub,
-                                T.cast(kb_s[i, j], accum)
-                                * T.exp2(gc_s[sub * BC + REF, j] - gc_s[(i // BC) * BC + REF, j]),
-                                0.0,
-                            ),
+                        kb_s[i, j] = T.cast(
+                            T.cast(ka_s[i, j], accum)
+                            * T.exp2(gc_s[(i // BC) * BC + REF, j] - gc_s[i, j]),
                             dtype,
                         )
                     T.sync_threads()
-                    if gate_mode == "channel":
+                    for i, j in T.Parallel(BT, K):
+                        ka_s[i, j] = T.cast(
+                            T.cast(ka_s[i, j], accum)
+                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                            dtype,
+                        )
+                        qa_s[i, j] = T.cast(
+                            T.cast(qa_s[i, j], accum)
+                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                            dtype,
+                        )
+                    T.sync_threads()
+
+                    T.clear(akk)
+                    T.clear(aq)
+                    for sub in T.serial(NC):
+                        for i, j in T.Parallel(BT, K):
+                            b_s[i, j] = T.cast(
+                                T.if_then_else(
+                                    i // BC <= sub,
+                                    T.cast(kb_s[i, j], accum)
+                                    * T.exp2(
+                                        gc_s[sub * BC + REF, j] - gc_s[(i // BC) * BC + REF, j]
+                                    ),
+                                    0.0,
+                                ),
+                                dtype,
+                            )
+                        T.sync_threads()
                         T.clear(tkk)
-                    T.clear(tqk)
-                    if gate_mode == "channel":
+                        T.clear(tqk)
                         T.gemm(ka_s, b_s, tkk, transpose_B=True)
-                    T.gemm(qa_s, b_s, tqk, transpose_B=True)
-                    for i, j in T.Parallel(BT, BT):
-                        if gate_mode == "channel":
+                        T.gemm(qa_s, b_s, tqk, transpose_B=True)
+                        for i, j in T.Parallel(BT, BT):
                             akk[i, j] = T.if_then_else(i // BC == sub, tkk[i, j], akk[i, j])
-                        aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
+                            aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
+                        T.sync_threads()
+
+                else:
+                    # A head gate factors outside the dot product. Apply its
+                    # causal difference after GEMM, without FP16 inverse scaling.
+                    T.clear(aq)
+                    T.gemm(qa_s, ka_s, aq, transpose_B=True)
+                    for i, j in T.Parallel(BT, BT):
+                        aq[i, j] = T.if_then_else(
+                            i >= j, aq[i, j] * T.exp2(gc_s[i, 0] - gc_s[j, 0]), 0.0
+                        )
+                    for i, j in T.Parallel(BT, K):
+                        kb_s[i, j] = ka_s[i, j]
                     T.sync_threads()
 
                 if lean:
@@ -270,7 +281,9 @@ def chunk_prepare_program(
 
                 for i, j in T.Parallel(BT, K):
                     b_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]) * bt_s[i],
+                        T.cast(ka_s[i, j], accum)
+                        * T.exp2(gc_s[(i // BC) * BC + REF if gate_mode == "channel" else i, j])
+                        * bt_s[i],
                         dtype,
                     )
                 T.sync_threads()

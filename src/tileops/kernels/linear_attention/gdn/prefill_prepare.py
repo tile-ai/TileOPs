@@ -231,11 +231,6 @@ def _prefill_blocksolve_A_bthd_tl(
                 k3 = T.alloc_shared([block_c, block_k], dtype)
                 g_s = T.alloc_shared([block_t], accum_dtype)
                 beta_s = T.alloc_shared([block_t], dtype)
-                gate0_s = T.alloc_shared([block_t], dtype)
-                gate1_s = T.alloc_shared([block_t], dtype)
-                gate2_s = T.alloc_shared([block_t], dtype)
-                gate3_s = T.alloc_shared([block_t], dtype)
-                beta_f_s = T.alloc_shared([block_t], dtype)
                 if l2norm:
                     rnorm_s = T.alloc_shared([block_t], accum_dtype)
                 a_s = T.alloc_shared([10, block_c, block_c], solve_dtype)
@@ -388,94 +383,48 @@ def _prefill_blocksolve_A_bthd_tl(
                         G32[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[2 * block_c + j]
                         G33[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[3 * block_c + j]
 
-                for t in T.Parallel(block_t):
-                    g_val = T.cast(g_s[t], accum_dtype) if use_gate else T.float32(0.0)
-                    gate0_s[t] = T.exp2(
-                        (g_val - (T.cast(g_s[0], accum_dtype) if use_gate else T.float32(0.0)))
-                        * LOG2E
-                    )
-                    gate1_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (T.cast(g_s[block_c], accum_dtype) if use_gate else T.float32(0.0))
-                        )
-                        * LOG2E
-                    )
-                    gate2_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (
-                                T.cast(g_s[2 * block_c], accum_dtype)
-                                if use_gate
-                                else T.float32(0.0)
-                            )
-                        )
-                        * LOG2E
-                    )
-                    gate3_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (
-                                T.cast(g_s[3 * block_c], accum_dtype)
-                                if use_gate
-                                else T.float32(0.0)
-                            )
-                        )
-                        * LOG2E
-                    )
-                    beta_f_s[t] = beta_s[t]
                 T.sync_threads()
 
                 for i, j in T.Parallel(block_c, block_c):
-                    s00 = (
-                        T.cast(beta_f_s[i], accum_dtype)
-                        * T.cast(gate0_s[i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s00 = T.cast(beta_s[i], accum_dtype) * (
+                        T.exp2((g_s[i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s11 = (
-                        T.cast(beta_f_s[block_c + i], accum_dtype)
-                        * T.cast(gate1_s[block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s11 = T.cast(beta_s[block_c + i], accum_dtype) * (
+                        T.exp2((g_s[block_c + i] - g_s[block_c + j]) * LOG2E) if use_gate else 1.0
                     )
-                    s22 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate2_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate2_s[2 * block_c + j], accum_dtype)
+                    s22 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[2 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s33 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate3_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate3_s[3 * block_c + j], accum_dtype)
+                    s33 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[3 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s10 = (
-                        T.cast(beta_f_s[block_c + i], accum_dtype)
-                        * T.cast(gate0_s[block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s10 = T.cast(beta_s[block_c + i], accum_dtype) * (
+                        T.exp2((g_s[block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s20 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate0_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s20 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s21 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate1_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s21 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s30 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate0_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s30 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s31 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate1_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s31 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s32 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate2_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate2_s[2 * block_c + j], accum_dtype)
+                    s32 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[2 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
                     a_s[0, i, j] = T.if_then_else(
                         i > j,
