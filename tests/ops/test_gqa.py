@@ -172,9 +172,9 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("batch", [1, 2])
-def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
-    heads, heads_kv, dim = 8, 2, 128
+@pytest.mark.parametrize("batch, dim", [(1, 64), (2, 128)])
+def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int, dim: int) -> None:
+    heads, heads_kv = 8, 2
     op = GQADenseFwdOp(target=BUILTIN)
 
     for seq_len_q, seq_len_kv in (

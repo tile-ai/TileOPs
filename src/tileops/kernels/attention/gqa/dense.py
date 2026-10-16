@@ -2,7 +2,7 @@
 
 import functools
 import itertools
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
@@ -209,7 +209,7 @@ def _gqa_dense_ws_kernel(
     sm_scale,
     softcap,
     dtype,
-    block_M=None,
+    block_M=128,
     block_N=128,
     nsK=2,
     nsV=2,
@@ -221,8 +221,6 @@ def _gqa_dense_ws_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     groups = H // Hkv
     accum = "float"
-    # Use three m64 consumers for D=64, with a 160-register budget per thread.
-    block_M = (192 if D == 64 else 128) if block_M is None else block_M
     assert block_M in (128, 192)
     half = 64
     num_consumers = block_M // half
@@ -558,6 +556,8 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     """Dense attention using the FA3 two-consumer pipeline."""
 
     supported_archs: list[int] = [90]
+    # Each implementation fixes its consumer count; dispatch selects the implementation.
+    _block_m: ClassVar[int] = 128
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -617,6 +617,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dim**-0.5 if sm_scale is None else sm_scale,
             softcap,
             self.dtype_str,
+            block_M=self._block_m,
         )
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
