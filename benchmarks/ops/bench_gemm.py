@@ -1,4 +1,4 @@
-"""Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
+"""Benchmark TileOPs GEMM, FP8 GEMM, W4A8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
 from typing import Any, Callable, Optional
@@ -11,14 +11,16 @@ from benchmarks.baselines import (
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
     QUACK_TAG,
+    VLLM_TAG,
     deepgemm_op,
     flaggems_op,
     flashinfer_op,
     quack_op,
+    vllm_op,
 )
 from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
-from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_version
 from workloads.gemm import (
     GemmFP8Workload,
@@ -330,6 +332,65 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
+def _vllm_w4a8_unsupported_reason(n: int, k: int, group_size: int) -> Optional[str]:
+    """Why vLLM's ``cutlass_w4a8_mm`` cannot take this call, or ``None`` when it can.
+
+    The domain ``CutlassW4A8LinearKernel.can_implement`` states in vllm 0.27.1
+    ``model_executor/kernels/linear/mixed_precision/cutlass.py``.
+    """
+    if get_sm_version() != 90:
+        return "CUTLASS W4A8 requires compute capability 90"
+    if group_size != 128:
+        return f"CUTLASS W4A8 supports group_size 128 only, got {group_size}"
+    if n % 128 or k % 128:
+        return f"CUTLASS W4A8 needs N and K divisible by 128, got N={n}, K={k}"
+    return None
+
+
+def _prepare_vllm_w4a8_baseline(
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_group_scale: torch.Tensor,
+    weight_channel_scale: torch.Tensor,
+    activation_scale: torch.Tensor,
+    group_size: int,
+) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
+    """vLLM's ``cutlass_w4a8_mm`` on operands laid out as vLLM lays them out at load time.
+
+    ``CutlassW4A8LinearKernel.process_weights_after_loading`` (vllm 0.27.1) reorders the
+    column-major ``[K/8, N]`` int32 packing through ``cutlass_encode_and_reorder_int4b`` and
+    the ``[K/group, N]`` fp8 group scales through ``cutlass_pack_scale_fp8``; its
+    ``apply_weights`` passes channel scales ``[1, N]`` and token scales ``[M, 1]``. Both
+    reorders run here, outside the timed call.
+    """
+    m, n = activation.shape[0], packed_weight.shape[0]
+    # The row-major bytes read as int32 put K 8j + i in bits 4i..4i+3 of word j, the
+    # signed INT4 packing the reorder takes; transposed, the [N, K/8] buffer is the
+    # column-major [K/8, N] operand.
+    packed_words = packed_weight.view(torch.int32)
+    weight = vllm_op("cutlass_encode_and_reorder_int4b")(packed_words.t())
+    group_scale = vllm_op("cutlass_pack_scale_fp8")(weight_group_scale.t().contiguous())
+    cutlass_w4a8_mm = vllm_op("cutlass_w4a8_mm")
+
+    def run(a, b_q, b_group_scales, b_channel_scales, a_token_scales):
+        return cutlass_w4a8_mm(
+            a=a,
+            b_q=b_q,
+            b_group_scales=b_group_scales,
+            b_group_size=group_size,
+            b_channel_scales=b_channel_scales,
+            a_token_scales=a_token_scales,
+        )
+
+    return run, (
+        activation,
+        weight,
+        group_scale,
+        weight_channel_scale.view(1, n),
+        activation_scale.view(m, 1),
+    )
+
+
 @pytest.mark.parametrize("case", bench.cases(GemmFwdOp), ids=lambda case: case.id)
 def test_gemm_bench(case) -> None:
     workload = case.workload
@@ -434,5 +495,21 @@ def test_gemm_w4a16_bench(case) -> None:
             print(f"  [skip] {tag}: {exc}")
             continue
         implementations[tag] = bench.Implementation(run=baseline, args=baseline_inputs)
+
+    bench.Runner(op, case).compare(implementations)
+
+
+@pytest.mark.parametrize("case", bench.cases(GemmW4A8FwdOp), ids=lambda case: case.id)
+def test_gemm_w4a8_bench(case) -> None:
+    workload = case.workload
+    op = GemmW4A8FwdOp(**case.arguments)
+
+    implementations = {}
+    reason = _vllm_w4a8_unsupported_reason(workload.n, workload.k, workload.group_size)
+    if reason is not None:
+        print(f"  [skip] {VLLM_TAG}: {reason}")
+    else:
+        baseline, baseline_inputs = _prepare_vllm_w4a8_baseline(*case.inputs, workload.group_size)
+        implementations[VLLM_TAG] = bench.Implementation(run=baseline, args=baseline_inputs)
 
     bench.Runner(op, case).compare(implementations)

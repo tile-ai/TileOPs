@@ -21,8 +21,12 @@ __all__ = [
     "GemmFP8Call",
     "GemmFP8FwdInterface",
     "GemmFwdInterface",
+    "GemmW4A8Call",
+    "GemmW4A8FwdInterface",
     "GemmW4A16Call",
     "GemmW4A16FwdInterface",
+    "W4A8RepackCall",
+    "W4A8RepackFwdInterface",
     "W4A16RepackCall",
     "W4A16RepackFwdInterface",
 ]
@@ -76,6 +80,25 @@ class W4A16RepackCall(CallSpec):
     n: int = 0
     # Bytes per weight row, ``k / 2``.
     packed_k: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class GemmW4A8Call(CallSpec):
+    """One W4A8 NT matmul: FP8 activations against a prepacked signed INT4 weight."""
+
+    m: int = 0
+    n: int = 0
+    k: int = 0
+    # The weight scale group along K its kernels are compiled for.
+    group_size: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class W4A8RepackCall(CallSpec):
+    """One conversion of a row-major packed signed INT4 weight into the order the GEMM reads."""
+
+    n: int = 0
+    k: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,6 +258,64 @@ class W4A16RepackFwdInterface(KernelInterface):
 
         Returns:
             A new ``(call.n, call.packed_k)`` ``uint8`` tensor holding the same nibbles.
+        """
+
+
+class GemmW4A8FwdInterface(KernelInterface):
+    """W4A8 NT matmul: FP8 activations times a group-scaled signed INT4 weight."""
+
+    request = GemmW4A8Call
+
+    @abstractmethod
+    def forward(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_group_scale: torch.Tensor,
+        weight_channel_scale: torch.Tensor,
+        activation_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        """Multiply the FP8 activations by the scaled INT4 weight; nothing is in place.
+
+        Every tensor is contiguous on ``call.device``. Weight element ``(n, k)`` enters the
+        FP8 tensor-core product as ``float8_e4m3fn(q * weight_group_scale[n, g])``, rounded
+        to nearest even, with ``g = k // call.group_size`` and ``q`` its signed INT4 value;
+        output element ``(m, n)`` is ``bfloat16(acc * weight_channel_scale[n] *
+        activation_scale[m])``. *packed_weight* is in the order
+        :class:`W4A8RepackFwdInterface` produces, which has the same shape and dtype as the
+        row-major packing and cannot be told from it at runtime.
+
+        Args:
+            activation: ``(call.m, call.k)`` ``float8_e4m3fn``.
+            packed_weight: ``(call.n, call.k // 2)`` ``uint8``, two INT4 per byte.
+            weight_group_scale: ``(call.n, call.k // call.group_size)`` ``float8_e4m3fn``.
+            weight_channel_scale: ``(call.n,)`` ``float32``.
+            activation_scale: ``(call.m,)`` ``float32``.
+
+        Returns:
+            A new ``(call.m, call.n)`` ``bfloat16`` tensor.
+        """
+
+
+class W4A8RepackFwdInterface(KernelInterface):
+    """The weight order :class:`GemmW4A8FwdInterface` reads, produced once at load time."""
+
+    request = W4A8RepackCall
+
+    @abstractmethod
+    def forward(self, packed_weight: torch.Tensor) -> torch.Tensor:
+        """Reorder and re-encode the nibbles of a row-major packed weight; nothing is in place.
+
+        The order and nibble code are the ones this backend's W4A8 GEMMs decode, so the
+        three are replaced together.
+
+        Args:
+            packed_weight: ``(call.n, call.k // 2)`` ``uint8`` on ``call.device``,
+                contiguous, two signed two's-complement INT4 per byte with even K in the
+                low nibble.
+
+        Returns:
+            A new ``(call.n, call.k // 2)`` ``uint8`` tensor holding the same weights.
         """
 
 
