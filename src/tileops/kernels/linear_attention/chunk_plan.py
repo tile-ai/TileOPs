@@ -19,6 +19,8 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     medium_heads = 16
     medium_tokens = 16384
     narrow_value_tile = 16
+    long_tokens = 65536
+    long_value_tile = 32
     if (
         num_seqs == 1
         and total >= minimum_tokens
@@ -29,6 +31,14 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
         and arch == 89
     ):
         return min(value_tile, narrow_value_tile)
+    if (
+        arch == 89
+        and dim == 128
+        and num_seqs == 1
+        and value_heads == medium_heads
+        and medium_tokens < total <= long_tokens
+    ):
+        return min(value_tile, long_value_tile)
     return value_tile
 
 
