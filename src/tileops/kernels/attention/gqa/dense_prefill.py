@@ -40,6 +40,8 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
+        if call.has_sinks:
+            return "does not serve attention sinks"
         if call.max_seqlen_q == 1:
             return "serves prefill"
         if call.is_fp8 and call.dim != 128:
@@ -155,7 +157,10 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if sinks is not None:
+            raise ValueError("SM89 dense prefill does not serve attention sinks")
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
         cu_q = _offsets(q.shape[0], q.shape[1], q.device)

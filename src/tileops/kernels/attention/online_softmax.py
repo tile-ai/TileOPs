@@ -61,6 +61,31 @@ def make_log2e_scale(dim):
     return (1.0 / dim) ** 0.5 * LOG2E
 
 
+def make_sink_scale(scale, block_rows):
+    """Merge a zero-value sink into a completed online softmax state.
+
+    The returned factor multiplies the ordinary attention output. Merging
+    after the row-sum reduction also works with lane-local partial sums: the
+    sink is counted once, independent of the reduction layout. Both
+    exponent arguments are nonpositive, even for very large sink logits.
+    ``scale`` converts the kernel's running maximum to base-2 logits.
+    """
+
+    @T.macro
+    def sink_scale(logsum, scores_max, sinks, factors, head_base, head_stride, valid_rows):
+        for i in T.Parallel(block_rows):
+            if i < valid_rows:
+                lse = T.log2(logsum[i]) + scores_max[i] * scale
+                sink = sinks[head_base + i * head_stride] * LOG2E
+                maximum = T.max(lse, sink)
+                mass = T.exp2(lse - maximum)
+                factors[i] = mass / (mass + T.exp2(sink - maximum))
+            else:
+                factors[i] = 1.0
+
+    return sink_scale
+
+
 def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
     """Create a reusable online softmax T.macro.
 
