@@ -39,25 +39,26 @@ class GQABwdTest(GQABwdWorkload, TestBase):
 )
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
-    "is_causal, rope_layout, rotary_dim, dtype",
+    "dim, is_causal, rope_layout, rotary_dim, dtype",
     [
-        (True, None, None, torch.float16),
-        (True, "neox", 64, torch.float16),
-        (True, "interleaved", 64, torch.float16),
-        (True, "neox", None, torch.bfloat16),
-        (False, None, None, torch.float16),
-        (False, "neox", 64, torch.float16),
+        (64, True, None, None, torch.float16),
+        (128, True, "neox", 64, torch.float16),
+        (128, True, "interleaved", 64, torch.float16),
+        (128, True, "neox", None, torch.bfloat16),
+        (128, False, None, None, torch.float16),
+        (128, False, "neox", 64, torch.float16),
     ],
 )
 @pytest.mark.smoke
 def test_gqa_dense_prefill_matches_reference(
     _architecture: int,
+    dim: int,
     is_causal: bool,
     rope_layout: Optional[str],
     rotary_dim: Optional[int],
     dtype: torch.dtype,
 ) -> None:
-    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 160, 270, 8, 2, 128
+    batch, seq_len_q, seq_len_kv, heads, heads_kv = 1, 160, 270, 8, 2
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
     v = torch.randn_like(k)
