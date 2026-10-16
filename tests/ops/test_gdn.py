@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -198,6 +200,32 @@ def test_gdn_prefill_takes_each_input_transform(
         inputs[1].copy_(inputs[1][:, :1].expand_as(inputs[1]).clone())
         inputs[4].fill_(-2)
         test.check(op, *inputs)
+
+
+@pytest.mark.sm89
+@pytest.mark.parametrize("seq_len", [4096, 16385], ids=["16-columns", "32-columns"])
+def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(seq_len: int) -> None:
+    """One sequence over sixteen 128-wide value heads, long enough that SM89 scans the
+    state in 16 value columns at 4096 tokens and in 32 past 16384 tokens."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, seq_len, 16, 128, torch.bfloat16, has_initial_state=True)
+    test.check(GDNFwdOp(), *test.gen_inputs())
+
+
+@PREFILL_ARCHITECTURES
+def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> None:
+    """A float16 raw gate at the fastest decay rate the workloads draw.
+
+    In the second head a 16-row block decays by more than 2**24, which underflowed a
+    float16 decay the triangular inverse divided by, and eight rows decay by more than
+    2**16, which overflowed the float16 key tile a shared gate reference scaled.
+    """
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, 64, 2, 128, torch.float16, raw_gate=True)
+    inputs = test.gen_inputs()
+    # The fastest decay rate the workloads draw.
+    inputs[8].fill_(math.log(16.0))
+    test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
 
 
 @pytest.mark.sm90
