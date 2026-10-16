@@ -5,7 +5,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmFP8Block128WaveFwdKernel
+from tileops.kernels.gemm import GemmFP8Block128WaveFwdKernel, GemmTMAKernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import device_calibration, get_sm_count
 from workloads.device import run_device
@@ -996,6 +996,29 @@ def test_gemm_k_tail_shorter_than_one_k_block() -> None:
     zero-padded K tail of the pipelined mainloop."""
     test = GemmTest(32, 64, 2, torch.bfloat16, False, True)
     test.check(GemmFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_coop2_refuses_an_epilogue_chunk_that_does_not_divide_the_tile() -> None:
+    """A 32-column epilogue chunk on a 176-wide coop2 tile stored 160 columns and dropped the rest."""
+    config = {
+        "coop2": True,
+        "block_n": 176,
+        "block_k": 64,
+        "num_stages": 4,
+        "group_size_m": 4,
+        "stage_n": 32,
+    }
+    # The op selects only configs that pass; this one is forced past selection.
+    kernel = GemmTMAKernel(  # lint: test-placement allow: forces a config the selector never picks
+        256, 352, 128, torch.bfloat16, config=config, trans_b=True
+    )
+    a = torch.randn(256, 128, device=run_device(), dtype=torch.bfloat16)
+    b = torch.randn(352, 128, device=run_device(), dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="stage_n must divide block_n"):
+        kernel(a, b)
 
 
 @pytest.mark.sm90
