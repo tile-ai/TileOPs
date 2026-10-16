@@ -7,6 +7,26 @@ from workloads.device import run_device
 from workloads.numerics import compare_outputs
 
 
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_fp8_long_causal_tails() -> None:
+    """Hopper FP8 attention handles long KV with partial Q and KV tiles."""
+    workload = GQADensePrefillWorkload(
+        1,
+        129,
+        4097,
+        8,
+        1,
+        128,
+        torch.float8_e4m3fn,
+        out_dtype=torch.float16,
+        is_causal=True,
+    )
+    inputs = workload.gen_inputs()
+    op = GQADenseFwdOp(is_causal=True, out_dtype=torch.float16)
+    compare_outputs(op(*inputs), workload.ref_program(*inputs), workload.verification(*inputs))
+
+
 def _quantize_kv_fa3_descale(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize K/V and return FA3-interface descales with shape ``[B, H_kv]``.
 
