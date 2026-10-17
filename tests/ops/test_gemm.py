@@ -5,7 +5,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmFP8Block128WaveFwdKernel
+from tileops.kernels.gemm import GemmFP8Block128WaveFwdKernel, GemmTMAKernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.utils import device_calibration, get_sm_count
 from workloads.device import run_device
@@ -701,6 +701,40 @@ class GemmW4A16Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-w4a16-small-mn-tail",
                 ),
+                # 16- and 32-row tiles scale FP32 partials instead of the decoded weight,
+                # whole-K and split-K.
+                pytest.param(
+                    20,
+                    4096,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-16-rows",
+                ),
+                pytest.param(
+                    40,
+                    4096,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-32-rows",
+                ),
+                pytest.param(
+                    40,
+                    2048,
+                    14336,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-16-rows-split-k",
+                ),
+                pytest.param(
+                    96,
+                    2048,
+                    14336,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-32-rows-split-k",
+                ),
             ],
         ),
     ]
@@ -1001,6 +1035,29 @@ def test_gemm_k_tail_shorter_than_one_k_block() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+def test_gemm_coop2_refuses_an_epilogue_chunk_that_does_not_divide_the_tile() -> None:
+    """A 32-column epilogue chunk does not divide a 176-wide coop2 tile, so the kernel refuses it."""
+    config = {
+        "coop2": True,
+        "block_n": 176,
+        "block_k": 64,
+        "num_stages": 4,
+        "group_size_m": 4,
+        "stage_n": 32,
+    }
+    # The op selects only configs that pass; this one is forced past selection.
+    kernel = GemmTMAKernel(  # lint: test-placement allow: forces a config the selector never picks
+        256, 352, 128, torch.bfloat16, config=config, trans_b=True
+    )
+    a = torch.randn(256, 128, device=run_device(), dtype=torch.bfloat16)
+    b = torch.randn(352, 128, device=run_device(), dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="stage_n must divide block_n"):
+        kernel(a, b)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
 def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     test = GemmW4A16Test(m, 1024, 512, torch.float16)
@@ -1013,9 +1070,10 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
 @pytest.mark.parametrize(
     "n, k",
     [
-        # One-row grids too narrow for the device slice K, eight ways or two.
+        # One-row grids too narrow for the device slice K: eight ways, and three ways into
+        # slices of 5, 5 and 6 of its 16 K tiles.
         pytest.param(1024, 8192, id="split-k-8", marks=pytest.mark.smoke),
-        pytest.param(2176, 8192, id="split-k-2", marks=pytest.mark.smoke),
+        pytest.param(2176, 8192, id="split-k-3-uneven", marks=pytest.mark.smoke),
         # Tiles just past half the SM count stream K; 67 tiles cross a tile boundary, 66
         # split exactly in two, and k = 32896 leaves a 128-element K tail.
         pytest.param(4288, 32896, id="stream-k-crossing", marks=pytest.mark.full),
@@ -1039,8 +1097,36 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A two-stage ring of four-sub-step K tiles over eight K tiles: each refill takes a
+    stage whose last sub-step has a buffer of its own and whose earlier sub-steps were
+    released after the WGMMAs reading them retired."""
+    import tileops.kernels.gemm.w4a16 as w4a16
+
+    config = {
+        "block_m": 64,
+        "block_n": 128,
+        "block_k": 512,
+        "num_stages": 2,
+        "threads": 256,
+        "producer_reg": 32,
+        "consumer_reg": 224,
+        "split_k": 1,
+        "stream_ctas": 0,
+    }
+    monkeypatch.setattr(w4a16, "_select_config", lambda *args: dict(config))
+    test = GemmW4A16Test(128, 1024, 4096, torch.float16)
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
 def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
-    """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile."""
+    """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile, and
+    its 200 K tiles split three ways run slices of 66, 67 and 67."""
     test = GemmW4A16Test(128, 5120, 25600, torch.float16)
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 

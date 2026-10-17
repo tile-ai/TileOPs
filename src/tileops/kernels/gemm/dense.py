@@ -2000,6 +2000,10 @@ def _gemm_coop2_kernel(
         b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
         sn = block_n if stage_n <= 0 else stage_n
+        # The epilogue stores the tile ``sn`` columns at a time, so a chunk that does not
+        # divide the tile would drop its last columns.
+        if block_n % sn or sn % 8:
+            raise ValueError(f"stage_n must divide block_n and be a multiple of 8, got {sn}")
         n_chunks = block_n // sn
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
@@ -3240,7 +3244,15 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             "split_k": 1,
         }
         scored = best_config(
-            self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count, self.device_name
+            self.m,
+            self.n,
+            self.k,
+            self.trans_a,
+            self.trans_b,
+            self.sm_count,
+            self.device_name,
+            # The raster group of a persistent tile depends on what L2 holds.
+            l2_bytes=torch.cuda.get_device_properties(self.device_index).L2_cache_size,
         )
         return scored if scored is not None else modal
 
