@@ -716,6 +716,15 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
+                # Short-K TP8 down projections exercise data-parallel prefill at the
+                # decode boundary and at a full 64-token tile.
+                pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-ds-tp8-m33"),
+                pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
+                # Long-K down projections also exercise balanced Stream-K contributors.
+                pytest.param(64, 7168, 18432, marks=pytest.mark.full, id="full-w4a8-ds-down-m64"),
+                pytest.param(
+                    33, 8192, 28672, marks=pytest.mark.full, id="full-w4a8-llama-down-m33"
+                ),
                 pytest.param(80, 256, 512, marks=pytest.mark.full, id="full-w4a8-m80"),
                 pytest.param(96, 256, 512, marks=pytest.mark.full, id="full-w4a8-m96"),
                 pytest.param(128, 256, 512, marks=pytest.mark.full, id="full-w4a8-m128"),
@@ -1111,10 +1120,16 @@ def test_gemm_w4a8(m: int, n: int, k: int) -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.smoke
-@pytest.mark.parametrize("m", [pytest.param(8, id="m8"), pytest.param(64, id="m64")])
-def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int) -> None:
-    test = GemmW4A8MixedSignTest(m, 80, 384, 128)
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        pytest.param(8, 80, 384, marks=pytest.mark.smoke, id="m8"),
+        pytest.param(64, 80, 384, marks=pytest.mark.smoke, id="m64"),
+        pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="short-k-prefill"),
+    ],
+)
+def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> None:
+    test = GemmW4A8MixedSignTest(m, n, k, 128)
     op = GemmW4A8FwdOp()
     test.check(op, *test.gen_inputs(), runs=_repacked(op))
 

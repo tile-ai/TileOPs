@@ -345,6 +345,45 @@ GemmW4A8FwdOp:
   - {M: 1, N: 3584, K: 8192, label: llama-70b-up-tp8-b1}
   - {M: 1, N: 8192, K: 3584, label: llama-70b-down-tp8-b1}
 
+  # Joint M/N/K coverage: decode/prefill boundary and batched TP8 decode.
+  # Keep model K dimensions paired with their real up/down N dimensions; synthetic K
+  # sweeps belong in optimization experiments rather than the published model suite.
+  - {M: 33, N: 7168, K: 18432, label: ds-r1-down-b33}
+  - {M: 48, N: 7168, K: 18432, label: ds-r1-down-b48}
+  - {M: 32, N: 18432, K: 7168, label: ds-r1-up-b32}
+  - {M: 33, N: 18432, K: 7168, label: ds-r1-up-b33}
+  - {M: 48, N: 18432, K: 7168, label: ds-r1-up-b48}
+  - {M: 32, N: 8192, K: 28672, label: llama-70b-down-b32}
+  - {M: 33, N: 8192, K: 28672, label: llama-70b-down-b33}
+  - {M: 48, N: 8192, K: 28672, label: llama-70b-down-b48}
+  - {M: 32, N: 28672, K: 8192, label: llama-70b-up-b32}
+  - {M: 33, N: 28672, K: 8192, label: llama-70b-up-b33}
+  - {M: 48, N: 28672, K: 8192, label: llama-70b-up-b48}
+  - {M: 8, N: 2304, K: 7168, label: ds-r1-up-tp8-b8}
+  - {M: 16, N: 2304, K: 7168, label: ds-r1-up-tp8-b16}
+  - {M: 32, N: 2304, K: 7168, label: ds-r1-up-tp8-b32}
+  - {M: 33, N: 2304, K: 7168, label: ds-r1-up-tp8-b33}
+  - {M: 48, N: 2304, K: 7168, label: ds-r1-up-tp8-b48}
+  - {M: 64, N: 2304, K: 7168, label: ds-r1-up-tp8-b64}
+  - {M: 8, N: 7168, K: 2304, label: ds-r1-down-tp8-b8}
+  - {M: 16, N: 7168, K: 2304, label: ds-r1-down-tp8-b16}
+  - {M: 32, N: 7168, K: 2304, label: ds-r1-down-tp8-b32}
+  - {M: 33, N: 7168, K: 2304, label: ds-r1-down-tp8-b33}
+  - {M: 48, N: 7168, K: 2304, label: ds-r1-down-tp8-b48}
+  - {M: 64, N: 7168, K: 2304, label: ds-r1-down-tp8-b64}
+  - {M: 8, N: 3584, K: 8192, label: llama-70b-up-tp8-b8}
+  - {M: 16, N: 3584, K: 8192, label: llama-70b-up-tp8-b16}
+  - {M: 32, N: 3584, K: 8192, label: llama-70b-up-tp8-b32}
+  - {M: 33, N: 3584, K: 8192, label: llama-70b-up-tp8-b33}
+  - {M: 48, N: 3584, K: 8192, label: llama-70b-up-tp8-b48}
+  - {M: 64, N: 3584, K: 8192, label: llama-70b-up-tp8-b64}
+  - {M: 8, N: 8192, K: 3584, label: llama-70b-down-tp8-b8}
+  - {M: 16, N: 8192, K: 3584, label: llama-70b-down-tp8-b16}
+  - {M: 32, N: 8192, K: 3584, label: llama-70b-down-tp8-b32}
+  - {M: 33, N: 8192, K: 3584, label: llama-70b-down-tp8-b33}
+  - {M: 48, N: 8192, K: 3584, label: llama-70b-down-tp8-b48}
+  - {M: 64, N: 8192, K: 3584, label: llama-70b-down-tp8-b64}
+
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
     # which scales each result by its channel and its token scale.

@@ -191,6 +191,28 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
         raise ValueError(f"config needs {need} bytes of shared memory, over {shared_limit}")
 
 
+def _worker_count(
+    m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int
+) -> int:
+    """Balance two Stream-K contributors per tile while retaining most resident CTAs.
+
+    The H200 measurements bound the extra average work to eleven 128-K groups per
+    worker. A long K can otherwise outweigh the saved second segment and epilogue.
+    Hardware capacity queries always use the physical device, not this launch count.
+    """
+    if not (32 < m <= 64 and block_m == 64 and cluster == 1 and stream_k != 0):
+        return sms
+    if k < 3584 or n % LAYOUT.block_n:
+        return sms
+    balanced = 2 * (n // LAYOUT.block_n)
+    if (
+        5 * sms <= 6 * balanced <= 6 * sms
+        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= 22 * sms
+    ):
+        return balanced
+    return sms
+
+
 @functools.lru_cache(maxsize=32)
 def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     step_k, block_n = W4A8_LAYOUT.tile_k, LAYOUT.block_n
@@ -944,11 +966,20 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         self.n = n
         self.k = k
         sms = get_sm_count(device_index)
-        self.kernel = _gemm_w4a8_prefill_kernel(m, n, k, sms)
         self.init_config(config)
+        workers = _worker_count(
+            m, n, k, sms, self.config["block_m"], self.config["cluster"], self.config["stream_k"]
+        )
+        self.kernel = _gemm_w4a8_prefill_kernel(m, n, k, workers)
         _check_config(n, self.config, get_shared_memory_optin(device_index))
         plan = _schedule(
-            m, n, k, sms, self.config["cluster"], self.config["stream_k"], self.config["block_m"]
+            m,
+            n,
+            k,
+            workers,
+            self.config["cluster"],
+            self.config["stream_k"],
+            self.config["block_m"],
         )
         device = torch.device("cuda", device_index) if device_index is not None else "cuda"
         self._ws = torch.empty(plan["workspace_floats"], dtype=torch.float32, device=device)
@@ -963,8 +994,9 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     def default_config(self) -> dict:
         """The tile, pipeline depth, stream-K mode and cluster the measured rules pick.
 
-        Each rule is measured on H200 against vLLM's ``cutlass_w4a8_mm``: paired CUPTI medians,
-        and 3 s back-to-back runs where the 700 W cap sets the clock.
+        The original tile and pipeline rules use paired H200 CUPTI medians and 3 s
+        back-to-back runs against vLLM's ``cutlass_w4a8_mm``. The small-batch scheduling
+        refinements use paired CUPTI measurements on H200 at 1500 MHz.
         """
         m, n, k = self.m, self.n, self.k
         sms = get_sm_count(self.device_index)
@@ -978,10 +1010,22 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         # passes.
         epilogue_tokens = {64: 64, 96: 32, 128: 128, 256: 64}[block_m]
         epilogue_buffers = 2 if block_m == 256 else 1
+        sms = _worker_count(m, n, k, sms, block_m, 1, 2)
         if block_m < 256:
-            # Stream-K with a second wave was fastest or tied at every measured M <= 80
+            # Stream-K with a second wave was fastest or tied at every M <= 80 in the original suite
             # (llama-70b-up M = 80: 1.029x vs 0.909x with one wave and 1.003x without).
             stream_k = 2
+            if block_m == 64 and k <= 3584:
+                tiles = -(-n // LAYOUT.block_n)
+                # Short K cannot always amortize a second segment's partial-sum and
+                # epilogue work. Keep evenly split one-segment schedules; otherwise
+                # use data parallelism when splitting saves at most 16 K groups per
+                # worker on average. Measured on H200, including held-out N/K pairs.
+                # K=4096 already benefits from splitting, as do narrow-N long-K rows.
+                if tiles < sms and (k // W4A8_LAYOUT.tile_k) * (sms - tiles) <= 16 * sms:
+                    plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
+                    if plan["max_segs"] > 1:
+                        stream_k = 0
         else:
             tiles = -(-m // block_m) * -(-n // LAYOUT.block_n)
             waves, tail = divmod(tiles, sms)
