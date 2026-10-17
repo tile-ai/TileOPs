@@ -2,7 +2,7 @@
 
 import functools
 import itertools
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
@@ -213,7 +213,7 @@ def _gqa_dense_ws_kernel(
     block_N=128,
     nsK=2,
     nsV=2,
-    threads=384,
+    threads=None,
 ):
     """Build the Dense WS program; its online softmax carries the previous tile's alpha."""
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
@@ -221,9 +221,15 @@ def _gqa_dense_ws_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     groups = H // Hkv
     accum = "float"
-    half = block_M // 2
-    # Threads of the two MMA consumer warpgroups.
-    nmma = 256
+    assert block_M in (128, 192)
+    half = 64
+    num_consumers = block_M // half
+    nmma = 128 * num_consumers
+    threads = (num_consumers + 1) * 128 if threads is None else threads
+    producer_regs = 32 if num_consumers == 3 else 24
+    consumer_regs = 160 if num_consumers == 3 else 240
+    # Each issue-turn barrier joins two groups; KV-free barriers join all consumers.
+    turn_threads = 256
     Pol = T.GemmWarpPolicy.FullRow
     seq_len_q = T.dynamic("seq_len_q")
     seq_len_kv = T.dynamic("seq_len_kv")
@@ -238,6 +244,181 @@ def _gqa_dense_ws_kernel(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
 
+    @T.macro
+    def consume(
+        wg, Qs, Ks, Vs, Os, O, q_bar, kready, kfree, vready, vfree, q0, causal_offset, eff, by, bz
+    ):
+        """Run one 64-row consumer; adjacent groups pass the MMA issue turn."""
+        T.set_max_nreg(consumer_regs, 1)  # consumer grabs producer's released regs
+        r0 = wg * half
+        my_bar = wg + 1
+        nxt_bar = (wg + 1) % num_consumers + 1
+        acc_s = T.alloc_fragment([half, block_N], accum)
+        pcast = T.alloc_fragment([half, block_N], dtype)  # register-P (rs-wgmma)
+        acc_o = T.alloc_fragment([half, D], accum)
+        sm = T.alloc_fragment([half], accum)
+        smp = T.alloc_fragment([half], accum)
+        alpha = T.alloc_fragment([half], accum)
+        ss = T.alloc_fragment([half], accum)
+        logsum = T.alloc_fragment([half], accum)
+        # Split each row's local max into independent partial reductions.
+        red = T.alloc_fragment([half, 8], accum)
+
+        T.fill(acc_o, 0)
+        T.fill(logsum, 0)
+        T.fill(alpha, 1.0)
+        T.fill(sm, -T.infinity(accum))
+        T.mbarrier_wait_parity(q_bar, 0)
+        if wg == num_consumers - 1:
+            T.named_barrier_arrive(1, turn_threads)  # prime WG0
+
+        # prologue: tile 0, QK + softmax (no PV)
+        T.sync_threads(my_bar, turn_threads)
+        T.mbarrier_wait_parity(kready[0], 0)
+        T.wgmma_gemm(
+            Qs[wg, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
+        )
+        T.named_barrier_arrive(nxt_bar, turn_threads)
+        T.wait_wgmma(0)
+        T.mbarrier_arrive(kfree[0])
+        if is_causal and q0 + r0 + causal_offset < block_N - 1:
+            mask_limit = q0 + r0 + causal_offset
+            for i, j in T.Parallel(half, block_N):
+                acc_s[i, j] = T.if_then_else(mask_limit + i >= j, acc_s[i, j], -T.infinity(accum))
+        elif not is_causal and seq_len_kv < block_N:
+            for i, j in T.Parallel(half, block_N):
+                acc_s[i, j] = T.if_then_else(j < seq_len_kv, acc_s[i, j], -T.infinity(accum))
+        if use_softcap:
+            apply_softcap(acc_s, half, block_N)
+        T.reduce_max(acc_s, sm, dim=1, clear=False)
+        for i, j in T.Parallel(half, block_N):
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+        T.reduce_sum(acc_s, ss, dim=1, batch=2)
+        for i in T.Parallel(half):
+            logsum[i] = ss[i]
+        T.copy(acc_s, pcast)
+
+        if is_causal:
+            nu = T.alloc_var(
+                "int32",
+                init=T.max(
+                    1,
+                    T.min(eff, T.floordiv(q0 + r0 + causal_offset + 1, block_N)),
+                ),
+            )
+        else:
+            nu = T.alloc_var("int32", init=T.max(1, T.floordiv(seq_len_kv, block_N)))
+        for k in T.serial(1, nu):
+            sk = k % nsK
+            svp = (k - 1) % nsV
+            T.sync_threads(my_bar, turn_threads)
+            T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
+            T.wgmma_gemm(
+                Qs[wg, :, :],
+                Ks[sk, :, :],
+                acc_s,
+                transpose_B=True,
+                policy=Pol,
+                clear_accum=True,
+            )
+            rescale = T.alloc_var("int32", init=0)
+            for i in T.Parallel(half):
+                if alpha[i] != 1.0:
+                    rescale = 1
+            if rescale == 1:
+                for i, j in T.Parallel(half, D):
+                    acc_o[i, j] *= alpha[i]
+            T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
+            T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+            T.named_barrier_arrive(nxt_bar, turn_threads)
+            T.wait_wgmma(1)
+            T.mbarrier_arrive(kfree[sk])
+            if use_softcap:
+                apply_softcap(acc_s, half, block_N)
+            T.copy(sm, smp)
+            T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+            T.reduce_max(red, sm, dim=1, clear=False, batch=2)
+            for i in T.Parallel(half):
+                alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+            for i, j in T.Parallel(half, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+            T.reduce_sum(acc_s, ss, dim=1, batch=2)
+            T.wait_wgmma(0)
+            T.mbarrier_arrive(vfree[svp])
+            for i in T.Parallel(half):
+                logsum[i] = logsum[i] * alpha[i] + ss[i]
+            T.copy(acc_s, pcast)
+        for k in T.serial(nu, eff):
+            sk = k % nsK
+            svp = (k - 1) % nsV
+            T.sync_threads(my_bar, turn_threads)
+            T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
+            T.wgmma_gemm(
+                Qs[wg, :, :],
+                Ks[sk, :, :],
+                acc_s,
+                transpose_B=True,
+                policy=Pol,
+                clear_accum=True,
+            )
+            rescale = T.alloc_var("int32", init=0)
+            for i in T.Parallel(half):
+                if alpha[i] != 1.0:
+                    rescale = 1
+            if rescale == 1:
+                for i, j in T.Parallel(half, D):
+                    acc_o[i, j] *= alpha[i]
+            T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
+            T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+            T.named_barrier_arrive(nxt_bar, turn_threads)
+            T.wait_wgmma(1)
+            T.mbarrier_arrive(kfree[sk])
+            if is_causal:
+                mask_limit_tail = q0 + r0 + causal_offset - k * block_N
+                for i, j in T.Parallel(half, block_N):
+                    acc_s[i, j] = T.if_then_else(
+                        mask_limit_tail + i >= j, acc_s[i, j], -T.infinity(accum)
+                    )
+            else:
+                for i, j in T.Parallel(half, block_N):
+                    acc_s[i, j] = T.if_then_else(
+                        k * block_N + j < seq_len_kv,
+                        acc_s[i, j],
+                        -T.infinity(accum),
+                    )
+            if use_softcap:
+                apply_softcap(acc_s, half, block_N)
+            T.copy(sm, smp)
+            T.reduce_max(T.reshape(acc_s, [half, block_N // 8, 8]), red, dim=1, clear=True)
+            T.reduce_max(red, sm, dim=1, clear=False, batch=2)
+            for i in T.Parallel(half):
+                alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+            for i, j in T.Parallel(half, block_N):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+            T.reduce_sum(acc_s, ss, dim=1, batch=2)
+            T.wait_wgmma(0)
+            T.mbarrier_arrive(vfree[svp])
+            for i in T.Parallel(half):
+                logsum[i] = logsum[i] * alpha[i] + ss[i]
+            T.copy(acc_s, pcast)
+
+        svp = (eff - 1) % nsV
+        for i, j in T.Parallel(half, D):
+            acc_o[i, j] *= alpha[i]
+        T.mbarrier_wait_parity(vready[svp], ((eff - 1) // nsV) % 2)
+        T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+        T.wait_wgmma(0)
+        T.mbarrier_arrive(vfree[svp])
+        for i in T.Parallel(half):
+            alpha[i] = 1.0 / logsum[i]
+        for i, j in T.Parallel(half, D):
+            acc_o[i, j] *= alpha[i]
+        T.copy(acc_o, Os[wg, :, :])
+        # All four warps must finish their shared stores before one thread starts TMA.
+        T.fence_proxy_async()
+        T.sync_threads(4 + wg, 128)
+        T.copy(Os[wg, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
+
     @T.prim_func
     def main(
         Q: T.Tensor([B, seq_len_q, H, D], dtype),
@@ -246,11 +427,11 @@ def _gqa_dense_ws_kernel(
         O: T.Tensor([B, seq_len_q, H, D], dtype),
     ):
         with T.Kernel(T.ceildiv(seq_len_q, block_M), H, B, threads=threads) as (bx, by, bz):
-            Qs = T.alloc_shared([2, half, D], dtype)
+            Qs = T.alloc_shared([num_consumers, half, D], dtype)
             Ks = T.alloc_shared([nsK, block_N, D], dtype)
             Vs = T.alloc_shared([nsV, block_N, D], dtype)
             Os = T.alloc_shared(
-                [2, half, D], dtype
+                [num_consumers, half, D], dtype
             )  # per-WG smem-staged output (FlashInfer epilogue)
             T.annotate_layout(
                 {
@@ -281,11 +462,15 @@ def _gqa_dense_ws_kernel(
                 eff = T.alloc_var("int32", init=T.ceildiv(seq_len_kv, block_N))
             tx = T.get_thread_binding()
 
-            if tx >= 256:  # ================= producer =================
-                T.set_max_nreg(24, 0)  # producer is TMA-only: release regs to consumers
-            if tx >= 256 and tx < 288:  # only 1 warp issues TMA + waits (rest of WG idle)
-                T.tma_copy(Q[bz, q0 : q0 + half, by, :], Qs[0, :, :], barrier=q_bar)
-                T.tma_copy(Q[bz, q0 + half : q0 + block_M, by, :], Qs[1, :, :], barrier=q_bar)
+            if tx >= nmma:  # ================= producer =================
+                T.set_max_nreg(producer_regs, 0)  # producer is TMA-only: release regs to consumers
+            if tx >= nmma and tx < nmma + 32:  # only 1 warp issues TMA + waits (rest of WG idle)
+                for wg in T.unroll(num_consumers):
+                    T.tma_copy(
+                        Q[bz, q0 + wg * half : q0 + (wg + 1) * half, by, :],
+                        Qs[wg, :, :],
+                        barrier=q_bar,
+                    )
                 T.mbarrier_arrive(q_bar)
                 for k in T.serial(eff):
                     sk = k % nsK
@@ -306,320 +491,63 @@ def _gqa_dense_ws_kernel(
                     T.mbarrier_arrive(vready[sv])
 
             with T.ws(0):
-                T.set_max_nreg(240, 1)  # consumer grabs producer's released regs
-                r0 = 0 * half
-                my_bar = 1
-                nxt_bar = 2
-                acc_s = T.alloc_fragment([half, block_N], accum)
-                pcast = T.alloc_fragment([half, block_N], dtype)  # register-P (rs-wgmma)
-                acc_o = T.alloc_fragment([half, D], accum)
-                sm = T.alloc_fragment([half], accum)
-                smp = T.alloc_fragment([half], accum)
-                alpha = T.alloc_fragment([half], accum)
-                ss = T.alloc_fragment([half], accum)
-                logsum = T.alloc_fragment([half], accum)
-
-                T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(alpha, 1.0)
-                T.fill(sm, -T.infinity(accum))
-                T.mbarrier_wait_parity(q_bar, 0)
-                pass  # WG0 goes first
-
-                # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, nmma)
-                T.mbarrier_wait_parity(kready[0], 0)
-                T.wgmma_gemm(
-                    Qs[0, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
+                consume(
+                    0,
+                    Qs,
+                    Ks,
+                    Vs,
+                    Os,
+                    O,
+                    q_bar,
+                    kready,
+                    kfree,
+                    vready,
+                    vfree,
+                    q0,
+                    causal_offset,
+                    eff,
+                    by,
+                    bz,
                 )
-                T.named_barrier_arrive(nxt_bar, nmma)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(kfree[0])
-                if is_causal and q0 + r0 + causal_offset < block_N - 1:
-                    mask_limit = q0 + r0 + causal_offset
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            mask_limit + i >= j, acc_s[i, j], -T.infinity(accum)
-                        )
-                elif not is_causal and seq_len_kv < block_N:
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            j < seq_len_kv, acc_s[i, j], -T.infinity(accum)
-                        )
-                if use_softcap:
-                    apply_softcap(acc_s, half, block_N)
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
-                for i, j in T.Parallel(half, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
-                for i in T.Parallel(half):
-                    logsum[i] = ss[i]
-                T.copy(acc_s, pcast)
-
-                if is_causal:
-                    nu = T.alloc_var(
-                        "int32",
-                        init=T.max(
-                            1,
-                            T.min(eff, T.floordiv(q0 + r0 + causal_offset + 1, block_N)),
-                        ),
-                    )
-                else:
-                    nu = T.alloc_var("int32", init=T.max(1, T.floordiv(seq_len_kv, block_N)))
-                for k in T.serial(1, nu):
-                    sk = k % nsK
-                    svp = (k - 1) % nsV
-                    T.sync_threads(my_bar, nmma)
-                    T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
-                    T.wgmma_gemm(
-                        Qs[0, :, :],
-                        Ks[sk, :, :],
-                        acc_s,
-                        transpose_B=True,
-                        policy=Pol,
-                        clear_accum=True,
-                    )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
-                    T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
-                    T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, nmma)
-                    T.wait_wgmma(1)
-                    T.mbarrier_arrive(kfree[sk])
-                    if use_softcap:
-                        apply_softcap(acc_s, half, block_N)
-                    T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
-                    for i in T.Parallel(half):
-                        alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
-                    T.wait_wgmma(0)
-                    T.mbarrier_arrive(vfree[svp])
-                    for i in T.Parallel(half):
-                        logsum[i] = logsum[i] * alpha[i] + ss[i]
-                    T.copy(acc_s, pcast)
-                for k in T.serial(nu, eff):
-                    sk = k % nsK
-                    svp = (k - 1) % nsV
-                    T.sync_threads(my_bar, nmma)
-                    T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
-                    T.wgmma_gemm(
-                        Qs[0, :, :],
-                        Ks[sk, :, :],
-                        acc_s,
-                        transpose_B=True,
-                        policy=Pol,
-                        clear_accum=True,
-                    )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
-                    T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
-                    T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, nmma)
-                    T.wait_wgmma(1)
-                    T.mbarrier_arrive(kfree[sk])
-                    if is_causal:
-                        mask_limit_tail = q0 + r0 + causal_offset - k * block_N
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                mask_limit_tail + i >= j, acc_s[i, j], -T.infinity(accum)
-                            )
-                    else:
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                k * block_N + j < seq_len_kv,
-                                acc_s[i, j],
-                                -T.infinity(accum),
-                            )
-                    if use_softcap:
-                        apply_softcap(acc_s, half, block_N)
-                    T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
-                    for i in T.Parallel(half):
-                        alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
-                    T.wait_wgmma(0)
-                    T.mbarrier_arrive(vfree[svp])
-                    for i in T.Parallel(half):
-                        logsum[i] = logsum[i] * alpha[i] + ss[i]
-                    T.copy(acc_s, pcast)
-
-                svp = (eff - 1) % nsV
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.mbarrier_wait_parity(vready[svp], ((eff - 1) // nsV) % 2)
-                T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(vfree[svp])
-                for i in T.Parallel(half):
-                    alpha[i] = 1.0 / logsum[i]
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.copy(acc_o, Os[0, :, :])
-                T.copy(Os[0, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
-
             with T.ws(1):
-                T.set_max_nreg(240, 1)  # consumer grabs producer's released regs
-                r0 = 1 * half
-                my_bar = 2
-                nxt_bar = 1
-                acc_s = T.alloc_fragment([half, block_N], accum)
-                pcast = T.alloc_fragment([half, block_N], dtype)  # register-P (rs-wgmma)
-                acc_o = T.alloc_fragment([half, D], accum)
-                sm = T.alloc_fragment([half], accum)
-                smp = T.alloc_fragment([half], accum)
-                alpha = T.alloc_fragment([half], accum)
-                ss = T.alloc_fragment([half], accum)
-                logsum = T.alloc_fragment([half], accum)
-
-                T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(alpha, 1.0)
-                T.fill(sm, -T.infinity(accum))
-                T.mbarrier_wait_parity(q_bar, 0)
-                T.named_barrier_arrive(1, nmma)  # prime WG0
-
-                # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, nmma)
-                T.mbarrier_wait_parity(kready[0], 0)
-                T.wgmma_gemm(
-                    Qs[1, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
+                consume(
+                    1,
+                    Qs,
+                    Ks,
+                    Vs,
+                    Os,
+                    O,
+                    q_bar,
+                    kready,
+                    kfree,
+                    vready,
+                    vfree,
+                    q0,
+                    causal_offset,
+                    eff,
+                    by,
+                    bz,
                 )
-                T.named_barrier_arrive(nxt_bar, nmma)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(kfree[0])
-                if is_causal and q0 + r0 + causal_offset < block_N - 1:
-                    mask_limit_wg1 = q0 + r0 + causal_offset
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            mask_limit_wg1 + i >= j, acc_s[i, j], -T.infinity(accum)
-                        )
-                elif not is_causal and seq_len_kv < block_N:
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            j < seq_len_kv, acc_s[i, j], -T.infinity(accum)
-                        )
-                if use_softcap:
-                    apply_softcap(acc_s, half, block_N)
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
-                for i, j in T.Parallel(half, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
-                for i in T.Parallel(half):
-                    logsum[i] = ss[i]
-                T.copy(acc_s, pcast)
-
-                if is_causal:
-                    nu_wg1 = T.alloc_var(
-                        "int32",
-                        init=T.max(
-                            1,
-                            T.min(eff, T.floordiv(q0 + r0 + causal_offset + 1, block_N)),
-                        ),
+            if num_consumers == 3:
+                with T.ws(2):
+                    consume(
+                        2,
+                        Qs,
+                        Ks,
+                        Vs,
+                        Os,
+                        O,
+                        q_bar,
+                        kready,
+                        kfree,
+                        vready,
+                        vfree,
+                        q0,
+                        causal_offset,
+                        eff,
+                        by,
+                        bz,
                     )
-                else:
-                    nu_wg1 = T.alloc_var("int32", init=T.max(1, T.floordiv(seq_len_kv, block_N)))
-                for k in T.serial(1, nu_wg1):
-                    sk = k % nsK
-                    svp_wg1 = (k - 1) % nsV
-                    T.sync_threads(my_bar, nmma)
-                    T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
-                    T.wgmma_gemm(
-                        Qs[1, :, :],
-                        Ks[sk, :, :],
-                        acc_s,
-                        transpose_B=True,
-                        policy=Pol,
-                        clear_accum=True,
-                    )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
-                    T.mbarrier_wait_parity(vready[svp_wg1], ((k - 1) // nsV) % 2)
-                    T.wgmma_gemm(pcast, Vs[svp_wg1, :, :], acc_o, policy=Pol, clear_accum=False)
-                    T.named_barrier_arrive(nxt_bar, nmma)
-                    T.wait_wgmma(1)
-                    T.mbarrier_arrive(kfree[sk])
-                    if use_softcap:
-                        apply_softcap(acc_s, half, block_N)
-                    T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
-                    for i in T.Parallel(half):
-                        alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
-                    T.wait_wgmma(0)
-                    T.mbarrier_arrive(vfree[svp_wg1])
-                    for i in T.Parallel(half):
-                        logsum[i] = logsum[i] * alpha[i] + ss[i]
-                    T.copy(acc_s, pcast)
-                for k in T.serial(nu_wg1, eff):
-                    sk = k % nsK
-                    svp_wg1_tail = (k - 1) % nsV
-                    T.sync_threads(my_bar, nmma)
-                    T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
-                    T.wgmma_gemm(
-                        Qs[1, :, :],
-                        Ks[sk, :, :],
-                        acc_s,
-                        transpose_B=True,
-                        policy=Pol,
-                        clear_accum=True,
-                    )
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
-                    T.mbarrier_wait_parity(vready[svp_wg1_tail], ((k - 1) // nsV) % 2)
-                    T.wgmma_gemm(
-                        pcast, Vs[svp_wg1_tail, :, :], acc_o, policy=Pol, clear_accum=False
-                    )
-                    T.named_barrier_arrive(nxt_bar, nmma)
-                    T.wait_wgmma(1)
-                    T.mbarrier_arrive(kfree[sk])
-                    if is_causal:
-                        mask_limit_wg1_tail = q0 + r0 + causal_offset - k * block_N
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                mask_limit_wg1_tail + i >= j, acc_s[i, j], -T.infinity(accum)
-                            )
-                    else:
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                k * block_N + j < seq_len_kv,
-                                acc_s[i, j],
-                                -T.infinity(accum),
-                            )
-                    if use_softcap:
-                        apply_softcap(acc_s, half, block_N)
-                    T.copy(sm, smp)
-                    T.reduce_max(acc_s, sm, dim=1, clear=False)
-                    for i in T.Parallel(half):
-                        alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
-                    T.wait_wgmma(0)
-                    T.mbarrier_arrive(vfree[svp_wg1_tail])
-                    for i in T.Parallel(half):
-                        logsum[i] = logsum[i] * alpha[i] + ss[i]
-                    T.copy(acc_s, pcast)
-
-                svp_wg1_final = (eff - 1) % nsV
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.mbarrier_wait_parity(vready[svp_wg1_final], ((eff - 1) // nsV) % 2)
-                T.wgmma_gemm(pcast, Vs[svp_wg1_final, :, :], acc_o, policy=Pol, clear_accum=False)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(vfree[svp_wg1_final])
-                for i in T.Parallel(half):
-                    alpha[i] = 1.0 / logsum[i]
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.copy(acc_o, Os[1, :, :])
-                T.copy(Os[1, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
 
     return main
 
@@ -628,6 +556,8 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     """Dense attention using the FA3 two-consumer pipeline."""
 
     supported_archs: list[int] = [90]
+    # Each implementation fixes its consumer count; dispatch selects the implementation.
+    _block_m: ClassVar[int] = 128
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -687,6 +617,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dim**-0.5 if sm_scale is None else sm_scale,
             softcap,
             self.dtype_str,
+            block_M=self._block_m,
         )
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
