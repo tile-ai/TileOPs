@@ -176,19 +176,28 @@ jobs:
     needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
+    env:
+      TILEOPS_LINT_BASE: origin/main
+      # The hooks with a rule that judges only the lines a pull request adds since the base.
+      DIFF_AWARE_HOOKS: comment-narration-lint,module-constant-lint,test-placement-lint
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # TILEOPS_LINT_BASE names origin/main; full history provides its merge base.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # A push defines no pull request diff (on main it is empty), and its commits passed the
+      # diff-aware hooks as a pull request, so a push skips them.
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
+        env:
+          SKIP: ${{ github.event_name == 'push' && env.DIFF_AWARE_HOOKS || '' }}
         with:
           extra_args: --all-files --show-diff-on-failure
 
