@@ -384,6 +384,45 @@ GemmW4A8FwdOp:
   - {M: 48, N: 8192, K: 3584, label: llama-70b-down-tp8-b48}
   - {M: 64, N: 8192, K: 3584, label: llama-70b-down-tp8-b64}
 
+  # Token-tile transitions and short-K one-wave scheduling across real down/up shapes.
+  - {M: 65, N: 7168, K: 18432, label: ds-r1-down-b65}
+  - {M: 80, N: 7168, K: 18432, label: ds-r1-down-b80}
+  - {M: 81, N: 7168, K: 18432, label: ds-r1-down-b81}
+  - {M: 97, N: 7168, K: 18432, label: ds-r1-down-b97}
+  - {M: 129, N: 7168, K: 18432, label: ds-r1-down-b129}
+  - {M: 192, N: 7168, K: 18432, label: ds-r1-down-b192}
+  - {M: 193, N: 7168, K: 18432, label: ds-r1-down-b193}
+  - {M: 256, N: 7168, K: 18432, label: ds-r1-down-b256}
+  - {M: 257, N: 7168, K: 18432, label: ds-r1-down-b257}
+  - {M: 384, N: 7168, K: 18432, label: ds-r1-down-b384}
+  - {M: 385, N: 7168, K: 18432, label: ds-r1-down-b385}
+  - {M: 513, N: 7168, K: 18432, label: ds-r1-down-b513}
+  - {M: 576, N: 7168, K: 18432, label: ds-r1-down-b576}
+  - {M: 577, N: 7168, K: 18432, label: ds-r1-down-b577}
+  - {M: 65, N: 8192, K: 28672, label: llama-70b-down-b65}
+  - {M: 129, N: 8192, K: 28672, label: llama-70b-down-b129}
+  - {M: 193, N: 8192, K: 28672, label: llama-70b-down-b193}
+  - {M: 257, N: 8192, K: 28672, label: llama-70b-down-b257}
+  - {M: 513, N: 8192, K: 28672, label: llama-70b-down-b513}
+  - {M: 65, N: 7168, K: 2304, label: ds-r1-down-tp8-b65}
+  - {M: 96, N: 7168, K: 2304, label: ds-r1-down-tp8-b96}
+  - {M: 97, N: 7168, K: 2304, label: ds-r1-down-tp8-b97}
+  - {M: 128, N: 7168, K: 2304, label: ds-r1-down-tp8-b128}
+  - {M: 129, N: 7168, K: 2304, label: ds-r1-down-tp8-b129}
+  - {M: 160, N: 7168, K: 2304, label: ds-r1-down-tp8-b160}
+  - {M: 161, N: 7168, K: 2304, label: ds-r1-down-tp8-b161}
+  - {M: 192, N: 7168, K: 2304, label: ds-r1-down-tp8-b192}
+  - {M: 193, N: 7168, K: 2304, label: ds-r1-down-tp8-b193}
+  - {M: 256, N: 7168, K: 2304, label: ds-r1-down-tp8-b256}
+  - {M: 96, N: 8192, K: 3584, label: llama-70b-down-tp8-b96}
+  - {M: 129, N: 8192, K: 3584, label: llama-70b-down-tp8-b129}
+  - {M: 192, N: 8192, K: 3584, label: llama-70b-down-tp8-b192}
+  - {M: 256, N: 8192, K: 3584, label: llama-70b-down-tp8-b256}
+  - {M: 65, N: 18432, K: 7168, label: ds-r1-up-b65}
+  - {M: 129, N: 18432, K: 7168, label: ds-r1-up-b129}
+  - {M: 257, N: 18432, K: 7168, label: ds-r1-up-b257}
+  - {M: 513, N: 18432, K: 7168, label: ds-r1-up-b513}
+
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
     # which scales each result by its channel and its token scale.

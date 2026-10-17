@@ -136,6 +136,31 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     if bk == 256:
         stages *= 2
     ctas = _grid(n, k, uw, bk, sm_count)
+    # Paired H200 measurements favor two contributors per complete tile at short K.
+    # Above K=3200, only the 512-K pipeline retained its gains. Also require no
+    # extra peak chunk and at most one extra 64-K step per CTA on average.
+    # The 256-K pipeline at K=3456 and the long-K shapes regressed.
+    tiles = -(-n // (WGMMA_ROWS * uw))
+    nchunk = -(-k // bk)
+    items = tiles * nchunk
+    balanced = 2 * tiles
+    if (
+        k <= 3584
+        and nt >= 16
+        and uw == 2
+        and n % (WGMMA_ROWS * uw) == 0
+        and 5 * sm_count <= 6 * balanced <= 6 * sm_count
+        and balanced <= items
+        and (
+            k <= 3200
+            or (
+                bk == 512
+                and -(-nchunk // 2) <= -(-items // ctas)
+                and (k // GROUP_SIZE) * (ctas - balanced) <= ctas
+            )
+        )
+    ):
+        ctas = balanced
     for st in range(stages, 1, -1):
         cfg = dict(
             block_tokens=nt,

@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmW4A16Kernel
+from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.kernels.gemm import GemmW4A8PrefillKernel, GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_count
 from workloads.device import run_device
@@ -716,6 +716,15 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
+                # Short-K decode covers both pipeline families and a rejected grid change.
+                pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
+                pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
+                pytest.param(
+                    32, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-decode-llama-m32"
+                ),
+                pytest.param(
+                    32, 7680, 3456, marks=pytest.mark.full, id="full-w4a8-decode-negative-guard"
+                ),
                 # Short-K TP8 down projections exercise data-parallel prefill at the
                 # decode boundary and at a full 64-token tile.
                 pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-ds-tp8-m33"),
@@ -1126,12 +1135,128 @@ def test_gemm_w4a8(m: int, n: int, k: int) -> None:
         pytest.param(8, 80, 384, marks=pytest.mark.smoke, id="m8"),
         pytest.param(64, 80, 384, marks=pytest.mark.smoke, id="m64"),
         pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="short-k-prefill"),
+        pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="short-k-decode"),
     ],
 )
 def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> None:
     test = GemmW4A8MixedSignTest(m, n, k, 128)
     op = GemmW4A8FwdOp()
     test.check(op, *test.gen_inputs(), runs=_repacked(op))
+
+
+def _w4a8_prefill_op_with_config(config: dict) -> GemmW4A8FwdOp:
+    """Exercise a supported custom config through the op's normal dispatch."""
+
+    class Forced(GemmW4A8PrefillKernel):
+        preferred_over = frozenset({"gemm_w4a8_prefill"})
+
+        @property
+        def default_config(self) -> dict:
+            return {**super().default_config, **config}
+
+    state = registry.snapshot()
+    try:
+        register_kernel_type("GemmW4A8FwdOp", "gemm_w4a8_prefill_odd_pass_test", Forced)
+        return GemmW4A8FwdOp(target=BUILTIN)
+    finally:
+        registry.restore(state)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("run_mode", ["repeat", "graph"])
+@pytest.mark.parametrize(
+    "token_counts, n, k, config",
+    [
+        pytest.param((129,), 272, 384, None, marks=pytest.mark.smoke, id="ragged-n"),
+        pytest.param(
+            (129, 192, 193, 129),
+            7168,
+            7296,
+            None,
+            marks=pytest.mark.full,
+            id="first-token-tile-edges-odd-k",
+        ),
+        pytest.param((257, 384), 7168, 2304, None, marks=pytest.mark.full, id="two-token-tiles"),
+        pytest.param((513,), 7168, 7296, None, marks=pytest.mark.full, id="partial-wave-odd-k"),
+        pytest.param(
+            None,
+            128,
+            128,
+            {
+                "block_m": 64,
+                "num_stages": 8,
+                "epilogue_tokens": 64,
+                "epilogue_buffers": 2,
+                "group_m": 8,
+                "cluster": 1,
+                "stream_k": 0,
+            },
+            marks=pytest.mark.full,
+            id="custom-one-pass-double-buffer",
+        ),
+        pytest.param(
+            None,
+            128,
+            128,
+            {
+                "block_m": 96,
+                "num_stages": 6,
+                "epilogue_tokens": 32,
+                "epilogue_buffers": 2,
+                "group_m": 8,
+                "cluster": 1,
+                "stream_k": 0,
+            },
+            marks=pytest.mark.full,
+            id="custom-three-passes-double-buffer",
+        ),
+    ],
+)
+def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
+    token_counts: tuple[int, ...] | None,
+    n: int,
+    k: int,
+    config: dict | None,
+    run_mode: str,
+) -> None:
+    """Repeated calls and graph replays write fresh results, including clipped tails."""
+    op = GemmW4A8FwdOp(target=BUILTIN) if config is None else _w4a8_prefill_op_with_config(config)
+    if token_counts is None:
+        # More than two persistent waves with the shortest mainloop exercise
+        # output-buffer reuse between tiles, including a final one-row tail.
+        sms = get_sm_count(torch.device(run_device()).index)
+        token_counts = (2 * sms * config["block_m"] + 1,)
+    repeats = 20 if config is not None else 3
+    for m in token_counts:
+        test = GemmW4A8MixedSignTest(m, n, k, 128)
+        raw = test.gen_inputs()
+        test.check(op, *raw, runs=_repacked(op))
+        alternate = (-raw[0].float()).to(raw[0].dtype)
+        logical_inputs = (raw, (alternate, *raw[1:]))
+        references = tuple(test.ref_program(*args) for args in logical_inputs)
+        evidence = tuple(test.verification(*args) for args in logical_inputs)
+        activation = raw[0].clone()
+        inputs = (activation, op.repack(raw[1]), *raw[2:])
+        compare_outputs(op(*inputs), references[0], evidence[0])
+        torch.cuda.synchronize()
+        if run_mode == "graph":
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                captured = op(*inputs)
+        for iteration in range(repeats):
+            index = (iteration + 1) % 2
+            activation.copy_(logical_inputs[index][0])
+            if run_mode == "graph":
+                # A skipped store must not pass because an old result remained.
+                captured.fill_(float("nan"))
+                graph.replay()
+                actual = captured
+            else:
+                actual = op(*inputs)
+            torch.cuda.synchronize()
+            compare_outputs(actual, references[index], evidence[index])
 
 
 @pytest.mark.sm90

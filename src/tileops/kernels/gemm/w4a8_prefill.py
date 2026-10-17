@@ -61,8 +61,8 @@ class W4A8PrefillLayout:
 
 
 LAYOUT = W4A8PrefillLayout()
-# Token tiles the selector picks among; the config check accepts no other.
-TOKEN_TILES = (64, 96, 128, 256)
+# Supported token tiles, including smaller tiles for short-K data-parallel waves.
+TOKEN_TILES = (32, 48, 64, 80, 96, 128, 192, 256)
 
 
 def _schedule(m: int, n: int, k: int, sms: int, cluster: int, stream_k: int, block_m: int) -> dict:
@@ -154,8 +154,11 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
     block_m, cluster = config["block_m"], config["cluster"]
     if block_m not in TOKEN_TILES:
         raise ValueError(f"block_m must be one of {TOKEN_TILES}, got {block_m}")
-    if config["epilogue_tokens"] not in (32, 64, 128) or block_m % config["epilogue_tokens"]:
-        raise ValueError(f"epilogue_tokens must be 32, 64 or 128 and divide {block_m}")
+    if (
+        config["epilogue_tokens"] not in (32, 48, 64, 80, 96, 128)
+        or block_m % config["epilogue_tokens"]
+    ):
+        raise ValueError(f"epilogue_tokens must be 32, 48, 64, 80, 96 or 128 and divide {block_m}")
     if config["epilogue_buffers"] not in (1, 2) or config["stream_k"] not in (0, 1, 2):
         raise ValueError("epilogue_buffers must be 1 or 2 and stream_k 0, 1 or 2")
     if config["num_stages"] < 2 or config["group_m"] < 1:
@@ -200,9 +203,9 @@ def _worker_count(
     worker. A long K can otherwise outweigh the saved second segment and epilogue.
     Hardware capacity queries always use the physical device, not this launch count.
     """
-    if not (32 < m <= 64 and block_m == 64 and cluster == 1 and stream_k != 0):
+    if not (32 < m <= block_m and block_m in (48, 64) and cluster == 1 and stream_k != 0):
         return sms
-    if k < 3584 or n % LAYOUT.block_n:
+    if k < 3072 or n % LAYOUT.block_n:
         return sms
     balanced = 2 * (n // LAYOUT.block_n)
     if (
@@ -260,7 +263,8 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         max_contributors, partial_tiles = plan["max_contributors"], plan["partial_tiles"]
         n_pairs = plan["tiles_n"] // cluster
         acc_regs = WGMMA_ROWS * block_m // WARPGROUP_THREADS
-        sub_m = min(block_m, LAYOUT.act_box_tokens)
+        # Three 64-row boxes cover 192 tokens; a 128-row box would leave 64 rows unread.
+        sub_m = 64 if block_m == 192 else min(block_m, LAYOUT.act_box_tokens)
         nsub = block_m // sub_m
         passes = block_m // epilogue_tokens
         consumers = LAYOUT.consumer_threads
@@ -858,7 +862,13 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                     # The buffer this pass writes is free once at most
                                     # epilogue_buffers - 1 stores are in flight.
                                     if tx // WARP_LANES == store_warp:
-                                        T.tma_store_wait(epilogue_buffers - 1)
+                                        # An odd number of double-buffered passes ends on
+                                        # the buffer the next tile starts with. Drain that
+                                        # store before the first pass overwrites it.
+                                        if passes % epilogue_buffers != 0 and p == 0:
+                                            T.tma_store_wait(0)
+                                        else:
+                                            T.tma_store_wait(epilogue_buffers - 1)
                                     T.sync_threads(barrier_id=1, arrive_count=consumers)
                                     for bsel in T.unroll(epilogue_buffers, explicit=True):
                                         if p % epilogue_buffers == bsel:
@@ -992,52 +1002,73 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """The tile, pipeline depth, stream-K mode and cluster the measured rules pick.
+        """Choose token tiles and schedules from paired H200 cold-L2 CUPTI measurements.
 
-        The original tile and pipeline rules use paired H200 CUPTI medians and 3 s
-        back-to-back runs against vLLM's ``cutlass_w4a8_mm``. The small-batch scheduling
-        refinements use paired CUPTI measurements on H200 at 1500 MHz.
+        Smaller tiles reduce padding; short K can use two M tiles to fill one wave.
+        Stream-K must save enough K work to amortize partial sums and extra epilogues.
+        Hardware capacity queries remain independent of the launch worker count.
         """
         m, n, k = self.m, self.n, self.k
-        sms = get_sm_count(self.device_index)
-        # The smallest token tile covering M, else the largest (M = 80 on llama-70b-up: 1.03x
-        # with the 96-token tile vs 0.66x with two 64-token tiles, which read the weight twice).
+        hardware_sms = get_sm_count(self.device_index)
         block_m = next((t for t in TOKEN_TILES if m <= t), TOKEN_TILES[-1])
-        # 64 tokens: 8 stages (11: 0.86x vs 1.02x); 96 tokens: 6 (7: 0.98x vs 1.03x on
-        # llama-70b-up); 128 tokens: 6, the one depth measured; 256 tokens: 4, all that fits.
-        num_stages = {64: 8, 96: 6, 128: 6, 256: 4}[block_m]
-        # Two 64-token buffers: +1.8% at K = 2304, neutral elsewhere; 96 tokens need 32-token
-        # passes.
-        epilogue_tokens = {64: 64, 96: 32, 128: 128, 256: 64}[block_m]
-        epilogue_buffers = 2 if block_m == 256 else 1
-        sms = _worker_count(m, n, k, sms, block_m, 1, 2)
-        if block_m < 256:
-            # Stream-K with a second wave was fastest or tied at every M <= 80 in the original suite
-            # (llama-70b-up M = 80: 1.029x vs 0.909x with one wave and 1.003x without).
+        if m > 128 and -(-m // 192) == -(-m // 256):
+            block_m = 192
+        # Preserve one-segment Stream-K plans, including a grid equal to the physical SM count.
+        base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
+        one_segment = False
+        if block_m < 192 and k <= 3584:
+            one_segment = _schedule(m, n, k, base_workers, 1, 2, block_m)["max_segs"] <= 1
+        # Short K favors two smaller M tiles when they fill almost one hardware wave.
+        short_dp = False
+        balanced = 2 * -(-n // LAYOUT.block_n)
+        if (
+            k <= 3584
+            and n % LAYOUT.block_n == 0
+            and 5 * hardware_sms <= 6 * balanced <= 6 * hardware_sms
+            and not one_segment
+        ):
+            trial = next((t for t in TOKEN_TILES if -(-m // 2) <= t), 256)
+            if trial <= 128 and -(-m // trial) == 2:
+                block_m, short_dp = trial, True
+        num_stages = {32: 8, 48: 8, 64: 8, 80: 8, 96: 6, 128: 6, 192: 4, 256: 4}[block_m]
+        epilogue_tokens = {32: 32, 48: 48, 64: 64, 80: 80, 96: 96, 128: 128, 192: 64, 256: 64}[
+            block_m
+        ]
+        epilogue_buffers = 2 if block_m in (192, 256) else 1
+        cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and min(n, k) <= 2304 else 1
+        group_m = 16 if cluster == 2 else 8
+        if short_dp:
+            stream_k = 0
+        elif block_m < 192:
+            # Preserve balanced one-segment schedules; otherwise avoid short-K partial sums.
+            sms = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
             stream_k = 2
-            if block_m == 64 and k <= 3584:
+            if block_m in (48, 64) and k <= 3584:
                 tiles = -(-n // LAYOUT.block_n)
-                # Short K cannot always amortize a second segment's partial-sum and
-                # epilogue work. Keep evenly split one-segment schedules; otherwise
-                # use data parallelism when splitting saves at most 16 K groups per
-                # worker on average. Measured on H200, including held-out N/K pairs.
-                # K=4096 already benefits from splitting, as do narrow-N long-K rows.
                 if tiles < sms and (k // W4A8_LAYOUT.tile_k) * (sms - tiles) <= 16 * sms:
                     plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
                     if plan["max_segs"] > 1:
                         stream_k = 0
         else:
-            tiles = -(-m // block_m) * -(-n // LAYOUT.block_n)
-            waves, tail = divmod(tiles, sms)
-            # A short schedule ending in a small partial wave gains from a stream-K tail
-            # (N = 2304 K = 7168: 1.067x vs 0.974x); every other prefill row lost 1-15% with it.
-            stream_k = 1 if 2 <= waves <= 4 and 0 < tail <= sms // 2 else 0
-        # Activation multicast in a 2-CTA cluster gained steady state only where K or N is short
-        # (K = 2304: 1.002x vs 0.985x; N = 2304: 1.028x vs 1.011x), and lost 1.0-2.8% on every
-        # row with K and N both >= 7168.
-        cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and min(n, k) <= 2304 else 1
-        # A group of 8 M tiles per sweep (+1..3% on 4096-token rows); 16 with the cluster (+1.3%).
-        group_m = 16 if cluster == 2 else 8
+            # A worker owns one CTA, or a pair of CTAs for cluster 2. Use the same
+            # units as _schedule for both the grid and the hardware capacity.
+            workers = hardware_sms // cluster
+            tiles = -(-m // block_m) * (-(-n // LAYOUT.block_n) // cluster)
+            waves, tail = divmod(tiles, workers)
+            if block_m == 192 and k < 7168:
+                stream_k = 0
+            # Splitting a single wave must save at least 28 K groups per worker on average;
+            # a second wave can instead amortize the extra epilogue with its idle tail.
+            elif k >= 7168 and (
+                (
+                    4 * tiles < 3 * workers
+                    and (k // W4A8_LAYOUT.tile_k) * (workers - tiles) >= 28 * workers
+                )
+                or (waves == 1 and 0 < tail <= workers // 2)
+            ):
+                stream_k = 2
+            else:
+                stream_k = 1 if 2 <= waves <= 4 and 0 < tail <= workers // 2 else 0
         return {
             "block_m": block_m,
             "num_stages": num_stages,
