@@ -9,7 +9,7 @@ from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
-from workloads.moe import MoEExpertsWorkload, moe_verification, ref_routed_experts
+from workloads.moe import MoEExpertsWorkload, ref_routed_experts, routed_experts_verification
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -206,7 +206,9 @@ class TestFusedMoEExpertsFwdOp:
     def test_small_route_branch_matches_reference(self, ids, dtype):
         experts, args = _small_route_case(ids, dtype)
         experts(*args)
-        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
+        compare_outputs(
+            args[0], ref_routed_experts(*args[1:]), routed_experts_verification(*args[1:])
+        )
 
     @pytest.mark.cuda_only
     @pytest.mark.smoke
@@ -224,14 +226,16 @@ class TestFusedMoEExpertsFwdOp:
         )
         graph.replay()
         torch.cuda.synchronize()
-        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
+        compare_outputs(
+            args[0], ref_routed_experts(*args[1:]), routed_experts_verification(*args[1:])
+        )
 
     @pytest.mark.smoke
     def test_the_indexed_op_scales_its_output(self):
         _, args = _small_route_case([[0, 1], [2, 3]])
         IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)
         expected = ref_routed_experts(*args[1:], scale=2.5)
-        compare_outputs(args[0], expected, moe_verification(2))
+        compare_outputs(args[0], expected, routed_experts_verification(*args[1:], scale=2.5))
 
     @pytest.mark.smoke
     def test_output_shape_and_weighted_reduce(self):

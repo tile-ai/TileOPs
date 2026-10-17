@@ -506,3 +506,24 @@ def test_spelling_out_the_ungrouped_defaults_changes_nothing() -> None:
     TestBase.check(workload, default, gating, bias)
     for got, want in zip(spelled(gating, bias), default(gating, bias), strict=True):
         assert torch.equal(got, want)
+
+
+@pytest.mark.smoke
+def test_sigmoid_bias_cancellation_respects_the_zero_selection_band() -> None:
+    """Near-zero biased scores admit float32 epsilon differences in expert selection."""
+    device = run_device()
+    generator = torch.Generator(device=device).manual_seed(137)
+    gating = torch.randn(1, 32, device=device, generator=generator) * 3
+    bias = -gating.sigmoid()[0]
+    bias[:16] = torch.nextafter(bias[:16], torch.full_like(bias[:16], -float("inf")))
+    call = manifest_call(
+        "FusedTopKFwdOp",
+        {"G": "float32"},
+        T=1,
+        E=32,
+        top_k=1,
+        scoring_func="sigmoid",
+        renormalize=False,
+        some=["correction_bias"],
+    )
+    TestBase.check(FusedTopKWorkload(call), FusedTopKFwdOp(1, "sigmoid"), gating, bias)

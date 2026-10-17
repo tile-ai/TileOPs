@@ -107,6 +107,23 @@ class MoEGroupedGemmFwdOp(Op):
     activation is fused) is added to each expert's fp32 product before the activation and
     the cast to the output dtype.
 
+    Accuracy: each defined row equals the float32 reference plus a deviation chosen
+    independently per output element from ``[-2B, 2B]``. This deviation interval defines
+    the numerical decision set.
+
+    The shared MoE budget model starts input budgets at zero. A contraction with weights
+    ``w`` carries input budgets as ``sqrt(sum((B_in * w)**2))`` and adds
+    ``(K + 1) * u32 * (sum(abs(x * w)) + abs(bias))``. A dtype store adds
+    ``u * (abs(value) + smallest_normal)``; ``u`` is half that dtype's epsilon.
+    A gated activation carries budgets through the absolute gate/up slopes and adds
+    half a float16 epsilon times the absolute sigmoid/CDF coefficient. At swigluoai clamps,
+    the interior slopes apply when ``gate < limit + 2B_gate`` and
+    ``abs(up) < limit + 2B_up``; otherwise the respective slope is zero. Its gate-product
+    store contributes an operand-dtype budget; its factor contributes
+    ``u * abs(activated_value)``, followed by the output-store budget. Sums carry the
+    absolute weighted budgets linearly. Biases join their float32 products before stores.
+    These rules define ``B`` from the inputs and the reference graph alone.
+
     Per layout the operands are (``trans``-free, ``b`` is ``[E, N, K]``):
 
     | layout                      | ``a``             | ``layout_metadata``          | ``out``           |
@@ -236,6 +253,12 @@ class MoEExpertMLPFwdOp(Op):
     ``b_gate_up`` (``[E, 2 * ffn]``, in ``w_gate_up``'s row order) is added to the fp32
     gate/up product before the activation, ``b_down`` (``[E, hidden]``) to the fp32 down
     product before its cast.
+
+    Accuracy: for each defined expert row, the numerical decision chooses either an
+    operand-dtype store or fp32 activated rows between the two GEMMs. Every element of
+    that row must equal the same chosen float32 reference plus a deviation in
+    ``[-2B, 2B]``, with ``B`` defined by ``MoEGroupedGemmFwdOp``. The verifier enumerates
+    both precision choices; it does not select a different choice per output column.
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
@@ -322,6 +345,12 @@ class MoEPostPermuteFwdOp(Op):
     A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``
     or ``inverse_indices``. Overlap raises ``ValueError`` before any write;
     disjoint views of one buffer are accepted.
+
+    Accuracy: the reference is the float32 weighted sum and scale. The numerical
+    decision independently adds an error in ``[-2B, 2B]`` per output element. The
+    budget is ``u_input * sum(abs(weighted_rows)) * abs(scale)``, an input-dtype
+    scaled-accumulator store contribution when the scale is nonunit, and the output
+    store contribution from the shared ``MoEGroupedGemmFwdOp`` budget model.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

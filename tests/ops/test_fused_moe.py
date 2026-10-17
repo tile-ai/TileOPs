@@ -22,8 +22,8 @@ from workloads.device import run_device
 from workloads.moe import (
     FusedMoEWorkload,
     FusedTopKWorkload,
-    moe_verification,
     ref_routed_experts,
+    routed_experts_verification,
 )
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
@@ -174,8 +174,9 @@ def test_fused_moe_qwen3(
     fk = FusedTopKFwdOp(top_k, scoring_func, renormalize)
     topk_weights, topk_ids = fk(gating)
     ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
+    verification = routed_experts_verification(hidden, w_gate_up, w_down, topk_weights, topk_ids)
 
-    compare_outputs(out_nopad, ref, moe_verification(2))
+    compare_outputs(out_nopad, ref, verification)
 
     # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
     if (
@@ -190,7 +191,7 @@ def test_fused_moe_qwen3(
             topk_weights,
             topk_ids,
         ).to(dtype)
-        compare_outputs(out_nopad.float(), out_vllm.float(), moe_verification(2))
+        compare_outputs(out_vllm, ref, verification)
 
 
 # Cases for the FusedMoE non-determinism regression. The cooperative 3WG
@@ -248,7 +249,9 @@ def test_fused_moe_deterministic(case):
     ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
     first = op(hidden, gating, w_gate_up, w_down)
-    compare_outputs(first, ref, moe_verification(2))
+    compare_outputs(
+        first, ref, routed_experts_verification(hidden, w_gate_up, w_down, topk_weights, topk_ids)
+    )
     for i in range(reps):
         out = op(hidden, gating, w_gate_up, w_down)
         assert torch.equal(out, first), (
@@ -419,11 +422,14 @@ def test_fused_moe_kimi(
     # Reference using FusedTopKFwdOp for consistent routing
     fk = FusedTopKFwdOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
-    ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
-    if routed_scaling_factor != 1.0:
-        ref = ref * routed_scaling_factor
+    ref = ref_routed_experts(
+        hidden, w_gate_up, w_down, topk_weights, topk_ids.long(), scale=routed_scaling_factor
+    )
+    verification = routed_experts_verification(
+        hidden, w_gate_up, w_down, topk_weights, topk_ids, scale=routed_scaling_factor
+    )
 
-    compare_outputs(out_nopad, ref, moe_verification(2))
+    compare_outputs(out_nopad, ref, verification)
 
 
 # correction_bias routing precision
@@ -578,7 +584,15 @@ def test_fused_moe_vs_vllm(
     if routed_scaling_factor != 1.0:
         out_vllm = out_vllm * routed_scaling_factor
 
-    compare_outputs(out_tileops.float(), out_vllm.float(), moe_verification(2))
+    # Both results lie within the routed experts' rounding budgets of the exact one.
+    ref = ref_routed_experts(
+        hidden, w_gate_up, w_down, topk_weights, topk_ids.long(), scale=routed_scaling_factor
+    )
+    verification = routed_experts_verification(
+        hidden, w_gate_up, w_down, topk_weights, topk_ids, scale=routed_scaling_factor
+    )
+    for out in (out_tileops, out_vllm):
+        compare_outputs(out, ref, verification)
 
 
 # roofline

@@ -34,6 +34,15 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     ``b_gate_up`` hold gate and up rows in the order it reads, both as
     ``MoEGroupedGemmFwdOp`` defines them.
 
+    Accuracy: each token chooses one complete float32 reference: its activated rows
+    are either retained in fp32 or rounded to the operand dtype before the down GEMM.
+    The chosen graph adds each bias to its float32 product, weights each route, combines
+    the routes and applies ``routed_scaling_factor``. A numerical decision independently
+    adds a deviation in ``[-2B, 2B]`` per output element; ``B`` uses the shared
+    ``MoEGroupedGemmFwdOp`` budget model for the gate/up product, activation, down
+    product, weighted combine and final output. One precision choice must fit the
+    token's entire output vector.
+
     forward() writes ``(T, H)``: reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
     WeightedReduceNoOp. A call with few routes per expert (``T * K <= 2 * E``) on

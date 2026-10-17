@@ -156,14 +156,20 @@ class FusedMoEFwdOp(FusedMoE):
     ``num_expert_group`` groups of consecutive experts, each scored by the sum of its
     two best biased scores when ``correction_bias`` is passed and by its best score
     otherwise, and top-k is selected inside the ``topk_group`` best groups. A group
-    within 1e-5 (relative; also 1e-6 absolute) of the last kept group score may be
-    kept in its place, as in ``FusedTopKFwdOp``. The output is multiplied by
+    whose score is within 1e-5 (relative; also 1e-6 absolute) of the last one kept,
+    the ``topk_group``-th best, may be kept in its place, as in ``FusedTopKFwdOp``; a
+    group scored further above it is always kept. The output is multiplied by
     ``routed_scaling_factor`` once.
 
     gpt-oss is ``scoring_func="softmax"``, ``renormalize=True``, ``activation="swigluoai"``
     and both expert biases. ``activation``, and the row order of ``w_gate_up`` and
     ``b_gate_up`` it reads, are as ``MoEGroupedGemmFwdOp`` defines them; the optional expert
     biases ``b_gate_up`` and ``b_down`` join each route as ``FusedMoEExpertsFwdOp`` states.
+
+    Accuracy: the output is as ``FusedMoEExpertsFwdOp`` states it under one routing this
+    paragraph and the group rule above admit, chosen per token. Expert choices obey the
+    complete expert selection band and mandatory-expert
+    rule of ``FusedTopKFwdOp``, including its absolute floor at zero.
     """
 
     def __init__(
