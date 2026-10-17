@@ -811,9 +811,16 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         ] or [(1, 1)]
         fitting = [pair for pair in admitted if blocks * pair[0] * pair[1] <= sm_count]
         num_v_partitions, num_k_partitions = (fitting or admitted[-1:])[0]
+        threads_par = 128
+        if (
+            get_sm_version(self.device_index) == 89
+            and self.dim_k == self.dim_v == 64
+            and self.chunk_size == 64
+        ):
+            threads_par = 256
         return {
             "num_stages": 1,
-            "threads_par": 128,
+            "threads_par": threads_par,
             "threads_seq": threads_seq,
             "num_v_partitions": num_v_partitions,
             "num_k_partitions": num_k_partitions,
