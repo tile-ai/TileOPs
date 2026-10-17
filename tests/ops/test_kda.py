@@ -188,7 +188,15 @@ def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
 
 @pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-@pytest.mark.parametrize("batch,heads", [(1, 4), (16, 16)], ids=["chunk", "fused"])
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch,heads",
+    [
+        pytest.param(1, 4, id="chunk"),
+        pytest.param(16, 16, marks=pytest.mark.sm89, id="fused-sm89"),
+        pytest.param(16, 16, marks=pytest.mark.sm90, id="fused-sm90"),
+    ],
+)
 def test_kda_prefill_correlated_keys(dtype, batch, heads):
     """Repeated keys must not destabilize the inverse, including a partial chunk."""
     torch.manual_seed(42)
@@ -202,4 +210,11 @@ def test_kda_prefill_correlated_keys(dtype, batch, heads):
         torch.full_like(beta, 0.95),
         state,
     )
-    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
+    from tileops.kernels.linear_attention.kda.prefill import KDAChunkPrefillFwdKernel
+    from tileops.kernels.linear_attention.kda.prefill_fused import KDAFusedPrefillFwdKernel
+
+    op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
+    workload.check(op, *inputs)
+    expected = KDAChunkPrefillFwdKernel if batch == 1 else KDAFusedPrefillFwdKernel
+    kernels = list(op.iter_kernels())
+    assert kernels and all(isinstance(kernel, expected) for kernel in kernels)

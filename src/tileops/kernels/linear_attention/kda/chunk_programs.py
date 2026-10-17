@@ -75,7 +75,7 @@ def chunk_prepare_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
-        invert = inverse_program(chunk_size=BT, block_size=BC, dtype=dtype)
+        invert = inverse_program(chunk_size=BT, block_size=BC, threads=threads, dtype=dtype)
 
         def gated_query(qa_s, gc_s, i, j):
             return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[(i // BC) * BC + REF, j]), dtype)
