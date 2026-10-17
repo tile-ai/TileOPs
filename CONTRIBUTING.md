@@ -49,19 +49,3 @@ types, branch names and labels — CI sources it. Conventional Commits (`feat(sc
 [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) is the body shape: what
 changed and how to verify it. A PR touching `tests/` reports its test node delta, and one touching
 a kernel or op reports benchmark numbers against a baseline that is not TileOPs.
-
-## Releasing
-
-A `workflow_dispatch` of [release.yml](.github/workflows/release.yml) publishes the given
-version to TestPyPI; a `v<X.Y.Z>` or `v<X.Y.Z>rc<N>` tag on `main` publishes to PyPI. Both
-test the built wheel on an SM90 runner and upload once a reviewer approves the environment.
-`pypi` needs a reviewer other than the person who pushed the tag.
-
-1. Dispatch nightly on `main`, and tag only a commit it ran green on.
-1. Dispatch `release.yml` with an `rc` version. In a clean environment, install the declared
-   dependencies from PyPI, then
-   `pip install --no-deps --index-url https://test.pypi.org/simple/ tileops==<version>`.
-1. Push the tag and have another reviewer approve `pypi`.
-1. Install the release from PyPI in a clean environment, then publish the GitHub release notes.
-
-PyPI refuses a second upload of a version: a broken release is yanked and fixed under a new one.

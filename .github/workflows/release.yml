@@ -2,7 +2,7 @@ name: Release
 
 # A version tag on main publishes to PyPI, a manual dispatch publishes to TestPyPI. Both
 # build the commit twice, fail unless the builds match, test one, and upload what was
-# tested. The steps around a release are in CONTRIBUTING.md, section Releasing.
+# tested once a reviewer approves the environment.
 on:
   push:
     tags: ["v*"]
