@@ -18,6 +18,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         PagedKVCacheWriteFwdOp,
     )
     from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+    from tileops.ops.attention.merge_states import MergeAttentionStatesFwdOp
     from tileops.ops.attention.topk_select import TopKSelectFwdOp
     from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
     from tileops.ops.elementwise import BinaryOp, FusedGatedOp, UnaryOp
@@ -250,6 +251,7 @@ _LAZY = {
     "PagedKVCacheWriteFwdOp": ".attention",
     "DSADecodeWithKVCacheFwdOp": ".attention",
     "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
+    "MergeAttentionStatesFwdOp": ".attention.merge_states",
     "TopKSelectFwdOp": ".attention.topk_select",
     # Linear attention
     "DeltaNetChunkFwdOp": ".linear_attention",

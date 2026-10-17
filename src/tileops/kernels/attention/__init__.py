@@ -35,6 +35,7 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
     GQAVarlenFP8FwdKernel,
     GQAVarlenFP8WSFwdKernel,
 )
+from tileops.kernels.attention.merge_states import MergeAttentionStatesKernel
 from tileops.kernels.attention.mha.bwd_ws import MHABwdWSKernel
 from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
@@ -98,6 +99,7 @@ __all__ = [
     "MLAVarlenCall",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
+    "MergeAttentionStatesKernel",
     "NSACompressedFwdVarlenKernel",
     "NSACompressedFwdVarlenTMAKernel",
     "NSAFwdVarlenKernel",
