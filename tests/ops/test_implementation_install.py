@@ -50,9 +50,7 @@ def _gemm_call():
 
 
 @pytest.mark.smoke
-def test_construction_succeeds_where_the_device_cannot_be_queried(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
     """An op constructs on a machine that cannot answer what the device is.
 
     Most ops do not yet know where they will run, and on hardware other than the
@@ -69,13 +67,15 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
     # The properties are cached per device, so a probe that already succeeded
     # would never reach the failing one.
     forget_device_properties()
-    monkeypatch.setattr(torch.cuda, "get_device_capability", unavailable)
-    monkeypatch.setattr(torch.cuda, "get_device_name", unavailable)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     try:
-        mod.ReluFwdOp()
-        GemmFwdOp()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(torch.cuda, "get_device_capability", unavailable)
+            patch.setattr(torch.cuda, "get_device_name", unavailable)
+            patch.setattr(torch.cuda, "is_available", lambda: False)
+            mod.ReluFwdOp()
+            GemmFwdOp()
     finally:
+        # After the patches are undone, so no answer read under them stays cached.
         forget_device_properties()
 
 

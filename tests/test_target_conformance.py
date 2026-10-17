@@ -60,26 +60,28 @@ def isolated_registry():
 
 
 @pytest.fixture(autouse=True)
-def no_cuda(monkeypatch):
+def no_cuda():
     """A host with no CUDA: any device query fails the call that makes it."""
     from tileops.utils import forget_device_properties
 
     def refuse(*args, **kwargs):
         raise AssertionError("queried a CUDA device")
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(torch.accelerator, "current_accelerator", lambda **_: None)
-    for name in (
-        "current_device",
-        "get_device_capability",
-        "get_device_properties",
-        "get_device_name",
-    ):
-        monkeypatch.setattr(torch.cuda, name, refuse)
-    for name in ("current_device_index", "device_index"):
-        monkeypatch.setattr(torch.accelerator, name, refuse)
-    forget_device_properties()
-    yield
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(torch.cuda, "is_available", lambda: False)
+        patch.setattr(torch.accelerator, "current_accelerator", lambda **_: None)
+        for name in (
+            "current_device",
+            "get_device_capability",
+            "get_device_properties",
+            "get_device_name",
+        ):
+            patch.setattr(torch.cuda, name, refuse)
+        for name in ("current_device_index", "device_index"):
+            patch.setattr(torch.accelerator, name, refuse)
+        forget_device_properties()
+        yield
+    # After the patches are undone, so no answer read under them stays cached.
     forget_device_properties()
 
 
