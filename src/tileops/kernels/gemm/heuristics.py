@@ -375,9 +375,8 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
     grid has more row tiles than column tiles (the case CUTLASS's SM90 scheduler
     rasterizes along N) and the whole ``B`` fits in one L2 partition, groups of 4 rows
     give a wave whole rows, and every wave reads every ``B`` tile from L2. At the power
-    limit the L2 reads cost clock: on H200, 4096x2112x7168 read 27.2M L2 sectors
-    against 34.8M and ran at 1.57 GHz against 1.55, 1.9% faster. With a larger ``B``
-    the 4-row groups read more from DRAM and ran up to 3.6% slower.
+    limit fewer L2 reads leave a higher clock. A ``B`` larger than one L2 partition
+    keeps 16-row groups, since 4-row groups would read more of it from DRAM.
     """
     # The dense family's operands are 16-bit.
     elem_bytes = 2

@@ -148,8 +148,7 @@ def _defer_scale(block_m: int) -> bool:
     """Whether a tile applies group scales to FP32 partials instead of to the FP16 weight.
 
     A tile of at most 32 rows is bound by the instructions its consumer issues, and scaling
-    its partials takes fewer of them than scaling every decoded weight. On H200, 16- to
-    32-row tiles ran in 2.5% to 10% fewer cycles with the deferred scale.
+    its partials takes fewer of them than scaling every decoded weight.
     """
     return block_m <= 32
 

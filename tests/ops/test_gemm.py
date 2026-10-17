@@ -1036,7 +1036,7 @@ def test_gemm_k_tail_shorter_than_one_k_block() -> None:
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_coop2_refuses_an_epilogue_chunk_that_does_not_divide_the_tile() -> None:
-    """A 32-column epilogue chunk on a 176-wide coop2 tile stored 160 columns and dropped the rest."""
+    """A 32-column epilogue chunk does not divide a 176-wide coop2 tile, so the kernel refuses it."""
     config = {
         "coop2": True,
         "block_n": 176,
