@@ -3,14 +3,11 @@
 
 Both directions are checked, because each fails silently on its own.
 
-Nothing missing. Every tracked file under ``src/tileops/`` must be in the
-wheel, modules and resources alike. A resource — a kernel header or YAML data —
-is opened at run time by path relative to ``__file__``, and a module is
-imported only when its family is first used, so either one missing is an
-install that imports cleanly and then fails on first use. The wheel is built
-from the sdist, so a ``MANIFEST.in`` prune or a ``packages.find`` change can
-drop either kind. The expected set is derived from ``git ls-files`` at run time
-rather than listed here, so a file added later is covered the day it lands.
+Nothing missing. Every tracked file under ``src/tileops/`` — modules, kernel
+headers, YAML data — must be in the wheel. The build drops a file without error
+when a ``MANIFEST.in`` prune, a ``packages.find`` setting or the package-data
+patterns miss it. The expected set comes from ``git ls-files`` at run time, so
+a file added later is covered when it lands.
 
 Nothing extra. The top level of each artifact is checked against a whitelist:
 the wheel may contain only the package and its ``.dist-info``; the sdist may

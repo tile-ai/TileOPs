@@ -52,38 +52,16 @@ a kernel or op reports benchmark numbers against a baseline that is not TileOPs.
 
 ## Releasing
 
-A version tag on `main` publishes to PyPI; a `workflow_dispatch` of
-[release.yml](.github/workflows/release.yml) publishes the version it is given to TestPyPI.
-Both run `build` → `verify` → `publish`, and `publish` uploads the files `verify` tested
-from an environment whose reviewer approves the upload.
+A `workflow_dispatch` of [release.yml](.github/workflows/release.yml) publishes the given
+version to TestPyPI; a `v<X.Y.Z>` or `v<X.Y.Z>rc<N>` tag on `main` publishes to PyPI. Both
+test the built wheel on an SM90 runner and upload once a reviewer approves the environment.
+`pypi` needs a reviewer other than the person who pushed the tag.
 
-Each environment uploads through a trusted publisher registered on its index (owner
-`tile-ai`, repository `TileOPs`, workflow `release.yml`, environment `testpypi` / `pypi`),
-so no upload token is stored. The environments are repository settings; a change to them
-changes this table in the same step.
+1. Dispatch nightly on `main`, and tag only a commit it ran green on.
+1. Dispatch `release.yml` with an `rc` version. In a clean environment, install the declared
+   dependencies from PyPI, then
+   `pip install --no-deps --index-url https://test.pypi.org/simple/ tileops==<version>`.
+1. Push the tag and have another reviewer approve `pypi`.
+1. Install the release from PyPI in a clean environment, then publish the GitHub release notes.
 
-| Environment | Index         | Deploys from  | Approval                                                                       |
-| ----------- | ------------- | ------------- | ------------------------------------------------------------------------------ |
-| `testpypi`  | test.pypi.org | branch `main` | A required reviewer; the person who dispatched may approve.                    |
-| `pypi`      | pypi.org      | tags `v*`     | A required reviewer other than the person who pushed the tag; no admin bypass. |
-
-1. Dispatch nightly on `main` and release the commit it ran on, once it is green. The tag
-   job refuses a commit without a green nightly dispatch on `main`, and a commit `main` has
-   moved past can no longer get one; release a newer commit instead.
-1. Dispatch `release.yml` with an `rc` version, which publishes to TestPyPI. Check it in a
-   clean environment where TestPyPI serves nothing but tileops: install the dependencies
-   `pyproject.toml` declares from PyPI first, then
-   `pip install --no-deps --index-url https://test.pypi.org/simple/ tileops==<X.Y.Z>rc<N>`.
-   Run `pip check`, and check the version, the imports and a short smoke run.
-1. Draft the GitHub release notes. The generated draft groups merged PRs by the type label
-   [release.yml](.github/release.yml) maps; write the title, a `pip install` line, the
-   highlights, the GPU architectures and software versions this release was tested on, and
-   the thanks to outside contributors by hand.
-1. Push the tag (`v<X.Y.Z>` or `v<X.Y.Z>rc<N>`) and approve the `pypi` environment.
-1. Install `tileops==<X.Y.Z>` from PyPI into a new environment. Check the version, the
-   SHA-256 of the downloaded files against the release run's job summary, `pip check`, the
-   imports, the shipped resources and a short smoke run.
-1. Publish the release notes.
-
-A published version cannot be replaced: PyPI refuses a second upload of one version. A
-release found broken is yanked, and the fix goes out under a new version number.
+PyPI refuses a second upload of a version: a broken release is yanked and fixed under a new one.
