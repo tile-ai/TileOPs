@@ -30,6 +30,8 @@ class GroupNormFixture(FixtureBase):
                 pytest.param(2, 320, (152, 104), 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1, 128, (256, 256), 32, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 128, (50, 125), 32, torch.float32, False, marks=pytest.mark.full),
+                # A padded FP32 row also exceeds SM90 shared memory.
+                pytest.param(2, 128, (100, 150), 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(4, 16, (4, 4), 4, torch.bfloat16, False, marks=pytest.mark.full),
