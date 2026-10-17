@@ -261,3 +261,11 @@ def test_ssd_state_passing_fwd_vectorized_short_scan(dtype):
     """A short scan over a flattened 8192-wide state splits each thread's state in two."""
     test = SSDStatePassingFwdTest(2, 4, 8, 8192, dtype)
     test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_ssd_state_passing_fwd_prefetched_scan(dtype):
+    """A wide state over 16 chunks: four elements a thread, eight chunks loaded ahead."""
+    test = SSDStatePassingFwdTest(1, 16, 4, 8192, dtype)
+    test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
