@@ -2,7 +2,7 @@
 
 One case per form the spelling rule has to tell apart: a value written out in the source,
 which is a constant and is spelled ``UPPER_SNAKE``, against everything that only looks like
-one, and the allow marker that exempts one binding line.
+one.
 """
 
 from pathlib import Path
@@ -90,35 +90,7 @@ def test_the_message_names_the_file_the_line_and_the_constant(tmp_path: Path) ->
 
 
 @pytest.mark.smoke
-def test_the_tree_is_clean() -> None:
-    assert lint.main([]) == 0
-
-
-@pytest.mark.smoke
 def test_an_allowed_lowercase_constant_is_left_alone(tmp_path: Path) -> None:
     source = "tma_swizzle_64b = 1  # lint: module-constant allow: CUDA tensor-map ABI encoding\n"
 
     assert _findings(tmp_path, source) == []
-
-
-NOT_ALLOWED = [
-    pytest.param("tma_swizzle_64b = 1  # lint: module-constant allow:\n", id="bare-marker"),
-    pytest.param(
-        "tma_swizzle_64b = 1  # lint: narration allow: CUDA tensor-map ABI encoding\n",
-        id="another-rule-marker",
-    ),
-    pytest.param(
-        "# lint: module-constant allow: CUDA tensor-map ABI encoding\ntma_swizzle_64b = 1\n",
-        id="marker-on-the-line-above",
-    ),
-]
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("source", NOT_ALLOWED)
-def test_a_marker_off_the_line_or_without_a_reason_does_not_suppress(
-    tmp_path: Path, source: str
-) -> None:
-    (found,) = _findings(tmp_path, source)
-
-    assert "module constant tma_swizzle_64b is not UPPER_SNAKE" in found

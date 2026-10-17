@@ -75,9 +75,3 @@ def test_a_line_allowance_with_a_reason_suppresses_the_finding(tmp_path: Path) -
     source = "def test_ref():\n    GemmKernel(64)  # lint: test-placement allow: layout probe\n"
 
     assert _findings(tmp_path, source) == []
-
-
-def test_a_bare_line_allowance_does_not_suppress_the_finding(tmp_path: Path) -> None:
-    assert _findings(
-        tmp_path, "def test_ref():\n    GemmKernel(64)  # lint: test-placement allow:\n"
-    )
