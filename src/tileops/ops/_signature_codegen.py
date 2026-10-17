@@ -1135,7 +1135,12 @@ def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
     """Whether two real tensors share storage; the caller settles that neither is traced."""
     if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
-    return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
+    if a.device != b.device:
+        return False
+    a_storage, b_storage = a.untyped_storage(), b.untyped_storage()
+    a_start, b_start = a_storage.data_ptr(), b_storage.data_ptr()
+    # Imported storages can have different bases while owning overlapping bytes.
+    return a_start < b_start + b_storage.nbytes() and b_start < a_start + a_storage.nbytes()
 
 
 def _construction_check(plan: _SignaturePlan):

@@ -317,7 +317,12 @@ class MoEExpertMLPFwdOp(Op):
 
 
 class MoEPostPermuteFwdOp(Op):
-    """Restore token order and apply the declared local routing epilogue."""
+    """Restore token order and apply the declared local routing epilogue.
+
+    A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``
+    or ``inverse_indices``. Overlap raises ``ValueError`` before any write;
+    disjoint views of one buffer are accepted.
+    """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "post_permute_contiguous": MoEUnpermuteKernel

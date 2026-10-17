@@ -825,3 +825,46 @@ def test_the_operator_names_its_family_once(family: str, class_name: str, expect
 )
 def test_an_abbreviation_stays_one_word(family: str, class_name: str, expected: str) -> None:
     assert operator_name(family, class_name) == expected
+
+
+def test_fresh_output_rejects_overlapping_dlpack_storage():
+    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    buffer = torch.zeros(8, dtype=torch.float16)
+    x = torch.from_dlpack(buffer[:4])
+    y = torch.from_dlpack(buffer[2:6])
+    op = _probe("ProbeImportedAliasFwdOp", signature, lambda self, x: y)()
+    with pytest.raises(ValueError, match="y shares storage"):
+        op(x)
+
+
+def test_fresh_output_accepts_disjoint_dlpack_storage():
+    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    buffer = torch.zeros(8, dtype=torch.float16)
+    x = torch.from_dlpack(buffer[:4])
+    separate = torch.from_dlpack(buffer[4:])
+    op = _probe("ProbeImportedDisjointFwdOp", signature, lambda self, x: separate)()
+    assert op(x) is separate
+
+
+def test_storage_ownership_matches_enumerated_imported_bytes():
+    """Imported storage ownership matches byte-set intersection on all small slices."""
+    from tileops.ops._signature_codegen import _shares_storage
+
+    buffer = torch.zeros(4, dtype=torch.uint8)
+    views = [
+        (torch.from_dlpack(buffer[start:end]), set(range(start, end)))
+        for start in range(buffer.numel() + 1)
+        for end in range(start, buffer.numel() + 1)
+    ]
+    for first, first_bytes in views:
+        for second, second_bytes in views:
+            assert _shares_storage(first, second) is bool(first_bytes & second_bytes)
+
+
+def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
+    """Disjoint tensor spans still share ownership when they use the same storage."""
+    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    buffer = torch.zeros(8, dtype=torch.float16)
+    op = _probe("ProbeSharedOwnerFwdOp", signature, lambda self, x: buffer[4:])()
+    with pytest.raises(ValueError, match="y shares storage"):
+        op(buffer[:4])

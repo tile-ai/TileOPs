@@ -366,7 +366,7 @@ class MGroupedGemmFP8FwdInterface(KernelInterface):
                 of *b*.
             layout_metadata: Contiguous ``int32`` ``(call.num_groups,)`` valid row counts.
             out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
-                written in place and returned; ``None`` allocates one.
+                written in place and returned; ``None`` allocates one. Must not overlap any input.
 
         Returns:
             ``(call.num_groups, call.max_m, call.n)`` in ``bfloat16``.
@@ -390,7 +390,7 @@ class PostPermuteFwdInterface(KernelInterface):
 
         The reduction accumulates in float32 and is scaled by
         ``call.epilogue.routed_scaling_factor`` before the cast. *out* must not overlap
-        *expert_output*, which is read concurrently.
+        any input, all of which are read concurrently.
 
         Args:
             expert_output: Contiguous ``(call.materialized_rows, call.hidden_size)`` in

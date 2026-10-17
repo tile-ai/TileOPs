@@ -199,7 +199,8 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
             inverse_indices: [T*K] int32 flat route → materialized row.
             topk_weights: [T, K] float32 routing weights.
             out: optional [T, H] output buffer to write into and reuse across
-                calls. Allocated internally with ``torch.empty`` if omitted.
+                calls. Must not overlap any input. Allocated internally with
+                ``torch.empty`` if omitted.
 
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
@@ -226,8 +227,13 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
                 raise ValueError("out must be contiguous")
             # Overlap races with the concurrent read; disjoint slices of one
             # workspace buffer are fine.
-            if tensors_overlap(out, expert_output):
-                raise ValueError("out must not overlap expert_output in memory")
+            for name, tensor in (
+                ("expert_output", expert_output),
+                ("inverse_indices", inverse_indices),
+                ("topk_weights", topk_weights),
+            ):
+                if tensors_overlap(out, tensor):
+                    raise ValueError(f"out must not overlap {name} in memory")
             output = out
 
         fn = self._unpermute_fn()
