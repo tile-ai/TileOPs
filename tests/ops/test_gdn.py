@@ -74,6 +74,26 @@ def test_gdn_dense_prefill_carries_a_value_major_state(_architecture: int) -> No
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm89
+@pytest.mark.cuda_only
+@pytest.mark.parametrize("length", [16, 65], ids=["partial-subblock", "cross-chunk"])
+def test_gdn_prefill_preserves_finite_strong_decay(length: int) -> None:
+    """SM89 head-gate scaling must stay finite across partial blocks and chunks."""
+    torch.manual_seed(42)
+    log_decay = -4.0
+    test = GDNFwdTest(
+        batch=1,
+        seq_len=length,
+        heads=2,
+        dim=128,
+        dtype=torch.float16,
+        has_initial_state=True,
+    )
+    inputs = test.gen_inputs()
+    gate = torch.full_like(inputs[3], log_decay)
+    test.check(GDNFwdOp(), *inputs[:3], gate, *inputs[4:])
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
