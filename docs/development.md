@@ -39,7 +39,7 @@ python -m pytest -q tests -m smoke
 
 `--no-deps` is deliberate: the image already carries the pinned stack, and letting pip resolve dependencies would replace it.
 
-Tags follow `cuda<major.minor>-torch<major.minor>-tilelang<version>`, where `<version>` is the release [Prerequisites](../README.md#prerequisites) names; pull that one rather than a floating tag. `tileops-dev` differs from the CI image `tileops-ci-runner` only by the runner agent, so a green run inside it is the same environment CI reports on.
+Tags follow `cuda<major.minor>-torch<major.minor>-tilelang<version>`, where `<version>` is the release [Prerequisites](../README.md#prerequisites) names; pull that one rather than a floating tag. `tileops-dev` is the stage the CI image `tileops-ci-runner` builds on: the same software stack, without the runner agent and its user, so a green run inside it is the same environment CI reports on.
 
 To build the image, roll out a new one, or bump TileLang, see [`.github/runner/README.md`](../.github/runner/README.md).
 

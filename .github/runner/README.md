@@ -28,7 +28,7 @@ the repository root; the context must contain `constraints.txt`, `constraints-ru
 `scripts/ci/`, and `.github/runner/entrypoint.sh`.
 
 ```bash
-TAG=cuda13.2-torch2.13-tilelang<version>
+TAG=cuda13.2-torch2.13-tilelang$(sed -n 's/^tilelang==\([^ ]*\).*/\1/p' constraints.txt)
 IMG=ghcr.io/tile-ai/tileops-ci-runner:$TAG
 DEV=ghcr.io/tile-ai/tileops-dev:$TAG
 
