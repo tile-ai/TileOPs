@@ -57,12 +57,15 @@ A version tag on `main` publishes to PyPI; a `workflow_dispatch` of
 Both run `build` → `verify` → `publish`, and `publish` uploads the files `verify` tested
 from an environment whose reviewer approves the upload.
 
-Neither environment exists yet. Before the first dispatch or tag, a repository owner
-confirms that the account holds the existing `tileops` project on pypi.org, creates the
-`pypi` and `testpypi` environments with required reviewers and no self-approval, restricts
-`pypi` to release tags, and registers the matching trusted publisher on pypi.org and on
-test.pypi.org (owner `tile-ai`, repository `TileOPs`, workflow `release.yml`, environment
-`pypi` / `testpypi`).
+Each environment uploads through a trusted publisher registered on its index (owner
+`tile-ai`, repository `TileOPs`, workflow `release.yml`, environment `testpypi` / `pypi`),
+so no upload token is stored. The environments are repository settings; a change to them
+changes this table in the same step.
+
+| Environment | Index         | Deploys from  | Approval                                                                       |
+| ----------- | ------------- | ------------- | ------------------------------------------------------------------------------ |
+| `testpypi`  | test.pypi.org | branch `main` | A required reviewer; the person who dispatched may approve.                    |
+| `pypi`      | pypi.org      | tags `v*`     | A required reviewer other than the person who pushed the tag; no admin bypass. |
 
 1. Dispatch nightly on `main` and release the commit it ran on, once it is green. The tag
    job refuses a commit without a green nightly dispatch on `main`, and a commit `main` has
