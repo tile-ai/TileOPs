@@ -23,7 +23,9 @@ from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = ["chunk_prepare_program", "chunk_scan_program"]
 
-# Channel-gate reference stride, also used by the fused program.
+# Center each channel-gate exponent within 16 rows: its log-gate difference
+# spans at most 8 increments rather than a whole chunk. This limits, but does
+# not universally bound, low-precision scaling; the fused program shares it.
 REFERENCE_BLOCK = 16
 # Added under the square root of each row norm before taking its reciprocal. The
 # fused program normalizes the same rows, so it imports this value.
@@ -79,10 +81,10 @@ def chunk_prepare_program(
             reference = (i // BC) * BC + REF if gate_mode == "channel" else i
             return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[reference, j]), dtype)
 
-        def gated_key(kb_s, gc_s, rows, i, j):
+        def gated_key(key, gc_s, rows, i, j):
             reference = (i // BC) * BC + REF if gate_mode == "channel" else i
             return T.cast(
-                T.cast(kb_s[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[reference, j]),
+                T.cast(key[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[reference, j]),
                 dtype,
             )
 
@@ -252,19 +254,22 @@ def chunk_prepare_program(
                     # causal difference after GEMM, without FP16 inverse scaling.
                     T.clear(aq)
                     T.gemm(qa_s, ka_s, aq, transpose_B=True)
+                    # Mask before exponentiation so future keys cannot produce
+                    # growing gate ratios; the shared store also masks the
+                    # channel-gate path, whose GEMMs leave future entries live.
                     for i, j in T.Parallel(BT, BT):
                         aq[i, j] = T.if_then_else(
                             i >= j, aq[i, j] * T.exp2(gc_s[i, 0] - gc_s[j, 0]), 0.0
                         )
-                    for i, j in T.Parallel(BT, K):
-                        kb_s[i, j] = ka_s[i, j]
                     T.sync_threads()
 
                 if lean:
                     for i, j in T.Parallel(BT, K):
                         if i < rows:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(kb_s, gc_s, rows, i, j)
+                            kg[0, bos + i, ihv, j] = gated_key(
+                                kb_s if gate_mode == "channel" else ka_s, gc_s, rows, i, j
+                            )
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
                 if gate_mode == "channel":
@@ -294,7 +299,9 @@ def chunk_prepare_program(
                         w[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
                         if not lean:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(kb_s, gc_s, rows, i, j)
+                            kg[0, bos + i, ihv, j] = gated_key(
+                                kb_s if gate_mode == "channel" else ka_s, gc_s, rows, i, j
+                            )
                 if not lean:
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
                 T.sync_threads()
