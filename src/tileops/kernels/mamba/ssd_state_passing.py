@@ -34,7 +34,7 @@ Parallelization:
 Notation:
   B = batch, C = num_chunks, H = n_heads, D = d_state
 
-Two execution modes selected by the ``vectorize`` config key:
+Three execution modes, selected by the ``items`` and ``vectorize`` config keys:
 
   vectorize=False  (default)
     One d-state element per thread.  ``threads`` is independent of
@@ -83,8 +83,19 @@ def _ssd_state_passing_fwd_kernel(
         block_d: int,
         threads: int,
         vectorize: bool,
+        items: int = 0,
+        prefetch: int = 1,
     ):
-        if vectorize:
+        # ``items`` > 0: each thread owns ``items`` contiguous d-state elements, moved as one
+        # vector, and loads ``prefetch`` chunks of them before scanning any, so a thread's
+        # loads overlap instead of each chunk waiting on the last.
+        if items:
+            assert threads * items == block_d and D % block_d == 0 and C % prefetch == 0, (
+                f"items needs threads * items == block_d dividing D and prefetch dividing C "
+                f"(got threads={threads}, items={items}, block_d={block_d}, D={D}, "
+                f"prefetch={prefetch}, C={C})"
+            )
+        elif vectorize:
             assert threads == block_d // 2, (
                 f"threads must equal block_d // 2 (got threads={threads}, block_d={block_d})"
             )
@@ -120,7 +131,32 @@ def _ssd_state_passing_fwd_kernel(
                     scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, c])
                 T.sync_threads()
 
-                if vectorize:
+                if items:
+                    s_run = T.alloc_local((items,), accum_dtype)
+                    u_run = T.alloc_local((prefetch, items), accum_dtype)
+                    base = d0 + T.get_thread_binding() * items
+                    for v in T.vectorized(items):
+                        if has_initial_states:
+                            s_run[v] = initial_states[bb, bh, base + v]
+                        else:
+                            s_run[v] = T.float32(0.0)
+                    for group in T.serial(C // prefetch):
+                        for p in T.unroll(prefetch):
+                            for v in T.vectorized(items):
+                                u_run[p, v] = T.cast(
+                                    states[bb, group * prefetch + p, bh, base + v], accum_dtype
+                                )
+                        for p in T.unroll(prefetch):
+                            for v in T.vectorized(items):
+                                out[bb, group * prefetch + p, bh, base + v] = s_run[v]
+                            for v in T.unroll(items):
+                                s_run[v] = (
+                                    scale_shared[group * prefetch + p] * s_run[v] + u_run[p, v]
+                                )
+                    for v in T.vectorized(items):
+                        final_states[bb, bh, base + v] = s_run[v]
+
+                elif vectorize:
                     # Vectorized path: 2 d-state elements per thread.
                     # threads = block_d // 2;
                     #   lo covers [d0 .. d0+threads-1]
@@ -254,6 +290,12 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
     vectorize : bool
         False (default) — one element per thread, threads free.
         True            — two elements per thread, threads = block_d // 2.
+    items : int
+        0 (default) — the ``vectorize`` modes; > 0 — that many contiguous
+        elements per thread, threads * items = block_d.
+    prefetch : int
+        Chunks an ``items`` thread loads before scanning them; divides
+        num_chunks.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -305,11 +347,25 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
                 "block_d": 256,
                 "threads": 128,
                 "vectorize": True,
+                "items": 0,
+                "prefetch": 1,
+            }
+        # A wide state over chunks in groups of 8: each thread moves 4 contiguous elements as
+        # one vector and loads 8 chunks before scanning them, which overlaps a thread's loads.
+        if self.d_state >= 4096 and self.d_state % 512 == 0 and self.num_chunks % 8 == 0:
+            return {
+                "block_d": 512,
+                "threads": 128,
+                "vectorize": False,
+                "items": 4,
+                "prefetch": 8,
             }
         return {
             "block_d": 64,
             "threads": 128,
             "vectorize": False,
+            "items": 0,
+            "prefetch": 1,
         }
 
     @property
@@ -317,21 +373,26 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
         # Non-vectorized: threads independent of block_d; extra warps improve
         # latency hiding on small grids.
         non_vec = [
-            {"block_d": 32, "threads": 128, "vectorize": False},
-            {"block_d": 32, "threads": 256, "vectorize": False},
-            {"block_d": 64, "threads": 128, "vectorize": False},
-            {"block_d": 64, "threads": 256, "vectorize": False},
-            {"block_d": 128, "threads": 128, "vectorize": False},
-            {"block_d": 128, "threads": 256, "vectorize": False},
+            {"block_d": 32, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 32, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 64, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 64, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
         ]
         # Vectorized: threads = block_d // 2; halves load count, best on large
         # grids where bandwidth is the bottleneck.
         vec = [
-            {"block_d": 64, "threads": 32, "vectorize": True},
-            {"block_d": 128, "threads": 64, "vectorize": True},
-            {"block_d": 256, "threads": 128, "vectorize": True},
+            {"block_d": 64, "threads": 32, "vectorize": True, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 64, "vectorize": True, "items": 0, "prefetch": 1},
+            {"block_d": 256, "threads": 128, "vectorize": True, "items": 0, "prefetch": 1},
         ]
-        return non_vec + vec
+        prefetched = [
+            {"block_d": 512, "threads": 128, "vectorize": False, "items": 4, "prefetch": 8}
+        ]
+        if not (self.d_state % 512 == 0 and self.num_chunks % 8 == 0):
+            prefetched = []
+        return non_vec + vec + prefetched
 
     def forward(
         self,
@@ -343,6 +404,8 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
             self.config["block_d"],
             self.config["threads"],
             self.config["vectorize"],
+            self.config["items"],
+            self.config["prefetch"],
         )(
             states,
             dA_chunk_cumsum,
