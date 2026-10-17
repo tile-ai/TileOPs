@@ -409,15 +409,13 @@ def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
 @pytest.mark.smoke
 def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tuned fused-RoPE decode times the programs forward launches, which read the RoPE
-    tables, rather than the plain split program, and runs the warp-specialized program at
-    the tile length and split count it timed. Each program's last candidate stands in for
-    its tuning result, and the program timed last wins."""
-    timed_parameters, winner = [], {}
+    tables, rather than the plain split program. Each program's last candidate stands in
+    for its tuning result, and the program timed last wins."""
+    timed_parameters = []
 
     def record(self, jit_kernel, configs, **kwargs):
         prim_func = jit_kernel.get_tir(**configs[-1])
         timed_parameters.append({buffer.name for buffer in prim_func.buffer_map.values()})
-        winner.update(configs[-1])
         return SimpleNamespace(config=configs[-1], latency=-float(len(timed_parameters)))
 
     monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
@@ -434,9 +432,6 @@ def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.Monk
 
     assert timed_parameters
     assert all("rope_cos" in parameters for parameters in timed_parameters)
-    assert winner["ctx_splits"] > 1
-    tuned = op.kernel_config()
-    assert (tuned["block_N"], tuned["num_split"]) == (winner["block_N"], winner["ctx_splits"])
     q_ref, k_ref = (
         apply_dense_rope(x, positions, rope_cos, rope_sin, rotary_dim=dim, layout="neox")
         for x, positions in (

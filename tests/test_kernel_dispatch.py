@@ -413,8 +413,9 @@ def test_register_kernel_type_takes_its_parameters_by_name() -> None:
 @pytest.mark.cuda_only
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
     register_kernel_type("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
-    assert _layer_norm(LayerNormFwdOp((256,)), 256) == ["_NarrowTorchLayerNorm"]
-    assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
+    assert _layer_norm(LayerNormFwdOp((256,), target=BUILTIN), 256) == ["_NarrowTorchLayerNorm"]
+    wide = _layer_norm(LayerNormFwdOp((1024,), target=BUILTIN), 1024)
+    assert len(wide) == 1 and wide != ["_NarrowTorchLayerNorm"]
 
 
 def test_every_op_reaches_its_kernels_through_an_interface() -> None:

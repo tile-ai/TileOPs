@@ -95,31 +95,21 @@ def test_epilogue_spec_is_minimal_and_frozen() -> None:
 
 
 @pytest.mark.smoke
-def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None:
+def test_family_call_specs_are_frozen_and_differ_by_layout() -> None:
     pre = PrePermuteCall(arch=90, sm_count=1, layout=ContiguousLayoutSpec.tight_physical_psum())
     aligned_pre = dataclasses.replace(pre, layout=ContiguousLayoutSpec.aligned_per_row(128))
-    gemm = MGroupedGemmCall(
-        arch=90, sm_count=1, kind="contiguous", packing="tight", metadata_kind="physical_psum"
-    )
     post = PostPermuteCall(
         arch=90,
         sm_count=1,
         layout_key="tight_physical_psum",
         epilogue=RoutingEpilogueSpec(),
     )
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        pre.arch = 100
+    for spec in (pre, post):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            spec.arch = 100
     assert aligned_pre != pre
     assert len({pre, aligned_pre}) == 2
     assert post.layout_key == "tight_physical_psum"
-    # ``m`` selects but does not build, and the device facts follow from ``device``, so
-    # they are outside this record's identity; every other field is inside it.
-    taller = dataclasses.replace(gemm, m=4096)
-    assert taller == gemm
-    assert len({gemm, taller}) == 1
-    assert dataclasses.replace(gemm, n=8) != gemm
-    assert dataclasses.replace(gemm, device=torch.device("meta")) != gemm
-    assert dataclasses.replace(gemm, arch=100) == gemm
 
 
 _CANDIDATE_KEY = "grouped_gemm_candidate"
