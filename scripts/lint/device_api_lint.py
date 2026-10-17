@@ -20,6 +20,7 @@ SCANNED = (
     "src/tileops/kernels/call_spec.py",
     "src/tileops/kernels/kernel_base.py",
     "src/tileops/ops/_signature_codegen.py",
+    "src/tileops/ops/compile_boundary.py",
     "src/tileops/ops/op_base.py",
     "src/tileops/utils/device.py",
     "benchmarks/api.py",

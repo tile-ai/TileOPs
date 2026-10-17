@@ -37,7 +37,7 @@ Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching
 | `built_entries(interface)`      | Read-only view of an interface's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                   |
 | `delegate_for(stage, identity)` | The sub-op held for a stage and identity, built once on a miss with the op's `target`, or the injected one. The only way an op holds a sub-op                    |
 | `held_delegates()`              | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                      |
-| `iter_kernels()`                | The TileOPs `Kernel` instances the entries hold, deduplicated: the op's interface entries and those of its held sub-ops. What `request_tune()` tunes             |
+| `iter_kernels()`                | The TileOPs `Kernel` instances the entries hold, deduplicated: the op's interface entries and those of its held sub-ops; a target's kernels are not among them   |
 | `kernel_config()`               | The configuration the op's kernels were built with, a target's included, or `None`                                                                               |
 | `serving_target`                | The target serving the instance: `None` until a call selects it, `BUILTIN` for the in-tree implementation, else the target's name                                |
 | `request_tune()`                | The one way into tuned mode: tunes the built kernels and held sub-ops, and every entry and sub-op built later is tuned as it is built; so are a target's kernels |
