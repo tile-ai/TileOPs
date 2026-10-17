@@ -187,5 +187,5 @@ markers = [
     "sm86: needs compute capability 8.6; skipped elsewhere, never skipped on an SM86 device",
     "sm80: needs compute capability 8.0; skipped elsewhere, never skipped on an SM80 device",
     "cuda_only: needs a CUDA device whatever the target; deselected when --tileops-device is not cuda",
-    "in_tree_kernels: asserts on the in-tree kernels an op built; deselected when --tileops-target is not builtin",
+    "in_tree_kernels: needs the in-tree implementation set -- a coverage gap, a registered stand-in; deselected when --tileops-target is not builtin. It does not license asserting which in-tree kernel, config or cache key an op chose: see docs/design/testing.md",
 ]

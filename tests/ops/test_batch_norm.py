@@ -235,22 +235,16 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
 
 @pytest.mark.parametrize("absent", ["weight", "bias"])
 @pytest.mark.parametrize(
-    "shape, kernel",
+    "shape",
     [
-        pytest.param((16, 32), "BatchNormFwdTrainWholeKernel", marks=pytest.mark.smoke, id="whole"),
-        pytest.param(
-            (8, 16, 32, 32), "BatchNormFwdTrainWideKernel", marks=pytest.mark.smoke, id="wide"
-        ),
-        pytest.param(
-            (4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", marks=pytest.mark.smoke, id="split"
-        ),
+        pytest.param((16, 32), marks=pytest.mark.smoke, id="whole"),
+        pytest.param((8, 16, 32, 32), marks=pytest.mark.smoke, id="wide"),
+        pytest.param((4, 4, 256, 512), marks=pytest.mark.smoke, id="split"),
         # 1024 channels of an odd 65537-element run: too many to split, too long to hold.
-        pytest.param(
-            (1, 1024, 65537), "BatchNormFwdTrainKernel", marks=pytest.mark.full, id="tiled"
-        ),
+        pytest.param((1, 1024, 65537), marks=pytest.mark.full, id="tiled"),
     ],
 )
-def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, absent) -> None:
+def test_training_forward_built_without_a_tensor_matches_torch(shape, absent) -> None:
     """A training program built without one affine tensor, and without running
     statistics, scales by one or shifts by zero in its place."""
     x = torch.randn(shape, dtype=torch.float16, device=run_device())
@@ -263,7 +257,6 @@ def test_training_forward_built_without_a_tensor_matches_torch(shape, kernel, ab
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
@@ -274,14 +267,14 @@ def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "training, shape, kernel",
+    "training, shape",
     [
-        pytest.param(True, (8, 16, 32, 32), "BatchNormFwdTrainWideKernel", id="wide"),
-        pytest.param(True, (4, 4, 256, 512), "BatchNormFwdTrainSplitKernel", id="split"),
-        pytest.param(False, (8, 16, 32, 32), "BatchNormFwdInferKernel", id="infer"),
+        pytest.param(True, (8, 16, 32, 32), id="wide"),
+        pytest.param(True, (4, 4, 256, 512), id="split"),
+        pytest.param(False, (8, 16, 32, 32), id="infer"),
     ],
 )
-def test_forward_input_off_a_vector_boundary_matches_torch(training, shape, kernel) -> None:
+def test_forward_input_off_a_vector_boundary_matches_torch(training, shape) -> None:
     """A contiguous input starting one element past a 16-byte boundary matches torch."""
     x = _off_a_vector_boundary(shape)
     c = shape[1]
@@ -293,18 +286,17 @@ def test_forward_input_off_a_vector_boundary_matches_torch(training, shape, kern
         batch_norm_fwd_ref(x, weight, bias, rm.clone(), rv.clone(), training=training),
         batch_norm_forward_verification(x.dtype),
     )
-    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "shape, kernel",
+    "shape",
     [
-        pytest.param((8, 16, 32, 32), "BatchNormBwdWideKernel", id="wide"),
-        pytest.param((4, 4, 256, 512), "BatchNormBwdSplitKernel", id="split"),
+        pytest.param((8, 16, 32, 32), id="wide"),
+        pytest.param((4, 4, 256, 512), id="split"),
     ],
 )
-def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> None:
+def test_backward_inputs_off_a_vector_boundary_match_torch(shape) -> None:
     """A grad_out and an x starting one element past a 16-byte boundary match torch."""
     grad_out, x = _off_a_vector_boundary(shape), _off_a_vector_boundary(shape)
     weight = torch.rand(shape[1], device=run_device()) + 0.5
@@ -314,7 +306,6 @@ def test_backward_inputs_off_a_vector_boundary_match_torch(shape, kernel) -> Non
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert [type(k).__name__ for k in bwd.iter_kernels()] == [kernel]
 
 
 @pytest.mark.smoke
@@ -339,7 +330,6 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
         batch_norm_fwd_ref(x, weight, bias, None, None, training=True),
         batch_norm_forward_verification(x.dtype),
     )
-    assert [type(k).__name__ for k in op.iter_kernels()] == ["BatchNormFwdTrainSplitKernel"]
     grad_out = torch.randn_like(x)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
@@ -347,7 +337,6 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
     compare_outputs(
         bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
     )
-    assert [type(k).__name__ for k in bwd.iter_kernels()] == ["BatchNormBwdSplitKernel"]
 
 
 # Input validation and torch.compile.
