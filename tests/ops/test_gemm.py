@@ -1070,9 +1070,10 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
 @pytest.mark.parametrize(
     "n, k",
     [
-        # One-row grids too narrow for the device slice K, eight ways or two.
+        # One-row grids too narrow for the device slice K: eight ways, and three ways into
+        # slices of 5, 5 and 6 of its 16 K tiles.
         pytest.param(1024, 8192, id="split-k-8", marks=pytest.mark.smoke),
-        pytest.param(2176, 8192, id="split-k-2", marks=pytest.mark.smoke),
+        pytest.param(2176, 8192, id="split-k-3-uneven", marks=pytest.mark.smoke),
         # Tiles just past half the SM count stream K; 67 tiles cross a tile boundary, 66
         # split exactly in two, and k = 32896 leaves a 128-element K tail.
         pytest.param(4288, 32896, id="stream-k-crossing", marks=pytest.mark.full),
@@ -1096,9 +1097,36 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
+def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A two-stage ring of four-sub-step K tiles over eight K tiles: each refill takes a
+    stage whose last sub-step has a buffer of its own and whose earlier sub-steps were
+    released after the WGMMAs reading them retired."""
+    import tileops.kernels.gemm.w4a16 as w4a16
+
+    config = {
+        "block_m": 64,
+        "block_n": 128,
+        "block_k": 512,
+        "num_stages": 2,
+        "threads": 256,
+        "producer_reg": 32,
+        "consumer_reg": 224,
+        "split_k": 1,
+        "stream_ctas": 0,
+    }
+    monkeypatch.setattr(w4a16, "_select_config", lambda *args: dict(config))
+    test = GemmW4A16Test(128, 1024, 4096, torch.float16)
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
 def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
     """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile, and
-    its 200 K tiles split three ways run slices of 67, 67 and 66."""
+    its 200 K tiles split three ways run slices of 66, 67 and 67."""
     test = GemmW4A16Test(128, 5120, 25600, torch.float16)
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
