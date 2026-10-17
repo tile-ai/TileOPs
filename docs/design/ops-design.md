@@ -62,7 +62,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **A backend adds an implementation under a new key.** `register_kernel_type(op, key, kernel_type)` adds it beside the in-tree `kernel_types`, under a key the op does not already have; every instance constructed afterwards installs it under each kernel interface it inherits, and selects it by the same `refusal`, `general` and `preferred_over`. A call it does not serve stays with the in-tree implementations. Why: each key has one implementation, so what selects a key is declared in one place.
 
-**The call device is decided once.** The generated check places the call; selection, the build and tuning run with that device current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
+**The call device is decided once.** The generated check places the call. Selection reads that device's facts; the build and tuning run with it current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
 
 **The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 

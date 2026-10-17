@@ -64,7 +64,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
   - needs a second CUDA device;
   - calls a `torch.cuda` API with no `torch.accelerator` equivalent;
   - checks against a reference that runs only on CUDA;
-  - runs the in-tree implementation, by pinning `target=BUILTIN` or carrying `in_tree_kernels`.
+  - builds or calls an implementation whose `devices` names CUDA alone.
 - A test that puts a run-device tensor beside a CPU one skips where the run device is `cpu`; it does not carry `cuda_only`.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
@@ -146,11 +146,9 @@ No performance exploration, autotune sweep or duplicate code path.
 **Target and device:**
 
 - The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
-- A benchmark runs on CUDA or on the process's accelerator and refuses any other device.
-- CUDA is timed through CUPTI. Another accelerator is timed with device events: the row records `timing: events`, and its `device_busy_ms` equals its `latency_ms`.
-- Every implementation in a row is timed on the run device; an argument on another device fails the row.
-- On CUDA, an absent baseline library fails the row. Why: the runner image installs every one.
-- On another device, a library that is absent or CUDA-only skips a row that selects it and drops the tag of one that prefers it.
+- A benchmark runs on CUDA or on the process's accelerator, and times every implementation in a row on that device.
+- A row records how it was timed: CUPTI on CUDA, CUDA events where CUPTI fails and the run allows the fallback, device events on another accelerator. Events cannot separate execution from gaps, so an event-timed row's `device_busy_ms` equals its `latency_ms`.
+- A baseline library unavailable on the run device skips a row that selects it and drops the tag of one that prefers it. On CUDA, a missing selected library fails the row. Why: the runner image installs every selected baseline.
 
 ### File checklist
 

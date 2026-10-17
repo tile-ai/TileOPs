@@ -33,21 +33,23 @@ A backend that serves part of one kernel interface instead registers an implemen
 ``register_kernel_type``. It inherits the interface and joins the in-tree implementations
 of every instance of the op; a call it does not serve stays with them.
 
-While building and tuning, the op layer makes a call's device current through
-``torch.accelerator``: a device of the process's accelerator type, CUDA or a backend's, and
-no other. Selection reads four facts of the call's device: ``arch``, ``calibration``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's; a backend for another device type states how its
-devices report them with ``register_device_facts``. Without it a device reports none, and
-an implementation that declares ``supported_archs`` is never available there.
+The op layer reads four facts of the call's device for selection: ``arch``,
+``calibration``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's; a backend for
+another device type registers its own with ``register_device_facts``. Without it a device
+reports none, and an implementation declaring ``supported_archs`` is never available there.
+The build and tuning run with the call's device current, through ``torch.accelerator``, for
+a device of the process's accelerator type.
 
-The kernel ``build_kernel`` returns may also define ``request_tune()`` and ``config``, the
-two members an in-tree ``Kernel`` has. While the op is in tuned mode, every
-``Op.request_tune()`` calls it on the kernels built so far, once for each device a kernel
-was built for, and every kernel built later receives it before its first call; the device
-is current each time. A later request calls it again, so it is idempotent per device: one
-object built for two devices tunes on each. Tuning it defers to a launch completes in a
-call made before any CUDA graph capture. What it raises is the error of the call that built
-the kernel, or of ``Op.request_tune()``. ``config``, a dict, is what ``Op.kernel_config()``
-reports. A kernel without ``request_tune()`` makes a tuning request warn.
+The kernel ``build_kernel`` returns may define two members an in-tree ``Kernel`` has:
+
+- ``request_tune()``: called while the op is in tuned mode, with the kernel's device
+  current. Every ``Op.request_tune()`` calls it on the kernels built so far, once per device
+  a kernel was built for; a kernel built later receives it before its first call. It is
+  idempotent per device. A tuning it defers to a launch completes before any CUDA graph
+  capture. What it raises is the error of the call that built the kernel, or of
+  ``Op.request_tune()``. A kernel without it makes a tuning request warn.
+- ``config``: a non-empty dict. ``Op.kernel_config()`` reports it where the op holds no
+  non-empty config of its own.
 
 Depends on torch only — importing this does not import tilelang.
 
