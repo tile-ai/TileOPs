@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""Lint comments and docstrings for citations of code locations.
+"""Flag comments and docstrings that cite a code location; name the symbol instead.
 
-A comment that points at a line of a file (``<file>.py:<n>``, ``<file>.py#L<n>``,
-``line <n> of <file>.py``) goes stale with the first edit above that line, and nothing
-reports it. Which code enforces a stated invariant belongs in the pull request's report; the
-comment names the invariant, and a symbol (``_check_tiles``, ``:func:`check_tiles```)
-when it must point somewhere, since a symbol survives an edit. A line that must cite a
-location carries ``lint: code-ref allow: <reason>`` on that same line.
+A location is a file name followed by ``:<n>``, ``:L<n>``, ``#L<n>`` or ``line <n>``, or
+``line(s) <n> of|in <file>``. A line number with no file passes.
 
-A location names its file: a source file name followed by ``:<n>``, ``:L<n>``, ``#L<n>``
-or ``line <n>``, or ``line <n>`` / ``lines <n>`` followed by ``of`` or ``in`` and a file
-name. A line number with no file ("line 128", "lines 3-4") is not decidable as a citation,
-since "a 64-byte line 128" is a size and "L2" a cache level, and is not a finding.
-
-Usage: ``comment_code_ref_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/``,
-``tests/``, ``benchmarks/``, ``workloads/`` and ``scripts/``. Exits 1 on a finding.
+Exempt: ``lint: code-ref allow: <reason>`` on the line. Default scan: ``src/tileops/``,
+``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``.
 """
 
 import argparse

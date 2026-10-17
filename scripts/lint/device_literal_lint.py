@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Lint tests and workloads for a CUDA device written outside ``cuda_only`` scope.
+"""Flag a CUDA device written into a test or workload outside ``cuda_only`` scope.
 
-A test or workload places its tensors on ``workloads.device.run_device()``, the device the run
-names with ``--tileops-device``. A test that needs CUDA whatever the target carries
-``pytest.mark.cuda_only`` and may write ``"cuda"``; anywhere else the literal pins the suite to
-CUDA without saying so.
+Tensors go on ``workloads.device.run_device()``. Flags ``"cuda"``, a string or f-string
+starting ``cuda:``, and an argument-less ``.cuda()``, unless a function, class,
+``pytest.param`` or module ``pytestmark`` carries ``pytest.mark.cuda_only``. Also flags
+``torch.cuda.is_available()`` outside a ``conftest.py``; gate on
+``workloads.device.run_device_available()``.
 
-Flags the string ``"cuda"`` or ``"cuda:<n>"``, an f-string starting with ``cuda:`` and an
-argument-less ``.cuda()`` call, unless it sits inside a function or class decorated with
-``pytest.mark.cuda_only``, a ``pytest.param(..., marks=...)`` carrying it, or a module whose
-``pytestmark`` carries it. ``workloads/device.py`` holds the default and is exempt.
-
-Also flags ``torch.cuda.is_available()`` anywhere outside a ``conftest.py``: an availability
-gate asks ``workloads.device.run_device_available()``, which answers for the run device.
-
-Usage: ``device_literal_lint.py [FILE ...]``. With no arguments, scans ``tests/`` and
-``workloads/``. Exits 1 on a finding.
+Exempt: ``workloads/device.py``. Default scan: ``tests/``, ``workloads/``.
 """
 
 import ast

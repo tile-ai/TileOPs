@@ -1,9 +1,7 @@
 """The comment and docstring lines of a Python source, for the lints that read prose.
 
-A comment is a ``#`` token, so a ``#`` inside a string is not one. A docstring is the string
-literal that opens a module, class or function body; every physical line it spans is
-returned, delimiters included. Code is never returned, so a name such as ``phase`` or
-``measured_ms`` in an expression is invisible to a rule run over these lines.
+A comment is a ``#`` token. A docstring is the string that opens a module, class or function,
+every line it spans. Code is never returned.
 """
 
 import ast

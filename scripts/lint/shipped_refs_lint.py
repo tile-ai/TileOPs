@@ -1,25 +1,11 @@
 #!/usr/bin/env python3
-"""Lint shipped source for review-process references.
+"""Flag review-process references in shipped source.
 
-Shipped source (code, docstrings, comments) must not reference issue/PR
-numbers, acceptance-criteria labels, review rounds, or follow-up markers;
-those belong to the review process, not the artifact. Flags, per line:
+Flags, on any line of a UTF-8 text file: ``#`` followed by 3+ digits (an issue or PR number),
+``AC-<n>``, ``round-<n> review`` and ``Follow-up: #<n>``. A ``#`` token of 3, 4, 6 or 8 hex
+characters with at least one letter is a CSS color and passes; an all-digit token does not.
 
-- ``#`` followed by 3+ digits (an issue/PR-number reference), unless the token
-  reads as a CSS hex color: ``#`` followed by exactly 3, 4, 6, or 8 hex
-  characters, at least one of them a letter (``#fff``, ``#191a16``). Length
-  alone cannot settle it, because issue numbers land on color lengths too, so an
-  all-digit token counts as a reference at every length. An all-digit color
-  would be a false positive; the tree has none, and every color in it carries a
-  letter.
-- ``AC-<n>`` labels.
-- ``round-<n> review`` phrases.
-- ``Follow-up: #<n>`` markers.
-
-Usage: ``shipped_refs_lint.py [FILE ...]``. With no arguments, scans the
-default shipped-source trees (``src/tileops/``, ``tests/``, ``benchmarks/``,
-``scripts/``, ``workloads/``). Exits 1 when any violation
-is found.
+Default scan: ``src/tileops/``, ``tests/``, ``benchmarks/``, ``scripts/``, ``workloads/``.
 """
 
 import argparse
@@ -29,7 +15,7 @@ from pathlib import Path
 
 from common import files, relative, report
 
-# Captured with its full hex extent, so the color test below can read the whole token.
+# The whole hex token, so the color test reads all of it.
 _HASH_TOKEN = re.compile(r"(?<![0-9A-Za-z])#([0-9a-fA-F]+)\b")
 _CSS_HEX_LENGTHS = frozenset({3, 4, 6, 8})
 _HEX_LETTER = re.compile(r"[a-fA-F]")

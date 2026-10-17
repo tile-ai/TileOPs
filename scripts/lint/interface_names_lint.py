@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Lint kernel interface class names against the naming rule.
+"""Flag a direct ``KernelInterface`` subclass not named ``{Name}{Fwd|Bwd}Interface``.
 
-A class that inherits ``KernelInterface`` directly is named ``{Name}{Fwd|Bwd}Interface``: the
-direction suffix is mandatory and every variant word precedes it, as in an op key
-(``docs/design/ops-design-reference.md`` § Naming Conventions). ``BatchNormTrainFwdInterface``
-passes; ``BatchNormFwdTrainInterface`` and ``W4A16RepackInterface`` do not.
+The direction comes after every variant word (``BatchNormTrainFwdInterface``), as in an op
+key (``docs/design/ops-design-reference.md`` § Naming Conventions).
 
-Usage: ``interface_names_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/kernels/``.
-Exits 1 on a finding.
+Default scan: ``src/tileops/kernels/``.
 """
 
 import ast

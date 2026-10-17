@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""Lint ``tests/ops/`` for tests that construct a kernel instead of calling its op.
+"""Flag a call to a ``...Kernel`` class in ``tests/ops/``.
 
-A test under ``tests/ops/`` guards what an op call promises, and the op's dispatch is the
-only path a caller has to a kernel (``docs/design/testing.md`` § Tests). A call whose callee
-is named ``...Kernel`` constructs a kernel outside that path, wherever in the file it sits:
-a test, a helper, or module scope. A kernel class named without being called (a base class,
-an ``isinstance`` check, a value handed to the op) constructs nothing and is not a finding.
+A test there reaches a kernel through its op; a kernel test belongs where
+``docs/design/testing.md`` § Tests puts it. Naming a kernel class without calling it passes.
 
-A kernel test belongs where ``testing.md`` puts it. An exceptional line carries
-``lint: test-placement allow: <reason>`` on that same line.
-
-Usage: ``test_placement_lint.py [FILE ...]``. With no files, scans ``tests/ops/``. Exits 1
-on a finding.
+Exempt: ``lint: test-placement allow: <reason>`` on the line. Default scan: ``tests/ops/``.
 """
 
 import argparse

@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""Lint comments and docstrings for narration of how the code came to be.
+"""Flag comments and docstrings that narrate how the code came to be.
 
-A comment states what the code promises and what its input must satisfy. How it got there
-(what the author attempted or which version came before) is history: it is true of the pull
-request, not of the code, and it goes stale with the next edit. ``_NARRATION`` contains only
-high-confidence forms of that history; words such as "measured", "step" and "phase" also
-have stable domain meanings and are not findings on their own. Where a threshold or config
-was measured ("Measured on H200: ...") is the reason ``.claude/rules/code-style.md`` asks to
-sit beside a tuned value, so it is a contract, not history.
+``_NARRATION`` holds only high-confidence forms ("we tried", "used to", "previous version").
+"Measured on H200: ..." beside a tuned value states a contract and passes.
 
-Only ``#`` comments and docstrings are read, so an identifier such as ``phase`` in barrier
-code or ``measured_ms`` is never a finding. A line that must state history carries
-``lint: narration allow: <reason>`` on that same line.
-
-Usage: ``comment_narration_lint.py [FILE ...]``. With no files, scans ``src/tileops/``,
-``tests/``, ``benchmarks/`` and ``workloads/``. Exits 1 on a finding.
+Exempt: ``lint: narration allow: <reason>`` on the line. Default scan: ``src/tileops/``,
+``tests/``, ``benchmarks/``, ``workloads/``.
 """
 
 import argparse

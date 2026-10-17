@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""Lint benchmark files for parametrize cases that carry no id.
+"""Flag a benchmark parametrize case without an id.
 
-A case id is the workload's name wherever it is read later, and pytest's
-positional fallback (``shape0-dtype0``) is also positional in the perf history:
-inserting a case renumbers the ones after it, so their history silently starts
-over.
+pytest's positional id (``shape0-dtype0``) shifts when a case is inserted, and the perf
+history keyed by it starts over. Flags a ``pytest.param(...)`` without ``id=`` anywhere and
+a bare tuple or list in a parametrize value list.
 
-Flags a ``pytest.param(...)`` without ``id=`` and a bare tuple in a parametrize
-value list, one finding per case.
-
-Usage: ``workload_names_lint.py [FILE ...]``. With no arguments, scans
-``benchmarks/ops/``. Exits 1 on an unnamed case.
+Default scan: ``benchmarks/ops/``.
 """
 
 import ast
@@ -48,11 +43,8 @@ def _case_lists(tree: ast.Module):
 def unnamed_cases(source: str) -> list[int]:
     """Line numbers of cases with no id.
 
-    A `pytest.param(...)` without `id=` counts wherever it is written, including
-    inside a helper that returns the list: scoping this to literal lists would
-    miss every file that builds its cases in a function. A bare tuple counts
-    only inside a parametrize value list, where it is a case rather than a
-    tuple.
+    A ``pytest.param(...)`` counts wherever it is written, so a helper that builds the
+    list is read too; a bare tuple counts only inside a parametrize value list.
     """
     tree = ast.parse(source)
     lines = [

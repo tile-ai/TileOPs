@@ -1,28 +1,14 @@
 #!/usr/bin/env python3
-"""Lint manifest op names against the rules that hold over every entry.
+"""Flag manifest entry and class names that break the naming rules.
 
-Three rules, each stated so it decides every entry on its own:
+M1  An abbreviation in an entry name is spelled as ``ABBREVIATIONS`` fixes.
+M2  An entry name holds no ``AGENTIVE`` noun, unless ``AGENTIVE_EXCEPTIONS`` lists it.
+M3  Among entries sharing one ``ref_api``, the plain ``<Stem>FwdOp`` / ``<Stem>BwdOp`` is
+    flagged, since it does not say which variant it is, unless ``DEFAULTED_SWITCH`` lists
+    the API; the plain name is then the default side.
+M4  M1 over every class under ``src/tileops/`` and ``workloads/``.
 
-M1  One spelling per abbreviation. The stem of an entry that names a `ref_api` comes from
-    that API (`rms_norm` -> `RmsNorm`), and this rule then fixes how its abbreviations are
-    written, so M1 never competes for the stem.
-M2  No agentive noun. A name says what the step computes, not who computes it.
-    `AGENTIVE_EXCEPTIONS` is an explicit allowlist: what this lint decides is membership
-    in it, nothing more. Putting an entry on it is a review decision, recorded there with
-    its reason, not something the rule derives.
-M3  Entries sharing one `ref_api` each carry the word that tells them apart, unless the
-    torch API's own switch has a default: the plain name is then the default side.
-M4  M1 again, over the class definitions a caller reads. M1 reaches manifest entries only,
-    and a spelling that holds there drifts in the layers underneath unless something checks
-    them too. M4 checks one thing, how an abbreviation is written, and leaves every other
-    naming question to review.
-
-A name no rule reaches is left alone. Most entries are in that position: a little over
-half name no `ref_api` at all, and for those neither an upstream name nor a sibling
-constrains the choice.
-
-Usage: ``op_naming_lint.py``. Reads the manifest through ``tileops.manifest.load_manifest``
-and every class under ``src/tileops/`` and ``workloads/``. Exits 1 on a finding.
+Reads the manifest through ``tileops.manifest.load_manifest``.
 """
 
 import ast
@@ -65,8 +51,7 @@ ABBREVIATIONS = {
 
 # M2: a noun naming an actor rather than the step.
 AGENTIVE = ("Producer", "Selector", "Indexer", "Builder", "Manager", "Handler")
-# Allowed by review, with the reason. Not derived from anything; adding a line is a
-# decision, and the reason is what a later reader weighs it against.
+# Each entry is a review decision, with its reason.
 AGENTIVE_EXCEPTIONS = {
     "FP8LightningIndexerFwdOp": "DeepSeek-V3.2 calls this component the lightning indexer",
 }
@@ -132,11 +117,7 @@ CLASS_ROOTS = ("src/tileops", "workloads")
 
 
 def class_findings() -> list[str]:
-    """M4 over every class under CLASS_ROOTS, by the spellings M1 already fixes.
-
-    Every class, not a suffix-filtered subset: a base class and a bare `FusedMoE` carry the
-    same abbreviations as the kernels beside them.
-    """
+    """M4 over every class under CLASS_ROOTS, by the spellings M1 already fixes."""
     out = []
     for root in CLASS_ROOTS:
         for path in sorted((REPO_ROOT / root).rglob("*.py")):

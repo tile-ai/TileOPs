@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Lint op classes for the docstrings the API reference is built from.
+"""Flag op docstrings the API reference cannot render.
 
-The docs site gives every rendered member an entry, so a missing docstring
-publishes a heading and a signature with nothing under them. For each class under
-``src/tileops/ops/`` that defines either method, this checks that ``__init__`` and
-``forward`` have a docstring, that neither carries reStructuredText the site
-renders as literal text, and that construction parameters sit on ``__init__``
-rather than in the class docstring's ``Args:``. See docs/development.md.
+For each class under ``src/tileops/ops/``: each ``__init__`` and ``forward`` it defines has
+a docstring without the reStructuredText the site shows literally (``.. math::``,
+``:func:`` roles, ``>>>``), and a class that defines ``__init__`` has no ``Args:`` in its
+own docstring, since parameters belong on ``__init__`` (docs/development.md).
 
-Usage: ``op_docstrings_lint.py [FILE ...]``; with no arguments, scans the tree.
+Default scan: ``src/tileops/ops/``.
 """
 
 import ast

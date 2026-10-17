@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""Lint benchmark files for a comparison that names no baseline.
+"""Flag a benchmark comparison that times only tileops.
 
-A benchmark timing only tileops reports a number with nothing to read it against,
-and the rendered page shows that row with an empty comparison. A row that has no
-baseline yet says why with ``FIXME(staged-rollout)`` above the comparison.
+A comparison passes when it names a tag that does not start with ``tileops``, through
+``compare({...})`` or ``record(..., tag=...)``. Tags this cannot read (``**`` unpacking, a
+computed key, a helper's return value) pass.
 
-Reads the tags a call site passes, not which survive at runtime: a baseline behind
-an optional import still counts, because dropping its row where the library is
-missing is what the bench is meant to do. A dict built by ``**`` unpacking, keyed
-by a name rather than a literal, or returned by a helper is decided elsewhere and
-left alone.
-
-Usage: ``bench_baseline_lint.py [FILE ...]``. With no arguments, scans
-``benchmarks/``. Exits 1 for a comparison with no baseline and no marker.
+Exempt: ``FIXME(staged-rollout)`` in the function, before the ``compare`` it waives, or
+anywhere in a function that only calls ``record``. Default scan: ``benchmarks/``.
 """
 
 import ast
@@ -40,11 +34,7 @@ def _literal_keys(node: ast.AST) -> set[str]:
 
 
 def _unreadable(node: ast.AST) -> bool:
-    """Whether a dict display holds a key this cannot name.
-
-    ``ast.Dict`` writes ``**expr`` as a ``None`` key; a computed key is an
-    expression. Either way the tags come from somewhere else.
-    """
+    """Whether a dict display holds a ``**`` unpacking or a computed key."""
     return isinstance(node, ast.Dict) and any(
         k is None or not (isinstance(k, ast.Constant) and isinstance(k.value, str))
         for k in node.keys
@@ -70,17 +60,13 @@ def _tags_of(name: str, func: ast.AST, before: int) -> set[str] | None:
                 if not (
                     isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str)
                 ):
-                    return None  # a computed key, such as a baselines.py tag constant
+                    return None  # a computed key
                 tags.add(target.slice.value)
     return tags
 
 
 def _recorded_tags(func: ast.AST) -> tuple[set[str], bool]:
-    """Literal tags a ``record(..., tag=...)`` names in *func*, and whether any is opaque.
-
-    The benchmarks that time one implementation at a time reach the report this
-    way instead of through ``compare``.
-    """
+    """Literal tags a ``record(..., tag=...)`` names in *func*, and whether any is opaque."""
     tags: set[str] = set()
     opaque = False
     for node in ast.walk(func):

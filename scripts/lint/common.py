@@ -1,10 +1,10 @@
-"""What every lint in this directory shares: the repository root, its inputs and its report.
+"""What every lint here shares: the repository root, the files a run reads, the
+allow-marker spelling and the report.
 
-A lint reads the files named on its command line, or every file under its own trees when
-none is named; the hook's ``files:`` pattern decides which files a commit passes. A finding
-is one ``path:line: message`` line on stdout, and a run with any finding exits 1. A line a
-rule must not judge carries ``lint: <rule> allow: <reason>``; a marker without a reason
-exempts nothing.
+A lint that takes files reads the ones named on its command line, or its default trees when
+none is named. Each finding is one ``path:line: message`` line on stdout, and a run with any
+finding exits 1. A lint that honours an allow marker spells it
+``lint: <rule> allow: <reason>``; a marker without a reason exempts nothing.
 """
 
 import re

@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Lint the file set for files that record the work rather than ship its result.
+"""Flag tracked files that record how a change was made rather than ship its result.
 
-A research note, a translated working note, a log, a SASS dump, a CUDA source generated
-outside ``src/tileops/csrc/``, a test whose name marks it as scratch or as one stage of a
-change, and the output directories of local runs are artifacts of how a change was made.
-They are read once, by the person who made it, and then mislead everyone after. ``_REJECTED``
-lists the path forms, each with what it marks.
+``_REJECTED`` lists the path forms: research and translated notes, logs, SASS dumps, CUDA
+sources outside ``src/tileops/csrc/``, scratch or staged tests, ``notes/``, agent scratch
+files and local run output.
 
-A file that matches a form and still belongs is allowed in one of two ways: ``ALLOWED`` below
-maps its path to the reason, or the file carries ``lint: file-set allow: <reason>`` in a
-comment. In Markdown the marker counts only outside a fenced code block (```` ``` ```` or ``~~~``), since a fence quotes text rather than stating it.
-
-Every path is checked, not only new ones: the tree holds no unallowed match, so a new file
-is the only way to add one.
-
-Usage: ``file_set_lint.py [FILE ...]``. With no arguments, checks every file git tracks.
-Exits 1 on a finding.
+Exempt: a path ``ALLOWED`` lists with its reason, or a file carrying
+``lint: file-set allow: <reason>`` after ``#``, ``//`` or ``<!--``, outside any Markdown
+code fence. Default scan: every file git tracks.
 """
 
 import argparse

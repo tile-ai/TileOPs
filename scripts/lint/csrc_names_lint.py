@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Lint the names the C++/CUDA headers under ``src/tileops/csrc/`` define.
+"""Flag names a header under ``src/tileops/csrc/`` defines outside ``namespace tileops``.
 
-A kernel calls a csrc function as ``tileops::<name>``, so a reader can tell it from a TileLang
-API, which is ``tl::<name>``, and a TileLang release cannot add a name that collides with it.
-A header therefore declares everything inside ``namespace tileops { ... }``: nothing else at
-file scope but preprocessor lines, no ``namespace tl`` anywhere, and no ``tileops_`` or
-``__tl_`` prefix, which the namespace makes redundant. A macro has no namespace, so its name
-carries the ``TILEOPS_`` prefix instead.
+A kernel calls ``tileops::<name>``, which no TileLang ``tl::<name>`` can collide with. Flags
+a declaration at file scope outside ``namespace tileops``, any ``namespace tl``, a
+``tileops_`` or ``__tl_`` prefix, and a macro without the ``TILEOPS_`` prefix.
 
-Usage: ``csrc_names_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/csrc/``.
-Exits 1 on a finding.
+Default scan: the ``.h``, ``.cuh`` and ``.hpp`` files under ``src/tileops/csrc/``.
 """
 
 import re
