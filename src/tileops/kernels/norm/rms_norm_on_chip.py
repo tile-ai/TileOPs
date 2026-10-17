@@ -184,7 +184,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     """
 
     supported_archs = [90]
-    preferred_over = frozenset({"rms_norm_streaming"})
+    preferred_over = frozenset({"rms_norm_streaming", "rms_norm_two_pass"})
 
     _THREADS = 1024
 

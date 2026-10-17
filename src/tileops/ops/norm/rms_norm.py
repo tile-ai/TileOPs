@@ -7,7 +7,12 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm import RMSNormKernel, RMSNormOnChipKernel, RMSNormStreamingKernel
+from tileops.kernels.norm import (
+    RMSNormKernel,
+    RMSNormOnChipKernel,
+    RMSNormStreamingKernel,
+    RMSNormTwoPassKernel,
+)
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.ops.op_base import Op
 
@@ -38,6 +43,7 @@ class RMSNormFwdOp(Op):
         "rms_norm": RMSNormKernel,
         "rms_norm_streaming": RMSNormStreamingKernel,
         "rms_norm_on_chip": RMSNormOnChipKernel,
+        "rms_norm_two_pass": RMSNormTwoPassKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rms_norm": RMSNormFwdInterface}
 
@@ -73,10 +79,12 @@ class RMSNormFwdOp(Op):
         """
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
+        n = math.prod(self.normalized_shape)
         call = LayerNormCall(
             device=x.device,
-            n=math.prod(self.normalized_shape),
+            n=n,
             eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
             dtype=x.dtype,
+            rows=x.numel() // n,
         )
         return self.kernel_for("rms_norm", call)(x, weight)
