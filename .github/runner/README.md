@@ -16,13 +16,10 @@ Both packages use the same tag, naming the three versions that decide what the i
 
 ```
 cuda<major.minor>-torch<major.minor>-tilelang<version>
-cuda<major.minor>-torch<major.minor>-tilelang-git-<short-sha>
 ```
 
-The first form installs the tilelang release `constraints.txt` pins, which a PyPI install of
-tileops also resolves; it is the standard build. The second form is a build with
-`TILELANG_GIT_SHA=<commit>`, which compiles that tilelang main commit in place of the release.
-The `ARG` block in the Dockerfile lists the other options, with defaults.
+`<version>` is the tilelang release `constraints.txt` pins, the one a PyPI install of tileops
+resolves. The `ARG` block in the Dockerfile lists the other options, with defaults.
 
 ## Build and roll out
 
@@ -86,17 +83,13 @@ What the flags are for:
   download keeps failing.
 - `--target runtime`, `--target fa2`, … — build an earlier stage to debug.
 
-For a SHA build, set `TAG=cuda13.2-torch2.13-tilelang-git-<short-sha>` and add
-`--build-arg TILELANG_GIT_SHA=<commit>` to both builds in step 1.
-
 ## Bump tilelang
 
-A release: change the `tilelang` pin in `pyproject.toml` and `constraints.txt` together,
+Change the `tilelang` pin in `pyproject.toml` and `constraints.txt` together,
 regenerate the lock, and rebuild under a new tag. The constraints reach the first layer, so the
 whole image rebuilds. Check the bench baselines the new tilelang affects before rebuilding — vllm
 pins an exact tilelang release, and its install is non-fatal, so an unsatisfiable pin drops the
-baseline from a green image. A main commit: rebuild with a new `TILELANG_GIT_SHA` and a new tag;
-every layer before tilelang is reused. **Never edit the Dockerfile** for either.
+baseline from a green image. **Never edit the Dockerfile** for a bump.
 
 Then update the tag in [`docs/development.md`](../../docs/development.md#dev-docker-image), the
 one place in the repo that names it.
@@ -113,9 +106,7 @@ Three files. `PIP_CONSTRAINT` hands the latter two to every `pip install` in the
 
 The lock is what makes a version stick: an install that would move a settled version fails the
 build instead of winning silently. After changing a version or a requirement, regenerate it with
-the `uv pip compile` command in its own header and read the diff. A SHA build installs its
-tilelang wheel outside the constraints, so it leaves the locked release and vLLM's pin on it
-unsatisfied.
+the `uv pip compile` command in its own header and read the diff.
 
 ## Runner registration
 
