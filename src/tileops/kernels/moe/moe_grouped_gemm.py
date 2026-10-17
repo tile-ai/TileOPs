@@ -135,8 +135,7 @@ def _moe_grouped_gemm_mma_kernel(
             if activation == "silu_and_mul":
                 return gate * (half + half * T.tanh(half * gate)) * up
             if activation == "swigluoai":
-                # min(gate, limit) * sigmoid(alpha * min(gate, limit)) * (clamp(up, limit) + 1),
-                # the sigmoid in silu's tanh form.
+                # swigluoai as MoEGroupedGemmFwdOp defines it, the sigmoid in silu's tanh form.
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 clamped_gate = T.min(gate, limit)
                 clamped_up = T.max(T.min(up, limit), -limit)
@@ -413,12 +412,13 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
         if out is None:
             rows = (call.num_groups, call.max_m) if call.kind == "masked" else (a.shape[0],)
             out = torch.empty((*rows, cols), dtype=call.cd_dtype, device=a.device)
-        # Tiles store while other tiles still load, so out shares no byte with a tensor the
-        # kernel reads; disjoint slices of one workspace buffer are accepted.
-        reads = (("a", a), ("b", b), ("layout_metadata", layout_metadata), ("bias", bias))
-        for name, t in reads:
-            if t is not None and tensors_overlap(out, t):
-                raise ValueError(f"out must not overlap {name} in memory")
+        else:
+            # Tiles store while other tiles still load, so out shares no byte with a tensor the
+            # kernel reads; disjoint slices of one workspace buffer are accepted.
+            reads = (("a", a), ("b", b), ("layout_metadata", layout_metadata), ("bias", bias))
+            for name, t in reads:
+                if t is not None and tensors_overlap(out, t):
+                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:
             return out
         if call.activation in INTERLEAVED_ACTIVATIONS:

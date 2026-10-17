@@ -444,8 +444,7 @@ def _make_prim_func(
                 half = T.cast(0.5, accum_dtype)
                 C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
             elif activation == "swigluoai":
-                # min(g, limit) * sigmoid(alpha * min(g, limit)) * (clamp(u, -limit, limit) + 1),
-                # the sigmoid in the tanh form above.
+                # swigluoai as MoEGroupedGemmFwdOp defines it, the sigmoid in the tanh form above.
                 half = T.cast(0.5, accum_dtype)
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 gate = T.min(g, limit)
@@ -1199,13 +1198,15 @@ class GemmTemplate(Kernel):
         cd_dtype = self.output_dtype(a)
         if out is None:
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)
-        elif tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
-            raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
-        # Tiles store while other tiles still load, so out shares no byte with a tensor the
-        # kernel reads; disjoint slices of one workspace buffer are accepted.
-        for name, t in (("a", a), ("b", b), ("grouped_layout", grouped_layout), ("bias", bias)):
-            if t is not None and tensors_overlap(out, t):
-                raise ValueError(f"out must not overlap {name} in memory")
+        else:
+            if tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
+                raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
+            # Tiles store while other tiles still load, so out shares no byte with a tensor the
+            # kernel reads; disjoint slices of one workspace buffer are accepted.
+            reads = (("a", a), ("b", b), ("grouped_layout", grouped_layout), ("bias", bias))
+            for name, t in reads:
+                if t is not None and tensors_overlap(out, t):
+                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:  # no rows or no columns: nothing to launch
             return out
         if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
