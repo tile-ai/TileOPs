@@ -127,7 +127,7 @@ def register_device_facts(device_type: str, read: ReadDeviceFacts) -> None:
     ``sm_count`` and ``smem_budget``. A device type nobody registers reports none.
 
     Args:
-        device_type: A torch device type, e.g. ``"musa"``.
+        device_type: A torch device type other than ``cuda``.
         read: Called with a device of *device_type*, returns its `.protocol.DeviceFacts`.
 
     Raises:
