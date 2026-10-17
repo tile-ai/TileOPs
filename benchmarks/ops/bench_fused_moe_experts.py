@@ -5,7 +5,11 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import vllm_op
-from benchmarks.moe_baselines import flashinfer_experts, vllm_experts
+from benchmarks.moe_baselines import (
+    flashinfer_experts,
+    flashinfer_experts_skip_reason,
+    vllm_experts,
+)
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedMoEExpertsFwdOp,
@@ -31,9 +35,7 @@ def _routed(inputs: tuple, callables: dict) -> dict:
 
 @pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
 def test_moe_experts_bench(case) -> None:
-    # gpt-oss rows append the expert biases b_gate_up, b_down after topk_ids.
-    _, hidden, w1, w2, _, topk_ids, *biases = case.inputs
-    b_gate_up = biases[0] if biases else None
+    _, hidden, w1, w2, _, topk_ids, b_gate_up, b_down = case.inputs
     experts = FusedMoEExpertsFwdOp(**case.arguments)
     scale = experts.routed_scaling_factor
 
@@ -41,12 +43,14 @@ def test_moe_experts_bench(case) -> None:
         # Neither library takes the routing scale; it is applied to their result.
         return fn if scale == 1.0 else lambda *args: fn(*args) * scale
 
-    implementations = {
-        "vllm-triton": scaled(vllm_experts(experts.activation)),
-        "flashinfer-cutlass": scaled(
+    implementations = {"vllm-triton": scaled(vllm_experts(experts.activation))}
+    reason = flashinfer_experts_skip_reason(hidden, w2, b_gate_up, b_down)
+    if reason is None:
+        implementations["flashinfer-cutlass"] = scaled(
             flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], experts.activation, b_gate_up)
-        ),
-    }
+        )
+    else:
+        print(f"  [skip] flashinfer-cutlass: {reason}")
     bench.Runner(experts, case).compare(_routed(case.inputs, implementations))
 
 
@@ -55,8 +59,8 @@ def test_indexed_expert_mlp_bench(case) -> None:
     output, hidden, w1, w2, _, topk_ids = case.inputs
     indexed = IndexedExpertMLPFwdOp(**case.arguments)
 
-    # The staged pipeline is what the composite runs on every other shape, so it is the
-    # comparator the indexed path has to beat.
+    # The staged pipeline is what FusedMoEExpertsFwdOp runs on every call the indexed path
+    # does not take, so it is the comparator the indexed path has to beat.
     layout = ContiguousLayoutSpec.tight_physical_psum()
     pre = MoEPrePermuteFwdOp(layout, num_local_experts=w1.shape[0])
     mlp = MoEExpertMLPFwdOp(layout)
@@ -76,14 +80,18 @@ def test_indexed_expert_mlp_bench(case) -> None:
         out = fused_experts(hidden, w1, w2, topk_weights, topk_ids)
         return out * indexed.routed_scaling_factor
 
-    cutlass = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1])
+    implementations = {"staged": _staged_fn, "vllm-triton": vllm_fn}
+    reason = flashinfer_experts_skip_reason(hidden, w2)
+    if reason is None:
+        cutlass = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], "silu_and_mul")
 
-    def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
-        return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
+        def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
+            out = cutlass(hidden, w1, w2, topk_weights, topk_ids)
+            return (
+                out if indexed.routed_scaling_factor == 1.0 else out * indexed.routed_scaling_factor
+            )
 
-    implementations = {
-        "staged": _staged_fn,
-        "vllm-triton": vllm_fn,
-        "flashinfer-cutlass": cutlass_fn,
-    }
+        implementations["flashinfer-cutlass"] = cutlass_fn
+    else:
+        print(f"  [skip] flashinfer-cutlass: {reason}")
     bench.Runner(indexed, case).compare(_routed(case.inputs, implementations))

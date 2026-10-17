@@ -17,7 +17,11 @@ from benchmarks.baselines import (
     quack_op,
     vllm_op,
 )
-from benchmarks.moe_baselines import flashinfer_experts, vllm_experts
+from benchmarks.moe_baselines import (
+    flashinfer_experts,
+    flashinfer_experts_skip_reason,
+    vllm_experts,
+)
 from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 
 
@@ -69,29 +73,33 @@ def _routed_moe(op, experts):
     return run
 
 
-def _expert_backends(
-    op, hidden, w1, w2, correction_bias, activation="silu_and_mul", b_gate_up=None
-):
+def _expert_backends(op, hidden, w1, w2, correction_bias, b_gate_up=None, b_down=None):
     """The routed baselines, or none for a grouped row vLLM cannot route.
 
-    vLLM's fused ``grouped_topk`` takes only a biased sigmoid.
+    vLLM's fused ``grouped_topk`` takes only a biased sigmoid, and both baselines route
+    with it. FlashInfer CUTLASS is dropped where its binding refuses the experts.
     """
     if op.num_expert_group > 1 and (correction_bias is None or op.scoring_func != "sigmoid"):
+        print(
+            f"  [skip] {VLLM_TAG}, flashinfer-cutlass: grouped routing needs sigmoid and a correction bias"
+        )
         return {}
-    top_k = op.top_k
-    return {
-        VLLM_TAG: vllm_experts(activation),
-        "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up),
-    }
+    backends = {VLLM_TAG: vllm_experts(op.activation)}
+    reason = flashinfer_experts_skip_reason(hidden, w2, b_gate_up, b_down)
+    if reason is None:
+        backends["flashinfer-cutlass"] = flashinfer_experts(
+            hidden, w1, w2, op.top_k, op.activation, b_gate_up
+        )
+    else:
+        print(f"  [skip] flashinfer-cutlass: {reason}")
+    return backends
 
 
 @pytest.mark.parametrize("case", bench.cases(FusedMoEFwdOp), ids=lambda case: case.id)
 def test_fused_moe_fwd_bench(case) -> None:
     op = FusedMoEFwdOp(**case.arguments)
-    # gpt-oss rows append the expert biases b_gate_up, b_down after correction_bias.
-    hidden, _, w1, w2, correction_bias, *biases = case.inputs
-    b_gate_up = biases[0] if biases else None
-    backends = _expert_backends(op, hidden, w1, w2, correction_bias, op.activation, b_gate_up)
+    hidden, _, w1, w2, correction_bias, b_gate_up, b_down = case.inputs
+    backends = _expert_backends(op, hidden, w1, w2, correction_bias, b_gate_up, b_down)
     bench.Runner(op, case).compare({tag: _routed_moe(op, fn) for tag, fn in backends.items()})
 
 
@@ -115,7 +123,7 @@ def test_fused_moe_shared_expert_bench(case) -> None:
     # Under tensor parallelism the op returns this rank's partial shared output; the
     # baselines compute the whole shared expert.
     if op.tp_size == 1:
-        backends = _expert_backends(op, hidden, w1, w2, correction_bias, op.activation)
+        backends = _expert_backends(op, hidden, w1, w2, correction_bias)
         implementations = {
             tag: _with_shared_expert(_routed_moe(op, fn)) for tag, fn in backends.items()
         }
