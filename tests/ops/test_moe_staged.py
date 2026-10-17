@@ -104,8 +104,9 @@ def test_family_call_specs_are_frozen_and_differ_by_layout() -> None:
         layout_key="tight_physical_psum",
         epilogue=RoutingEpilogueSpec(),
     )
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        pre.arch = 100
+    for spec in (pre, post):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            spec.arch = 100
     assert aligned_pre != pre
     assert len({pre, aligned_pre}) == 2
     assert post.layout_key == "tight_physical_psum"

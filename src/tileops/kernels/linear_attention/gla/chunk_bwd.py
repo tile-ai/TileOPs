@@ -811,11 +811,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         ] or [(1, 1)]
         fitting = [pair for pair in admitted if blocks * pair[0] * pair[1] <= sm_count]
         num_v_partitions, num_k_partitions = (fitting or admitted[-1:])[0]
-        # Eight warps for a 64-wide state on SM89: the parallel pass takes the wider
-        # block while the reverse-state scan keeps threads_seq. Measured on one sm_89 GPU
-        # at D=64 and chunk 64, it takes 9-13% off the complete backward over B/S/H from
-        # 2/256/4 to 2/8192/4, and the widest program compiles to 87,040 bytes of shared
-        # memory, inside the 101,376-byte SM89 limit. Every other shape keeps four warps.
+        # Eight warps for a 64-wide state on SM89, four everywhere else: measured 9-13%
+        # off the complete backward over B/S/H from 2/256/4 to 2/8192/4 at D=64, chunk 64.
+        # The widest program it admits holds 87,040 of the 101,376 bytes SM89 allows.
         threads_par = 128
         if (
             get_sm_version(self.device_index) == 89
