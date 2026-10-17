@@ -62,7 +62,7 @@ class _ConfigSpace:
     block_ks: tuple[int, ...] = (128, 256, 512)
     stages: tuple[int, ...] = (2, 3, 4)
     threads: tuple[int, ...] = (128, 256)
-    split_ks: tuple[int, ...] = (1, 2, 4, 8, 16)
+    split_ks: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 8, 16)
     max_m_tiles: int = 64
     smem_bytes: int = BLOCK_SHARED_BYTES_OPT_IN[90]
     # Warp-specialized allocations must satisfy
@@ -223,7 +223,7 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                         ):
                             continue
                         for split_k in _CONFIG_SPACE.split_ks:
-                            if split_k > 1 and (k_iters % split_k or k_iters // split_k < 2):
+                            if split_k > 1 and k_iters // split_k < 2:
                                 continue
                             config = {
                                 "block_m": block_m,
@@ -306,7 +306,9 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
         block_k, num_stages, threads = cfg["block_k"], cfg["num_stages"], cfg["threads"]
         split_k = cfg.get("split_k", 1)
         c = _CALIBRATION
-        k_eff = k / split_k
+        # A split that does not divide the K tiles runs as long as its longest slice.
+        k_tiles = -(-k // block_k)
+        k_eff = -(-k_tiles // split_k) * block_k
         waves = -(-((-(-m // block_m)) * (-(-n // block_n)) * split_k) // sms)
         math_warpgroups = min(threads // 128, block_n // 64)
         rows_per_warpgroup = block_n / math_warpgroups
@@ -403,9 +405,13 @@ def _gemm_w4a16_kernel(
         tiles_n = -(-n // block_n)
         k_iters = -(-k // block_k)
         has_k_tail = k % block_k != 0
-        if k_iters % split_k:
-            raise ValueError(f"split_k={split_k} must divide the {k_iters} K tiles")
-        k_slice = k_iters // split_k
+        if not 1 <= split_k <= k_iters:
+            raise ValueError(f"split_k={split_k} must be 1 to the {k_iters} K tiles")
+        # Slice ``bz`` takes K tiles ``bz * k_iters // split_k`` up to the next slice's first:
+        # a split that does not divide the K tiles gives slices one K tile apart in length.
+        # ``k_slice`` is the longest.
+        even_slices = k_iters % split_k == 0
+        k_slice = -(-k_iters // split_k)
         defer_scale = _defer_scale(block_m)
         stream_k = stream_ctas > 0
         # Whether the producer refills a stage while a CTA runs: only then must a stage's
@@ -891,7 +897,12 @@ def _gemm_w4a16_kernel(
                 m_start = bx * block_m
                 n_start = by * block_n
                 tensors = (activation, packed_weight, weight_scale, weight_zero)
-                tile_body(bz * k_slice, k_slice, tensors, buf, m_start, n_start)
+                if even_slices:
+                    tile_body(bz * k_slice, k_slice, tensors, buf, m_start, n_start)
+                else:
+                    kk_first = bz * k_iters // split_k
+                    kk_count = (bz + 1) * k_iters // split_k - kk_first
+                    tile_body(kk_first, kk_count, tensors, buf, m_start, n_start)
                 for i, j in T.Parallel(block_n, block_m):
                     buf.out_shared[j, i] = buf.output_local[i, j]
                 T.copy(
