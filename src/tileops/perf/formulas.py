@@ -550,6 +550,10 @@ def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     ]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
     flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
+    if call.present("sinks"):
+        # Per visible query row: subtract the max, exponentiate, add to the denominator.
+        # A row with no visible KV is identically zero and needs no normalization.
+        flops += 3 * indices["H"] * rows
     return flops, _derived_bytes(call)
 
 
@@ -666,9 +670,11 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
-    return attention_flops(
-        indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
-    ), moved
+    flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
+    if call.present("sinks"):
+        # Subtract max, exponentiate and add to the denominator for each visible row.
+        flops += 3 * indices["H"] * rows
+    return flops, moved
 
 
 def paged_decode_cache_rows(call: "CallView") -> int:

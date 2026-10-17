@@ -76,7 +76,6 @@ def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
 def test_fused_moe_shared_expert_basic(num_tokens):
@@ -84,7 +83,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = run_device()
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, device=dev)

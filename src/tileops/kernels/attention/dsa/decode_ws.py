@@ -504,7 +504,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         return {}
 
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(q=q, kv=kv, indices=indices)
+        self._require_devices(q=q, kv=kv, indices=indices)
         out = torch.empty(
             (self.batch, self.seq_len, self.heads, self.dim), dtype=q.dtype, device=q.device
         )

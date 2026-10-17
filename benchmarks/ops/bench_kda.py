@@ -3,6 +3,7 @@
 import pytest
 
 from benchmarks import api as bench
+from benchmarks.baselines import baseline_module
 from tileops.ops import KDAFwdOp
 
 
@@ -20,7 +21,8 @@ def test_kda_fwd_bench(case) -> None:
     op = KDAFwdOp(**case.arguments)
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
-        from fla.ops.kda import chunk_kda, fused_recurrent_kda
+        fla_kda = baseline_module("fla.ops.kda", "fla")
+        chunk_kda, fused_recurrent_kda = fla_kda.chunk_kda, fla_kda.fused_recurrent_kda
 
         # FLA caches derived metadata by tensor identity; snapshot the live call.
         cu = None if cu is None else cu.clone()

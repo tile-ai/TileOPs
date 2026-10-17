@@ -156,7 +156,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         del cu_seqlens, cu_seqlens_cpu
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         if self.has_initial_state and initial_state is None:
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread

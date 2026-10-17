@@ -12,7 +12,7 @@ import torch
 from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.ops.elementwise._base import ELEMENTWISE
 from tileops.utils import forget_device_properties, get_sm_version
-from workloads.device import run_device_available
+from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
 
@@ -50,9 +50,7 @@ def _gemm_call():
 
 
 @pytest.mark.smoke
-def test_construction_succeeds_where_the_device_cannot_be_queried(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
     """An op constructs on a machine that cannot answer what the device is.
 
     Most ops do not yet know where they will run, and on hardware other than the
@@ -69,13 +67,15 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
     # The properties are cached per device, so a probe that already succeeded
     # would never reach the failing one.
     forget_device_properties()
-    monkeypatch.setattr(torch.cuda, "get_device_capability", unavailable)
-    monkeypatch.setattr(torch.cuda, "get_device_name", unavailable)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     try:
-        mod.ReluFwdOp()
-        GemmFwdOp()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(torch.cuda, "get_device_capability", unavailable)
+            patch.setattr(torch.cuda, "get_device_name", unavailable)
+            patch.setattr(torch.cuda, "is_available", lambda: False)
+            mod.ReluFwdOp()
+            GemmFwdOp()
     finally:
+        # After the patches are undone, so no answer read under them stays cached.
         forget_device_properties()
 
 
@@ -106,8 +106,8 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
         op.kernel_for("gemm", _gemm_call())
 
 
-@pytest.mark.cuda_only
-@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
+@pytest.mark.in_tree_kernels
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.smoke
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     """``supported_archs=None`` means no restriction, and the op runs.
@@ -128,7 +128,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
 
     register_kernel_type("ReluFwdOp", "relu_unrestricted", UnrestrictedKernel)
     op = cls(target=BUILTIN)
-    x = torch.randn(8, device="cuda", dtype=torch.float16)
+    x = torch.randn(8, device=run_device(), dtype=torch.float16)
 
     y = op(x)
     ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
@@ -145,7 +145,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
 # names neither.
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     """The bool sibling wins the bool call and builds in the storage it names."""
@@ -168,7 +168,7 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
 
     register_kernel_type("BitwiseAndFwdOp", "native_bool_and", NativeBoolAnd)
     op = BitwiseAndFwdOp(target=BUILTIN)
-    x = torch.tensor([True, False] * 32, device="cuda")
+    x = torch.tensor([True, False] * 32, device=run_device())
 
     compare_outputs(op(x, ~x), x & ~x, ElementwiseWorkload(type(op).__name__, ()).verification())
     ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
@@ -176,15 +176,15 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
     """The float program and the integral answer are two keys with disjoint regions."""
     from tileops.ops.elementwise import FloorFwdOp
 
     op = FloorFwdOp(target=BUILTIN)
-    ints = torch.arange(1, 65, device="cuda", dtype=torch.int32)
-    floats = torch.randn(64, device="cuda", dtype=torch.float32)
+    ints = torch.arange(1, 65, device=run_device(), dtype=torch.int32)
+    floats = torch.randn(64, device=run_device(), dtype=torch.float32)
 
     compare_outputs(op(ints), ints, ElementwiseWorkload(type(op).__name__, ()).verification())
     compare_outputs(

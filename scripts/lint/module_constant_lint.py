@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""Lint the spelling of module-level constants in ``src/tileops/``.
+"""Flag a module-level constant in ``src/tileops/`` not spelled ``UPPER_SNAKE``.
 
-A name bound once at module scope to a value written out in the source is ``UPPER_SNAKE``,
-with or without a leading underscore. A lowercase name reads as state a reader may rebind,
-and a short one hides what it holds: ``_pc`` and ``_cf`` in ``gqa/dense.py`` were byte-identical
-copies of ``_PASS_CONFIGS`` and ``_COMPILE_FLAGS`` defined 25 lines above them.
+A constant is a name bound once at module scope to a value written out in the source: a
+literal (signed, or a string joined from literals), a dotted name, or a tuple, list, set or
+dict of those. A call result is not one,
+and neither is a name some function declares ``global``, the module binds twice, or an
+annotation marks ``TypeAlias``. Whether a constant belongs at module scope is left to review
+(``.claude/rules/code-style.md``).
 
-Written out means a literal, a dotted name, or a tuple, list, set or dict of those. A value a
-call produces is not, so a logger or a device object is left alone. A name any function
-declares ``global``, binds twice, or annotates ``TypeAlias`` is not a constant either.
-
-Usage: ``module_constant_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/``.
-Exits 1 on a finding.
+Exempt: ``lint: module-constant allow: <reason>`` on the binding line. Default scan:
+``src/tileops/``.
 """
 
+import argparse
 import ast
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCANNED = "src/tileops"
+from comment_lines import allowed_lines
+from common import files, relative, report
+
+SCANNED = ("src/tileops",)
 
 
 def _is_written_out(node: ast.expr) -> bool:
@@ -132,23 +133,24 @@ def _is_dunder(name: str) -> bool:
 
 
 def findings(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    allowed = allowed_lines(source, "module-constant")
     return [
-        f"{rel}:{line}: module constant {name} is not UPPER_SNAKE"
+        f"{relative(path)}:{line}: module constant {name} is not UPPER_SNAKE — rename it, "
+        'or add "# lint: module-constant allow: <reason>" on the line'
         for name, line in _candidates(tree)
-        if not _is_dunder(name) and name.lstrip("_") != name.lstrip("_").upper()
+        if line not in allowed
+        and not _is_dunder(name)
+        and name.lstrip("_") != name.lstrip("_").upper()
     ]
 
 
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] or sorted((REPO_ROOT / SCANNED).rglob("*.py"))
-    errors = [
-        e for p in paths if p.suffix == ".py" and "__pycache__" not in p.parts for e in findings(p)
-    ]
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("files", nargs="*", type=Path)
+    args = parser.parse_args(argv)
+    return report(e for p in files(args.files, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":

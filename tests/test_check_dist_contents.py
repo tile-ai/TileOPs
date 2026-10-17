@@ -2,9 +2,9 @@
 
 Each case assembles a synthetic repo root plus wheel/sdist archives in a tmp
 directory, then runs the checker against them — never against the live repo
-or a real build. The fixture repo carries one resource of each kind the
-package ships at runtime: a nested-package header, a hardware perf profile,
-and manifest YAMLs.
+or a real build. The fixture repo carries one file of each kind the package
+ships: a module, a nested-package header, a hardware perf profile, and manifest
+YAMLs.
 """
 
 import io
@@ -110,11 +110,11 @@ def test_complete_dist_passes(tmp_path):
 
 @pytest.mark.parametrize(
     "dropped",
-    [NESTED_HEADER, PERF_PROFILE, MANIFEST_YAMLS[1]],
-    ids=["nested-package-header", "perf-profile", "manifest-yaml"],
+    [NESTED_HEADER, PERF_PROFILE, MANIFEST_YAMLS[1], SOURCES[1]],
+    ids=["nested-package-header", "perf-profile", "manifest-yaml", "module"],
 )
-def test_wheel_missing_any_resource_fails(tmp_path, dropped):
-    """Every tracked non-.py resource is required, whatever its subpackage."""
+def test_wheel_missing_any_tracked_file_fails(tmp_path, dropped):
+    """Every tracked file is required, module or resource, whatever its subpackage."""
     repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e != dropped], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1

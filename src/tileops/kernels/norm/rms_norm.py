@@ -501,16 +501,11 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             Tensor shaped like *x*.
 
         Raises:
-            ValueError: Either input is not on a CUDA device.
+            ValueError: Either input is not on a device this kernel's ``devices`` names.
         """
         x = vector_aligned(x)
         weight = vector_aligned(weight)
-        if not (x.is_cuda and (weight is None or weight.is_cuda)):
-            weight_device = None if weight is None else weight.device
-            raise ValueError(
-                f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
-                f"{weight_device}. Another target's backend serves other devices."
-            )
+        self._require_devices(x=x, weight=weight)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

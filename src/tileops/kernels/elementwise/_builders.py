@@ -57,6 +57,14 @@ def _broadcast_index_terms(plan_name):
     return ndim, divisors, plan.a_strides, plan.b_strides
 
 
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
@@ -79,11 +87,20 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 
 @functools.lru_cache(maxsize=32)
-def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8):
-    """Strategy 3: fragment load -> compute -> fragment store."""
-    out_dtype = output_dtype or dtype
+def make_unary_regcopy(
+    N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, evict_last=False
+):
+    """Strategy 3: fragment load -> compute -> fragment store.
 
-    @tilelang.jit(out_idx=[1])
+    With *evict_last*, a thread whose elements are whole 16-byte vectors reads them
+    through ``tileops::load16_evict_last``, at the slots the fragment copy gives it.
+    """
+    out_dtype = output_dtype or dtype
+    vec = 16 // (DataType(dtype).bits // 8)
+
+    flags = csrc_include("streaming_load.h") if evict_last else None
+
+    @tilelang.jit(out_idx=[1], compile_flags=flags)
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
@@ -91,11 +108,37 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, threads=256, num_pe
         # A narrower result is stored from a thread's own contiguous run, in one
         # store; the fragment layout would split it into one store per vector.
         contiguous = _narrows(dtype, out_dtype) and N % block_size == 0
+        hinted = evict_last and not contiguous and npt_arg % vec == 0 and N % vec == 0
+        # The fragment copy hands a thread one vector in each block-wide chunk.
+        chunks = npt_arg // vec
+        ragged = N % block_size != 0
+
+        @T.macro
+        def copy_hinted(x, y, bx):
+            tx = T.get_thread_binding()
+            x_run = T.alloc_local((npt_arg,), dtype)
+            y_run = T.alloc_local((npt_arg,), out_dtype)
+            for c in T.unroll(chunks):
+                at = bx * block_size + (c * threads_arg + tx) * vec
+                if not ragged or at < N:
+                    _load16_evict_last(x_run, c * vec, x, at)
+            for c in T.unroll(chunks):
+                at = bx * block_size + (c * threads_arg + tx) * vec
+                if not ragged or at < N:
+                    for v in T.unroll(vec):
+                        y_run[c * vec + v] = op_func(x_run[c * vec + v])
+            for c in T.unroll(chunks):
+                at = bx * block_size + (c * threads_arg + tx) * vec
+                if not ragged or at < N:
+                    for v in T.vectorized(vec):
+                        y[at + v] = y_run[c * vec + v]
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                if contiguous:
+                if hinted:
+                    copy_hinted(x, y, bx)
+                elif contiguous:
                     base = bx * block_size + T.get_thread_binding() * npt_arg
                     x_run = T.alloc_local((npt_arg,), dtype)
                     y_run = T.alloc_local((npt_arg,), out_dtype)
@@ -682,14 +725,6 @@ def make_binary_explicit(
         return main
 
     return kernel
-
-
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
 
 
 @functools.lru_cache(maxsize=32)

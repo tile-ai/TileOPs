@@ -9,6 +9,7 @@ from benchmarks.baselines import (
     FLA_TAG,
     TORCH_COMPILE_TAG,
     backward_of,
+    baseline_module,
     compiled_reference,
     fla_op,
 )
@@ -40,7 +41,7 @@ def test_deltanet_fwd_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(DeltaNetChunkFwdOp), ids=lambda case: case.id)
 def test_deltanet_vs_fla_fwd(case) -> None:
-    from fla.ops.delta_rule import chunk_delta_rule
+    chunk_delta_rule = baseline_module("fla.ops.delta_rule", "fla").chunk_delta_rule
 
     op = DeltaNetChunkFwdOp(**case.arguments)
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*case.inputs)
@@ -54,7 +55,7 @@ def test_deltanet_vs_fla_fwd(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(DeltaNetChunkBwdOp), ids=lambda case: case.id)
 def test_deltanet_vs_fla_bwd(case) -> None:
-    from fla.ops.delta_rule import chunk_delta_rule
+    chunk_delta_rule = baseline_module("fla.ops.delta_rule", "fla").chunk_delta_rule
 
     do, q, k, v, beta, *_saved = case.inputs
     bwd_op = DeltaNetChunkBwdOp(**case.arguments)

@@ -7,6 +7,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import register_kernel_type, registry
 from tileops.ops import GQAPagedFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
+from workloads.device import run_device
 
 
 def _decode(
@@ -265,23 +266,33 @@ def test_gqa_paged_decode_op(
     _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "sm_scale, softcap, cache_lens, q_len",
     [
-        pytest.param(0.25, None, [512, 300], 1, id="custom-sm-scale"),
-        pytest.param(None, 2.0, [512, 300], 1, id="softcap"),
+        pytest.param(0.25, None, [512, 300], 1, marks=pytest.mark.smoke, id="custom-sm-scale"),
+        pytest.param(None, 2.0, [512, 300], 1, marks=pytest.mark.smoke, id="softcap"),
         # Unequal lengths on the split path leave the short request with empty splits.
-        pytest.param(0.0, None, [4096, 128], 1, id="zero-scale-split"),
+        pytest.param(0.0, None, [4096, 128], 1, marks=pytest.mark.smoke, id="zero-scale-split"),
         # Masked keys stay masked when every score is zero.
-        pytest.param(0.0, None, [700, 300], 4, id="zero-scale-causal"),
+        pytest.param(0.0, None, [700, 300], 4, marks=pytest.mark.smoke, id="zero-scale-causal"),
+        # Raw-QK softmax used to turn masked tail logits into NaNs at zero scale.
+        pytest.param(0.0, None, [1025], 1, marks=pytest.mark.full, id="zero-scale-bs1"),
     ],
 )
 def test_gqa_paged_decode_score_controls(
     sm_scale: float | None, softcap: float | None, cache_lens: list[int], q_len: int
 ) -> None:
+    """Score controls preserve masking, including zero-scale batch-one decode tails."""
     workload = _decode(
-        2, 16, 8, cache_lens, 128, 128, q_len=q_len, sm_scale=sm_scale, softcap=softcap
+        len(cache_lens),
+        16,
+        8,
+        cache_lens,
+        128,
+        128,
+        q_len=q_len,
+        sm_scale=sm_scale,
+        softcap=softcap,
     )
     op = GQAPagedFwdOp(sm_scale=sm_scale, softcap=softcap)
     _check(op, workload, workload.gen_inputs())
@@ -563,3 +574,34 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
         v_pages[page_table[slots // page_size], slots % page_size] = float("nan")
         graph.replay()
         TestBase.check(workload, op, *inputs, runs=lambda *args: output)
+
+
+@pytest.mark.smoke
+def test_gqa_paged_sink_normalization() -> None:
+    """A small paged prefill includes one denominator-only logit per query head."""
+    workload = GQAPagedFwdWorkload(8, 2, 64, [17], [65], 32, 3, 3, torch.bfloat16, has_sinks=True)
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, GQAPagedFwdOp(), *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(
+    torch.device(run_device()).type == "cpu",
+    reason="mixes a run-device tensor with a cpu one, so the run device is not cpu",
+)
+def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
+    """Unsupported Q dtypes and malformed sinks fail at the public signature check."""
+    from tileops.ops._signature_codegen import CheckError
+
+    workload = GQAPagedFwdWorkload(8, 2, 64, [1], [1], 16, 1, 1, torch.float16, has_sinks=True)
+    inputs = workload.gen_inputs()
+    op = GQAPagedFwdOp()
+    with pytest.raises(CheckError, match="dtype"):
+        op(inputs[0].float(), *inputs[1:])
+    for bad_sink, message in (
+        (inputs[-1].half(), "dtype"),
+        (inputs[-1][:-1], "H|shape|size"),
+        (inputs[-1].cpu(), "device"),
+    ):
+        with pytest.raises(CheckError, match=message):
+            op(*inputs[:-1], bad_sink)

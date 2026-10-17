@@ -207,7 +207,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         """
         assert inverse_indices.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
-        assert expert_output.is_cuda
+        self._require_devices(expert_output=expert_output)
 
         dev = expert_output.device
         if out is None:

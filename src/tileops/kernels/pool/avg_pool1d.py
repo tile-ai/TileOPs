@@ -281,7 +281,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
         return self._staging().tuned()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         kernel = self.kernel(self.config["block_ol"], self.config["threads"])
         rows = kernel(x.contiguous().view(self.window.rows, *self.window.size))

@@ -158,7 +158,6 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
         op(a, b)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize(

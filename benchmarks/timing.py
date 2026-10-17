@@ -4,6 +4,10 @@ The timing layer owns the measurement and nothing else -- it knows how to run a 
 n times and return each run's device latency. What the numbers mean, and where they are
 written, belong to the layers above.
 
+A CUDA device is timed through CUPTI. Another accelerator is timed with torch's device
+events, which bracket each call: its ``timing`` reads ``events``, and the busy time equals
+the latency.
+
 A kernel belongs to the iteration whose external correlation id it carries, so nothing
 is inferred from timestamps and a kernel shorter than the host overhead around it is
 attributed as reliably as a long one. CUPTI's id stack is per-thread, which is this
@@ -21,6 +25,9 @@ import threading
 from typing import Any, Callable, NamedTuple, Optional
 
 import torch
+
+from tileops.utils.device import device_context, on_current_index
+from workloads.device import run_device
 
 _logger = logging.getLogger("tileops.bench")
 
@@ -62,8 +69,9 @@ _DROP_COUNTER_LIVE: Optional[bool] = None
 _PREPARE_ID = 1 << 32
 
 
-# L2 cache flush buffer per device index, allocated lazily.
-_l2_flush_caches: dict[int, torch.Tensor] = {}
+# L2 cache flush buffer per device, allocated lazily. Keyed by the whole device: two
+# device types both number their first device 0.
+_l2_flush_caches: dict[torch.device, torch.Tensor] = {}
 
 
 def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
@@ -143,7 +151,7 @@ def _drop_counter_is_live() -> bool:
     with _phase_session(buffer_bytes=8):  # too small to hold one record
         for _ in range(probe_kernels):
             probe.zero_()
-        torch.cuda.synchronize()
+        torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
         _load_cupti().activity_flush_all(1)
     dropped = _read_dropped()
     _DROP_COUNTER_LIVE = bool(dropped)
@@ -266,7 +274,7 @@ def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
 def _flush() -> tuple[list[dict[str, Any]], dict[int, int]]:
     """Return the kernels recorded since the previous flush, and their iteration map."""
     cupti = _load_cupti()
-    torch.cuda.synchronize()
+    torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
     try:
         cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
     except Exception as exc:
@@ -318,7 +326,7 @@ def collect_repeats(
                 prepare_one(i)
             with _labelled(i):
                 run_one(i)
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
         kernels, iteration_of = _flush()
         # Counted after the flush, once CUPTI has handed back what it did keep. Unproven
         # counter reports None, not zero: it is the only evidence separating a lost
@@ -535,22 +543,37 @@ def _reset_persisting_l2_cache() -> None:
     result = _cuda_runtime.cudaCtxResetPersistingL2Cache()
     if isinstance(result, tuple):
         result = result[0]
-    torch.cuda.check_error(int(result))
+    torch.cuda.check_error(int(result))  # lint: device-api allow: CUPTI runs on CUDA only
 
 
-def _get_l2_flush_cache() -> torch.Tensor:
-    """A buffer twice the L2 of the current device, the one ``bench_kernel`` launches on."""
-    device = torch.cuda.current_device()
+def bench_device() -> torch.device:
+    """The device this run times on: ``--tileops-device``, with its index filled in."""
+    return on_current_index(torch.device(run_device()))
+
+
+def _instrument_for(device: torch.device) -> str:
+    """How a call on *device* is timed: ``cupti`` on CUDA, ``events`` on any other device."""
+    return "cupti" if device.type == "cuda" else "events"
+
+
+def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
+    """A buffer twice the L2 of *device*, the one ``bench_kernel`` launches on.
+
+    The size is the one the device's torch module reports, where it reports one.
+    """
     cache = _l2_flush_caches.get(device)
     if cache is None:
-        l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
+        module = torch.get_device_module(device.type)
+        properties = getattr(module, "get_device_properties", None)
+        l2_bytes = getattr(properties(device.index), "L2_cache_size", 0) if properties else 0
         if l2_bytes <= 0:
             _logger.warning(
-                "L2 cache size query returned %d; flushing a 256 MB buffer instead",
+                "L2 cache size query on %s returned %d; flushing a 256 MB buffer instead",
+                device,
                 l2_bytes,
             )
             l2_bytes = int(256e6)
-        cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device=torch.device("cuda", device))
+        cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device=device)
         _l2_flush_caches[device] = cache
     return cache
 
@@ -604,8 +627,9 @@ def bench_kernel(
     count_copies: bool = False,
     allow_events_fallback: Optional[bool] = None,
     reset: Optional[Callable[[], None]] = None,
+    device: Optional[torch.device] = None,
 ) -> list[Sample]:
-    """Time *fn* through CUPTI, one :class:`Sample` per iteration.
+    """Time *fn* on *device*, one :class:`Sample` per iteration.
 
     A calibration pass measures one cold-isolated iteration and the millisecond budgets
     divide into it, clamped to ``[min_iters, max_iters]``; an op faster than the L2 flush
@@ -625,20 +649,31 @@ def bench_kernel(
     L2 flush, then *fn*; ``reset`` is never part of the reading, and the flush evicts what
     it wrote.
 
-    Everything runs on the device the first CUDA tensor in *args* lives on, or the
-    current device when there is none.
+    Everything runs on *device*, by default :func:`bench_device`. A CUDA device is timed
+    through CUPTI as above; any other is timed with device events, which neither attribute
+    kernels nor fall back.
+
+    Raises:
+        TypeError: *args* is not a tuple.
+        ValueError: A tensor in *args* is on another device than *device*, CPU aside.
     """
     if not isinstance(args, tuple):
         raise TypeError(
             f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
             "Check that gen_inputs() returns a tuple."
         )
-    device = next(
-        (a.device for a in args if isinstance(a, torch.Tensor) and a.is_cuda),
-        torch.device("cuda", torch.cuda.current_device()),
-    )
-    with torch.cuda.device(device):
+    device = bench_device() if device is None else on_current_index(device)
+    elsewhere = {
+        a.device for a in args if isinstance(a, torch.Tensor) and a.device.type != "cpu"
+    } - {device}
+    if elsewhere:
+        raise ValueError(
+            f"bench_kernel times on {device}, but its args hold tensors on "
+            f"{sorted(map(str, elsewhere))}"
+        )
+    with device_context(device):
         return _bench_kernel(
+            device,
             fn,
             args,
             dry_run_ms,
@@ -652,6 +687,7 @@ def bench_kernel(
 
 
 def _bench_kernel(
+    device: torch.device,
     fn: Callable,
     args: tuple[Any, ...] = (),
     dry_run_ms: float = DRY_RUN_MS,
@@ -668,12 +704,14 @@ def _bench_kernel(
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
-    cache = _get_l2_flush_cache()
+    cache = _get_l2_flush_cache(device)
+    on_cuda = device.type == "cuda"
 
     def _reset_and_flush():
         if reset is not None:
             reset()
-        _reset_persisting_l2_cache()
+        if on_cuda:
+            _reset_persisting_l2_cache()
         cache.zero_()
 
     def _call_raw():
@@ -681,15 +719,15 @@ def _bench_kernel(
 
     _reset_and_flush()
     _call_raw()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     calibration_iters = 3
-    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    start, end = torch.Event(enable_timing=True), torch.Event(enable_timing=True)
     start.record()
     for _ in range(calibration_iters):
         _reset_and_flush()
         _call_raw()
     end.record()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     per_iter_ms = max(start.elapsed_time(end) / calibration_iters, 1e-6)
 
     n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters, min_iters)
@@ -700,13 +738,18 @@ def _bench_kernel(
 
     def _prepare_iteration(i):
         _reset_and_flush()
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
 
     for i in range(n_warmup):
         _prepare_iteration(i)
         _run(i)
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
+    if _instrument_for(device) == "events":
+        _bench_meta.timing = "events"
+        samples = _event_samples(_run, n_repeat, _prepare_iteration)
+        torch.accelerator.empty_cache()
+        return samples
     try:
         with _native_output_suppressor():
             samples = _collect_attributed(_run, n_repeat, _prepare_iteration, count_copies)
@@ -721,20 +764,30 @@ def _bench_kernel(
         _bench_meta.timing = "cuda-events"
         _bench_meta.fallback_reason = str(exc)
         _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
-        starts = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-        ends = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-        for i in range(n_repeat):
-            _prepare_iteration(i)
-            starts[i].record()
-            _run(i)
-            ends[i].record()
-        torch.cuda.synchronize()
-        # Events bracket the call, so they cannot separate execution from the gaps
-        # between kernels. Both fields carry the same number and `timing` says why.
-        samples = [
-            Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
-            for elapsed in (s.elapsed_time(e) for s, e in zip(starts, ends, strict=True))
-        ]
+        samples = _event_samples(_run, n_repeat, _prepare_iteration)
 
-    torch.cuda.empty_cache()
+    torch.accelerator.empty_cache()
     return samples
+
+
+def _event_samples(
+    run: Callable[[int], Any], n_repeat: int, prepare: Callable[[int], None]
+) -> list[Sample]:
+    """Time *n_repeat* iterations of *run* with device events on the current device.
+
+    Events bracket the call, so they cannot separate execution from the gaps between
+    kernels, nor a device-to-device copy from the arithmetic. Both fields carry the same
+    number and ``timing`` says why.
+    """
+    starts = [torch.Event(enable_timing=True) for _ in range(n_repeat)]
+    ends = [torch.Event(enable_timing=True) for _ in range(n_repeat)]
+    for i in range(n_repeat):
+        prepare(i)
+        starts[i].record()
+        run(i)
+        ends[i].record()
+    torch.accelerator.synchronize()
+    return [
+        Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
+        for elapsed in (s.elapsed_time(e) for s, e in zip(starts, ends, strict=True))
+    ]

@@ -40,7 +40,6 @@ pytestmark = [
 _SM90 = 90
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue.
@@ -55,7 +54,6 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
         op.key_for("gemm", call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
     """A full batch folds each row of 926463 weights into 28952 float64 entries, which with the
@@ -69,7 +67,6 @@ def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
         ChainSpeculativeSamplingFwdOp().key_for("chain_speculative_sampling", call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
     """The tile rule the three decode kernels share, which every served row satisfies."""
@@ -129,7 +126,6 @@ def test_gla_chunked_refuses_what_no_kernel_serves(
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dim_k", "dim_v", "reason"),
@@ -182,7 +178,6 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCa
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("call", "reason"),
@@ -213,7 +208,6 @@ def _deltanet_call(**facts: object) -> DeltaNetCall:
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("call", "reason"),
@@ -303,7 +297,6 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
     ]
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_linear_attention_refuses_an_odd_head_count() -> None:
     for op, interface, call in _head_axis_cases(3):
@@ -311,7 +304,6 @@ def test_linear_attention_refuses_an_odd_head_count() -> None:
             op.key_for(interface, call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("seq_len", [2048, 1])
 def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
@@ -352,7 +344,6 @@ _GQA_DENSE_GAPS = [
 ]
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("row", "reason"), [pytest.param(row, reason, id=name) for row, name, reason in _GQA_DENSE_GAPS]

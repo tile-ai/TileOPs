@@ -377,7 +377,7 @@ class _MaxPool3dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor) -> Any:
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         return type(self)._dispatch(
             self.n,
             self.c_in,

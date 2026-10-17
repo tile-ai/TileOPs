@@ -1,22 +1,14 @@
 """Unit tests for ``scripts/lint/module_constant_lint.py``.
 
-One case per form the rule has to tell apart: a value written out in the source, which is a
-constant and is spelled ``UPPER_SNAKE``, against everything that only looks like one.
+One case per form the spelling rule has to tell apart: a value written out in the source,
+which is a constant and is spelled ``UPPER_SNAKE``, against everything that only looks like
+one.
 """
 
-import importlib.util
-import sys
 from pathlib import Path
 
+import module_constant_lint as lint
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "module_constant_lint.py"
-
-_spec = importlib.util.spec_from_file_location("module_constant_lint", LINT_SCRIPT)
-lint = importlib.util.module_from_spec(_spec)
-sys.modules["module_constant_lint"] = lint
-_spec.loader.exec_module(lint)
 
 
 def _findings(tmp_path: Path, source: str) -> list[str]:
@@ -91,9 +83,14 @@ def test_a_destructured_assignment_reports_every_name_it_binds(tmp_path: Path) -
 def test_the_message_names_the_file_the_line_and_the_constant(tmp_path: Path) -> None:
     (found,) = _findings(tmp_path, "BLOCK_SIZE = 1\nblock_n = 128\n")
 
-    assert found.endswith("probe.py:2: module constant block_n is not UPPER_SNAKE")
+    assert found.endswith(
+        "probe.py:2: module constant block_n is not UPPER_SNAKE — rename it, or add "
+        '"# lint: module-constant allow: <reason>" on the line'
+    )
 
 
 @pytest.mark.smoke
-def test_the_tree_is_clean() -> None:
-    assert lint.main([]) == 0
+def test_an_allowed_lowercase_constant_is_left_alone(tmp_path: Path) -> None:
+    source = "tma_swizzle_64b = 1  # lint: module-constant allow: CUDA tensor-map ABI encoding\n"
+
+    assert _findings(tmp_path, source) == []

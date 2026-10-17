@@ -3,12 +3,11 @@
 
 Both directions are checked, because each fails silently on its own.
 
-Nothing missing. Every tracked non-``.py`` file under ``src/tileops/`` must be
-in the wheel. Those files — kernel headers and YAML data — are opened at run
-time by path relative to ``__file__``, so one missing from the wheel is an
-install that imports cleanly and then fails on first use. The expected set is
-derived from ``git ls-files`` at run time rather than listed here, so a
-resource added later is covered the day it lands.
+Nothing missing. Every tracked file under ``src/tileops/`` — modules, kernel
+headers, YAML data — must be in the wheel. The build drops a file without error
+when a ``MANIFEST.in`` prune, a ``packages.find`` setting or the package-data
+patterns miss it. The expected set comes from ``git ls-files`` at run time, so
+a file added later is covered when it lands.
 
 Nothing extra. The top level of each artifact is checked against a whitelist:
 the wheel may contain only the package and its ``.dist-info``; the sdist may
@@ -45,12 +44,13 @@ SDIST_ALLOWED_FILES = frozenset(
         "setup.cfg",
     }
 )
-# Build residue that lives beside the sources but is not a shipped resource.
+# Build residue that lives beside the sources but is not a shipped file.
 _IGNORED_DIRS = frozenset({"__pycache__", ".egg-info"})
+_IGNORED_SUFFIXES = frozenset({".pyc"})
 
 
-def _tracked_resources_from_git(repo_root: Path) -> list[str] | None:
-    """Return tracked non-``.py`` paths under the package, or None without git."""
+def _tracked_files_from_git(repo_root: Path) -> list[str] | None:
+    """Return tracked paths under the package, or None without git."""
     try:
         completed = subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "--", SOURCE_PACKAGE_DIR],
@@ -62,16 +62,16 @@ def _tracked_resources_from_git(repo_root: Path) -> list[str] | None:
         return None
     if completed.returncode != 0:
         return None
-    paths = [line for line in completed.stdout.splitlines() if line and not line.endswith(".py")]
+    paths = [line for line in completed.stdout.splitlines() if line]
     return sorted(paths) if paths else None
 
 
-def _resources_from_source_tree(repo_root: Path) -> list[str]:
-    """Return non-``.py`` paths under the package by walking the source tree."""
+def _files_from_source_tree(repo_root: Path) -> list[str]:
+    """Return paths under the package by walking the source tree."""
     package = repo_root / SOURCE_PACKAGE_DIR
     paths = []
     for path in package.rglob("*"):
-        if not path.is_file() or path.suffix == ".py":
+        if not path.is_file() or path.suffix in _IGNORED_SUFFIXES:
             continue
         rel = path.relative_to(repo_root)
         if any(part in _IGNORED_DIRS or part.endswith(".egg-info") for part in rel.parts):
@@ -80,16 +80,16 @@ def _resources_from_source_tree(repo_root: Path) -> list[str]:
     return sorted(paths)
 
 
-def expected_resources(repo_root: Path) -> tuple[list[str], str]:
-    """Return the resources the wheel must ship, and the source they came from."""
-    tracked = _tracked_resources_from_git(repo_root)
+def expected_files(repo_root: Path) -> tuple[list[str], str]:
+    """Return the files the wheel must ship, and the source they came from."""
+    tracked = _tracked_files_from_git(repo_root)
     if tracked is not None:
         return tracked, "git ls-files"
-    return _resources_from_source_tree(repo_root), "source-tree walk (git unavailable)"
+    return _files_from_source_tree(repo_root), "source-tree walk (git unavailable)"
 
 
 def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
-    """Return errors for resources missing from, or extra trees present in, the wheel."""
+    """Return errors for files missing from, or extra trees present in, the wheel."""
     with zipfile.ZipFile(wheel_path) as zf:
         names = set(zf.namelist())
     # A wheel is unpacked into site-packages, so its paths carry no `src/`.
@@ -155,21 +155,19 @@ def main(argv: list[str] | None = None) -> int:
     if not sdists:
         errors.append(f"no sdist (*.tar.gz) found in {args.dist_dir}")
 
-    resources, source = expected_resources(args.repo_root)
-    print(
-        f"expected {len(resources)} shipped resources under {SOURCE_PACKAGE_DIR}/ (from {source})"
-    )
-    if not resources:
-        errors.append(f"no non-.py resources found under {args.repo_root}/{SOURCE_PACKAGE_DIR}")
+    shipped, source = expected_files(args.repo_root)
+    print(f"expected {len(shipped)} shipped files under {SOURCE_PACKAGE_DIR}/ (from {source})")
+    if not shipped:
+        errors.append(f"no files found under {args.repo_root}/{SOURCE_PACKAGE_DIR}")
 
     manifest_yamls = [
         r
-        for r in resources
+        for r in shipped
         if r.startswith(f"{SOURCE_PACKAGE_DIR}/manifest/") and r.endswith(".yaml")
     ]
     sdist_required = manifest_yamls + list(SDIST_EXTRA_REQUIRED)
     for wheel in wheels:
-        errors.extend(check_wheel(wheel, resources))
+        errors.extend(check_wheel(wheel, shipped))
     for sdist in sdists:
         errors.extend(check_sdist(sdist, sdist_required))
 

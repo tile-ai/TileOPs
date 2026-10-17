@@ -144,7 +144,6 @@ class _Cand:
                 "block_n": self.block_n,
                 "block_k": self.block_k,
                 "num_stages": self.num_stages,
-                "group_size_m": 16,
                 "stage_n": self.stage_n,
             }
         if self.structure == "coop2s":
@@ -362,11 +361,33 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
         "block_n": width,
         "block_k": 64,
         "num_stages": 4,
-        "group_size_m": 16,
         # The widest epilogue chunk that divides the tile, is a whole number of 16-byte
         # TMA rows and leaves the 192-wide accumulators unspilled.
         "stage_n": 16 if width == 176 else 32,
     }
+
+
+def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
+    """Row tiles one raster group of a persistent coop2 or ping-pong grid spans.
+
+    A CTA takes its tiles a group of rows at a time, every column of the group before
+    the next group. Groups of 16 rows give a wave 16 rows by a few columns. Where the
+    grid has more row tiles than column tiles (the case CUTLASS's SM90 scheduler
+    rasterizes along N) and the whole ``B`` fits in one L2 partition, groups of 4 rows
+    give a wave whole rows, and every wave reads every ``B`` tile from L2. At the power
+    limit fewer L2 reads leave a higher clock. A ``B`` larger than one L2 partition
+    keeps 16-row groups, since 4-row groups would read more of it from DRAM.
+    """
+    # The dense family's operands are 16-bit.
+    elem_bytes = 2
+    # SM90's L2 is two partitions, each caching for the SMs attached to it, so data
+    # every SM reads is held in both.
+    l2_partitions = 2
+    row_tiles = -(-m // 128)
+    col_tiles = -(-n // block_n)
+    if row_tiles > col_tiles and n * k * elem_bytes <= l2_bytes // l2_partitions:
+        return 4
+    return 16
 
 
 def _tiny_m_split_k(k: int) -> int:
@@ -414,7 +435,14 @@ def _swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
 
 @functools.lru_cache(maxsize=512)
 def _best_config_cached(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, cal: _Calibration
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    sm_count: int,
+    l2_bytes: int,
+    cal: _Calibration,
 ) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
 
@@ -501,12 +529,22 @@ def _best_config_cached(
         )
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal), -c.block_k))
     if best.structure == "coop2":
-        return _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
+        cfg = _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
+        cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
+        return cfg
     return best.to_config()
 
 
 def best_config(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, device_name: str
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    sm_count: int,
+    device_name: str,
+    *,
+    l2_bytes: int,
 ) -> Optional[dict]:
     """Return the analytically selected ``GemmTMAKernel`` config for a shape.
 
@@ -519,6 +557,8 @@ def best_config(
         sm_count: Streaming multiprocessors of the target device.
         device_name: The target device as CUDA names it, which selects the
             profile the ranking constants come from.
+        l2_bytes: L2 cache of the target device, in bytes; it sets the raster group
+            of a persistent coop2 or ping-pong tile.
 
     Returns:
         ``None`` when no profile carries this board's ranking constants, so the
@@ -535,7 +575,7 @@ def best_config(
     cal = _calibration(device_name)
     if cal is None:
         return None
-    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, cal))
+    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal))
 
 
 def gemv_config(k: int) -> dict:
@@ -626,7 +666,8 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
       tile wins even under a short grid. Per-tensor, with no scaled
       partial beside the accumulator, 192 also fits; it is taken where its waves,
       counted whole, cover fewer columns than 128's, since a partial last wave
-      costs a full one.
+      costs a full one. 176 replaces 192 where it fills as many waves and pads
+      ``n`` no further: each wave then multiplies 176 columns instead of 192.
     - ring depth: the deepest the budget allows, except in block128, where a
       K-step ends in a promotion the next WGMMA cannot start under. There the
       ring covers nothing beyond the fill, and 4 stages is enough — 3 over a
@@ -660,13 +701,17 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         epilogue = block_m * block_n * 2 if m > half_m else 0
         return (_SMEM_BUDGET - epilogue) // per_stage
 
+    def _waves(block_n: int) -> int:
+        return -(-(-(-m // 128) * -(-n // block_n)) // sm_count)
+
     def _waved_columns(block_n: int) -> int:
-        return -(-(-(-m // 128) * -(-n // block_n)) // sm_count) * block_n
+        return _waves(block_n) * block_n
 
     k_iters = -(-k // 128)
     block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
     if not block_scaled and block_n == 128 and _waved_columns(192) < _waved_columns(128):
-        block_n = 192
+        narrow = _waves(176) == _waves(192) and -(-n // 176) * 176 <= -(-n // 192) * 192
+        block_n = 176 if narrow else 192
     deepest = _fp8_ws_stages(2 * half_m, block_n)
     if not block_scaled or m <= 8:
         num_stages = deepest

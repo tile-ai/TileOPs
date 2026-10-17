@@ -1171,7 +1171,7 @@ class GemmTemplate(Kernel):
                 the kernel reads.
             bias: Optional ``[G, N]`` bias in ``b``'s row order and dtype; M-grouped only.
         """
-        self._require_cuda(a=a, b=b, grouped_layout=grouped_layout, out=out, bias=bias)
+        self._require_devices(a=a, b=b, grouped_layout=grouped_layout, out=out, bias=bias)
         for name, t in (("b", b), ("grouped_layout", grouped_layout), ("out", out), ("bias", bias)):
             if t is not None and t.device != a.device:
                 raise ValueError(f"{name} must be on {a.device}, got {t.device}")

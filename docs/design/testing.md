@@ -52,13 +52,24 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
 - A test of target dispatch names its target or isolates the registry.
-- A test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
-- A test about the in-tree implementation set — a coverage gap, a registered stand-in implementation — pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
+- An op contract test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
+- A test that depends on the in-tree implementations — a coverage gap, a registered stand-in implementation, a kernel path it pins `target=BUILTIN` to reach — carries `in_tree_kernels`, which deselects it off the builtin target.
+- The full `tests/ops` suite on a device other than CUDA runs under a `--tileops-target` naming a backend that serves the device; `cpu` with the builtin target is not a configuration of that suite.
 
 **Device:**
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
-- A test that needs CUDA whatever the target — it builds a call record that reads the device, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
+- A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
+- A test that needs CUDA in a run configuration that collects it carries `cuda_only`, writes `"cuda"`, and is deselected on any other device. It needs CUDA when it, for example:
+  - asserts a CUDA device fact of a call record;
+  - needs a second CUDA device;
+  - calls a `torch.cuda` API with no `torch.accelerator` equivalent;
+  - checks against a reference that runs only on CUDA;
+  - builds or calls a CUDA kernel directly, outside an op;
+  - executes an in-tree CUDA kernel outside `tests/ops`, where a `cpu` run uses the builtin target.
+- In `tests/ops`, a test that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone: off CUDA that suite runs under a backend target, which deselects it.
+- An `sm*`-marked case needs CUDA through its architecture mark and does not also carry `cuda_only`.
+- A test that puts a run-device tensor beside a CPU one skips where the run device is `cpu`; it does not carry `cuda_only`.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### Shared correctness contract
@@ -139,7 +150,9 @@ No performance exploration, autotune sweep or duplicate code path.
 **Target and device:**
 
 - The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
-- The timer is CUDA events and CUPTI, so a benchmark refuses any device but `cuda`.
+- A benchmark runs on CUDA or on the process's accelerator, and times every implementation in a row on that device.
+- A row records how it was timed: CUPTI on CUDA, CUDA events where CUPTI fails and the run allows the fallback, device events on another accelerator. Events cannot separate execution from gaps, so an event-timed row's `device_busy_ms` equals its `latency_ms`.
+- A baseline library unavailable on the run device skips a row that selects it and drops the tag of one that prefers it. On CUDA, a missing selected library fails the row. Why: the runner image installs every selected baseline.
 
 ### File checklist
 

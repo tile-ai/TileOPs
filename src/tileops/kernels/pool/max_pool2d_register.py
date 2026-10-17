@@ -274,7 +274,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
 
     def _launch(self, x: torch.Tensor):
         """Run the program on ``x``; return its leading dims and the program's outputs."""
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = x.contiguous()
         # The kernel reads 16-byte vectors from the start of each row.
         x = vector_aligned(x)

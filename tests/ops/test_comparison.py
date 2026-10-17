@@ -356,12 +356,12 @@ def test_comparison_rejects_unsupported_dtype(
         op(x, x)
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_comparison_bool_result_from_int8_storage() -> None:
     """A broadcast comparison writes an int8 buffer the op returns as a bool tensor."""
-    a = torch.randn(2, 64, 128, device="cuda", dtype=torch.float16)
-    b = torch.randn(1, 1, 128, device="cuda", dtype=torch.float16)
+    a = torch.randn(2, 64, 128, device=run_device(), dtype=torch.float16)
+    b = torch.randn(1, 1, 128, device=run_device(), dtype=torch.float16)
     op = GtFwdOp(target=BUILTIN)
     ComparisonTest(a.numel(), a.dtype, "GtFwdOp").check(op, a, b)
 

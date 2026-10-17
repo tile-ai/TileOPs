@@ -32,6 +32,8 @@ __all__ = [
     "NSACompressedFwdInterface",
     "NSAFwdInterface",
     "NSATopKFwdInterface",
+    "PagedKVCacheWriteCall",
+    "PagedKVCacheWriteFwdInterface",
     "SparseMLADecodeFwdInterface",
 ]
 
@@ -65,6 +67,7 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
+    has_sinks: bool = False
     cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
     max_position: Optional[int] = None
@@ -122,6 +125,8 @@ class AttentionCall(CallSpec):
             return "does not serve FP8"
         if self.uses_sliding_window:
             return "does not serve sliding windows"
+        if self.has_sinks:
+            return "does not serve attention sinks"
         if self.fuse_rope:
             return "does not serve RoPE"
         return None
@@ -263,6 +268,7 @@ class GQAVarlenFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries to its own keys; nothing is written in place.
 
@@ -279,6 +285,7 @@ class GQAVarlenFwdInterface(KernelInterface):
             v_scale: The same, for ``v``.
             rope_cos: RoPE table, passed exactly when ``call.fuse_rope``.
             rope_sin: The same, passed exactly when ``rope_cos`` is.
+            sinks: Optional float32 ``(heads,)`` logits adding denominator-only mass.
 
         Returns:
             A new ``(total_q, heads, dim)`` output in ``call.dtype``.
@@ -301,6 +308,7 @@ class GQAPagedFwdInterface(KernelInterface):
         cu_seqlens_q: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries, aligned to the end of its cache.
 
@@ -320,6 +328,7 @@ class GQAPagedFwdInterface(KernelInterface):
                 exactly when ``call.fuse_rope``. Query positions are cache length minus
                 query length plus the query index; key positions are logical cache indices.
             rope_sin: The same layout as *rope_cos*. Cached keys are never rewritten.
+            sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
 
         Returns:
             A new output shaped like *q*, in ``call.dtype``.
@@ -635,4 +644,79 @@ class NSACompressedFwdInterface(KernelInterface):
 
         Returns:
             New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class PagedKVCacheWriteCall(CallSpec):
+    """The cache geometry and dtypes of one write; the token count arrives with the tensors.
+
+    The token count is deliberately absent. A serving process writes one token per decode
+    step, so keying a build on it would compile a kernel per step; the rows are a dynamic
+    extent of the tensors the call passes instead.
+    """
+
+    heads_kv: int = 0
+    dim: int = 0
+    num_pages: int = 0
+    page_size: int = 0
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+    @property
+    def row_width(self) -> int:
+        """Elements in one token's K or V row: ``heads_kv * dim``."""
+        return self.heads_kv * self.dim
+
+    @property
+    def physical_tokens(self) -> int:
+        """Rows in the page pool: ``num_pages * page_size``."""
+        return self.num_pages * self.page_size
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes the scales."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+class PagedKVCacheWriteFwdInterface(KernelInterface):
+    """Scatter each token's K and V rows into the page-pool row its slot names."""
+
+    request = PagedKVCacheWriteCall
+
+    @abstractmethod
+    def forward(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
+
+        ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the page
+        pool flattened to ``call.physical_tokens`` rows; a negative slot skips that token.
+        The caller owes distinct non-negative slots. A slot outside the pool is the
+        caller's error; the op does not check it. Every row the call names is written in
+        place and nothing else is: a row no token names keeps whatever it held.
+
+        Args:
+            k: ``(tokens, call.heads_kv, call.dim)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+            v: The same rows of values.
+            k_pages: ``(call.num_pages, call.page_size, call.heads_kv, call.dim)`` in
+                ``call.cache_dtype``, contiguous, written in place. Of the tokens with a
+                slot, it stores ``k / k_scale`` rounded to nearest, ties to even, with saturation
+                when ``call.quantized``, and ``k`` unchanged otherwise.
+            v_pages: The same page pool, holding ``v`` under ``v_scale``.
+            slot_mapping: ``int64`` ``(tokens,)``, the flattened row each token writes.
+            k_scale: ``float32`` ``(1,)`` divisor of the stored keys, present exactly when
+                ``call.quantized``. A non-positive value is the caller's error.
+            v_scale: The same divisor for the stored values.
+
+        Returns:
+            ``None``; the two page pools are mutated and no other tensor is touched.
         """

@@ -55,7 +55,11 @@ def fused_chunk_program(
     )
     def build():
         invert = inverse_program(
-            chunk_size=BT, block_size=BC, dtype=dtype, output_offset=BT if compact else 0
+            chunk_size=BT,
+            block_size=BC,
+            threads=threads,
+            dtype=dtype,
+            output_offset=BT if compact else 0,
         )
 
         def reference_gate(gc, metadata, block, channel):

@@ -337,7 +337,7 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
     def forward(
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
-        self._require_cuda(x=x, offsets=offsets, indices=indices)
+        self._require_devices(x=x, offsets=offsets, indices=indices)
         return self._mean_pooling_run(
             self.batch_size,
             self.seq_len,

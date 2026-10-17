@@ -77,7 +77,6 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
     return a, b, metadata.to(run_device()), ref, valid
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,n,k,major_b,config",
@@ -471,7 +470,6 @@ def test_spec_rejects_inconsistent_template_parameters():
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,config",
@@ -499,7 +497,6 @@ def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     _assert_gemm(out, ref)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "sizes,config",
@@ -517,7 +514,6 @@ def test_m_grouped_aligned_psum(sizes, config):
     _assert_gemm(out[valid], ref[valid])
 
 
-@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "masked,max_m,config",
@@ -547,7 +543,6 @@ def _gated_ref(ref, activation):
     return act(gate) * up
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 @pytest.mark.parametrize(
@@ -655,7 +650,6 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
     return a, b, torch.tensor(sizes, dtype=torch.int32, device=run_device()), ref
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "major_a,major_b,config",

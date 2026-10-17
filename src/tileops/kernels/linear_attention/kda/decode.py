@@ -124,7 +124,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Advance every sequence by one token; see the interface for the tensors."""
         del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch = q.shape[0]
         HV, V = v.shape[2], v.shape[3]
         K = q.shape[3]

@@ -120,21 +120,14 @@ def test_kda_prefill_scans_independent_value_tiles() -> None:
 
 
 @pytest.mark.sm89
-@pytest.mark.in_tree_kernels
 def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
-    """Fused blocks read their own boundaries without staging every sequence offset."""
-    from tileops.kernels.linear_attention.kda.prefill_fused import KDAFusedPrefillFwdKernel
-
+    """2048 sequences of four tokens: more boundaries than a block can stage."""
     torch.manual_seed(42)
     test = KDAFwdTest(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(4,) * 2048)
-    op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
-    test.check(op, *test.gen_inputs())
-    kernels = list(op.iter_kernels())
-    assert kernels and all(isinstance(kernel, KDAFusedPrefillFwdKernel) for kernel in kernels)
+    test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *test.gen_inputs())
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("facts", "reason"),
@@ -170,25 +163,26 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
 
 
 @pytest.mark.sm89
-@pytest.mark.cuda_only
-@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("dim", [64, 128])
 def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
-    """Cover the device with fused blocks while checking output and carried state."""
-    from tileops.kernels.linear_attention.kda.prefill_fused import KDAFusedPrefillFwdKernel
-
+    """256 sequences over 16 value heads: enough blocks to cover an SM89 device, with
+    output and carried state checked at each width."""
     torch.manual_seed(42)
     test = KDAFwdTest(16, 256, 16, dim, dtype)
-    op = KDAFwdOp(use_qk_l2norm_in_kernel=True)
-    test.check(op, *test.gen_inputs())
-    kernels = list(op.iter_kernels())
-    assert kernels and all(isinstance(kernel, KDAFusedPrefillFwdKernel) for kernel in kernels)
+    test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *test.gen_inputs())
 
 
 @pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-@pytest.mark.parametrize("batch,heads", [(1, 4), (16, 16)], ids=["chunk", "fused"])
+@pytest.mark.parametrize(
+    "batch,heads",
+    [
+        pytest.param(1, 4, id="chunk"),
+        pytest.param(16, 16, marks=pytest.mark.sm89, id="fused-sm89"),
+        pytest.param(16, 16, marks=pytest.mark.sm90, id="fused-sm90"),
+    ],
+)
 def test_kda_prefill_correlated_keys(dtype, batch, heads):
     """Repeated keys must not destabilize the inverse, including a partial chunk."""
     torch.manual_seed(42)

@@ -590,7 +590,7 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
         Raises:
             ValueError: *x* is not on a CUDA device.
         """
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         in_shape = tuple(x.shape)
         if self.M == 0:
@@ -749,7 +749,7 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         y = self.kernel(self.config["block_m"], self.config["threads"])(x.reshape(-1))
         return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)
