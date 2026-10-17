@@ -414,12 +414,12 @@ _FACTS = DeviceFacts(arch=31, calibration=None, sm_count=128, smem_budget=96 * 1
 
 def test_a_registered_device_type_reports_its_facts_to_a_call_spec():
     seen = []
-    registry.register_device_facts(_OTHER, lambda index: seen.append(index) or _FACTS)
+    registry.register_device_facts(_OTHER, lambda device: seen.append(device) or _FACTS)
 
     call = CallSpec(device=torch.device(_OTHER, 1))
 
     assert (call.arch, call.calibration, call.sm_count, call.smem_budget) == _FACTS
-    assert seen == [1], "read once, with the device's index"
+    assert seen == [torch.device(_OTHER, 1)], "read once, with the call's device"
 
 
 def test_a_device_type_nobody_registered_reports_none():
@@ -428,28 +428,31 @@ def test_a_device_type_nobody_registered_reports_none():
 
 
 def test_a_device_type_has_one_reader_and_cuda_is_read_by_tileops():
-    registry.register_device_facts(_OTHER, lambda index: _FACTS)
+    registry.register_device_facts(_OTHER, lambda device: _FACTS)
     with pytest.raises(BackendError, match="already reports its facts"):
-        registry.register_device_facts(_OTHER, lambda index: _FACTS)
+        registry.register_device_facts(_OTHER, lambda device: _FACTS)
     with pytest.raises(BackendError, match="TileOPs reads them itself"):
         # The device type the in-tree kernels run on.
         (in_tree,) = Kernel.devices
-        registry.register_device_facts(in_tree, lambda index: _FACTS)
+        registry.register_device_facts(in_tree, lambda device: _FACTS)
 
 
-def test_a_registered_device_without_an_index_that_cannot_be_filled_in_is_an_error():
-    registry.register_device_facts(_OTHER, lambda index: _FACTS)
-    with pytest.raises(BackendError, match="names no index"):
-        device_facts_of(torch.device(_OTHER))
+def test_a_device_that_numbers_none_reaches_its_reader_as_it_is():
+    """A ``cpu`` device carries no index; its reader decides what that means."""
+    seen = []
+    registry.register_device_facts("cpu", lambda device: seen.append(device) or _FACTS)
+
+    assert CallSpec(device=torch.device("cpu")).arch == _FACTS.arch
+    assert seen == [torch.device("cpu")]
 
 
 @pytest.mark.parametrize(
     "read, why",
     [
-        (lambda index: (31, None, 128, 0), "returns DeviceFacts"),
-        (lambda index: _FACTS._replace(sm_count=-1), "not negative"),
-        (lambda index: _FACTS._replace(arch="mp_31"), "arch is an int"),
-        (lambda index: _raise(RuntimeError("driver")), "raised"),
+        (lambda device: (31, None, 128, 0), "returns DeviceFacts"),
+        (lambda device: _FACTS._replace(sm_count=-1), "not negative"),
+        (lambda device: _FACTS._replace(arch="mp_31"), "arch is an int"),
+        (lambda device: _raise(RuntimeError("driver")), "raised"),
     ],
     ids=["tuple", "negative", "string-arch", "raises"],
 )
@@ -462,7 +465,7 @@ def test_a_reader_that_misbehaves_is_named(read, why):
 
 def test_restoring_the_registry_drops_a_device_type_registered_since():
     state = registry.snapshot()
-    registry.register_device_facts(_OTHER, lambda index: _FACTS)
+    registry.register_device_facts(_OTHER, lambda device: _FACTS)
     registry.restore(state)
     assert tuple(device_facts_of(torch.device(_OTHER, 0))) == (-1, None, 0, 0)
 

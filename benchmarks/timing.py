@@ -151,7 +151,7 @@ def _drop_counter_is_live() -> bool:
     with _phase_session(buffer_bytes=8):  # too small to hold one record
         for _ in range(probe_kernels):
             probe.zero_()
-        torch.cuda.synchronize()
+        torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
         _load_cupti().activity_flush_all(1)
     dropped = _read_dropped()
     _DROP_COUNTER_LIVE = bool(dropped)
@@ -274,7 +274,7 @@ def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
 def _flush() -> tuple[list[dict[str, Any]], dict[int, int]]:
     """Return the kernels recorded since the previous flush, and their iteration map."""
     cupti = _load_cupti()
-    torch.cuda.synchronize()
+    torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
     try:
         cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
     except Exception as exc:
@@ -326,7 +326,7 @@ def collect_repeats(
                 prepare_one(i)
             with _labelled(i):
                 run_one(i)
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
         kernels, iteration_of = _flush()
         # Counted after the flush, once CUPTI has handed back what it did keep. Unproven
         # counter reports None, not zero: it is the only evidence separating a lost
@@ -543,7 +543,7 @@ def _reset_persisting_l2_cache() -> None:
     result = _cuda_runtime.cudaCtxResetPersistingL2Cache()
     if isinstance(result, tuple):
         result = result[0]
-    torch.cuda.check_error(int(result))
+    torch.cuda.check_error(int(result))  # lint: device-api allow: CUPTI runs on CUDA only
 
 
 def bench_device() -> torch.device:

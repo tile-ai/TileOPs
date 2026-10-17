@@ -47,6 +47,7 @@ from tileops.manifest.signature import (
 from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
+from tileops.utils.device import current_device
 
 __all__ = [
     "CheckError",
@@ -221,7 +222,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     #   choice of the explicit or process-default target among its device classes.
     # Why: `Target` declares no device classes yet.
     # Cleanup: read them here once `tileops.backend` exposes them.
-    return torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
+    return current_device()
 
 
 def _placed(op, name: str, device, dtype: str):

@@ -10,13 +10,11 @@ from benchmarks.baselines import (
     backward_of,
     baseline_module,
     compiled_reference,
+    optional_baseline,
 )
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 
-try:
-    from fla.ops.gla import fused_recurrent_gla
-except ImportError:
-    fused_recurrent_gla = None
+fused_recurrent_gla = optional_baseline("fla.ops.gla", "fla", "fused_recurrent_gla")
 
 
 # Chunkwise: FLA's chunk_gla is required; a torch reference is not a comparison worth recording.

@@ -350,6 +350,50 @@ def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(monkeypatc
     )
 
 
+def test_a_target_builds_with_the_calls_device_current(monkeypatch):
+    """The builder runs inside the call device's context, as an in-tree build does."""
+    entered, building = [], []
+    current = op_base.device_context
+
+    @contextlib.contextmanager
+    def recording(device):
+        with current(device):
+            entered.append(device)
+            yield
+            entered.pop()
+
+    def build_kernel(*inputs, **params):
+        building.append([*entered])
+        return _InstanceNormTarget.Kernel(params["eps"])
+
+    monkeypatch.setattr(op_base, "device_context", recording)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    _run_instance_norm(InstanceNormFwdOp())
+
+    assert building == [[torch.device("cpu")]]
+
+
+def test_a_call_with_no_tensor_keys_its_kernel_by_the_device_the_checks_chose(monkeypatch):
+    """A zero-input op on a target is built for, and keyed by, the call device the checks
+    placed it on, not by the absence of a tensor to read one off."""
+    from tileops.ops import _signature_codegen
+    from tileops.ops.elementwise.sinusoidal import SinusoidalFwdOp
+
+    monkeypatch.setattr(_signature_codegen, "current_device", lambda: torch.device("cpu"))
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder(
+        "SinusoidalFwdOp",
+        "acme",
+        lambda **p: lambda: torch.zeros(p["seq_len"], p["d_model"], dtype=p["out_dtype"]),
+    )
+    op = SinusoidalFwdOp(seq_len=4, d_model=8, target="acme")
+
+    op()
+
+    assert [key[0] for key in op._target_kernels] == [torch.device("cpu")]
+
+
 def test_a_kernel_whose_tuning_raises_is_not_kept():
     """A kernel built in tuned mode whose tuning raised is built again by the next call."""
 

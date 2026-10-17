@@ -128,7 +128,7 @@ def register_device_facts(device_type: str, read: ReadDeviceFacts) -> None:
 
     Args:
         device_type: A torch device type, e.g. ``"musa"``.
-        read: Called with a device index, returns that device's `.protocol.DeviceFacts`.
+        read: Called with a device of *device_type*, returns its `.protocol.DeviceFacts`.
 
     Raises:
         BackendError: *device_type* is ``"cuda"``, whose facts TileOPs reads itself, or

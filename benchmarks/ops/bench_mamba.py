@@ -13,6 +13,7 @@ from benchmarks.baselines import (
     baseline_module,
     compiled_reference,
     flashinfer_op,
+    optional_baseline,
     private_inputs,
 )
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
@@ -25,34 +26,21 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
 
 # Optional mamba_ssm Triton baselines
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_cumsum_fwd as _mamba_chunk_cumsum_fwd
-except ImportError:
-    _mamba_chunk_cumsum_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd as _mamba_chunk_scan_fwd
-except ImportError:
-    _mamba_chunk_scan_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_state_fwd as _mamba_chunk_state_fwd
-except ImportError:
-    _mamba_chunk_state_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_state_passing import (
-        _state_passing_fwd as _mamba_state_passing_fwd,
-    )
-except ImportError:
-    _mamba_state_passing_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_combined import (
-        mamba_chunk_scan_combined as _mamba_chunk_scan_combined,
-    )
-except ImportError:
-    _mamba_chunk_scan_combined = None
+_mamba_chunk_cumsum_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_state", "mamba-ssm", "_chunk_cumsum_fwd"
+)
+_mamba_chunk_scan_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_scan", "mamba-ssm", "_chunk_scan_fwd"
+)
+_mamba_chunk_state_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_state", "mamba-ssm", "_chunk_state_fwd"
+)
+_mamba_state_passing_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_state_passing", "mamba-ssm", "_state_passing_fwd"
+)
+_mamba_chunk_scan_combined = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_combined", "mamba-ssm", "mamba_chunk_scan_combined"
+)
 
 
 def _torch_baselines(implementations: dict, ref_program) -> None:

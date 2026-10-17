@@ -36,9 +36,10 @@ class DeviceFacts(NamedTuple):
     smem_budget: int
 
 
-# Called with a device index of the type it was registered for. Read on a dispatch miss,
+# Called with a device of the type it was registered for, its index filled in where torch
+# numbers that type's devices; a ``cpu`` device may carry none. Read on a dispatch miss,
 # when selection first reads a fact of a call on that device.
-ReadDeviceFacts = Callable[[int], DeviceFacts]
+ReadDeviceFacts = Callable[[torch.device], DeviceFacts]
 
 
 class TensorSpec(NamedTuple):

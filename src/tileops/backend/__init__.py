@@ -33,17 +33,19 @@ A backend that serves part of one kernel interface instead registers an implemen
 ``register_kernel_type``. It inherits the interface and joins the in-tree implementations
 of every instance of the op; a call it does not serve stays with them.
 
-Selection reads four facts of the call's device: ``arch``, ``calibration``, ``sm_count`` and
-``smem_budget``. TileOPs reads CUDA's; a backend for another device type states how its
+While building and tuning, the op layer makes a call's device current through
+``torch.accelerator``: a device of the process's accelerator type, CUDA or a backend's, and
+no other. Selection reads four facts of the call's device: ``arch``, ``calibration``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's; a backend for another device type states how its
 devices report them with ``register_device_facts``. Without it a device reports none, and
 an implementation that declares ``supported_archs`` is never available there.
 
 The kernel ``build_kernel`` returns may also define ``request_tune()`` and ``config``, the
-two members an in-tree ``Kernel`` has. ``request_tune()`` is called once per device the
-kernel was built for, with that device current, when the op is in tuned mode: on the
-kernels built so far when ``Op.request_tune()`` is called, and on every kernel built later,
-before its first call. It is idempotent; tuning it defers to a launch completes in a call
-made before any CUDA graph capture. What it raises is the error of the call that built
+two members an in-tree ``Kernel`` has. While the op is in tuned mode, every
+``Op.request_tune()`` calls it on the kernels built so far, once for each device a kernel
+was built for, and every kernel built later receives it before its first call; the device
+is current each time. A later request calls it again, so it is idempotent per device: one
+object built for two devices tunes on each. Tuning it defers to a launch completes in a
+call made before any CUDA graph capture. What it raises is the error of the call that built
 the kernel, or of ``Op.request_tune()``. ``config``, a dict, is what ``Op.kernel_config()``
 reports. A kernel without ``request_tune()`` makes a tuning request warn.
 

@@ -92,6 +92,18 @@ repos:
         language: python
         files: ^(tests|workloads)/.*\.py$
 
+      - id: device-api-lint
+        name: device API lint for the shared op and benchmark path
+        entry: python scripts/lint/device_api_lint.py
+        language: python
+        files: ^(src/tileops/(backend/.*|kernels/call_spec|kernels/kernel_base|ops/_signature_codegen|ops/op_base|utils/device)|benchmarks/(api|baselines|conftest|report|timing))\.py$
+
+      - id: baseline-import-lint
+        name: benchmark baseline import lint
+        entry: python scripts/lint/baseline_import_lint.py
+        language: python
+        files: ^benchmarks/.*\.py$
+
       - id: interface-names-lint
         name: kernel interface name lint
         entry: python scripts/lint/interface_names_lint.py

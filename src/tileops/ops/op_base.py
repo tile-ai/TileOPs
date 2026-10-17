@@ -33,7 +33,7 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops.ops._signature_codegen import check_result
 from tileops.ops.compile_boundary import register_instance
-from tileops.utils.device import current_accelerator_type, device_context, on_current_index
+from tileops.utils.device import current_device, device_context
 
 
 class _Unresolved:
@@ -474,9 +474,9 @@ class Op(ABC):
         if isinstance(call, CallSpec) and call.device is None:
             # A call without a device runs on the accelerator's current one, which the cache
             # key must name.
-            kind = current_accelerator_type()
-            if kind is not None:
-                call = call.on_device(on_current_index(torch.device(kind)))
+            device = current_device()
+            if device is not None:
+                call = call.on_device(device)
         dispatched = self._entries_by_call
         try:
             entry = dispatched.get((interface, call))
@@ -715,7 +715,11 @@ class Op(ABC):
                 result = self._empty_result(call, inputs, writes)
             elif self._has_target_builder():
                 result = self._run_on_target(
-                    inputs, writes, call.written if written is None else written, execution
+                    inputs,
+                    writes,
+                    call.written if written is None else written,
+                    execution,
+                    call.device,
                 )
             else:
                 result = body(*inputs, **writes, **(execution or {}))
@@ -735,12 +739,16 @@ class Op(ABC):
         writes: "dict[str, torch.Tensor]",
         written: "frozenset[str] | None" = None,
         execution: "dict[str, object] | None" = None,
+        device: "torch.device | None" = None,
     ) -> object:
         """Run the whole op on the target bound to this instance.
 
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, and the checks generated from the signature.
         The kernel is built once per device and per input dtype and shape.
+
+        *device* is the call device the checks placed the call on; a traced call, which runs
+        no check, places it from its tensors or the ``device`` param.
 
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
@@ -754,7 +762,8 @@ class Op(ABC):
             t if t is None or name in written else t.contiguous()
             for name, t in zip(names, inputs, strict=True)
         )
-        device = next(iter(devices)) if devices else self._declared_device()
+        if device is None:
+            device = next(iter(devices)) if devices else self._declared_device()
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart.
         signature = (device,) + tuple(
@@ -777,7 +786,7 @@ class Op(ABC):
     ) -> object:
         """Ask the target for the kernel serving calls on *device* described by *inputs*.
 
-        In tuned mode the kernel is tuned before it is returned, so a kernel whose tuning
+        The builder runs with *device* current. In tuned mode the kernel is tuned before it is returned, so a kernel whose tuning
         raised is never cached and the next call builds it again.
 
         Raises:
@@ -785,7 +794,10 @@ class Op(ABC):
         """
         params = self._manifest_params()
         specs = tuple(None if t is None else TensorSpec.of(t) for t in inputs.values())
-        kernel = self._target_builder(*specs, **params)
+        # Built with its device current, as an in-tree entry is: a builder may compile or
+        # allocate for whichever device is current.
+        with device_context(device):
+            kernel = self._target_builder(*specs, **params)
         if not callable(kernel):
             raise OpNotAvailableError(
                 f"target {self._serving_target!r} built {kernel!r} for "
@@ -1031,9 +1043,10 @@ class Op(ABC):
         no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
         Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
 
-        A target's kernels are reached through the kernel, never the builder: each one
-        built so far has its ``request_tune()`` called once per device it was built for,
-        with that device current, and each one built later before its first call. An op a
+        A target's kernels are reached through the kernel, never the builder: each call of
+        this calls ``request_tune()`` on each one built so far, once for each device it was
+        built for, with that device current, and each one built later receives it before
+        its first call. An op a
         target serves warns once when one of its kernels defines no ``request_tune()``.
 
         A kernel whose tuning raises leaves the op in tuned mode, so calling this again

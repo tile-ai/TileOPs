@@ -10,7 +10,7 @@ import functools
 
 import torch
 
-__all__ = ["current_accelerator_type", "device_context", "on_current_index"]
+__all__ = ["current_accelerator_type", "current_device", "device_context", "on_current_index"]
 
 
 @functools.cache
@@ -23,6 +23,12 @@ def current_accelerator_type() -> "str | None":
     """
     device = torch.accelerator.current_accelerator(check_available=True)
     return None if device is None else device.type
+
+
+def current_device() -> "torch.device | None":
+    """The accelerator's current device, where a call names none; ``None`` without one."""
+    kind = current_accelerator_type()
+    return None if kind is None else on_current_index(torch.device(kind))
 
 
 def on_current_index(device: torch.device) -> torch.device:

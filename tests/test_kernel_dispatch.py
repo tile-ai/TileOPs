@@ -360,7 +360,7 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
     other = "privateuseone"
     archs = {0: 31, 1: 22}
     registry.register_device_facts(
-        other, lambda index: DeviceFacts(archs[index], None, sm_count=1, smem_budget=0)
+        other, lambda device: DeviceFacts(archs[device.index], None, sm_count=1, smem_budget=0)
     )
 
     class _Newer(_Implementation):
@@ -382,6 +382,20 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
     assert _Newer(1, device_index=0).decade == 1
     with pytest.raises(ValueError, match=f"{other}:1 reports 22"):
         _Newer(1, device_index=1)
+
+
+def test_a_cpu_implementation_is_selected_by_the_architecture_its_backend_reports() -> None:
+    """A real ``cpu`` call, whose device carries no index, reads the registered facts too."""
+    registry.register_device_facts("cpu", lambda device: DeviceFacts(7, None, 1, 0))
+    wide = _implementation("Wide", supported_archs=[7], general=True)
+    narrow = _implementation("Narrow", supported_archs=[8], preferred_over=frozenset({"wide"}))
+
+    class _CpuOp(_ScaleOp):
+        kernel_types = {"wide": wide, "narrow": narrow}
+
+    op = _CpuOp()
+    assert op.key_for("scale", _Call(device=torch.device("cpu"))) == "wide"
+    assert type(op.entry(5)).__name__ == "Wide"
 
 
 def test_an_implementation_naming_architectures_runs_on_one_device_type() -> None:

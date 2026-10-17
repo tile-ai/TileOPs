@@ -94,34 +94,27 @@ def device_facts_of(device: torch.device | None) -> DeviceFacts:
     ``None`` names the current device of this process's accelerator. A device of a type
     nobody registered, CPU included, reports none.
 
+    The reader receives *device* with its index filled in where it is the accelerator's
+    type; a device that numbers none, such as ``cpu``, reaches it as it is.
+
     Raises:
-        BackendError: *device* is of a registered type but names no index, and is not of
-            this process's accelerator type, so no index can be filled in; or the reader
-            raised or returned something other than valid `.protocol.DeviceFacts`.
+        BackendError: The reader raised or returned something other than valid
+            `.protocol.DeviceFacts`.
     """
     from tileops.utils import device_facts
-    from tileops.utils.device import current_accelerator_type, on_current_index
+    from tileops.utils.device import current_device, on_current_index
 
+    device = current_device() if device is None else on_current_index(device)
     if device is None:
-        kind = current_accelerator_type()
-        if kind is None:
-            return _NO_DEVICE_FACTS
-        device = torch.device(kind)
-    device = on_current_index(device)
+        return _NO_DEVICE_FACTS
     if device.type == "cuda":
         return DeviceFacts(*device_facts(device.index))
     registry.ensure_loaded()
     read = registry.DEVICE_FACTS.get(device.type)
     if read is None:
         return _NO_DEVICE_FACTS
-    if device.index is None:
-        raise BackendError(
-            f"device {device} names no index, and {device.type} is not this process's "
-            f"accelerator, so the device whose facts {registry.describe(read)} reports "
-            f"cannot be chosen"
-        )
     try:
-        facts = read(device.index)
+        facts = read(device)
     except Exception as exc:
         raise BackendError(
             f"device facts reader {registry.describe(read)} raised on {device}: "

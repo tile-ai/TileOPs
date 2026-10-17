@@ -82,9 +82,8 @@ def _release_device_cache_after_case() -> None:
 
 @pytest.fixture(autouse=True)
 def setup() -> None:
+    # Seeds every device's generator, CUDA's and a backend's alike.
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
