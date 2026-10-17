@@ -1,16 +1,15 @@
 """The comment and docstring lines of a Python source, for the lints that read prose.
 
-A comment is a ``#`` token, so a ``#`` inside a string is not one. A docstring is the string
-literal that opens a module, class or function body; every physical line it spans is
-returned, delimiters included. Code is never returned, so a name such as ``phase`` or
-``measured_ms`` in an expression is invisible to a rule run over these lines.
+A comment is a ``#`` token. A docstring is the string that opens a module, class or function,
+every line it spans. Code is never returned.
 """
 
 import ast
 import io
-import re
 import tokenize
 from typing import NamedTuple
+
+from common import allow_marker
 
 
 class ProseLine(NamedTuple):
@@ -21,7 +20,7 @@ class ProseLine(NamedTuple):
 
 def allowed_lines(source: str, rule: str) -> set[int]:
     """Lines carrying ``lint: <rule> allow: <reason>`` in their prose."""
-    marker = re.compile(rf"\blint:\s*{re.escape(rule)}\s+allow:\s*\w", re.IGNORECASE)
+    marker = allow_marker(rule)
     return {prose.line for prose in prose_lines(source) if marker.search(prose.text)}
 
 

@@ -1,16 +1,9 @@
 """The device lint flags a CUDA availability gate."""
 
-import importlib.util
-from pathlib import Path
-
+import device_literal_lint as lint
 import pytest
 
 pytestmark = pytest.mark.smoke
-
-_PATH = Path(__file__).resolve().parents[1] / "scripts" / "lint" / "device_literal_lint.py"
-_SPEC = importlib.util.spec_from_file_location("device_literal_lint", _PATH)
-lint = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(lint)
 
 
 def test_a_cuda_availability_gate_is_flagged() -> None:

@@ -369,7 +369,7 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             GQADenseFwdOp(target=BUILTIN)(q, k, v), reference, dense_gqa_verification(dtype)
         )
         if dim == 256:
-            kernel = GQADecodeKernel(
+            kernel = GQADecodeKernel(  # lint: test-placement allow: pins block_H to 64
                 batch=2,
                 heads=heads,
                 heads_kv=heads_kv,

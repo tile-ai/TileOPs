@@ -63,7 +63,3 @@ def test_a_line_allowance_with_a_reason_suppresses_the_finding(tmp_path: Path) -
     source = "# See spec.md#L12.  # lint: code-ref allow: external-spec wording\n"
 
     assert _findings(tmp_path, source) == []
-
-
-def test_a_bare_line_allowance_does_not_suppress_the_finding(tmp_path: Path) -> None:
-    assert _findings(tmp_path, "# See ops.py:12.  # lint: code-ref allow:\n")

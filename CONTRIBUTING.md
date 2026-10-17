@@ -31,9 +31,7 @@ A justified exception carries `# lint: <rule> allow: <reason>`, with the rule it
 on the line the finding points at (a constant's or a manifest row's first line); it exempts that
 line from that hook only, and a marker without a reason exempts nothing. A file the `file-set`
 hook rejects carries `lint: file-set allow: <reason>` in a comment, outside any Markdown code
-fence. The narration and test-placement hooks and the module-constant reader rule judge only the
-lines a branch adds since its merge base with `tile-ai/TileOPs` `main`; `TILEOPS_LINT_BASE` names
-another base ref.
+fence.
 
 ## Naming
 

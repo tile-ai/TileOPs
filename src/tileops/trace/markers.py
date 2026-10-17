@@ -28,9 +28,10 @@ def _emit(event_id: int, kind: int, lane: int, payload) -> None:
         payload_expr = T.int32(payload)
     else:
         payload_expr = payload
-    T.evaluate(
-        T.call_extern("handle", MARKER, event_id, int(kind), lane, state.active_gid, payload_expr)
+    marker = T.call_extern(  # lint: extern-target allow: MARKER names tl_trace_marker
+        "handle", MARKER, event_id, int(kind), lane, state.active_gid, payload_expr
     )
+    T.evaluate(marker)
 
 
 class AnnoToken:

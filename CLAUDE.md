@@ -55,4 +55,4 @@ Naming, PR body shape, and what a review checks: [CONTRIBUTING.md](CONTRIBUTING.
 can be checked mechanically is a `pre-commit` hook, not a line in a document — run
 `pre-commit run --all-files` and read what it says rather than re-deriving the rule. A line a
 hook must not judge carries `# lint: <rule> allow: <reason>`, with the rule its finding names; a
-marker without a reason exempts nothing. `TILEOPS_LINT_BASE` sets the diff-aware hooks' base ref.
+marker without a reason exempts nothing.

@@ -52,6 +52,12 @@ def test_a_file_carrying_a_bare_allow_comment_is_reported(tmp_path: Path) -> Non
     assert lint.findings("notes/plan.md", tmp_path)
 
 
+def test_the_marker_outside_a_comment_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "run.log").write_text("lint: file-set allow: quoted in the log\n")
+
+    assert lint.findings("run.log", tmp_path)
+
+
 def test_the_message_names_the_allow_comment(tmp_path: Path) -> None:
     (found,) = lint.findings("notes/plan.md", tmp_path)
 

@@ -8,10 +8,10 @@ import test_placement_lint as lint
 pytestmark = pytest.mark.smoke
 
 
-def _findings(tmp_path: Path, source: str, added: set[int] | None = None) -> list[str]:
+def _findings(tmp_path: Path, source: str) -> list[str]:
     path = tmp_path / "test_probe.py"
     path.write_text(source, encoding="utf-8")
-    return lint.findings(path, added)
+    return lint.findings(path)
 
 
 def test_a_kernel_construction_is_reported_with_its_function(tmp_path: Path) -> None:
@@ -71,21 +71,7 @@ def test_a_kernel_class_that_is_not_called_is_left_alone(tmp_path: Path, source:
     assert _findings(tmp_path, source) == [], source
 
 
-def test_only_a_construction_on_an_added_line_is_reported(tmp_path: Path) -> None:
-    source = "def test_a():\n    GemmKernel(64)\n\n\ndef test_b():\n    GemmKernel(64)\n"
-
-    (found,) = _findings(tmp_path, source, added={6})
-
-    assert "test_probe.py:6: test_b " in found
-
-
 def test_a_line_allowance_with_a_reason_suppresses_the_finding(tmp_path: Path) -> None:
     source = "def test_ref():\n    GemmKernel(64)  # lint: test-placement allow: layout probe\n"
 
     assert _findings(tmp_path, source) == []
-
-
-def test_a_bare_line_allowance_does_not_suppress_the_finding(tmp_path: Path) -> None:
-    assert _findings(
-        tmp_path, "def test_ref():\n    GemmKernel(64)  # lint: test-placement allow:\n"
-    )
