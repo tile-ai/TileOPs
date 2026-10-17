@@ -114,7 +114,8 @@ def chunk_prepare_program(
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
-                kb_s = T.alloc_shared([BT, K], dtype)
+                if gate_mode == "channel":
+                    kb_s = T.alloc_shared([BT, K], dtype)
                 b_s = T.alloc_shared([BT, K], dtype)
                 m_s = T.alloc_shared([BT, BT], dtype)
                 p_s = T.alloc_shared([BT, BT], dtype)

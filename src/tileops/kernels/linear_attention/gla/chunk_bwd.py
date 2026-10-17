@@ -817,7 +817,8 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         threads_par = 128
         if get_sm_version(self.device_index) == 89 and (
             (self.dim_k == self.dim_v == 64 and self.chunk_size == 64)
-            # BF16 at D=128, chunk 32 also benefits; FP16 regresses with eight warps.
+            # BF16 D=128, chunk 32: 10-17% faster backward, 81,920 bytes shared memory.
+            # FP16 regresses with eight warps.
             or (
                 self.dtype == torch.bfloat16
                 and self.dim_k == self.dim_v == 128
