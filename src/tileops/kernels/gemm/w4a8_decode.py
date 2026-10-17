@@ -233,7 +233,6 @@ def _gemm_w4a8_decode_kernel(
     @tilelang.jit(
         pass_configs={
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: False,
         },
         compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("w4a8_decode_helper.h")],
     )

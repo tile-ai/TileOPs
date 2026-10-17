@@ -112,7 +112,8 @@ __device__ __forceinline__ void w4a8_epilogue(float* acc, bfloat16_t* out_smem,
   constexpr int kChunks = PM / 8;
   auto bf16x2_bits = [](float lo, float hi) {
     __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
-    return *reinterpret_cast<uint32_t*>(&v);
+    __nv_bfloat162_raw const raw = v;
+    return uint32_t(raw.x) | (uint32_t(raw.y) << 16);
   };
 #pragma unroll
   for (int ii = 0; ii < kChunks; ii += 2) {

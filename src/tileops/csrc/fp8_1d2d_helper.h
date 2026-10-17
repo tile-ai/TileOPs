@@ -8,6 +8,7 @@
 #include <tl_templates/cuda/instruction/wgmma.h>
 #include <tl_templates/cuda/intrin.h>
 
+#include <cstring>
 #include <cute/algorithm/gemm.hpp>
 #include <cute/arch/copy_sm75.hpp>
 #include <cute/arch/copy_sm90.hpp>
@@ -85,21 +86,22 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_stsm_bf16(
   int const warp_in_group = (static_cast<int>(threadIdx.x) >> 5) & 3;
 #pragma unroll
   for (int i = 0; i < (BlockN / 2) / 8; ++i) {
-    nv_bfloat162 v0 =
+    __nv_bfloat162_raw const v0 =
         __float22bfloat162_rn({accumulator[i * 8 + 0], accumulator[i * 8 + 1]});
-    nv_bfloat162 v1 =
+    __nv_bfloat162_raw const v1 =
         __float22bfloat162_rn({accumulator[i * 8 + 2], accumulator[i * 8 + 3]});
-    nv_bfloat162 v2 =
+    __nv_bfloat162_raw const v2 =
         __float22bfloat162_rn({accumulator[i * 8 + 4], accumulator[i * 8 + 5]});
-    nv_bfloat162 v3 =
+    __nv_bfloat162_raw const v3 =
         __float22bfloat162_rn({accumulator[i * 8 + 6], accumulator[i * 8 + 7]});
     auto* dst = reinterpret_cast<cute::uint128_t*>(
         reinterpret_cast<__nv_bfloat16*>(output_smem) +
         (warp_in_group * 16 + lane % 16) * BlockN + i * 16 + 8 * (lane / 16));
-    cute::SM90_U32x4_STSM_N::copy(*reinterpret_cast<uint32_t*>(&v0),
-                                  *reinterpret_cast<uint32_t*>(&v1),
-                                  *reinterpret_cast<uint32_t*>(&v2),
-                                  *reinterpret_cast<uint32_t*>(&v3), *dst);
+    cute::SM90_U32x4_STSM_N::copy((uint32_t(v0.x) | (uint32_t(v0.y) << 16)),
+                                  (uint32_t(v1.x) | (uint32_t(v1.y) << 16)),
+                                  (uint32_t(v2.x) | (uint32_t(v2.y) << 16)),
+                                  (uint32_t(v3.x) | (uint32_t(v3.y) << 16)),
+                                  *dst);
   }
 }
 
@@ -119,16 +121,18 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_store_global_vec2(
     if (col + 1 < shape_n) {
       if (row0 < shape_m) {
         uint32_t packed;
-        MutableOutT* values = reinterpret_cast<MutableOutT*>(&packed);
+        MutableOutT values[2];
         values[0] = static_cast<MutableOutT>(accumulator[i * 4 + 0]);
         values[1] = static_cast<MutableOutT>(accumulator[i * 4 + 1]);
+        memcpy(&packed, values, sizeof(packed));
         *reinterpret_cast<uint32_t*>(out + row0 * leading_dim + col) = packed;
       }
       if (row1 < shape_m) {
         uint32_t packed;
-        MutableOutT* values = reinterpret_cast<MutableOutT*>(&packed);
+        MutableOutT values[2];
         values[0] = static_cast<MutableOutT>(accumulator[i * 4 + 2]);
         values[1] = static_cast<MutableOutT>(accumulator[i * 4 + 3]);
+        memcpy(&packed, values, sizeof(packed));
         *reinterpret_cast<uint32_t*>(out + row1 * leading_dim + col) = packed;
       }
     }

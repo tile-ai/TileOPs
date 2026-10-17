@@ -501,6 +501,10 @@ def test_gemm_w4a16_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(GemmW4A8FwdOp), ids=lambda case: case.id)
 def test_gemm_w4a8_bench(case) -> None:
+    """Compare FP8 e4m3 activations times signed INT4 weights, producing BF16 output.
+
+    Every W4A8 row uses FP8 e4m3 group scales and FP32 channel/token scales.
+    """
     workload = case.workload
     op = GemmW4A8FwdOp(**case.arguments)
 

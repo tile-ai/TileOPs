@@ -347,6 +347,9 @@ class GemmW4A8FwdOp(Op):
     multiple of 16 and K a multiple of 128. The in-tree kernels serve ``group_size = 128``
     only and refuse any other value when one is selected. They own cross-CTA workspaces, so
     one instance must not run on two streams at once.
+
+    Prefill stream-K tiles combine FP32 partial sums in an order that depends on CTA
+    arrival order. Results are not guaranteed to be bitwise reproducible across calls.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

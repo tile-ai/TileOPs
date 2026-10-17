@@ -819,6 +819,8 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                     )
                                 T.sync_threads(barrier_id=6, arrive_count=consumers)
                                 do_epi = flag_s[0]
+                                # The last arriving CTA keeps its accumulator, so FP32
+                                # addition order can vary between launches (see the op API).
                                 if do_epi == 1:
                                     for c in T.serial(nc):
                                         if c != seg[4]:

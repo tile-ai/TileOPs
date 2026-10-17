@@ -113,12 +113,13 @@ __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled(
         warp_in_group * (kWgmmaMPerWarp * kSwizzleBytes) +
         m_offset * kSwizzleBytes + atom_offset * BlockM * kSwizzleBytes +
         row * 128 + col * 16);
-    nv_bfloat162 v0 =
+    __nv_bfloat162_raw const v0 =
         __float22bfloat162_rn({accumulator[i * 4 + 0], accumulator[i * 4 + 1]});
-    nv_bfloat162 v1 =
+    __nv_bfloat162_raw const v1 =
         __float22bfloat162_rn({accumulator[i * 4 + 2], accumulator[i * 4 + 3]});
-    cute::SM90_U32x2_STSM_N::copy(*reinterpret_cast<uint32_t*>(&v0),
-                                  *reinterpret_cast<uint32_t*>(&v1), *dst);
+    cute::SM90_U32x2_STSM_N::copy((uint32_t(v0.x) | (uint32_t(v0.y) << 16)),
+                                  (uint32_t(v1.x) | (uint32_t(v1.y) << 16)),
+                                  *dst);
   }
 }
 
