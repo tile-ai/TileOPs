@@ -141,7 +141,7 @@ No performance exploration, autotune sweep or duplicate code path.
 **Target and device:**
 
 - The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
-- A benchmark runs on the process's accelerator and refuses any other device. A CUDA device is timed through CUPTI; another accelerator with its device events, which record `timing: events` and make `device_busy_ms` equal to `latency_ms`.
+- A benchmark runs on CUDA or on the process's accelerator and refuses any other device. A CUDA device is timed through CUPTI; another accelerator with its device events, which record `timing: events` and make `device_busy_ms` equal to `latency_ms`.
 - Every implementation in a row is timed on the run device; an argument on another device fails the row.
 - The runner image installs every baseline library for CUDA, so on CUDA an absent one fails the row. On another device an absent library is one that does not run there: a row that selects it is skipped with the reason, and a preferred one drops its tag.
 

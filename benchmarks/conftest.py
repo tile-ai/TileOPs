@@ -109,16 +109,17 @@ _OUTER_VERIFYING = pytest.StashKey[bool]()
 
 
 def pytest_configure(config):
-    """Refuse a run device that is not an accelerator, and pin the events-fallback setting.
+    """Refuse a run device that is neither CUDA nor the process's accelerator, and pin the
+    events-fallback setting.
 
-    A CUDA device is timed through CUPTI and another accelerator with its device events,
-    so the run device is one the process has an accelerator of.
+    A CUDA device is timed through CUPTI and another accelerator with its device events.
+    CUDA is accepted on a host without one, where the benchmarks' own tests collect.
     """
     device = torch.device(config.getoption("--tileops-device"))
-    if device.type != current_accelerator_type():
+    if device.type not in ("cuda", current_accelerator_type()):
         raise pytest.UsageError(
-            f"--tileops-device={device}: benchmarks time on this process's accelerator, "
-            f"which is {current_accelerator_type()}"
+            f"--tileops-device={device}: benchmarks time on CUDA or on this process's "
+            f"accelerator, which is {current_accelerator_type()}"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
     config.stash[_OUTER_VERIFYING] = api.verifying()

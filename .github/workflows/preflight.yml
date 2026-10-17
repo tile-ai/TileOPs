@@ -329,7 +329,7 @@ jobs:
             exit 1
           fi
           if python -m pytest "${opts[@]}" benchmarks > bench.txt 2>&1 \
-              || ! grep -q "benchmarks time with CUDA events" bench.txt; then
+              || ! grep -q "benchmarks time on CUDA or on this process's accelerator" bench.txt; then
             cat bench.txt
             echo "benchmarks did not refuse --tileops-device=cpu"
             exit 1
